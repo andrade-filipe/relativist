@@ -1,0 +1,754 @@
+# SPEC-13: System Architecture
+
+**Status:** Draft v1
+**Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-09 (Benchmarks)
+**Gray zones resolved:** ---
+**Research consumed:** PESQ-010 (Coordinator-Worker Patterns), PESQ-012 (MapReduce/Dataflow/BSP Comparison), PESQ-013 (State Machines for Distributed Protocols), PESQ-023 (Decision Matrix: D1-D8), PESQ-024 (Architecture Recommendations)
+**Discussions consumed:** DISC-005 v2 (cross-boundary protocol, centralized merge), DISC-006 v2 (overhead anatomy, break-even), DISC-007 v2 (fault tolerance scope), DISC-008 v2 (shared-to-distributed transition)
+**Arguments consumed:** ARG-001 (central argument, P1-P6), ARG-002 (partitioning preserves structure), ARG-003 (merge protocol guarantees frontier completeness), ARG-004 (practical viability and limits)
+
+---
+
+## 1. Purpose
+
+This spec defines the system architecture of Relativist: the programming model classification (BSP), module boundaries and dependency rules, the coordinator and worker finite state machines, the transport abstraction, the async architecture, feature flags, data flow through the system, CLI design, error handling strategy, and explicit exclusions for v1. This is the integration spec that ties together all other specs (SPEC-01 through SPEC-09) into a coherent system design, resolving all 8 architecture decisions from PESQ-023 (D1-D8) and consuming the full architecture blueprint from PESQ-024.
+
+## 2. Definitions
+
+Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introduced or refined in this spec:
+
+| Term | Definition |
+|------|-----------|
+| **BSP (Bulk Synchronous Parallel)** | A parallel programming model where computation proceeds in supersteps: each superstep consists of a local computation phase, a communication phase, and a barrier synchronization. Relativist implements BSP where each grid round (SPEC-05) is one superstep. Identified as the correct classification in PESQ-012. |
+| **Superstep** | One complete iteration of the BSP cycle in Relativist: split the net into partitions, dispatch to workers, reduce locally, collect results, merge partitions, check termination. Equivalent to one Round (SPEC-05). |
+| **Coordinator** | The central process that orchestrates the grid cycle: partitions the net, dispatches partitions to workers, collects results, executes merge, resolves border redexes, and decides whether to continue or terminate. Runs as a tokio async event loop. |
+| **Worker** | A remote process that receives a partition, reduces it locally via `reduce_all` (SPEC-03), and returns the reduced partition to the coordinator. Workers have no knowledge of each other and communicate only with the coordinator (star topology, PESQ-010 L6). |
+| **Core Layer** | The set of modules (`net`, `reduction`, `partition`, `merge`) that contain pure, synchronous logic with no async runtime dependency, no I/O, and no network access. Core compiles and runs without tokio. |
+| **Infrastructure Layer** | The set of modules (`protocol`, `coordinator`, `worker`) that depend on tokio for async I/O and network communication. Infrastructure depends on Core but never the reverse. |
+| **Transport** | A trait abstracting the send/receive mechanism. `TcpTransport` for production; `ChannelTransport` (tokio mpsc) for in-memory testing. TLS wraps TCP transparently when the `tls` feature is enabled. |
+| **Feature Flag** | A Cargo feature that enables optional functionality at compile time. Relativist uses feature flags for `tls`, `metrics`, and `otel` to keep the default binary lean. |
+| **Stimulus-Response Pattern** | An FSM design where the state machine is a pure function `transition(state, event) -> (state, Vec<Action>)`. Events are stimuli; actions are responses. The async runtime dispatches events and executes actions, but the FSM logic itself is synchronous and testable without tokio (PESQ-013 L2). |
+| **Star Topology** | Network topology where all workers connect directly to the coordinator, with no worker-to-worker communication. Sufficient for v1 (PESQ-010 L6, L7). |
+
+---
+
+## 3. Requirements
+
+### 3.1 Programming Model (BSP)
+
+**R1.** Relativist MUST implement the BSP programming model where each grid round is one BSP superstep consisting of the phases: split, dispatch, reduce (local), collect, merge, check termination. **(MUST)**
+
+**R2.** Each BSP superstep MUST use barrier synchronization: the coordinator MUST wait for ALL workers to return their reduced partitions before proceeding to the merge phase. No worker's result from round `r` may be merged with results from round `r-1` or `r+1`. **(MUST)**
+
+Rationale: Barrier synchronization is required by P3 of the formal argument (ARG-001): the merge assumes all partitions have been independently reduced. Partial merges would violate the split/merge identity (SPEC-01, D1) and could produce incorrect results.
+
+**R3.** The grid loop MUST terminate when `border_redexes(merged_net) == 0` AND `local_redexes(merged_net) == 0`, i.e., the merged net is in Normal Form (SPEC-05, R10). **(MUST)**
+
+**R4.** Relativist MUST NOT implement MapReduce (lacks iterative rounds with structural merge) or Dataflow (wrong abstraction -- IC reduction is a single repeated operation, not a DAG of distinct operations). The BSP classification MUST be documented in the coordinator's module-level documentation. **(MUST)**
+
+Rationale: PESQ-012 provides exhaustive comparison. The BSP mapping is exact: superstep = grid round, local computation = reduce(partition), communication = ReturnPartition, barrier = coordinator waits for all workers.
+
+### 3.2 Module Structure
+
+**R5.** Relativist MUST be organized as a single crate with the following 10 modules. **(MUST)**
+
+```
+src/
+├── lib.rs              # Re-exports, top-level error type
+├── main.rs             # CLI entry point (clap)
+├── net/                # SPEC-02: Net, Agent, Wire, Port, PortRef
+│   ├── mod.rs
+│   ├── agent.rs
+│   ├── wire.rs
+│   └── port.rs
+├── reduction/          # SPEC-03: reduce(), redex detection, 6 rules
+│   └── mod.rs
+├── partition/          # SPEC-04: split(), PartitionStrategy, FreePort
+│   └── mod.rs
+├── merge/              # SPEC-05: merge(), border resolution
+│   └── mod.rs
+├── protocol/           # SPEC-06: Message, Transport trait, framing
+│   ├── mod.rs
+│   ├── message.rs
+│   ├── transport.rs    # trait Transport
+│   ├── tcp.rs          # TcpTransport
+│   └── channel.rs      # ChannelTransport (testing)
+├── coordinator/        # Coordinator FSM, round management
+│   └── mod.rs
+├── worker/             # Worker FSM, reduction loop
+│   └── mod.rs
+├── config/             # SPEC-07: CLI config, environment parsing
+│   └── mod.rs
+├── observability/      # Logging setup, metrics registry
+│   └── mod.rs
+└── security/           # TLS, token authentication
+    └── mod.rs
+```
+
+**R6.** The Core Layer modules (`net`, `reduction`, `partition`, `merge`) MUST NOT depend on tokio, on any async runtime, or on any I/O crate. They MUST be pure synchronous Rust with no `async fn` signatures. **(MUST)**
+
+**R7.** The Infrastructure Layer modules (`protocol`, `coordinator`, `worker`) MAY depend on tokio and other async/I/O crates. They MUST depend on the Core Layer for data types and algorithms. **(MUST for dependency direction)**
+
+**R8.** The Core Layer MUST NOT depend on the Infrastructure Layer. The dependency direction MUST be: Infrastructure -> Core, never Core -> Infrastructure. **(MUST)**
+
+Rationale: This separation enables (a) testing core logic without an async runtime, (b) potential future extraction into a `relativist-core` crate if the project grows, and (c) clear mental model of what is pure computation vs. what is I/O (PESQ-023 D7, PESQ-024 Section 3).
+
+**R9.** The `observability` and `security` modules MUST be feature-gated where they introduce optional dependencies (`metrics`, `otel`, `tls` features). The always-on parts (basic `tracing` setup) MAY reside in `observability` without feature gates. **(MUST)**
+
+**R10.** The crate MUST produce a single binary named `relativist`. **(MUST)**
+
+### 3.3 Dependency Map
+
+**R11.** The always-on dependencies MUST be limited to the following crates. **(MUST)**
+
+| Crate | Version | Purpose | Justification |
+|-------|---------|---------|--------------|
+| `tokio` | 1.x | Async runtime | Universal standard (PESQ-009 L3) |
+| `serde` | 1.x | Serialization framework | Universal standard (PESQ-009 L2) |
+| `bincode` | 2.x | Binary encoding | Validated by 3/4 surveyed frameworks (PESQ-009 Section 3.2) |
+| `clap` | 4.x | CLI parsing | Standard for Rust CLIs |
+| `tracing` | 0.1 | Structured logging | Single instrumentation API (PESQ-015 L1) |
+| `tracing-subscriber` | 0.3 | Log formatting + filtering | Required companion to `tracing` |
+| `thiserror` | 2.x | Error type derivation | Typed errors over anyhow (PESQ-023 D2) |
+| `rand` | 0.8 | Random number generation | Token generation, test data |
+
+**R12.** Feature-gated dependencies MUST be declared with `dep:` syntax in `Cargo.toml` and MUST only be compiled when the corresponding feature is enabled. **(MUST)**
+
+| Crate | Feature | Purpose |
+|-------|---------|---------|
+| `rustls` | `tls` | TLS 1.3 implementation (PESQ-017) |
+| `tokio-rustls` | `tls` | Async TLS for tokio |
+| `rustls-pemfile` | `tls` | PEM file parsing |
+| `prometheus-client` | `metrics` | Prometheus metrics exposition (PESQ-016) |
+| `axum` | `metrics` | HTTP server for /metrics, /health endpoints |
+| `opentelemetry` | `otel` | OpenTelemetry core API (PESQ-014) |
+| `opentelemetry-sdk` | `otel` | OpenTelemetry SDK |
+| `opentelemetry-otlp` | `otel` | OTLP exporter |
+| `tracing-opentelemetry` | `otel` | tracing-to-OTel bridge |
+
+**R13.** Dev/test dependencies MUST include at least the following. **(MUST)**
+
+| Crate | Purpose |
+|-------|---------|
+| `proptest` | Property-based testing (SPEC-08, PESQ-022) |
+| `criterion` | Micro-benchmarks (SPEC-09) |
+| `tokio-test` | Async test utilities |
+| `rcgen` | Certificate generation for TLS tests |
+
+**R14.** No additional always-on dependencies SHOULD be added without justification. The principle is: build on primitives, not frameworks (PESQ-009 L1). **(SHOULD)**
+
+### 3.4 Error Handling
+
+**R15.** Relativist MUST use `thiserror` for all error type definitions. Each module MUST define its own error enum. **(MUST)**
+
+**R16.** The per-module error enums MUST be at minimum:
+
+```rust
+/// Errors from the net representation layer.
+#[derive(Debug, thiserror::Error)]
+pub enum NetError {
+    #[error("agent {0} not found")]
+    AgentNotFound(AgentId),
+    #[error("port {0:?} is dangling (not connected)")]
+    DanglingPort(PortRef),
+    #[error("net invariant violated: {0}")]
+    InvariantViolation(String),
+}
+
+/// Errors from the reduction engine.
+#[derive(Debug, thiserror::Error)]
+pub enum ReductionError {
+    #[error("invalid redex: agents {0} and {1} are not connected via principal ports")]
+    InvalidRedex(AgentId, AgentId),
+    #[error("net invariant violated: {0}")]
+    InvariantViolation(String),
+}
+
+/// Errors from the partitioning subsystem.
+#[derive(Debug, thiserror::Error)]
+pub enum PartitionError {
+    #[error("cannot partition net with {agents} agents into {k} partitions")]
+    TooFewAgents { agents: usize, k: usize },
+    #[error("partition invariant violated: {0}")]
+    InvariantViolation(String),
+}
+
+/// Errors from the merge subsystem.
+#[derive(Debug, thiserror::Error)]
+pub enum MergeError {
+    #[error("unresolved border: FreePort({0}) has no matching partner")]
+    UnresolvedBorder(u32),
+    #[error("merge invariant violated: {0}")]
+    InvariantViolation(String),
+}
+
+/// Errors from the wire protocol and transport.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtocolError {
+    #[error("connection lost: {0}")]
+    ConnectionLost(#[source] std::io::Error),
+    #[error("invalid message: {0}")]
+    InvalidMessage(String),
+    #[error("message too large: {size} bytes (max {max})")]
+    MessageTooLarge { size: usize, max: usize },
+    #[error("frame checksum mismatch")]
+    ChecksumMismatch,
+    #[error("authentication failed")]
+    AuthFailed,
+    #[error("timeout after {0:?}")]
+    Timeout(std::time::Duration),
+}
+
+/// Errors from the coordinator.
+#[derive(Debug, thiserror::Error)]
+pub enum CoordinatorError {
+    #[error("worker {0} failed: {1}")]
+    WorkerFailed(WorkerId, String),
+    #[error("no workers registered within timeout")]
+    NoWorkers,
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+    #[error(transparent)]
+    Partition(#[from] PartitionError),
+    #[error(transparent)]
+    Merge(#[from] MergeError),
+}
+
+/// Errors from the worker.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerError {
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+    #[error(transparent)]
+    Reduction(#[from] ReductionError),
+}
+```
+
+**(MUST for the enum structure; individual variants MAY be added or renamed during implementation)**
+
+**R17.** A top-level error type `RelativistError` MUST unify all module errors via `#[from]` conversions. **(MUST)**
+
+```rust
+/// Top-level error type for the Relativist binary.
+#[derive(Debug, thiserror::Error)]
+pub enum RelativistError {
+    #[error(transparent)]
+    Net(#[from] NetError),
+    #[error(transparent)]
+    Reduction(#[from] ReductionError),
+    #[error(transparent)]
+    Partition(#[from] PartitionError),
+    #[error(transparent)]
+    Merge(#[from] MergeError),
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
+    #[error(transparent)]
+    Coordinator(#[from] CoordinatorError),
+    #[error(transparent)]
+    Worker(#[from] WorkerError),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("configuration error: {0}")]
+    Config(String),
+}
+```
+
+**R18.** Errors MUST be classified as either **Transient** (retryable: network timeout, temporary connection loss) or **Fatal** (non-retryable: invalid net structure, protocol violation, invariant violation). The coordinator FSM MUST handle transient errors with retry/re-dispatch and fatal errors with shutdown. **(MUST)**
+
+### 3.5 Coordinator FSM
+
+**R19.** The coordinator MUST implement a finite state machine with the following states. **(MUST)**
+
+```rust
+/// Coordinator states.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub enum CoordinatorState {
+    /// Initial state. Loading configuration, binding TCP listener.
+    Init,
+    /// Waiting for the minimum number of workers to register.
+    WaitingForWorkers,
+    /// Partitioning the net into sub-nets for distribution.
+    Partitioning,
+    /// Sending partitions to workers.
+    Dispatching,
+    /// Waiting for all workers to return their reduced partitions.
+    WaitingForResults,
+    /// Merging returned partitions and resolving border redexes.
+    Merging,
+    /// Checking if the merged net has reached Normal Form.
+    CheckTermination,
+    /// Reduction complete. Writing output and shutting down.
+    Done,
+    /// Fatal error. Shutting down.
+    Error,
+}
+```
+
+**R20.** The coordinator FSM MUST follow the stimulus-response pattern: a pure function `transition(state, event) -> (new_state, Vec<Action>)` that takes the current state and an event, and returns the new state plus a list of side-effectful actions to execute. **(MUST)**
+
+```rust
+/// Events that drive the coordinator FSM.
+#[derive(Debug, Clone)]
+pub enum CoordinatorEvent {
+    ConfigLoaded,
+    WorkerRegistered(WorkerId),
+    SplitComplete(Vec<Partition>),
+    AllDispatched,
+    PartitionReturned { worker_id: WorkerId, partition: Partition },
+    HeartbeatTimeout(WorkerId),
+    MergeComplete { net: Net, border_redex_count: usize },
+    FatalError(String),
+}
+
+/// Actions the coordinator runtime must execute.
+#[derive(Debug)]
+pub enum CoordinatorAction {
+    BindListener(SocketAddr),
+    SendMessage(WorkerId, Message),
+    StartTimer(TimerId, Duration),
+    CancelTimer(TimerId),
+    EmitMetric(MetricEvent),
+    LogTransition { from: CoordinatorState, to: CoordinatorState },
+    WriteOutput(Net),
+    ShutdownAll,
+}
+```
+
+**R21.** The coordinator transition table MUST implement at minimum the following transitions. **(MUST)**
+
+| From | Event | To | Actions |
+|------|-------|----|---------|
+| Init | ConfigLoaded | WaitingForWorkers | BindListener, LogTransition |
+| WaitingForWorkers | WorkerRegistered(id) [count < min] | WaitingForWorkers | SendMessage(id, RegisterAck) |
+| WaitingForWorkers | WorkerRegistered(id) [count >= min] | Partitioning | SendMessage(id, RegisterAck), LogTransition |
+| Partitioning | SplitComplete(parts) | Dispatching | LogTransition |
+| Dispatching | AllDispatched | WaitingForResults | StartTimer(round_timer), LogTransition |
+| WaitingForResults | PartitionReturned(id, P) [not all] | WaitingForResults | EmitMetric |
+| WaitingForResults | PartitionReturned(id, P) [all received] | Merging | CancelTimer, LogTransition |
+| WaitingForResults | HeartbeatTimeout(id) | Error | LogTransition, ShutdownAll |
+| Merging | MergeComplete(net, 0) | Done | WriteOutput, ShutdownAll, LogTransition |
+| Merging | MergeComplete(net, n) [n > 0] | Partitioning | LogTransition |
+| Any | FatalError(e) | Error | LogTransition, ShutdownAll |
+
+**R22.** The coordinator FSM MUST be enum-based (not typestate). Typestate encoding would make serialization, logging, and testing harder for no benefit at this scale (PESQ-013 L1). **(MUST)**
+
+**R23.** Every state transition MUST be logged at `INFO` level with the `from` and `to` states, the triggering event, and the round number (if applicable). This enables post-hoc debugging and is essential for the observability story (PESQ-013 L3). **(MUST)**
+
+### 3.6 Worker FSM
+
+**R24.** The worker MUST implement a finite state machine with the following states. **(MUST)**
+
+```rust
+/// Worker states.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub enum WorkerState {
+    /// Initial state. Connecting to coordinator.
+    Init,
+    /// Connected and idle. Waiting for a partition.
+    Idle,
+    /// Reducing a partition locally.
+    Reducing,
+    /// Sending the reduced partition back to the coordinator.
+    Returning,
+    /// Fatal error.
+    Error,
+    /// Shutdown received. Exiting.
+    Done,
+}
+```
+
+**R25.** The worker FSM MUST implement at minimum the following transitions. **(MUST)**
+
+| From | Event | To | Actions |
+|------|-------|----|---------|
+| Init | Connected | Idle | SendMessage(Register) |
+| Idle | ReceivePartition(P) | Reducing | LogTransition |
+| Reducing | ReductionComplete(P') | Returning | LogTransition |
+| Returning | SendComplete | Idle | LogTransition |
+| Idle | Shutdown | Done | CloseConnection, LogTransition |
+| Reducing | ReductionError(e) | Error | SendMessage(Error(e)), LogTransition |
+| Any | ConnectionLost | Init | AttemptReconnect, LogTransition |
+
+**R26.** The worker MUST perform local reduction synchronously (blocking the current task) using `reduce_all` from the `reduction` module (SPEC-03). The worker's async runtime is used for receiving and sending messages, not for parallelizing reduction. **(MUST)**
+
+Rationale: `reduce_all` is a CPU-bound sequential operation on the partition. Running it on a `tokio::task::spawn_blocking` context (or a dedicated thread) prevents blocking the async I/O loop. The reduction itself MUST NOT use async internally.
+
+**R27.** Workers MUST have no knowledge of each other. All communication flows through the coordinator (star topology). No worker-to-worker messages exist in the protocol (PESQ-010 L7, SPEC-06). **(MUST)**
+
+### 3.7 Transport Abstraction
+
+**R28.** The protocol module MUST define a `Transport` trait abstracting the send/receive mechanism. **(MUST)**
+
+```rust
+/// Abstraction over the communication channel between coordinator and worker.
+#[async_trait::async_trait]
+pub trait Transport: Send + Sync {
+    /// Send a message to the remote end.
+    async fn send(&mut self, msg: &Message) -> Result<(), ProtocolError>;
+
+    /// Receive a message from the remote end.
+    async fn recv(&mut self) -> Result<Message, ProtocolError>;
+
+    /// Close the connection gracefully.
+    async fn close(&mut self) -> Result<(), ProtocolError>;
+}
+```
+
+**R29.** Relativist MUST provide two Transport implementations. **(MUST)**
+
+| Implementation | Use Case | Description |
+|----------------|----------|-------------|
+| `TcpTransport` | Production, TCP benchmarks | Length-prefixed bincode frames over TCP (SPEC-06). Used for `TcpLocalhost` and `TcpNetwork` modes. |
+| `ChannelTransport` | Unit tests, integration tests | Uses `tokio::sync::mpsc` channels in-memory. No serialization overhead. Enables testing the full grid cycle without TCP. |
+
+**R30.** When the `tls` feature is enabled, `TcpTransport` MUST transparently wrap the TCP stream with TLS 1.3 via `tokio-rustls`. The `Transport` trait interface MUST NOT change -- TLS is an implementation detail of `TcpTransport`, not a separate transport. **(MUST)**
+
+**R31.** The `ChannelTransport` MUST implement the same `Transport` trait, enabling the coordinator and workers to be instantiated in the same process for integration testing (SPEC-08, PESQ-020 L1). This is the in-memory grid mode referenced in SPEC-09 as `Local` mode. **(MUST)**
+
+### 3.8 Async Architecture
+
+**R32.** The coordinator MUST run on a single tokio runtime. Its main loop MUST be an event loop that: (a) accepts new TCP connections, (b) receives messages from workers, (c) processes timer events, and (d) feeds events into the FSM transition function. **(MUST)**
+
+**R33.** Each worker MUST run on its own tokio runtime (separate process). The worker's async loop MUST: (a) maintain a persistent connection to the coordinator, (b) receive partitions, (c) offload reduction to a blocking task (`tokio::task::spawn_blocking`), and (d) send results back. **(MUST)**
+
+**R34.** The Core Layer (`net`, `reduction`, `partition`, `merge`) MUST be fully synchronous. No function in the Core Layer MUST be `async`. No Core Layer module MUST import `tokio`. **(MUST)**
+
+**R35.** There MUST be no shared mutable state between workers. Each worker operates on its own partition independently. The coordinator is the sole point of state aggregation (via merge). **(MUST)**
+
+Rationale: This is a direct consequence of the BSP model (R1-R2) and the star topology (R27). Shared mutable state would require synchronization primitives that are unnecessary in BSP and would violate the independence assumption of P2 (ARG-001).
+
+**R36.** The coordinator SHOULD use `tokio::select!` to multiplex between connection accept, message receive, and timer events in its main loop. **(SHOULD)**
+
+### 3.9 Feature Flags
+
+**R37.** The `Cargo.toml` MUST define exactly the following features. **(MUST)**
+
+```toml
+[features]
+default = []
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
+metrics = ["dep:prometheus-client", "dep:axum"]
+otel = ["dep:opentelemetry", "dep:opentelemetry-sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+full = ["tls", "metrics", "otel"]
+```
+
+**R38.** The default feature set MUST be empty (no optional features enabled). A plain `cargo build` MUST produce a functional binary with TCP communication, structured logging, and token authentication -- but without TLS, Prometheus metrics, or OpenTelemetry tracing. **(MUST)**
+
+**R39.** Feature-gated code MUST use `#[cfg(feature = "...")]` attributes. Feature-gated modules SHOULD provide no-op stubs when the feature is disabled, so that calling code does not need extensive `#[cfg]` blocks. **(MUST for cfg; SHOULD for stubs)**
+
+### 3.10 Data Flow
+
+**R40.** The end-to-end data flow of a distributed reduction MUST follow this sequence. **(MUST)**
+
+```
+1. Input: Parse IC net from file (.bin / .json) -> Net
+2. Coordinator::Init: Load config, bind TCP, wait for workers
+3. Workers register: Each worker connects, sends Register, receives RegisterAck
+4. BSP Loop (repeated until Normal Form):
+   a. split(net, k) -> [P1, P2, ..., Pk]         (SPEC-04)
+   b. dispatch(Pi -> Worker_i) for all i           (SPEC-06)
+   c. Workers: reduce_all(Pi) -> Pi'               (SPEC-03)
+   d. Coordinator: collect all Pi'                  (SPEC-06)
+   e. merge([P1', P2', ..., Pk']) -> net'           (SPEC-05)
+   f. Check: is net' in Normal Form?
+      - No:  net = net', goto step 4a
+      - Yes: proceed to step 5
+5. Output: Write reduced net + metrics
+6. Shutdown: Send Shutdown to all workers, close connections
+```
+
+**R41.** The local execution mode (`relativist reduce`) MUST bypass the coordinator/worker/protocol infrastructure entirely. It MUST call `reduce_all` directly on the parsed net. The result MUST be identical to running the grid with any number of workers (Fundamental Property, SPEC-01 G1). **(MUST)**
+
+**R42.** The input format for nets MUST be bincode (SPEC-02, SPEC-06). The system SHOULD also accept a human-readable JSON format for debugging and test fixture creation. **(MUST for bincode; SHOULD for JSON)**
+
+### 3.11 CLI Design
+
+**R43.** The CLI MUST use `clap` with the derive API and MUST provide at least the following subcommands. **(MUST)**
+
+```rust
+/// Relativist: Distributed Interaction Combinator Reduction Engine
+#[derive(Debug, clap::Parser)]
+#[command(name = "relativist", version, about)]
+pub enum Cli {
+    /// Run as coordinator: partition, dispatch, merge, check termination.
+    Coordinator(CoordinatorArgs),
+    /// Run as worker: connect to coordinator, reduce partitions.
+    Worker(WorkerArgs),
+    /// Run local reduction (no distribution).
+    Reduce(ReduceArgs),
+    /// Inspect an IC net file (print summary statistics).
+    Inspect(InspectArgs),
+    /// Generate test IC nets.
+    Generate(GenerateArgs),
+}
+```
+
+**R44.** The `coordinator` subcommand MUST accept at minimum: `--bind` (socket address, default `127.0.0.1:9000`), `--workers` (minimum worker count before starting), `--input` (path to net file), `--output` (path for result, optional), and optional TLS arguments (`--tls-cert`, `--tls-key`) when the `tls` feature is enabled. **(MUST)**
+
+**R45.** The `worker` subcommand MUST accept at minimum: `--coordinator` (address of coordinator), `--token` (authentication token, optional), and optional `--tls-ca` when the `tls` feature is enabled. **(MUST)**
+
+**R46.** The `reduce` subcommand MUST accept at minimum: `--input` (path to net file) and `--output` (path for result, optional). It MUST perform purely local reduction without any network communication. **(MUST)**
+
+**R47.** The `inspect` subcommand MUST accept a path to a net file and print: agent count, wire count, redex count, agent distribution by symbol (CON, DUP, ERA), and whether the net is in Normal Form. **(MUST)**
+
+**R48.** The `generate` subcommand MUST accept a benchmark name and size, and produce a net file. This enables creating test inputs independently of the benchmark suite (SPEC-09). **(MUST)**
+
+### 3.12 What is NOT in v1
+
+**R49.** The following features MUST NOT be implemented in v1. Each is explicitly excluded with justification. **(MUST NOT)**
+
+| Feature | Justification | Source |
+|---------|--------------|--------|
+| Multi-crate workspace | Over-engineering for a single developer; module boundaries achieve the same goal | PESQ-023 D1 |
+| Mutual TLS (mTLS) | PKI complexity; server-side TLS + token auth is sufficient | PESQ-017 L3 |
+| Full deterministic simulation testing (Turmoil/MadSim) | Disproportionate integration effort for v1 scope | PESQ-021 L1 |
+| Work stealing | Incompatible with BSP barrier synchronization | PESQ-011 L1 |
+| Byzantine fault tolerance | Redundant computation not justified for research prototype | PESQ-019 L5 |
+| Coordinator high availability (HA) | Single coordinator is a known limitation, acceptable for TCC scope | PESQ-010 Section 3.3 |
+| Actor model (e.g., Actix) | Wrong abstraction for BSP; adds framework coupling | PESQ-008 L1 |
+| Consensus protocols (Raft, Paxos) | Single coordinator makes election unnecessary | PESQ-009 Section 2.1 |
+| Token rotation | Per-session token is sufficient for TCC evaluation | PESQ-018 L4 |
+| Intra-worker parallelism (rayon) | Sequential per-worker reduction is simpler and sufficient | PESQ-011 L2 |
+| Worker-to-worker communication | Star topology is sufficient; peer-to-peer adds complexity without clear benefit | PESQ-010 L6, L7 |
+
+**R50.** The v1 exclusions SHOULD be documented in a `ROADMAP.md` file in the repository, noting which items are candidates for future work. **(SHOULD)**
+
+---
+
+## 4. Design
+
+### 4.1 System Diagram
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      CLI (clap)                          │
+│  coordinator | worker | reduce | inspect | generate      │
+└──────────┬────────────────┬──────────────────────────────┘
+           │                │
+     ┌─────▼──────┐   ┌────▼─────┐
+     │ Coordinator │   │  Worker   │
+     │   (FSM)     │   │  (FSM)   │      Infrastructure
+     └──┬──────┬───┘   └────┬─────┘      Layer (async)
+        │      │            │
+     ┌──▼──────▼────────────▼──┐
+     │     protocol/            │
+     │  Transport trait         │
+     │  TcpTransport            │
+     │  ChannelTransport        │
+     └──────────┬───────────────┘
+                │
+┌───────────────▼────────────────────────────────────────┐
+│                    CORE LAYER (sync, no I/O)           │
+│                                                         │
+│  ┌─────────┐  ┌───────────┐  ┌───────────┐  ┌───────┐ │
+│  │   net/   │  │reduction/ │  │partition/ │  │merge/ │ │
+│  │ Agent    │  │ 6 rules   │  │ split()   │  │merge()│ │
+│  │ Wire     │  │reduce_all │  │ FreePort  │  │border │ │
+│  │ PortRef  │  │ redex Q   │  │ strategy  │  │resolve│ │
+│  └─────────┘  └───────────┘  └───────────┘  └───────┘ │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Coordinator Event Loop
+
+The coordinator's async runtime processes events from multiple sources:
+
+```
+async fn run_coordinator(config: CoordinatorConfig) -> Result<Net, CoordinatorError> {
+    let mut state = CoordinatorState::Init;
+    let mut workers: HashMap<WorkerId, WorkerHandle> = HashMap::new();
+    let mut net: Net = parse_input(&config.input)?;
+    let mut round: u32 = 0;
+
+    // Feed initial event
+    let (state, actions) = transition(state, CoordinatorEvent::ConfigLoaded);
+    execute_actions(actions);
+
+    loop {
+        // Multiplex events from connections, timers, internal signals
+        let event = tokio::select! {
+            conn = listener.accept() => { /* wrap as WorkerRegistered */ },
+            msg = recv_from_any_worker(&workers) => { /* wrap as PartitionReturned */ },
+            _ = timer.tick() => { /* wrap as HeartbeatTimeout */ },
+        };
+
+        let (new_state, actions) = transition(state, event);
+        info!(from = ?state, to = ?new_state, round, "state transition");
+        state = new_state;
+        execute_actions(actions);
+
+        if matches!(state, CoordinatorState::Done | CoordinatorState::Error) {
+            break;
+        }
+    }
+
+    // Return final net or error
+}
+```
+
+This is pseudocode illustrating the pattern. The actual implementation will differ in details but MUST follow this structure: an event loop feeding events into a pure transition function.
+
+### 4.3 Worker Main Loop
+
+```
+async fn run_worker(config: WorkerConfig) -> Result<(), WorkerError> {
+    let mut transport = TcpTransport::connect(&config.coordinator_addr).await?;
+    transport.send(&Message::Register { /* ... */ }).await?;
+
+    loop {
+        let msg = transport.recv().await?;
+        match msg {
+            Message::AssignPartition(partition) => {
+                // Offload CPU-bound work to blocking thread pool
+                let reduced = tokio::task::spawn_blocking(move || {
+                    reduce_all(partition.into_net())
+                }).await?;
+
+                transport.send(&Message::ReturnPartition {
+                    partition: reduced.into_partition(),
+                }).await?;
+            }
+            Message::Shutdown => break,
+            _ => { /* unexpected message */ }
+        }
+    }
+
+    transport.close().await?;
+    Ok(())
+}
+```
+
+### 4.4 Module Dependency Graph
+
+```
+main.rs ──> config/ ──> (clap)
+    │
+    ├──> coordinator/ ──> protocol/ ──> net/
+    │         │              │           │
+    │         ├──> partition/ ──> net/   │
+    │         │                          │
+    │         ├──> merge/ ──> net/       │
+    │         │                          │
+    │         └──> reduction/ ──> net/   │
+    │                                    │
+    ├──> worker/ ──> protocol/ ──> net/  │
+    │         │                          │
+    │         └──> reduction/ ──> net/   │
+    │                                    │
+    ├──> observability/ ──> (tracing)    │
+    │                                    │
+    └──> security/ ──> (rustls)          │
+
+Legend: ──> means "depends on"
+Core modules (net, reduction, partition, merge) have NO reverse arrows to infrastructure.
+```
+
+### 4.5 In-Memory Grid Mode (Testing)
+
+For integration testing without TCP:
+
+```rust
+/// Run a complete grid cycle in-memory using ChannelTransport.
+/// This is the `Local` mode used in SPEC-09 benchmarks.
+pub async fn run_grid_local(
+    net: Net,
+    num_workers: usize,
+) -> Result<(Net, GridMetrics), RelativistError> {
+    // Create channel pairs for each worker
+    let mut channels: Vec<(ChannelTransport, ChannelTransport)> = (0..num_workers)
+        .map(|_| ChannelTransport::pair())
+        .collect();
+
+    // Spawn coordinator and workers as tokio tasks
+    // Coordinator uses one end of each channel pair
+    // Workers use the other end
+    // Full BSP loop runs in-process with zero serialization overhead
+}
+```
+
+This enables SPEC-08 integration tests and SPEC-09 Local-mode benchmarks without requiring TCP sockets.
+
+---
+
+## 5. Rationale
+
+### 5.1 Why BSP and not MapReduce or Dataflow
+
+PESQ-012 evaluates three programming models for Relativist. BSP is the correct classification because:
+
+1. **Iteration:** IC reduction requires multiple rounds when border redexes emerge (SPEC-05). MapReduce is inherently single-pass; adapting it to iterative reduction requires an external loop that is effectively BSP.
+2. **Barrier:** The merge operation (SPEC-05) requires ALL partitions to be available. This is a natural BSP barrier. Dataflow models allow partial progress, which would violate the merge assumption.
+3. **Structural merge:** The merge is not a simple reduce (key-value aggregation). It is a graph reconstruction that reconnects border ports. MapReduce's reduce function cannot express this.
+4. **Exact mapping:** Superstep = Round, local computation = reduce_all, communication = ReturnPartition, barrier = collect-all. No conceptual stretching required.
+
+### 5.2 Why a single crate with feature flags
+
+PESQ-023 D1 evaluates three options. A multi-crate workspace (2-3 crates) provides stronger compile-time boundaries but adds boilerplate and cross-crate refactoring friction for a single-developer research project. The single-crate approach with module-level boundaries achieves the same conceptual separation (Core vs. Infrastructure) while remaining easy to navigate. If Relativist grows beyond TCC scope, the module boundaries make extraction into separate crates straightforward. Paladin (PESQ-007) validates this approach at production scale.
+
+### 5.3 Why thiserror over anyhow
+
+PESQ-023 D2 analysis: Relativist needs to distinguish between transient and fatal errors in the coordinator FSM (R18). The coordinator must decide: retry (transient) or shutdown (fatal). `anyhow::Error` erases type information, making this classification impossible at the call site. `thiserror` preserves typed variants that can be matched. The additional boilerplate is justified by correctness of error handling.
+
+### 5.4 Why enum-based FSM over typestate
+
+PESQ-013 evaluates both patterns. Typestate encoding (one struct per state, consuming `self` on transition) provides compile-time guarantees but makes serialization, logging, and dynamic dispatch harder. The coordinator FSM needs to: (a) serialize its state for observability, (b) log transitions with `from`/`to` as strings, (c) store state in a single field that changes at runtime. All three are natural with enums and unnatural with typestate. For a 9-state FSM in a research project, the type-safety benefit of typestate does not justify the ergonomic cost.
+
+### 5.5 Why stimulus-response pattern for the coordinator
+
+The stimulus-response pattern (PESQ-013 L2) separates the FSM logic (pure function) from the I/O runtime (async event loop). This enables:
+
+1. **Deterministic testing:** The transition function can be tested with unit tests that feed events and assert on (state, actions) without any async runtime (PESQ-013 L5).
+2. **Clear audit trail:** Every transition is driven by a named event, enabling structured logging.
+3. **Simpler reasoning:** Side effects are concentrated in the action executor, not scattered through the FSM logic.
+
+### 5.6 Why star topology
+
+PESQ-010 L6 and L7: Relativist's BSP model requires centralized merge. The coordinator must receive ALL partitions. Worker-to-worker communication would only be useful for direct border redex resolution, which DISC-005 v2 and ARG-003 rejected in favor of centralized merge. Star topology is the simplest topology that supports the protocol and adds no unnecessary complexity.
+
+---
+
+## 6. Haskell Prototype Reference
+
+### 6.1 Architecture comparison
+
+| Aspect | Haskell Prototype | Relativist |
+|--------|-------------------|-----------|
+| Programming model | Implicit BSP (not named) | Explicit BSP (documented, classified) |
+| Coordinator FSM | Implicit in `gridLoop` control flow | Explicit enum-based FSM with transition table |
+| Worker FSM | Implicit in `workerLoop` pattern match | Explicit enum-based FSM |
+| Module boundaries | 6 Haskell modules (Core, Partition, Protocol, Network, Grid, TreeMapReduce) | 10 Rust modules with Core/Infrastructure split |
+| Error handling | Haskell exceptions + `Either` | thiserror enums with classification |
+| Transport abstraction | None (TCP hardcoded in Protocol.hs) | `trait Transport` with TCP and Channel impls |
+| Feature flags | None | tls, metrics, otel |
+| CLI | Basic argument parsing | clap with 5 subcommands |
+| Async model | GHC threads + forkIO | tokio + spawn_blocking |
+| Observability | printf debugging | tracing + optional Prometheus + optional OTel |
+
+### 6.2 What the prototype got right
+
+1. **Centralized merge.** The coordinator-centric architecture proven correct in the prototype maps directly to Relativist's design.
+2. **Persistent connections.** TCP connections reused across rounds, avoiding reconnection overhead.
+3. **Length-prefixed framing.** Simple, effective protocol that Relativist adopts (SPEC-06).
+4. **Grid loop structure.** The split-dispatch-reduce-collect-merge-check cycle is preserved exactly.
+
+### 6.3 What Relativist changes and why
+
+1. **Explicit FSMs.** The prototype's control flow is implicit in nested pattern matches. Relativist makes it explicit for testability and observability.
+2. **Transport abstraction.** The prototype hardcodes TCP. Relativist abstracts it for testing (ChannelTransport) and extensibility.
+3. **Core/Infrastructure split.** The prototype mixes I/O throughout (e.g., `traceIO` in pure functions). Relativist enforces a clean boundary.
+4. **Feature-gated optional components.** The prototype has no concept of optional features. Relativist allows TLS, metrics, and tracing to be enabled independently.
+5. **Structured error handling.** The prototype uses `error "..."` strings. Relativist uses typed error enums.
+
+---
+
+## 7. Open Questions
+
+1. **async_trait vs native async traits.** Rust's native async traits (stabilized in Rust 1.75) may be usable instead of the `async_trait` crate for the `Transport` trait. The implementer SHOULD evaluate whether native async traits meet the needs (dynamic dispatch via `Box<dyn Transport>` requires `async_trait` or manual boxing). **(Does NOT block implementation; choose at implementation time.)**
+
+2. **Coordinator backpressure.** If a worker returns a very large partition while the coordinator is still merging a previous round's results, the coordinator's receive buffer may grow. The coordinator SHOULD implement backpressure (e.g., limit the number of in-flight rounds to 1), but the exact mechanism is left to the implementer. **(Does NOT block implementation; BSP naturally limits this to 1 round.)**
+
+3. **Graceful shutdown on Ctrl+C.** The coordinator and worker SHOULD handle `SIGINT`/`SIGTERM` for graceful shutdown (closing connections, flushing logs). The exact signal handling mechanism (e.g., `tokio::signal`) is left to the implementer. **(Does NOT block implementation.)**
+
+4. **Config file support.** R43-R48 define CLI arguments. A TOML/YAML config file MAY be added as an alternative to long CLI argument lists, especially for multi-machine deployments. **(Does NOT block implementation; CLI-first, config-file later.)**
+
+5. **ChannelTransport serialization option.** The `ChannelTransport` bypasses serialization for speed. For testing serialization correctness in integration tests, a variant that serializes/deserializes through bincode (round-trip) MAY be provided. **(Does NOT block implementation.)**

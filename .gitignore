@@ -1,0 +1,47 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock (library convention — include if binary, exclude if library)
+# Relativist is a binary, so Cargo.lock SHOULD be committed.
+# Uncomment if this becomes a library:
+# Cargo.lock
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vim/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+._*
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Coverage and profiling
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.html
+coverage/
+
+# Benchmarks output (raw data, not the spec)
+criterion/
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Docker
+.docker/
+
+# Claude Code local settings (not shared)
+.claude/settings.local.json
