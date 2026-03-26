@@ -98,21 +98,7 @@ Once all specs are finalized and infrastructure is ready:
 
 ## Roadmap (NOT in v1)
 
-Documented for future work, not implementation scope:
-
-- Multi-tenancy / job queuing
-- Automatic node discovery (Consul/etcd/mDNS)
-- Full fault tolerance (checkpoint, re-dispatch, replication)
-- Visualization (Graphviz export, live progress)
-- Dynamic plugin system (custom partition strategies without recompilation)
-- GPU worker support (heterogeneous compute)
-- Kubernetes / Helm charts
-- WASM target for browser-based reduction
-- Load balancing / intelligent scheduling
-- Full DST with Turmoil (PESQ-021)
-- rayon intra-worker parallelism (PESQ-011)
-- mTLS mutual authentication (PESQ-017)
-- Coordinator high-availability (PESQ-010)
+Documented for future work, not implementation scope. See **[ROADMAP.md](ROADMAP.md)** for full details, including the elastic grid architecture (coordinator-as-worker, dynamic worker joining, distributed coordination) enabled by strong confluence.
 
 ---
 

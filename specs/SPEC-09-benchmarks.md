@@ -372,18 +372,15 @@ pub struct WorkerBenchStats {
 
 #### 3.4.3 Execution Mode
 
-**R26.** The suite MUST support at least two execution modes. **(MUST)**
+**R26.** The suite MUST support three execution modes. **(MUST)**
 
 | Mode | Description | Workers | Communication |
 |------|-------------|---------|---------------|
 | `Local` | Simulated grid in a single process. Workers are sequential function calls (or parallel via `rayon`). | Simulated | None |
 | `TcpLocalhost` | Grid with workers as separate processes on the same host, communicating via TCP localhost. | Real processes | TCP 127.0.0.1 |
+| `TcpNetwork` | Grid with workers on distinct physical machines, communicating via TCP over a real network. | Real processes on separate machines | TCP over LAN |
 
-**R27.** The suite MAY support a third mode `TcpNetwork` for execution on separate physical machines. **(MAY)**
-
-| Mode | Description |
-|------|-------------|
-| `TcpNetwork` | Workers on distinct physical machines, communicating via TCP over a real network. |
+**R27.** The suite MUST support the `TcpNetwork` mode for execution on separate physical machines with at least 4 and 8 workers. Deployment follows the bare-metal procedure defined in SPEC-07 (R41, Section 4.12). **(MUST)**
 
 #### 3.4.4 Partitioning Strategy
 
@@ -838,18 +835,18 @@ The table below summarizes the complete experimental plan. The total number of d
 
 | Benchmark | Profile | Sizes | Workers | Modes | Reps | Datapoints |
 |-----------|---------|-------|---------|-------|------|------------|
-| EP-Annihilation | A | 7 | 5 (0,1,2,4,8) | 2 | 5 | 350 |
-| EP-Annihilation-CON | A | 6 | 5 | 2 | 5 | 300 |
-| EP-Annihilation-DUP | A | 6 | 5 | 2 | 5 | 300 |
-| CON-DUP Expansion | B | 6 | 5 | 2 | 5 | 300 |
-| DualTree | C | 6 | 5 | 2 | 5 | 300 |
-| TreeSum | A/B | 7 | 5 | 2 | 5 | 350 |
-| TreeSumBalanced | A/B | 7 | 5 | 2 | 5 | 350 |
-| MixedNet | B | 5 | 5 | 2 | 5 | 250 |
-| ErasurePropagation | C | 6 | 5 | 2 | 5 | 300 |
-| **Total** | | | | | | **~2800** |
+| EP-Annihilation | A | 7 | 5 (0,1,2,4,8) | 3 | 5 | 525 |
+| EP-Annihilation-CON | A | 6 | 5 | 3 | 5 | 450 |
+| EP-Annihilation-DUP | A | 6 | 5 | 3 | 5 | 450 |
+| CON-DUP Expansion | B | 6 | 5 | 3 | 5 | 450 |
+| DualTree | C | 6 | 5 | 3 | 5 | 450 |
+| TreeSum | A/B | 7 | 5 | 3 | 5 | 525 |
+| TreeSumBalanced | A/B | 7 | 5 | 3 | 5 | 525 |
+| MixedNet | B | 5 | 5 | 3 | 5 | 375 |
+| ErasurePropagation | C | 6 | 5 | 3 | 5 | 450 |
+| **Total** | | | | | | **~4200** |
 
-Comparison: the Haskell prototype produced ~110 datapoints (AC-005). Relativist will produce ~2800 with 5 repetitions, or ~16800 with 30 repetitions. This is a ~25-150x improvement in the empirical evidence base.
+Comparison: the Haskell prototype produced ~110 datapoints (AC-005). Relativist will produce ~4200 with 5 repetitions, or ~25200 with 30 repetitions. This is a ~38-230x improvement in the empirical evidence base. The three modes (Local, TcpLocalhost, TcpNetwork) allow isolating the cost of each layer: serialization (Local vs TcpLocalhost), network latency (TcpLocalhost vs TcpNetwork).
 
 ### 4.8 Visualizations for the Paper
 
@@ -908,7 +905,18 @@ DISC-006 v2 Section 3.3 estimates thresholds of ~500-1000 redexes/worker for bre
 
 Speedup alone can be misleading. An 8-worker configuration with speedup 4.0x has efficiency 0.5, meaning half the computational resources are wasted. Efficiency enables comparing different worker counts on an equal footing and identifies the point of diminishing returns. For Profile A, efficiency should be near 1.0 (or above for the Haskell prototype's super-linear case). For Profile C, efficiency will be well below 1.0. For Profile B, the efficiency curve is the primary unknown -- filling this gap is a key contribution of the TCC (ARG-004, Part I, Step 6: Profile B is conjectural with only 4 TCP datapoints).
 
-### 5.8 Why break-even analysis is a first-class concern
+### 5.8 Why TcpNetwork is mandatory
+
+The TCC's objective is to evaluate distributed IC reduction in a Grid Computing environment. Running benchmarks only on `Local` (in-process) and `TcpLocalhost` (same machine) would validate the algorithm but not the distributed system. Key differences that only `TcpNetwork` on physical machines can reveal:
+
+1. **Real network latency.** TcpLocalhost uses loopback (~0.01ms RTT). A LAN has ~0.1-1ms RTT. This 10-100x difference directly affects the break-even point and overhead ratio.
+2. **Real bandwidth constraints.** Loopback bandwidth is effectively unlimited (~10 Gbps+). A LAN may be 1 Gbps or less, making serialization payload size a real factor.
+3. **System heterogeneity.** Different machines may have different CPU speeds, memory, and OS scheduling behavior, affecting worker idle time and load balance.
+4. **Isolation of overhead layers.** With 3 modes, the paper can decompose overhead: `Local` measures pure algorithm cost, `TcpLocalhost` adds serialization + TCP overhead, `TcpNetwork` adds real network latency. This progression (SPEC-07, Section 5.6) is essential for the overhead anatomy described in DISC-006 v2.
+
+Without `TcpNetwork` data, the break-even analysis (Section 3.9) would be based on loopback measurements, which systematically underestimate communication overhead and produce optimistic thresholds that do not transfer to real grid deployments.
+
+### 5.9 Why break-even analysis is a first-class concern
 
 The TCC's research question (OBJETIVO_TCC.md) asks whether IC properties "allow building a model of distributed reduction for Grid Computing where the result is deterministic." The answer to correctness is covered by the Fundamental Property verification. But a practical follow-up is: "when is this model also efficient?" The break-even analysis (R46-R47) directly addresses this question, connecting the theoretical framework (ARG-001, P1-P5 ensure correctness unconditionally) with practical viability (ARG-004: efficiency depends on workload profile, network size, and overhead). Without break-even analysis, the paper would only show "it works" without quantifying "when it works well."
 
@@ -989,10 +997,10 @@ Based on the analysis in DISC-006 v2, DISC-008 v2, and ARG-004, the following di
 
 1. **Maximum practical sizes.** The default sizes (up to 100K for EP, up to depth 14 for DualTree) are estimates. The maximum practical size depends on: (a) available memory, (b) acceptable time per datapoint (< 10 minutes as a guideline). Sizes MUST be adjusted after the first empirical benchmarks. **(Does NOT block implementation; adjust iteratively.)**
 
-2. **Memory measurement in TCP mode.** In TcpLocalhost mode, the coordinator's peak memory includes the full net, but worker peak memory is measured in separate processes. The framework needs a mechanism to collect peak memory from worker processes (via a metrics message or by reading `/proc/<pid>/status`). **(Does NOT block implementation; can be added incrementally.)**
+2. **Memory measurement in TCP mode.** In TcpLocalhost and TcpNetwork modes, the coordinator's peak memory includes the full net, but worker peak memory is measured in separate processes. The framework MUST collect peak memory and `WorkerBenchStats` from worker processes via a `WorkerMetrics` message (SPEC-06) sent alongside `PartitionResult`. This is required for complete metric reporting in `TcpNetwork` mode. **(Resolved: metrics piggyback on the return message.)**
 
 3. **MixedNet: rule proportions.** The spec defines equal proportions (N pairs of each type). Different proportions (e.g., 80% ERA-ERA + 10% CON-DUP + 10% rest) may be more representative of real programs. This MAY be parameterized via an optional field in the `Benchmark` trait. **(Does NOT block implementation.)**
 
 4. **Benchmarks adapted from HVM Bench.** AC-014 identifies `tree_fold`, `cnot_24`, `fib_nat`, and `lambda_eval` as high-adaptability candidates for pure ICs. Encoding these computations as IC nets is a non-trivial effort that MAY be included as future work or a suite extension. **(Does NOT block implementation; out of scope for v1.)**
 
-5. **TcpNetwork mode on physical machines.** The spec defines TcpNetwork as MAY (R27). Feasibility depends on access to 8 physical machines and deployment infrastructure (SPEC-07). If not feasible, TcpLocalhost with Docker is the alternative. **(Does NOT block implementation.)**
+5. ~~**TcpNetwork mode on physical machines.**~~ **Resolved.** TcpNetwork is now MUST (R27). The benchmark suite MUST execute on at least 4 and 8 physical machines using bare-metal deployment (SPEC-07, R41). This is the primary experimental scenario for the TCC, producing data with real network latency and bandwidth constraints.
