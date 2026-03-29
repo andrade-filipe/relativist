@@ -430,7 +430,7 @@ latency = Histogram("my_request_latency_seconds", description="Request latency",
 | **Task granularity** | Fine-grained (microsecond tasks to hours-long actors) | Coarse-grained (one partition per worker per round) |
 | **Task generation** | Dynamic at runtime (execution creates new tasks) | Static per round (coordinator decides partitioning) |
 | **Statefulness** | Actors maintain state; tasks are stateless | Workers are stateless; coordinator maintains net state |
-| **Correctness guarantee** | Programmer's responsibility (determinism assumed, not guaranteed) | Strong confluence: `reduce_all(net) == extract_result(run_grid(net, n))` (SPEC-01, G1) |
+| **Correctness guarantee** | Programmer's responsibility (determinism assumed, not guaranteed) | Strong confluence: `reduce_all(net) ~ run_grid(net, n)` (graph isomorphism) (SPEC-01, G1) |
 | **Data model** | Arbitrary Python objects in shared-memory store | Interaction net graph (agents + wires) in arena (SPEC-02) |
 | **Communication** | Hierarchical: worker-worker direct, Raylet gossip, GCS centralized | Star: workers only talk to coordinator (SPEC-06) |
 | **Iteration** | Implicit (application-driven loops) | Explicit multi-round loop until Normal Form (SPEC-05) |

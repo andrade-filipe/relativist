@@ -531,7 +531,7 @@ The Haskell prototype validates this empirically: 0 failures in ~110 tests with 
 
 **Decision:** Use contiguous ID range partitioning as the default allocation function.
 
-**Justification:** It is the same strategy as the Haskell prototype (AC-002), enabling direct comparison between prototype and Relativist. It is O(A) in time, deterministic, and trivial to implement. The disadvantage (ignores topology, may maximize border redexes, AC-002 L1) is accepted within the scope of this TCC: the goal is to validate the Fundamental Property `reduce_all(net) == extract_result(run_grid(net, n))`, not to optimize performance. The `PartitionStrategy` trait (R21-R23) allows adding better strategies in the future.
+**Justification:** It is the same strategy as the Haskell prototype (AC-002), enabling direct comparison between prototype and Relativist. It is O(A) in time, deterministic, and trivial to implement. The disadvantage (ignores topology, may maximize border redexes, AC-002 L1) is accepted within the scope of this TCC: the goal is to validate the Fundamental Property `reduce_all(net) ~ run_grid(net, n)` (graph isomorphism), not to optimize performance. The `PartitionStrategy` trait (R21-R23) allows adding better strategies in the future.
 
 **Alternatives considered and retained as future work:**
 - **Redex-aware** (DISC-004 v2, Section 2.4): Group agents of Active Pairs as indivisible units. Minimizes border redexes in the first round, but cannot anticipate emergent border redexes from CON-DUP. Moderate additional complexity.

@@ -361,7 +361,7 @@ Relativist ensures distributed correctness through **mathematical properties of 
 | **When correctness is checked** | Compile time | By construction (mathematical proof) |
 | **What the developer must do** | Use correct types and annotations | Implement the 6 rules correctly (SPEC-03) |
 | **What can go wrong** | Logic errors within correctly-typed code | Implementation bugs in rules or merge protocol |
-| **Testing strategy** | Deterministic simulation + fuzzing | Round-trip property: `reduce_all(net) == extract_result(run_grid(net, n))` (SPEC-08) |
+| **Testing strategy** | Deterministic simulation + fuzzing | Round-trip property: `reduce_all(net) ~ run_grid(net, n)` (graph isomorphism) (SPEC-08) |
 
 ### 4.5 Streaming vs Graph Reduction
 
@@ -430,7 +430,7 @@ More directly, the DFIR design validates Relativist's single-threaded worker cho
 Options for Relativist:
 1. **Turmoil or MadSim:** Use an existing Rust deterministic simulation framework (PESQ-021 will analyze these). These frameworks intercept tokio's async runtime to provide deterministic scheduling and simulated networking.
 2. **In-process grid:** Run the coordinator and workers in the same process on separate tokio tasks, with a simulated network layer that introduces controllable delays and reordering. This is simpler than a full simulation framework but provides deterministic testing.
-3. **Property-based testing with seeds:** Use proptest or quickcheck to generate random nets, partition them with different worker counts, reduce locally and distributed, and assert the fundamental property (`reduce_all(net) == extract_result(run_grid(net, n))`). The seed makes failures reproducible.
+3. **Property-based testing with seeds:** Use proptest or quickcheck to generate random nets, partition them with different worker counts, reduce locally and distributed, and assert the fundamental property (`reduce_all(net) ~ run_grid(net, n)` (graph isomorphism)). The seed makes failures reproducible.
 
 **Verdict: ADAPT for SPEC-08.** The principle of deterministic simulation testing is highly valuable. Implementation strategy should be analyzed in PESQ-020 and PESQ-021, and applied in SPEC-08.
 

@@ -493,7 +493,7 @@ Dask Distributed includes a built-in **Bokeh-based dashboard** on port 8787 (sch
 | **Data model** | Arbitrary Python objects (NumPy arrays, DataFrames, etc.) | Interaction net graph (agents + wires) in arena (SPEC-02) |
 | **Communication** | Scheduler-worker (RPC + batched) + worker-worker (P2P gather) | Star: workers only talk to coordinator (SPEC-06) |
 | **Memory model** | Persistent results across tasks with LRU spill | Ephemeral partitions (created/destroyed per round) |
-| **Correctness** | Programmer's responsibility (results may differ on retry if impure) | Strong confluence: `reduce_all(net) == extract_result(run_grid(net, n))` (SPEC-01) |
+| **Correctness** | Programmer's responsibility (results may differ on retry if impure) | Strong confluence: `reduce_all(net) ~ run_grid(net, n)` (graph isomorphism) (SPEC-01) |
 
 ### 4.2 State Machine Comparison (Most Relevant for SPEC-13)
 

@@ -349,7 +349,7 @@ ignite.compute().broadcast(() -> {
 | **Job independence** | Jobs are independent (no shared state unless task sessions used) | Partitions are coupled by border wires |
 | **Iteration** | Single-shot (one map-execute-reduce cycle per task) | Multi-round loop until Normal Form |
 | **Result aggregation** | User-defined reduce function (simple aggregation) | Graph merge + border redex resolution (complex structural operation) |
-| **Correctness guarantee** | Programmer's responsibility (no framework guarantee) | Strong confluence: `reduce_all(net) == extract_result(run_grid(net, n))` (SPEC-01, G1) |
+| **Correctness guarantee** | Programmer's responsibility (no framework guarantee) | Strong confluence: `reduce_all(net) ~ run_grid(net, n)` (graph isomorphism) (SPEC-01, G1) |
 | **Data model** | Key-value pairs in distributed caches | Interaction net graph (agents + wires) in arena |
 | **Data location** | Distributed across nodes (affinity-based) | Centralized at coordinator, dispatched per round |
 | **Communication** | P2P mesh (any node to any node) | Star (workers only talk to coordinator) |

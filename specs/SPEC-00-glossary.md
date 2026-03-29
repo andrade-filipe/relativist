@@ -690,14 +690,13 @@ This table serves as a quick reference for translating between the three nomencl
 The glossary as a whole serves a single property that Relativist MUST guarantee:
 
 ```
-reduce_all(net) == extract_result(run_grid(net, n))
+reduce_all(net) ~ run_grid(net, n)
 ```
 
 Where:
 - `reduce_all(net)` is the local sequential reduction of the Net to Normal Form.
 - `run_grid(net, n)` is the distributed reduction with n Workers, executing Rounds until the Net reaches Normal Form.
-- `extract_result` extracts the final Net after distributed reduction.
-- Equality is modulo isomorphism of AgentIds (IDs are arbitrary labels).
+- `~` denotes graph isomorphism: structural equality modulo renaming of AgentIds (IDs are arbitrary labels).
 
 This property is enabled by **Strong Confluence** (which guarantees that reduction order does not matter -- P1) and **Locality** (which guarantees that each reduction is independent), conditioned on the implementation satisfying **Premises P2-P5**.
 

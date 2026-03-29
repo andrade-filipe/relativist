@@ -77,7 +77,7 @@ Relativist implements the three fundamental symbols and six interaction rules of
 | Erasure | δ-ε | DUP consumed, 2 ERAs created |
 | Erasure | ε-ε | Both consumed |
 
-The **strong confluence** theorem (Lafont 1997) guarantees that any two non-overlapping redexes can be reduced in any order with the same final result. This is what makes distributed reduction deterministic.
+The **strong confluence** theorem (Lafont 1997) guarantees that any two non-overlapping redexes can be reduced in any order with the same final result. Combined with a distribution protocol that preserves net structure (premises P2-P5), this is what makes distributed reduction of terminating nets deterministic.
 
 ## Specs
 
@@ -100,16 +100,19 @@ All design decisions are documented in formal specifications:
 
 Relativist is part of a Computer Science thesis (TCC) at Universidade Tiradentes (UNIT), investigating whether Interaction Combinators can serve as a formal model for distributed reduction in Grid Computing.
 
-**Research question:** Do the strong confluence and locality properties of Lafont's Interaction Combinators allow building a distributed reduction model for Grid Computing where the result is deterministic regardless of work order and distribution?
+**Research question:** Do the strong confluence and locality properties of Lafont's Interaction Combinators, combined with a structure-preserving protocol, allow building a distributed reduction model for Grid Computing where the result is deterministic regardless of work order and distribution, for terminating nets?
 
-**Hypothesis:** Yes — strong confluence guarantees determinism, and locality enables independent reduction of disjoint partitions.
+**Hypothesis:** Yes — strong confluence (P1), combined with protocol correctness (P2-P5: split/merge identity, border completeness, ID consistency, termination), guarantees that distributed reduction of terminating nets produces results structurally identical to sequential reduction.
 
 ### References
 
 - Lafont, Y. (1990). *Interaction Nets*. POPL.
 - Lafont, Y. (1997). *Interaction Combinators*. Information and Computation.
+- Mackie, I. (1997). *Static Analysis of INets for Distributed Implementation*. POPL Workshop.
+- Kahl, W. (2015). *Simple Parallel Implementation of INets in Haskell*. IFL.
 - Taelin (2024). *HVM2: A Parallel Evaluator for Interaction Combinators*.
 - Foster, I., Kesselman, C., Tuecke, S. (2001). *The Anatomy of the Grid*.
+- Arrighi, P. et al. (2024). *Space-time Deterministic Graph Rewriting*. LIPIcs.
 
 ## Contributing
 
