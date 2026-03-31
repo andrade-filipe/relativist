@@ -23,7 +23,7 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 | **Superstep** | One complete iteration of the BSP cycle in Relativist: split the net into partitions, dispatch to workers, reduce locally, collect results, merge partitions, check termination. Equivalent to one Round (SPEC-05). |
 | **Coordinator** | The central process that orchestrates the grid cycle: partitions the net, dispatches partitions to workers, collects results, executes merge, resolves border redexes, and decides whether to continue or terminate. Runs as a tokio async event loop. |
 | **Worker** | A remote process that receives a partition, reduces it locally via `reduce_all` (SPEC-03), and returns the reduced partition to the coordinator. Workers have no knowledge of each other and communicate only with the coordinator (star topology, PESQ-010 L6). |
-| **Core Layer** | The set of modules (`net`, `reduction`, `partition`, `merge`) that contain pure, synchronous logic with no async runtime dependency, no I/O, and no network access. Core compiles and runs without tokio. |
+| **Core Layer** | The set of modules (`net`, `reduction`, `partition`, `merge`, `encoding`) that contain pure, synchronous logic with no async runtime dependency, no I/O, and no network access. Core compiles and runs without tokio. |
 | **Infrastructure Layer** | The set of modules (`protocol`, `coordinator`, `worker`) that depend on tokio for async I/O and network communication. Infrastructure depends on Core but never the reverse. |
 | **Transport** | A trait abstracting the send/receive mechanism. `TcpTransport` for production; `ChannelTransport` (tokio mpsc) for in-memory testing. TLS wraps TCP transparently when the `tls` feature is enabled. |
 | **Feature Flag** | A Cargo feature that enables optional functionality at compile time. Relativist uses feature flags for `tls`, `metrics`, and `otel` to keep the default binary lean. |
@@ -50,7 +50,7 @@ Rationale: PESQ-012 provides exhaustive comparison. The BSP mapping is exact: su
 
 ### 3.2 Module Structure
 
-**R5.** Relativist MUST be organized as a single crate with the following 10 modules. **(MUST)**
+**R5.** Relativist MUST be organized as a single crate with the following 11 modules. **(MUST)**
 
 ```
 src/
@@ -67,6 +67,10 @@ src/
 │   └── mod.rs
 ├── merge/              # SPEC-05: merge(), border resolution
 │   └── mod.rs
+├── encoding/           # SPEC-14: Church numerals, arithmetic, readback
+│   ├── mod.rs
+│   ├── church.rs
+│   └── arithmetic.rs
 ├── protocol/           # SPEC-06: Message, Transport trait, framing
 │   ├── mod.rs
 │   ├── message.rs
@@ -85,7 +89,7 @@ src/
     └── mod.rs
 ```
 
-**R6.** The Core Layer modules (`net`, `reduction`, `partition`, `merge`) MUST NOT depend on tokio, on any async runtime, or on any I/O crate. They MUST be pure synchronous Rust with no `async fn` signatures. **(MUST)**
+**R6.** The Core Layer modules (`net`, `reduction`, `partition`, `merge`, `encoding`) MUST NOT depend on tokio, on any async runtime, or on any I/O crate. They MUST be pure synchronous Rust with no `async fn` signatures. **(MUST)**
 
 **R7.** The Infrastructure Layer modules (`protocol`, `coordinator`, `worker`) MAY depend on tokio and other async/I/O crates. They MUST depend on the Core Layer for data types and algorithms. **(MUST for dependency direction)**
 
@@ -480,6 +484,8 @@ pub enum Cli {
     Inspect(InspectArgs),
     /// Generate test IC nets.
     Generate(GenerateArgs),
+    /// Encode arithmetic, reduce, decode result.
+    Compute(ComputeArgs),
 }
 ```
 
@@ -492,6 +498,8 @@ pub enum Cli {
 **R47.** The `inspect` subcommand MUST accept a path to a net file and print: agent count, wire count, redex count, agent distribution by symbol (CON, DUP, ERA), and whether the net is in Normal Form. **(MUST)**
 
 **R48.** The `generate` subcommand MUST accept a benchmark name and size, and produce a net file. This enables creating test inputs independently of the benchmark suite (SPEC-09). **(MUST)**
+
+**R48a.** The `compute` subcommand MUST accept an arithmetic operation (add, mul, exp) and two operands, encode them as an IC net via the encoding module (SPEC-14), reduce the net, decode the result, and print a summary. See SPEC-14 (R22-R25) for the full `ComputeArgs` specification. **(MUST)**
 
 ### 3.12 What is NOT in v1
 
@@ -522,7 +530,7 @@ pub enum Cli {
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                      CLI (clap)                          │
-│  coordinator | worker | reduce | inspect | generate      │
+│  coordinator | worker | reduce | inspect | generate | compute │
 └──────────┬────────────────┬──────────────────────────────┘
            │                │
      ┌─────▼──────┐   ┌────▼─────┐
@@ -540,12 +548,12 @@ pub enum Cli {
 ┌───────────────▼────────────────────────────────────────┐
 │                    CORE LAYER (sync, no I/O)           │
 │                                                         │
-│  ┌─────────┐  ┌───────────┐  ┌───────────┐  ┌───────┐ │
-│  │   net/   │  │reduction/ │  │partition/ │  │merge/ │ │
-│  │ Agent    │  │ 6 rules   │  │ split()   │  │merge()│ │
-│  │ Wire     │  │reduce_all │  │ FreePort  │  │border │ │
-│  │ PortRef  │  │ redex Q   │  │ strategy  │  │resolve│ │
-│  └─────────┘  └───────────┘  └───────────┘  └───────┘ │
+│  ┌─────────┐  ┌───────────┐  ┌───────────┐  ┌───────┐  ┌──────────┐ │
+│  │   net/   │  │reduction/ │  │partition/ │  │merge/ │  │encoding/ │ │
+│  │ Agent    │  │ 6 rules   │  │ split()   │  │merge()│  │ Church   │ │
+│  │ Wire     │  │reduce_all │  │ FreePort  │  │border │  │ arith    │ │
+│  │ PortRef  │  │ redex Q   │  │ strategy  │  │resolve│  │ readback │ │
+│  └─────────┘  └───────────┘  └───────────┘  └───────┘  └──────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -635,12 +643,14 @@ main.rs ──> config/ ──> (clap)
     │         │                          │
     │         └──> reduction/ ──> net/   │
     │                                    │
+    ├──> encoding/ ──> net/               │
+    │                                    │
     ├──> observability/ ──> (tracing)    │
     │                                    │
     └──> security/ ──> (rustls)          │
 
 Legend: ──> means "depends on"
-Core modules (net, reduction, partition, merge) have NO reverse arrows to infrastructure.
+Core modules (net, reduction, partition, merge, encoding) have NO reverse arrows to infrastructure.
 ```
 
 ### 4.5 In-Memory Grid Mode (Testing)

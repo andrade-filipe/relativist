@@ -647,6 +647,63 @@ This domain defines the premises of the formal argument for correctness of distr
 
 ---
 
+## 8b. Domain 6 -- Encoding & Readback (SPEC-14)
+
+### 8b.1 Church Numeral
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Church Numeral |
+| **Alias** | Church encoding, Church natural |
+| **Definition** | An IC net encoding of a natural number n as the lambda term lambda f. lambda x. f^n(x). Uses CON agents for lambda abstractions and applications, DUP agents for variable sharing, and ERA for erasure. Church numeral n (n >= 2) contains (n + 2) CON + (n - 1) DUP agents. The encoding is in Normal Form (zero redexes). |
+| **Ref** | REF-002 (Lafont 1997, Section 4: universality), SPEC-14 |
+| **Rust (proposed)** | `encode_nat(n: u64) -> Net` |
+| **Related to** | Encoding, Decoding, Arithmetic Net |
+
+### 8b.2 Encoding
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Encoding |
+| **Alias** | -- |
+| **Definition** | The process of translating a high-level value (natural number) or expression (arithmetic operation applied to operands) into an IC net. The resulting net contains redexes whose reduction computes the result. **(Relativist)** |
+| **Ref** | SPEC-14 |
+| **Related to** | Church Numeral, Decoding, Arithmetic Net |
+
+### 8b.3 Decoding (Readback)
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Decoding |
+| **Alias** | Readback |
+| **Definition** | The process of interpreting a Church numeral IC net in Normal Form as a natural number. Performed by traversing the net structure from root, identifying the two lambda CON agents, and counting the application chain length. Inverse of Encoding. **(Relativist)** |
+| **Ref** | SPEC-14 |
+| **Rust (proposed)** | `decode_nat(net: &Net) -> Option<u64>` |
+| **Related to** | Church Numeral, Encoding, Normal Form |
+
+### 8b.4 Arithmetic Net
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Arithmetic Net |
+| **Alias** | -- |
+| **Definition** | An IC net constructed by composing Church numeral sub-nets with an arithmetic combinator (addition, multiplication, or exponentiation). When reduced to Normal Form via `reduce_all` (SPEC-03), the result is a Church numeral encoding the arithmetic result. Exhibits Profile B overhead behavior (expansion via CON-DUP commutation, then collapse via annihilation). **(Relativist)** |
+| **Ref** | SPEC-14, SPEC-09 (Profile B) |
+| **Rust (proposed)** | `build_add(a, b) -> Net`, `build_mul(a, b) -> Net`, `build_exp(a, b) -> Net` |
+| **Related to** | Church Numeral, Encoding, Overhead Profile |
+
+### 8b.5 Combinator
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Combinator |
+| **Alias** | -- |
+| **Definition** | A closed lambda term (no free variables) that implements an operation, encoded as an IC net fragment. In Relativist: `add = lambda m. lambda n. lambda f. lambda x. m f (n f x)`, `mul = lambda m. lambda n. lambda f. m (n f)`, `exp = lambda m. lambda n. n m`. Each combinator connects to operand sub-nets via application CON agents, introducing redexes that drive the computation. **(Relativist)** |
+| **Ref** | SPEC-14 |
+| **Related to** | Arithmetic Net, Church Numeral |
+
+---
+
 ## 9. Mapping Table: Lafont --> Haskell --> Rust
 
 This table serves as a quick reference for translating between the three nomenclature layers.
@@ -704,4 +761,4 @@ This property is enabled by **Strong Confluence** (which guarantees that reducti
 
 ## 11. Open Questions
 
-None. This glossary is complete for the scope of Relativist v1. Additional terms may be introduced by future specs, provided they are registered here by amendment.
+None. Domain 6 (Encoding & Readback) was added by amendment for SPEC-14. Additional terms may be introduced by future specs, provided they are registered here by amendment.

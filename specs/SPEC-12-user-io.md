@@ -1,7 +1,7 @@
 # SPEC-12: User I/O & Examples
 
 **Status:** Draft v1
-**Depends on:** SPEC-00 (Glossary), SPEC-02 (Net Representation), SPEC-07 (Deployment), SPEC-09 (Benchmarks), SPEC-13 (System Architecture)
+**Depends on:** SPEC-00 (Glossary), SPEC-02 (Net Representation), SPEC-07 (Deployment), SPEC-09 (Benchmarks), SPEC-13 (System Architecture), SPEC-14 (Encoding)
 **Gray zones resolved:** ---
 **Research consumed:** PESQ-002 (Apache Ignite architecture, CLI patterns), PESQ-024 (Architecture Recommendations, Section 7 CLI Design, Section 4 Data Flow)
 **Discussions consumed:** ---
@@ -302,6 +302,12 @@ pub enum ExampleNet {
     MixedRules,
     /// ERA propagation chain of length N (Profile C). SPEC-09 R17.
     ErasurePropagation,
+    /// Church numeral encoding of N (Profile B). SPEC-14 R26.
+    ChurchNat,
+    /// Church addition: church(N/2) + church(N - N/2) (Profile B). SPEC-14 R26.
+    ChurchAdd,
+    /// Church multiplication: church(floor(sqrt(N))) * church(floor(sqrt(N))) (Profile B). SPEC-14 R26.
+    ChurchMul,
 }
 ```
 
@@ -480,6 +486,10 @@ pub enum IoError {
     UnsupportedFormat(String),
 }
 ```
+
+### 3.9 Compute Subcommand (SPEC-14)
+
+**R53.** Relativist MUST provide a `compute` subcommand that encodes an arithmetic expression as an IC net, reduces it (locally or distributedly), and decodes the result. The full specification is in SPEC-14 (R22-R25). **(MUST)**
 
 ---
 
