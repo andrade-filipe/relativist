@@ -148,6 +148,56 @@ Graphviz export of net state, live progress dashboard, reduction animation.
 
 Browser-based IC reduction for education and demonstration.
 
+### 2.15 Streaming Reduction Mode **(confluence-enabled)**
+
+**v1 limitation:** The BSP cycle is strictly batch: workers reduce their partition to Normal Form (`reduce_all`), return the complete result, and the coordinator waits for ALL workers before merging (SPEC-13 R2). No partial results are exchanged.
+
+**v2 change:** Replace the barrier-synchronized BSP cycle with an asynchronous streaming model:
+
+1. Workers use `reduce_n(budget)` instead of `reduce_all`, returning partially-reduced partitions after a fixed interaction budget.
+2. The coordinator performs incremental merge as results arrive, without waiting for all workers.
+3. New border redexes are dispatched immediately as they emerge from partial merges.
+4. The cycle repeats with finer granularity, allowing faster workers to contribute more.
+
+**Why confluence makes this safe:** Strong confluence guarantees that ANY subsequence of reductions applied in ANY order produces the same final result. Partial reductions are just shorter subsequences. The coordinator can merge partial results in any order because the merge of partially-reduced partitions is still a valid intermediate state.
+
+**Motivation (Mackie and Sato, REF-015):** Mackie and Sato demonstrated that streaming operations (which release partial results incrementally) enable dramatically more parallelism than batch operations. For Fibonacci, the complexity drops from exponential (batch) to quadratic (streaming). Applying this insight to distributed IC reduction would allow workers to generate and exchange partial results continuously instead of waiting for full Normal Form.
+
+**Complexity:** High. Requires:
+- New protocol messages: `PartialPartitionResult` with intermediate state.
+- Reformulation of the merge algorithm to support incremental merge without all partitions present.
+- Reformulation of premise P3 (completeness) in the formal argument (ARG-001) to accommodate partial merges.
+- Coordinator state machine redesign: event-driven instead of round-based.
+- Careful handling of border redex resolution with incomplete partition state.
+
+**Assessment:** This is a significant research direction that could transform Relativist's performance characteristics for Profile B and C workloads. However, it requires re-establishing the formal correctness argument under weaker synchronization assumptions. Best pursued after v1 validates the batch approach.
+
+**v1 exclusion source:** SPEC-13 R2 (mandatory barrier synchronization), DISC-009 (analysis of batch vs streaming trade-offs).
+
+### 2.16 Streaming Arithmetic Encoding
+
+**v1 limitation:** Church arithmetic combinators are batch: `add(S(x), y) = add(x, S(y))` accumulates all computation before returning. This limits parallelism because intermediate redexes are not exposed until the entire operation completes.
+
+**v2 change:** Implement streaming variants of arithmetic combinators following Mackie and Sato (REF-015): `add(S(x), y) = S(add(x, y))` releases partial results immediately, creating new redexes that other agents (or workers) can consume before the full computation finishes.
+
+**Impact:** Combined with streaming reduction (2.15), this would enable pipelined distributed arithmetic where workers process intermediate results as they emerge, instead of waiting for complete Normal Form.
+
+**Complexity:** Low-Medium (encoding changes are straightforward; benefit requires 2.15 to be useful in distributed mode).
+
+**v1 exclusion source:** SPEC-14 Open Question 0, DISC-009 Section 4.
+
+### 2.17 Native Numeric Types (HVM2-style)
+
+**v1 limitation:** Arithmetic uses Church numerals (unary encoding): church(n) requires O(n) agents. Multiplication requires O(a*b) interactions. This is theoretically correct but practically inefficient for large numbers.
+
+**v2 change:** Add native agent types for numbers and operations, following HVM2's approach (REF-003): NUM (numeric literal), OPE (binary operator), SWI (conditional switch). These bypass Church encoding entirely, reducing `mul(1000, 1000)` from ~1M interactions to O(1).
+
+**Why this is separate from universality:** Lafont's universality (REF-002, Theorem 1) guarantees that Church encoding works. Native types are a performance optimization that does not affect the theoretical contribution. The TCC validates the formal property with pure ICs; native types would be an engineering improvement for post-TCC practical use.
+
+**Complexity:** Medium. Requires extending the Symbol enum, adding reduction rules for native types, and updating serialization and partitioning to handle new agent kinds.
+
+**v1 exclusion source:** SPEC-14 Section 5.1 (Church encoding chosen for simplicity and theoretical alignment).
+
 ---
 
 ## The Confluence Argument for the Paper

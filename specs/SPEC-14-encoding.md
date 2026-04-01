@@ -651,7 +651,73 @@ The encoding module is entirely new functionality that transforms Relativist fro
 
 ---
 
-## 8. Open Questions
+## 8. Arithmetic Benchmark Scenarios for Distributed Evaluation
+
+This section defines the specific arithmetic problems to be tested in distributed mode, informed by the overhead profile analysis (SPEC-09, DISC-006 v2, DISC-009) and the batch nature of the current system.
+
+### 8.1 Design Rationale
+
+Church arithmetic nets exhibit Profile B behavior (Section 4.5): expansion via CON-DUP followed by collapse via annihilation. The key factor determining distribution benefit is whether total interactions exceed the break-even threshold (estimated at 5K-10K redexes per worker for optimized Rust, per DISC-006 v2 and ARG-004).
+
+Since the Relativist v1 operates in batch mode (DISC-009, Section 4.3), streaming optimizations from Mackie and Sato (REF-015) are not available. All encoding uses standard Church combinators where operations process all data before returning results.
+
+### 8.2 Benchmark Table
+
+| Benchmark ID | Expression | Interactions (approx.) | Profile | Workers | Purpose |
+|---|---|---|---|---|---|
+| ARITH-ADD-S | add(50, 50) | ~100 | A/B | 1,2 | Baseline: too small for distribution benefit |
+| ARITH-ADD-M | add(500, 500) | ~1,000 | A/B | 1,2,4 | Near break-even threshold |
+| ARITH-ADD-L | add(5000, 5000) | ~10,000 | A/B | 1,2,4,8 | Above break-even: should show speedup |
+| ARITH-ADD-XL | add(10000, 10000) | ~20,000 | A/B | 1,2,4,8 | Large addition: strong distribution candidate |
+| ARITH-MUL-S | mul(5, 5) | ~25 | B | 1,2 | Baseline: minimal expansion |
+| ARITH-MUL-M | mul(30, 30) | ~900 | B | 1,2,4 | Near break-even with expansion phase |
+| ARITH-MUL-L | mul(100, 100) | ~10,000 | B | 1,2,4,8 | Significant expansion/collapse cycle |
+| ARITH-MUL-XL | mul(200, 200) | ~40,000 | B | 1,2,4,8 | Large multiplication: tests Profile B limits |
+| ARITH-EXP-S | exp(2, 3) | ~8 | B/C | 1,2 | Baseline: tiny exponentiation |
+| ARITH-EXP-M | exp(2, 8) | ~256 | B/C | 1,2,4 | Moderate: exponential growth begins |
+| ARITH-EXP-L | exp(2, 12) | ~4,096 | B/C | 1,2,4,8 | Near threshold: tests deep dependency chains |
+| ARITH-EXP-XL | exp(2, 16) | ~65,536 | B/C | 1,2,4,8 | Large exponentiation: high interaction count but deep dependencies |
+
+### 8.3 Verification Property
+
+For every benchmark point, the fundamental property MUST hold:
+
+```
+decode_nat(reduce_all(build_op(a, b))) == decode_nat(extract_result(run_grid(build_op(a, b), k)))
+```
+
+Zero correctness failures across all arithmetic benchmarks constitutes the success criterion. This extends SPEC-09's verification to arithmetic workloads.
+
+### 8.4 Metrics Collected
+
+Per benchmark point (same as SPEC-09, Section 3.4):
+- **Correctness:** Sequential result == distributed result (via decode_nat comparison)
+- **Speedup:** T_sequential / T_distributed
+- **MIPS:** Total interactions / total time
+- **Overhead ratio:** T_overhead / T_total
+- **Rounds:** Number of BSP rounds required
+- **Peak agents:** Maximum agent count during reduction (captures expansion phase)
+
+### 8.5 Expected Behavior by Operation Type
+
+**Addition (ARITH-ADD):** O(a+b) interactions, mostly annihilation (CON-CON) after initial beta-reductions. Expansion is minimal. Approaches Profile A behavior for large operands. Expected: speedup above break-even for ADD-L and ADD-XL.
+
+**Multiplication (ARITH-MUL):** O(a*b) interactions with significant CON-DUP expansion phase (DUP agents in church(a) duplicate the entire church(b) sub-net). This is the canonical Profile B benchmark for arithmetic. Expected: speedup depends on topology of emergent border redexes; multiple BSP rounds likely.
+
+**Exponentiation (ARITH-EXP):** O(base^exp) interactions with deep dependency chains. Even though the interaction count is large for exp(2,16), the reduction has inherent sequential structure from nested function composition. Expected: limited or negative speedup due to depth dependencies, approaching Profile C behavior.
+
+### 8.6 Limitations of Church Arithmetic Benchmarks
+
+1. **Church encoding is unary:** church(n) uses O(n) agents. This limits practical operand sizes (n > 10,000 consumes significant memory).
+2. **Batch encoding only:** The current encoding does not use streaming patterns from Mackie and Sato (REF-015). Streaming would enable more parallelism within rounds but requires fundamental protocol changes (see DISC-009, Section 6).
+3. **Not representative of HVM2-class workloads:** HVM2 uses native numeric types (NUM, OPE, SWI) that avoid Church encoding overhead entirely. The arithmetic benchmarks validate correctness and distribution mechanics, not raw performance.
+4. **Interaction counts are approximate:** The exact interaction count depends on the encoding strategy chosen (direct construction vs. combinator composition, per Section 4.3.1). Values in the table assume standard combinator composition.
+
+---
+
+## 9. Open Questions
+
+0. **Streaming encoding.** Mackie and Sato (REF-015) demonstrated that streaming operations (which release partial results incrementally) enable significantly more parallelism than batch operations (which process all data before returning). The current Church arithmetic encoding is strictly batch. A streaming variant (e.g., `add(S(x), y) = S(add(x, y))` instead of `add(S(x), y) = add(x, S(y))`) would create new redexes incrementally, potentially enabling better distribution. However, exploiting this in the Relativist would also require protocol changes (removing BSP barrier, supporting incremental merge). See DISC-009 for full analysis. **(Does NOT block implementation. Future work.)**
 
 1. **Factorial and recursion.** Encoding the Y-combinator as an IC net enables recursive computations (factorial, Fibonacci, etc.). This is well-studied in the literature (Lamping 1990, Asperti & Guerrini 1998) but adds significant complexity. Defer to post-v1 if time does not permit. **(Does NOT block implementation.)**
 
