@@ -1071,14 +1071,16 @@ The prototype defines two CSV formats (local and distributed, AC-004). Relativis
 
 ---
 
-## 7. Open Questions
+## 7. Resolved Questions
 
-1. **Parallelization in local mode: rayon vs. sequential.** Local mode SHOULD use rayon to parallelize partition reduction (R20). However, for baseline benchmarks to be fairly comparable with distributed mode, timing must measure wall-clock time of all workers, not the sum. With rayon, `compute_time_per_round` would measure the maximum (correct for comparison). Without rayon, it would measure the sum (unfair comparison). The decision to include rayon as a dependency and prioritize fair comparison is left to the ENGINEER.
+*All questions resolved during Human Check review (2026-04-03).*
 
-2. **Metrics format: summary row or separate file?** The CSV format (R29) contains one line per round. Total metrics (total_interactions, total_time, converged) do not have a natural place in this format. Options: (a) an extra row with `round = "TOTAL"`, (b) a separate `*_summary.csv` file, (c) include totals only in JSON. The decision is left to the ENGINEER.
+1. **Parallelization in local mode: rayon vs. sequential.** **RESOLVED: Use rayon.** Local mode MUST use `rayon::par_iter` to parallelize partition reduction (R20). Timing MUST measure wall-clock time of the slowest worker (maximum), not the sum, ensuring fair comparison with distributed mode. The `rayon` crate is a direct dependency. Fair comparison is the priority.
 
-3. **`inspect` subcommand for visualization.** It would be useful to have a subcommand `relativist inspect --net file.bin` that prints the network in human-readable format (agent counts by symbol, redex count, graph in DOT format). This is not essential for the TCC but would facilitate development. The decision to implement is left to the ENGINEER.
+2. **Metrics format: summary row or separate file?** **RESOLVED: Separate file (Option B).** Total metrics (total_interactions, total_time, converged) MUST be written to a separate `*_summary.csv` file alongside the per-round `*.csv`. This keeps the per-round CSV clean (one row per round) and the summary self-contained.
 
-4. **`serde_json` dependency.** The JSON format for metrics (R28, R30) requires the `serde_json` crate as a dependency. If the ENGINEER prefers to avoid this dependency, the default format can be CSV only, and JSON can be added as a feature flag (`--features json-metrics`).
+3. **`inspect` subcommand for visualization.** **RESOLVED: Implement as SHOULD, not priority for v1.** Relativist SHOULD implement a subcommand `relativist inspect --net file.bin` that prints the network in human-readable format (agent counts by symbol, redex count, graph in DOT format). This is not a v1 blocker but SHOULD be implemented as soon as practical after core functionality is complete.
 
-5. **Docker Compose worker count synchronization.** The `NUM_WORKERS` environment variable must match the number of Docker Compose replicas. A wrapper script or health-check mechanism MAY be implemented to ensure consistency. This is a convenience issue, not a correctness issue.
+4. **`serde_json` dependency.** **RESOLVED: Direct dependency.** The `serde_json` crate is included as a direct dependency (no feature flag). JSON metrics output (R28, R30) is available by default.
+
+5. **Docker Compose worker count synchronization.** **RESOLVED: Health check elevated to SHOULD.** The coordinator SHOULD implement a health-check mechanism that verifies the expected number of workers (`NUM_WORKERS`) have connected before starting the grid loop. Since the TCC assumes a stable, failure-free network, this health check ensures that assumption holds in practice. This is a correctness precondition, not just a convenience issue.
