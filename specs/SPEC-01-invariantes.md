@@ -518,10 +518,12 @@ The Haskell prototype (AC-001) implicitly assumes all T1-T7 invariants but does 
 
 ---
 
-## 7. Open Questions
+## 7. Resolved Questions
 
-1. **Graph isomorphism comparison in G1:** The Fundamental Property compares Normal Forms "modulo isomorphism of IDs." Which comparison algorithm to use? Options: (a) ID canonicalization (renumber sequentially by BFS) and direct comparison, (b) graph structure hashing, (c) counting + topology verification. Option (a) is simplest and sufficient for small/medium nets. Decision deferred to the implementer (SPEC-08 will specify test strategy).
+*All questions resolved during Human Check review (2026-04-03).*
 
-2. **Assertion verification frequency:** In debug mode, verifying I1+I2 after EACH reduction may be costly for large nets. It SHOULD be possible to configure the frequency (e.g., every N reductions, or only at the end). Decision deferred to the implementer.
+1. **Graph isomorphism comparison in G1.** **RESOLVED: Option (a) — ID canonicalization.** The comparison algorithm for G1 MUST use ID canonicalization (renumber agents sequentially by BFS traversal from a deterministic root) followed by direct structural comparison. This is the simplest approach and sufficient for test nets (G1 is verified in tests, not in production runtime). More complex alternatives (graph hashing, topology verification) are unnecessary given the controlled test sizes.
 
-3. **Non-terminating net handling in the grid protocol:** I5 covers `reduce_n` as a safeguard, but the grid protocol MUST have a round limit to prevent infinite looping for accidentally non-terminating nets. The round limit will be specified in SPEC-05 (merge protocol) or SPEC-07 (deployment). Not yet decided.
+2. **Assertion verification frequency.** **RESOLVED: Configurable and disableable.** Invariant verification (I1, I2, I3, I4) MUST be configurable at three levels: (a) every reduction (maximum safety, for debugging), (b) every N reductions (tunable frequency), (c) disabled (zero overhead, for production/benchmarks). The default in debug builds SHOULD be every reduction; the default in release builds SHOULD be disabled. This applies to all runtime verification that costs computational resources — the user expects full flexibility to trade safety for performance.
+
+3. **Non-terminating net handling in the grid protocol.** **RESOLVED: Covered by SPEC-07 `--max-rounds`.** The `--max-rounds <N>` CLI argument (SPEC-07, R3/R5) serves as the round limit for both coordinator and local mode. Default is unlimited (for known-terminating nets). For unknown nets, the user sets a finite limit. No additional mechanism is needed beyond what SPEC-07 already specifies.
