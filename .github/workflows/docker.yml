@@ -1,0 +1,15 @@
+name: Docker
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t relativist:${{ github.ref_name }} .

@@ -1,0 +1,22 @@
+services:
+  coordinator:
+    build: .
+    command:
+      - coordinator
+      - --workers=${NUM_WORKERS:-2}
+      - --port=9000
+      - --net=/data/input.bin
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./data:/data
+
+  worker:
+    build: .
+    command:
+      - worker
+      - --coordinator=coordinator:9000
+    depends_on:
+      - coordinator
+    deploy:
+      replicas: ${NUM_WORKERS:-2}

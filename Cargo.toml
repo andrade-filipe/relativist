@@ -1,0 +1,64 @@
+[package]
+name = "relativist"
+version = "0.0.1"
+edition = "2021"
+authors = ["Filipe Andrade Nascimento <filipeandrade.work@gmail.com>"]
+license = "MIT"
+description = "Distributed reduction of Interaction Combinators on Grid Computing"
+repository = "https://github.com/andrade-filipe/relativist"
+readme = "README.md"
+keywords = ["interaction-combinators", "grid-computing", "distributed", "reduction"]
+categories = ["science", "concurrency"]
+
+[dependencies]
+# Serialization (SPEC-02 R24, SPEC-06 R11, SPEC-07 RQ4)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# CLI (SPEC-07 R2)
+clap = { version = "4", features = ["derive"] }
+
+# Error handling (PESQ-023 D2)
+thiserror = "2"
+
+# Observability (PESQ-023 D5)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async runtime (SPEC-06 — TCP)
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
+
+# Checksum (SPEC-06 R10)
+crc32fast = "1"
+
+# Local parallelism (SPEC-07 RQ1 — rayon for fair comparison)
+rayon = "1"
+
+# TLS (SPEC-10 — optional)
+rustls = { version = "0.23", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
+
+# Metrics (SPEC-11 — optional)
+prometheus-client = { version = "0.23", optional = true }
+
+# OpenTelemetry (SPEC-11 — optional)
+opentelemetry = { version = "0.28", optional = true }
+opentelemetry_sdk = { version = "0.28", optional = true }
+
+[dev-dependencies]
+# Property-based testing (PESQ-023 D6)
+proptest = "1"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[features]
+default = []
+tls = ["rustls", "tokio-rustls"]
+metrics = ["prometheus-client"]
+otel = ["opentelemetry", "opentelemetry_sdk"]
+
+[[bench]]
+name = "benchmarks"
+harness = false

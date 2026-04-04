@@ -1,0 +1,10 @@
+target/
+.git/
+.github/
+docs/
+specs/
+tests/
+benches/
+*.md
+.claude/
+.gitignore
