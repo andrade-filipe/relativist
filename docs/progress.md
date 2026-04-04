@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
-**Last updated:** 2026-03-26
-**Updated by:** ORCHESTRATOR — Development pipeline defined. 6 agents created/updated. Backlog structure ready.
+**Last updated:** 2026-04-04
+**Updated by:** ORCHESTRATOR — Human Check complete (blocos 1-8). All OQs resolved. Scaffolding done. Task decomposition in progress.
 
 ---
 
@@ -13,13 +13,15 @@
 | Specs (end-to-end) | 4/4 DRAFT v1 | SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture) — all Draft v1 |
 | Research library | 24/24 COMPLETE | PESQ-001 to PESQ-024 in `docs/pesquisa/` |
 | Open decisions | 8/8 RESOLVED | See PESQ-023 (Decision Matrix) |
-| Open-source setup | IN PROGRESS | LICENCE, README, CONTRIBUTING created |
-| Rust scaffolding | NOT STARTED | No Cargo.toml, no src/ |
-| Docker | NOT STARTED | No Dockerfile |
-| CI/CD | NOT STARTED | No .github/workflows/ |
+| Open-source setup | COMPLETE | LICENCE, README, CONTRIBUTING, GitHub templates (.github/) |
+| Rust scaffolding | COMPLETE | Cargo.toml, src/ (10 modules + CLI skeleton + error types), compiles clean |
+| Docker | COMPLETE | Dockerfile (multi-stage), docker-compose.yml, .dockerignore |
+| CI/CD | COMPLETE | .github/workflows/ci.yml (fmt, clippy, test, build), docker.yml (tag push) |
+| Git workflow | COMPLETE | docs/GIT-WORKFLOW.md (GitHub Flow, conventional commits, SSH auth) |
 | Development pipeline | DEFINED | 6 agents + DEVELOPMENT-PIPELINE.md + backlog structure |
-| Task decomposition | NOT STARTED | Run task-splitter on SPEC-02 to begin |
-| Implementation | NOT STARTED | All specs complete; ready for task decomposition |
+| Human Check | COMPLETE | Blocos 1-8 reviewed. All OQs resolved across SPEC-01, 02, 07 |
+| Task decomposition | IN PROGRESS | Running task-splitter on SPEC-02 through SPEC-06 (Phases 1-5) |
+| Implementation | NOT STARTED | Awaiting task decomposition completion |
 
 ---
 
@@ -48,32 +50,37 @@ All research is complete. Each spec has its primary PESQ inputs identified:
 - [x] **SPEC-11: Observability** — Draft v1 complete. 37 requirements (R1-R37). Consumes PESQ-003/014/015/016/023 (D5).
 - [x] **SPEC-12: User I/O & Examples** — Draft v1 complete. 52 requirements (R1-R52), 9 test requirements (T1-T9). Consumes PESQ-002/024, AC-005.
 
-### 2. Infrastructure setup
+### 2. Infrastructure setup (COMPLETE)
 
-#### Rust scaffolding
-- [ ] Cargo.toml with metadata and initial dependencies
-- [ ] src/lib.rs with module declarations
-- [ ] src/main.rs with clap CLI skeleton
-- [ ] tests/ directory structure
-- [ ] benches/ directory
+#### Rust scaffolding ✓
+- [x] Cargo.toml with metadata and all dependencies (serde, bincode, clap, tokio, rayon, etc.)
+- [x] src/lib.rs with 10 module declarations
+- [x] src/main.rs with clap CLI skeleton (4 subcommands)
+- [x] src/error.rs with RelError enum (thiserror)
+- [x] 9 module stubs (net, reduction, partition, merge, protocol, config, security, observability, io)
+- [x] benches/benchmarks.rs (criterion placeholder)
 
-#### Docker
-- [ ] Dockerfile (multi-stage: rust:slim build → debian:slim runtime)
-- [ ] docker-compose.yml (coordinator + N workers)
-- [ ] .dockerignore
+#### Docker ✓
+- [x] Dockerfile (multi-stage: rust:slim build → debian:bookworm-slim runtime)
+- [x] docker-compose.yml (coordinator + N workers via NUM_WORKERS)
+- [x] .dockerignore
 
-#### CI/CD
-- [ ] .github/workflows/ci.yml (fmt, clippy, test, build)
-- [ ] .github/workflows/docker.yml (build + push image)
-- [ ] .github/ISSUE_TEMPLATE/bug.md
-- [ ] .github/ISSUE_TEMPLATE/feature.md
-- [ ] .github/PULL_REQUEST_TEMPLATE.md
+#### CI/CD ✓
+- [x] .github/workflows/ci.yml (fmt, clippy, test, build release)
+- [x] .github/workflows/docker.yml (build on tag push v*)
+- [x] .github/ISSUE_TEMPLATE/bug.md
+- [x] .github/ISSUE_TEMPLATE/feature.md
+- [x] .github/PULL_REQUEST_TEMPLATE.md
 
-### 3. Repository migration
-- [ ] Create github.com/[user]/relativist
-- [ ] Migrate specs/ to new repo
-- [ ] Set up CI/CD in new repo
-- [ ] Reference from TCC repo (submodule or link)
+#### Git workflow ✓
+- [x] docs/GIT-WORKFLOW.md (GitHub Flow, conventional commits)
+- [x] SSH authentication configured (git@github.com:andrade-filipe/relativist.git)
+
+### 3. Repository setup (COMPLETE)
+- [x] Created github.com/andrade-filipe/relativist
+- [x] Specs, research, agents migrated to repo
+- [x] CI/CD workflows in place
+- [x] Referenced from TCC repo as submodule
 
 ---
 
@@ -117,4 +124,8 @@ Documented for future work, not implementation scope. See **[ROADMAP.md](ROADMAP
 | 2026-03-26 | 3-tier security model | PESQ-023 D4: dev (none), private (token), production (token+TLS) |
 | 2026-03-26 | tracing + prometheus-client | PESQ-023 D5: ecosystem standard for Rust observability |
 | 2026-03-26 | Transport trait abstraction | PESQ-020/021: enables in-memory testing + future DST |
+| 2026-04-04 | Human Check complete (blocos 1-8) | All specs reviewed, OQs resolved in SPEC-01, 02, 07 |
+| 2026-04-04 | Rust scaffolding complete | Cargo.toml, 10 modules, CLI skeleton, CI/CD, Docker |
+| 2026-04-04 | HVM2-style compact repr → ROADMAP | Documented as v2 optimization (ROADMAP 2.15), not v1 scope |
+| 2026-04-04 | Task decomposition started | Phases 1-5 (SPEC-02 to SPEC-06) being split in parallel |
 | 2026-03-26 | proptest for invariants | PESQ-022: P1, P2, P3, T1-T7, D1-D6 verified by property tests |
