@@ -148,7 +148,37 @@ Graphviz export of net state, live progress dashboard, reduction animation.
 
 Browser-based IC reduction for education and demonstration.
 
-### 2.15 Streaming Reduction Mode **(confluence-enabled)**
+### 2.15 Compact Memory Representation (HVM2-style)
+
+**v1 representation:** Semantic Rust types prioritizing clarity (SPEC-02):
+- Agent arena: `Vec<Option<Agent>>` with named fields (`symbol: Symbol`, `id: AgentId`).
+- Port array: `Vec<PortRef>` where `PortRef` is an enum (`AgentPort(AgentId, PortId) | FreePort(u32)`), ~6 bytes per entry.
+- Single flat array indexed by `agent_id * 3 + port_id`.
+
+**v2 change:** Adopt the HVM2 compact encoding (AC-006, AC-015 CC-1):
+- Two separate buffers: `nodes: Vec<u64>` for auxiliary port pairs, `vars: Vec<u32>` for linking variables. Each worker has its own arena (a contiguous slice of the global ID space, as in HVM4 AC-011).
+- Compact `u32` port references with bit-packing: `(val << TAG_BITS) | tag`, where tag distinguishes CON/DUP/ERA/VAR. Fits in a register, 4 bytes per reference (vs ~6 bytes for enum).
+- Bump allocation within each worker's slice. For communication between workers, serialize as direct buffer copy (zero-copy when possible).
+- Optional: pool allocator with free list (inspired by Optiscope AC-012) if fragmentation becomes a problem after many reduction rounds.
+
+**Why v1 chose simplicity:**
+- Enum PortRef provides exhaustive pattern matching and readable debug output (SPEC-02, Section 5.4).
+- Single flat port array avoids dual address spaces and LSB tag manipulation (SPEC-02, Section 5.2).
+- The space overhead (~50% more per PortRef) is acceptable for a research prototype.
+
+**Why v2 would switch:**
+- ~33% memory reduction per PortRef (4 bytes vs 6 bytes).
+- Better cache locality (dense `u32` arrays instead of enum with padding).
+- Faster serialization for wire protocol (memcpy-style, as recommended in AC-015 CC-7).
+- Less waste for ERA agents (ERA doesn't need slots in `nodes[]`).
+
+**Migration path:** Encapsulate PortRef in a newtype with conversion methods (SPEC-02, Section 5.4 already anticipates this). The public API (`connect`, `get_target`, `create_agent`) does not change; only the internal representation does.
+
+**Complexity:** Medium. Requires bit manipulation for every port access, dual address space management, and updated serialization. No correctness implications (same semantics, different encoding).
+
+**v1 exclusion source:** SPEC-02 Sections 5.2, 5.4 (clarity over micro-optimization); SPEC-02 Resolved Question 1 (uniform allocation accepted for v1).
+
+### 2.16 Streaming Reduction Mode **(confluence-enabled)**
 
 **v1 limitation:** The BSP cycle is strictly batch: workers reduce their partition to Normal Form (`reduce_all`), return the complete result, and the coordinator waits for ALL workers before merging (SPEC-13 R2). No partial results are exchanged.
 
@@ -174,19 +204,19 @@ Browser-based IC reduction for education and demonstration.
 
 **v1 exclusion source:** SPEC-13 R2 (mandatory barrier synchronization), DISC-009 (analysis of batch vs streaming trade-offs).
 
-### 2.16 Streaming Arithmetic Encoding
+### 2.17 Streaming Arithmetic Encoding
 
 **v1 limitation:** Church arithmetic combinators are batch: `add(S(x), y) = add(x, S(y))` accumulates all computation before returning. This limits parallelism because intermediate redexes are not exposed until the entire operation completes.
 
 **v2 change:** Implement streaming variants of arithmetic combinators following Mackie and Sato (REF-015): `add(S(x), y) = S(add(x, y))` releases partial results immediately, creating new redexes that other agents (or workers) can consume before the full computation finishes.
 
-**Impact:** Combined with streaming reduction (2.15), this would enable pipelined distributed arithmetic where workers process intermediate results as they emerge, instead of waiting for complete Normal Form.
+**Impact:** Combined with streaming reduction (2.16), this would enable pipelined distributed arithmetic where workers process intermediate results as they emerge, instead of waiting for complete Normal Form.
 
 **Complexity:** Low-Medium (encoding changes are straightforward; benefit requires 2.15 to be useful in distributed mode).
 
 **v1 exclusion source:** SPEC-14 Open Question 0, DISC-009 Section 4.
 
-### 2.17 Native Numeric Types (HVM2-style)
+### 2.18 Native Numeric Types (HVM2-style)
 
 **v1 limitation:** Arithmetic uses Church numerals (unary encoding): church(n) requires O(n) agents. Multiplication requires O(a*b) interactions. This is theoretically correct but practically inefficient for large numbers.
 

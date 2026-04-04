@@ -841,10 +841,12 @@ For a typical net with 10,000 agents and 100 redexes: ~240 KB.
 
 ---
 
-## 7. Open Questions
+## 7. Resolved Questions
 
-1. **Port array sizing for ERA:** ERA agents occupy 3 slots in the port array but only use 1 (principal port). For nets with a predominance of ERAs (e.g., after erasure propagation), this may represent ~67% waste in ERA slots. The question is: is it worth optimizing with variable-arity allocation? The provisional answer is no (uniformity simplifies the implementation), but benchmarks may change this.
+*All questions resolved during Human Check review (2026-04-04).*
 
-2. **Arena compaction after many removals:** In nets with many annihilation reductions (which remove agents), the `Vec<Option<Agent>>` accumulates `None` slots. Relativist does not compact the arena (IDs are never reused). For long reductions with millions of agents created and destroyed, memory consumption may grow monotonically. If this becomes a problem, a compaction operation with ID remapping could be implemented between rounds of the grid protocol -- but this is complex and out of scope for this project.
+1. **Port array sizing for ERA.** **RESOLVED: Keep uniform (NO optimization).** ERA agents occupy 3 slots in the port array but only use 1. The ~67% waste in ERA slots is accepted in favor of uniform allocation, which simplifies the implementation. If benchmarks later show this is a problem, variable-arity allocation can be revisited as a post-v1 optimization.
 
-3. **FreePort in the port array:** Section 4.10 describes that FreePort has no slot in the port array and requires an external Border Map for the reverse direction. This introduces an asymmetry that complicates invariant T1. The complete solution is defined in SPEC-04 (partitioning) and SPEC-05 (merge).
+2. **Arena compaction after many removals.** **RESOLVED: Out of scope.** The `Vec<Option<Agent>>` accumulates `None` slots after annihilation reductions. Relativist does not compact the arena (IDs are never reused). This is accepted for v1. If memory becomes a problem for very long reductions, a compaction operation with ID remapping could be implemented between grid rounds as a future optimization.
+
+3. **FreePort in the port array.** **RESOLVED: Handled by SPEC-04/SPEC-05.** The asymmetry introduced by FreePort (no slot in the port array, requires external Border Map) is fully addressed by SPEC-04 (partitioning, Border Map construction) and SPEC-05 (merge, Border Map resolution). No further action needed in SPEC-02.
