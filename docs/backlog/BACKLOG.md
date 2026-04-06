@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (3 done, 0 in progress, 202 todo, 1 obsoleted)
+**Total tasks:** 206 (4 done, 0 in progress, 201 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -14,7 +14,7 @@
 | TASK-0001 | Convert net module to directory structure | P0 | **DONE** | none | S |
 | TASK-0002 | Define Symbol enum | P0 | **DONE** | 0001 | S |
 | TASK-0003 | Define AgentId and PortId type aliases | P0 | **DONE** | 0001 | S |
-| TASK-0004 | Define PortRef enum | P0 | TODO | 0003 | S |
+| TASK-0004 | Define PortRef enum | P0 | **DONE** | 0003 | S |
 | TASK-0005 | Define Agent struct | P0 | TODO | 0002, 0003 | S |
 | TASK-0006 | Define arity and total_ports functions | P0 | TODO | 0002 | S |
 | TASK-0007 | Define PORTS_PER_SLOT, port_index, DISCONNECTED | P0 | TODO | 0003, 0004 | S |
