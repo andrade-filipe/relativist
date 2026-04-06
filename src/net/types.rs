@@ -3,6 +3,20 @@
 //! Defines Symbol, AgentId, PortId, PortRef, Agent, and related
 //! constants. These are the building blocks of the Net struct.
 
+/// Unique identifier for an agent in the net.
+///
+/// Monotonically increasing, never reused within an execution (SPEC-01, I3).
+/// `u32` allows ~4 billion agents over the lifetime of a single reduction,
+/// which is sufficient for the TCC's experimental workloads.
+pub type AgentId = u32;
+
+/// Port index within an agent: 0 = principal, 1 = left auxiliary, 2 = right auxiliary.
+///
+/// Values beyond 2 are invalid for any Interaction Combinator agent.
+/// CON and DUP have 3 ports (0, 1, 2); ERA has only port 0 (principal).
+/// Validation is done at the call site via `arity()`, not in the type itself.
+pub type PortId = u8;
+
 /// The 3 universal symbols of Lafont's Interaction Combinators (REF-002, p.71-72).
 ///
 /// Every agent in an interaction net has exactly one symbol, which determines
@@ -109,5 +123,59 @@ mod tests {
     #[test]
     fn test_symbol_size() {
         assert_eq!(std::mem::size_of::<Symbol>(), 1);
+    }
+
+    // --- AgentId tests (TASK-0003) ---
+
+    // T1: AgentId is u32 (4 bytes)
+    #[test]
+    fn test_agent_id_is_u32() {
+        let id: AgentId = 42u32;
+        assert_eq!(std::mem::size_of::<AgentId>(), 4);
+        assert_eq!(id, 42);
+    }
+
+    // T4: AgentId supports full u32 range
+    #[test]
+    fn test_agent_id_max_value() {
+        let max: AgentId = u32::MAX;
+        assert_eq!(max, 4_294_967_295);
+    }
+
+    // E1: AgentId arithmetic (important for next_id increment)
+    #[test]
+    fn test_agent_id_arithmetic() {
+        let id: AgentId = 0;
+        let next = id + 1;
+        assert_eq!(next, 1);
+    }
+
+    // --- PortId tests (TASK-0003) ---
+
+    // T2: PortId is u8 (1 byte)
+    #[test]
+    fn test_port_id_is_u8() {
+        let p: PortId = 0u8;
+        assert_eq!(std::mem::size_of::<PortId>(), 1);
+        assert_eq!(p, 0);
+    }
+
+    // T3: PortId valid range (0, 1, 2)
+    #[test]
+    fn test_port_id_valid_range() {
+        let principal: PortId = 0;
+        let aux1: PortId = 1;
+        let aux2: PortId = 2;
+        assert_eq!(principal, 0);
+        assert_eq!(aux1, 1);
+        assert_eq!(aux2, 2);
+    }
+
+    // E2: PortId as array index
+    #[test]
+    fn test_port_id_as_index() {
+        let ports = [10, 20, 30];
+        let p: PortId = 1;
+        assert_eq!(ports[p as usize], 20);
     }
 }
