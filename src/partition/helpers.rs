@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::net::{total_ports, AgentId, Net, PortId, PortRef, DISCONNECTED};
+use std::collections::VecDeque;
+
+use crate::net::{total_ports, AgentId, Net, PortId, PortRef, DISCONNECTED, PORTS_PER_SLOT};
 
 use super::types::{IdRange, WorkerId};
 
@@ -131,6 +133,84 @@ pub fn classify_wires(
         border_entries,
         border_id_end: border_id_counter,
         border_id_start,
+    }
+}
+
+/// Builds a sub-net for one partition (SPEC-04 Section 4.5, Step 5).
+///
+/// Creates a `Net` containing only the agents in `worker_agents`, with:
+/// - Internal wires copied directly from the original net.
+/// - Border wires replaced by `FreePort(bid)` connections.
+/// - Interface wires (pre-existing FreePorts) copied as-is.
+/// - Redex queue populated with only internal Active Pairs.
+///
+/// The `agents` and `ports` Vecs are sized to `max_id + 1` (preserving
+/// the original ID indexing scheme). Unused slots are None/DISCONNECTED.
+pub fn build_subnet(
+    net: &Net,
+    worker_agents: &[AgentId],
+    sigma: &HashMap<AgentId, WorkerId>,
+    border_entries: &[(AgentId, PortId, u32)],
+    worker_id: WorkerId,
+) -> Net {
+    if worker_agents.is_empty() {
+        return Net::new();
+    }
+
+    let max_id = *worker_agents.iter().max().unwrap() as usize;
+    let agents_len = max_id + 1;
+    let ports_len = agents_len * PORTS_PER_SLOT;
+
+    // Initialize with None/DISCONNECTED
+    let mut agents: Vec<Option<crate::net::Agent>> = vec![None; agents_len];
+    let mut ports: Vec<PortRef> = vec![DISCONNECTED; ports_len];
+
+    // Build a set of border overrides: (agent_id, port_id) -> FreePort(bid)
+    let mut border_overrides: HashMap<(AgentId, PortId), u32> = HashMap::new();
+    for &(agent_id, port_id, bid) in border_entries {
+        border_overrides.insert((agent_id, port_id), bid);
+    }
+
+    // Copy agents and their port connections
+    for &agent_id in worker_agents {
+        let agent = net.agents[agent_id as usize]
+            .as_ref()
+            .expect("worker_agents should only contain live agent IDs");
+
+        agents[agent_id as usize] = Some(*agent);
+
+        // Copy all PORTS_PER_SLOT port entries (preserves uniform layout)
+        for port_id in 0..PORTS_PER_SLOT as PortId {
+            let idx = agent_id as usize * PORTS_PER_SLOT + port_id as usize;
+
+            if let Some(&bid) = border_overrides.get(&(agent_id, port_id)) {
+                // Border wire: replace with FreePort(bid)
+                ports[idx] = PortRef::FreePort(bid);
+            } else {
+                // Internal, interface, or DISCONNECTED: copy as-is
+                ports[idx] = net.ports[idx];
+            }
+        }
+    }
+
+    // Populate redex queue with only internal Active Pairs
+    let mut redex_queue = VecDeque::new();
+    for &(a_id, b_id) in &net.redex_queue {
+        // Both agents must be in this partition
+        if sigma.get(&a_id) == Some(&worker_id) && sigma.get(&b_id) == Some(&worker_id) {
+            // Verify both agents still exist in our sub-net
+            if agents[a_id as usize].is_some() && agents[b_id as usize].is_some() {
+                redex_queue.push_back((a_id, b_id));
+            }
+        }
+    }
+
+    Net {
+        agents,
+        ports,
+        redex_queue,
+        next_id: 0, // Caller sets this based on ID range
+        root: None, // Caller sets this based on R28
     }
 }
 
@@ -430,5 +510,140 @@ mod tests {
 
         // Only principal-principal is a border (1 border wire)
         assert_eq!(result.borders.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_subnet tests
+    // -----------------------------------------------------------------------
+
+    // S1: Empty worker agents -> empty net
+    #[test]
+    fn test_build_subnet_empty() {
+        let net = Net::new();
+        let sigma = HashMap::new();
+        let subnet = build_subnet(&net, &[], &sigma, &[], 0);
+        assert_eq!(subnet.agents.len(), 0);
+    }
+
+    // S2: Single agent, no borders
+    #[test]
+    fn test_build_subnet_single_agent() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(5));
+
+        let sigma = make_sigma(&[(a, 0)]);
+        let subnet = build_subnet(&net, &[a], &sigma, &[], 0);
+
+        assert!(subnet.agents[a as usize].is_some());
+        assert_eq!(
+            subnet.ports[a as usize * PORTS_PER_SLOT],
+            PortRef::FreePort(5)
+        );
+    }
+
+    // S3: Internal wire preserved
+    #[test]
+    fn test_build_subnet_internal_wire() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+
+        let sigma = make_sigma(&[(a, 0), (b, 0)]);
+        let subnet = build_subnet(&net, &[a, b], &sigma, &[], 0);
+
+        // Principal ports still connected to each other
+        assert_eq!(
+            subnet.ports[a as usize * PORTS_PER_SLOT],
+            PortRef::AgentPort(b, 0)
+        );
+        assert_eq!(
+            subnet.ports[b as usize * PORTS_PER_SLOT],
+            PortRef::AgentPort(a, 0)
+        );
+    }
+
+    // S4: Border wire replaced by FreePort(bid)
+    #[test]
+    fn test_build_subnet_border_wire() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let sigma = make_sigma(&[(a, 0), (b, 1)]);
+        let border_entries_w0 = vec![(a, 0 as PortId, 42u32)];
+        let subnet = build_subnet(&net, &[a], &sigma, &border_entries_w0, 0);
+
+        // a's principal port now points to FreePort(42)
+        assert_eq!(
+            subnet.ports[a as usize * PORTS_PER_SLOT],
+            PortRef::FreePort(42)
+        );
+    }
+
+    // S5: Unused slots are None/DISCONNECTED
+    #[test]
+    fn test_build_subnet_unused_slots() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era); // id=0
+        let _b = net.create_agent(Symbol::Era); // id=1
+        let c = net.create_agent(Symbol::Era); // id=2
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(c, 0), PortRef::FreePort(1));
+
+        // Only include a and c (skip b at id=1)
+        let sigma = make_sigma(&[(a, 0), (c, 0)]);
+        let subnet = build_subnet(&net, &[a, c], &sigma, &[], 0);
+
+        // Slot 1 (b) should be None
+        assert!(subnet.agents[1].is_none());
+        // Slot 1's ports should be DISCONNECTED
+        for p in 0..PORTS_PER_SLOT {
+            assert_eq!(subnet.ports[1 * PORTS_PER_SLOT + p], DISCONNECTED);
+        }
+    }
+
+    // S6: Redex queue contains only internal pairs
+    #[test]
+    fn test_build_subnet_redex_queue() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        let c = net.create_agent(Symbol::Era);
+        let d = net.create_agent(Symbol::Era);
+        // a-b: internal pair in worker 0
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // c-d: cross-partition pair
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+
+        let sigma = make_sigma(&[(a, 0), (b, 0), (c, 0), (d, 1)]);
+        let subnet = build_subnet(&net, &[a, b, c], &sigma, &[(c, 0, 100)], 0);
+
+        // Only (a, b) should be in the queue, not (c, d)
+        assert_eq!(subnet.redex_queue.len(), 1);
+        let (ra, rb) = subnet.redex_queue[0];
+        assert!((ra == a && rb == b) || (ra == b && rb == a));
+    }
+
+    // S7: Interface wire (FreePort) preserved
+    #[test]
+    fn test_build_subnet_interface_wire() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(99));
+
+        let sigma = make_sigma(&[(a, 0)]);
+        let subnet = build_subnet(&net, &[a], &sigma, &[], 0);
+
+        assert_eq!(
+            subnet.ports[a as usize * PORTS_PER_SLOT],
+            PortRef::FreePort(99)
+        );
     }
 }
