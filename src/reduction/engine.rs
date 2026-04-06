@@ -138,6 +138,48 @@ pub fn reduce_all(net: &mut Net) -> ReductionStats {
     }
 }
 
+// ---------------------------------------------------------------------------
+// reduce_n
+// ---------------------------------------------------------------------------
+
+/// Reduces the net by at most `budget` interactions (SPEC-03 Section 4.6.3).
+///
+/// Useful for:
+/// - Granularity control in the grid (workers execute a budget and return
+///   a partial result).
+/// - Safeguard against non-terminating nets (SPEC-01, I5).
+///
+/// Returns statistics of the interactions performed (may be < budget
+/// if Normal Form is reached before the budget is exhausted).
+pub fn reduce_n(net: &mut Net, budget: usize) -> ReductionStats {
+    let mut stats = ReductionStats {
+        total_interactions: 0,
+        anni_count: 0,
+        comm_count: 0,
+        eras_count: 0,
+        void_count: 0,
+        interactions_by_rule: [0; 6],
+    };
+
+    for _ in 0..budget {
+        match reduce_step(net) {
+            StepResult::NormalForm => return stats,
+            StepResult::Reduced(rule, specific) => {
+                stats.total_interactions += 1;
+                match rule {
+                    Rule::Anni => stats.anni_count += 1,
+                    Rule::Comm => stats.comm_count += 1,
+                    Rule::Eras => stats.eras_count += 1,
+                    Rule::Void => stats.void_count += 1,
+                }
+                stats.interactions_by_rule[specific as usize] += 1;
+            }
+        }
+    }
+
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,5 +678,168 @@ mod tests {
         assert_eq!(stats.total_interactions, 3);
         assert_eq!(stats.void_count, 3);
         assert_eq!(stats.interactions_by_rule[SpecificRule::EraEra as usize], 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // reduce_n tests
+    // -----------------------------------------------------------------------
+
+    // T1: Empty net with budget=10
+    #[test]
+    fn test_reduce_n_empty_net() {
+        let mut net = Net::new();
+        let stats = reduce_n(&mut net, 10);
+        assert_eq!(stats.total_interactions, 0);
+    }
+
+    // T2: Single ERA-ERA with budget=10 (stops at NormalForm before budget)
+    #[test]
+    fn test_reduce_n_era_era_under_budget() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let stats = reduce_n(&mut net, 10);
+        assert_eq!(stats.total_interactions, 1);
+        assert_eq!(stats.void_count, 1);
+    }
+
+    // T3: Budget=0 performs no reductions
+    #[test]
+    fn test_reduce_n_budget_zero() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let stats = reduce_n(&mut net, 0);
+        assert_eq!(stats.total_interactions, 0);
+        // Redex still exists
+        assert!(net.is_valid_redex(a, b));
+    }
+
+    // T4: Budget=1 on net with 3 ERA-ERA pairs
+    #[test]
+    fn test_reduce_n_budget_one_of_three() {
+        let mut net = Net::new();
+        for _ in 0..3 {
+            let a = net.create_agent(Symbol::Era);
+            let b = net.create_agent(Symbol::Era);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        }
+
+        let stats = reduce_n(&mut net, 1);
+        assert_eq!(stats.total_interactions, 1);
+    }
+
+    // T5: Budget exactly equals required steps
+    #[test]
+    fn test_reduce_n_exact_budget() {
+        let mut net = Net::new();
+        for _ in 0..3 {
+            let a = net.create_agent(Symbol::Era);
+            let b = net.create_agent(Symbol::Era);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        }
+
+        let stats = reduce_n(&mut net, 3);
+        assert_eq!(stats.total_interactions, 3);
+        // Should be in normal form
+        assert_eq!(reduce_step(&mut net), StepResult::NormalForm);
+    }
+
+    // T6: Budget exceeds required steps
+    #[test]
+    fn test_reduce_n_excess_budget() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let stats = reduce_n(&mut net, 100);
+        assert_eq!(stats.total_interactions, 1);
+    }
+
+    // T7: Stats consistency: total == anni + comm + eras + void
+    #[test]
+    fn test_reduce_n_stats_consistency_category() {
+        let mut net = Net::new();
+        // CON-CON pair
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+
+        let stats = reduce_n(&mut net, 10);
+        assert_eq!(
+            stats.total_interactions,
+            stats.anni_count + stats.comm_count + stats.eras_count + stats.void_count
+        );
+    }
+
+    // T8: Stats consistency: total == sum(interactions_by_rule)
+    #[test]
+    fn test_reduce_n_stats_consistency_specific() {
+        let mut net = Net::new();
+        for _ in 0..2 {
+            let a = net.create_agent(Symbol::Era);
+            let b = net.create_agent(Symbol::Era);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        }
+
+        let stats = reduce_n(&mut net, 5);
+        let sum: u64 = stats.interactions_by_rule.iter().sum();
+        assert_eq!(stats.total_interactions, sum);
+    }
+
+    // T9: Net NOT in normal form when budget < required
+    #[test]
+    fn test_reduce_n_partial_not_normal_form() {
+        let mut net = Net::new();
+        for _ in 0..3 {
+            let a = net.create_agent(Symbol::Era);
+            let b = net.create_agent(Symbol::Era);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        }
+
+        reduce_n(&mut net, 1);
+        // Net still has 2 more redexes
+        assert_ne!(reduce_step(&mut net), StepResult::NormalForm);
+    }
+
+    // E1: Budget=usize::MAX on small net terminates
+    #[test]
+    fn test_reduce_n_max_budget() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let stats = reduce_n(&mut net, usize::MAX);
+        assert_eq!(stats.total_interactions, 1);
+    }
+
+    // E2: reduce_n then reduce_all finishes the job
+    #[test]
+    fn test_reduce_n_then_reduce_all() {
+        let mut net = Net::new();
+        for _ in 0..3 {
+            let a = net.create_agent(Symbol::Era);
+            let b = net.create_agent(Symbol::Era);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        }
+
+        let stats1 = reduce_n(&mut net, 1);
+        assert_eq!(stats1.total_interactions, 1);
+
+        let stats2 = reduce_all(&mut net);
+        assert_eq!(stats2.total_interactions, 2);
+
+        // Combined = 3
+        assert_eq!(stats1.total_interactions + stats2.total_interactions, 3);
     }
 }
