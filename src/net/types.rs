@@ -84,6 +84,31 @@ pub struct Agent {
     pub id: AgentId,
 }
 
+/// Returns the arity (number of auxiliary ports) of a symbol.
+///
+/// - CON (γ): 2 auxiliary ports (left, right) — REF-002 p.71
+/// - DUP (δ): 2 auxiliary ports (left, right) — REF-002 p.71
+/// - ERA (ε): 0 auxiliary ports — REF-002 p.72
+///
+/// Every agent also has a principal port (port 0), not counted in arity.
+pub const fn arity(symbol: Symbol) -> u8 {
+    match symbol {
+        Symbol::Con => 2,
+        Symbol::Dup => 2,
+        Symbol::Era => 0,
+    }
+}
+
+/// Returns the total number of ports of a symbol: `arity + 1`.
+///
+/// Includes the principal port (port 0). Used for port array indexing
+/// and iteration over all ports of an agent.
+/// - CON/DUP: 3 ports (principal + 2 auxiliary)
+/// - ERA: 1 port (principal only)
+pub const fn total_ports(symbol: Symbol) -> u8 {
+    arity(symbol) + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +430,40 @@ mod tests {
             id: u32::MAX,
         };
         assert_eq!(a.id, u32::MAX);
+    }
+
+    // --- arity / total_ports tests (TASK-0006) ---
+
+    // T1: arity values
+    #[test]
+    fn test_arity() {
+        assert_eq!(arity(Symbol::Con), 2);
+        assert_eq!(arity(Symbol::Dup), 2);
+        assert_eq!(arity(Symbol::Era), 0);
+    }
+
+    // T2: total_ports values
+    #[test]
+    fn test_total_ports() {
+        assert_eq!(total_ports(Symbol::Con), 3);
+        assert_eq!(total_ports(Symbol::Dup), 3);
+        assert_eq!(total_ports(Symbol::Era), 1);
+    }
+
+    // T3: const fn usable at compile time
+    #[test]
+    fn test_arity_const() {
+        const CON_ARITY: u8 = arity(Symbol::Con);
+        const ERA_TOTAL: u8 = total_ports(Symbol::Era);
+        assert_eq!(CON_ARITY, 2);
+        assert_eq!(ERA_TOTAL, 1);
+    }
+
+    // E1: total_ports = arity + 1 identity for all symbols
+    #[test]
+    fn test_total_ports_identity() {
+        for sym in [Symbol::Con, Symbol::Dup, Symbol::Era] {
+            assert_eq!(total_ports(sym), arity(sym) + 1);
+        }
     }
 }
