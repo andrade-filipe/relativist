@@ -1,6 +1,6 @@
 # SPEC-11: Observability
 
-**Status:** Draft v1
+**Status:** Revised v2
 **Depends on:** SPEC-00 (Glossary), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-13 (System Architecture)
 **Gray zones resolved:** ---
 **Research consumed:** PESQ-003 (Ray architecture, observability patterns), PESQ-014 (OpenTelemetry for Rust), PESQ-015 (tracing crate ecosystem), PESQ-016 (Prometheus metrics exposition in Rust), PESQ-023 (Decision Matrix, Decision D5: Observability Architecture)
@@ -42,7 +42,7 @@ Source: PESQ-014 L2, PESQ-015 L1. Rationale: a single instrumentation API enable
 
 **R2.** Relativist MUST use `tracing_subscriber::Registry` as the root subscriber with composable `Layer` instances. **(MUST)**
 
-**R3.** The `fmt::Layer` MUST support two output formats, selected at startup via configuration. **(MUST)**
+**R3.** The `fmt::Layer` MUST support two output formats, selected at startup via configuration. The `--log-format` argument MUST be added to both `CoordinatorArgs` and `WorkerArgs` structs defined in SPEC-13 R44/R45. **(MUST)**
 
 | Format | Selector | Use Case |
 |--------|----------|----------|
@@ -64,7 +64,7 @@ Source: PESQ-015 L2, PESQ-015 Section 2.4.
 | `relativist::partition` | INFO | Split/merge statistics |
 | `relativist::net` | WARN | Only structural errors |
 | `relativist::observability` | INFO | Init confirmation |
-| `relativist::security` | INFO | Auth events, TLS status |
+| `relativist::security` | INFO | Auth events, TLS status (provisional; MAY be removed if the security module is not implemented -- see SPEC-13 R5) |
 
 Source: PESQ-015 Section 3.1. The default filter string is: `"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn"`.
 
@@ -73,9 +73,9 @@ Source: PESQ-015 Section 3.1. The default filter string is: `"relativist::coordi
 | Function | Module | Span Fields |
 |----------|--------|-------------|
 | `split()` | `partition` | `input_agents`, `k`, `strategy` |
-| `reduce_all()` | `reduction` | `partition_id`, `initial_redexes` |
+| `reduce_all()` | `reduction` | `partition_index` (0..k position within round), `initial_redexes` |
 | `merge()` | `merge` | `partition_count`, `border_redexes` |
-| `dispatch()` | `coordinator` | `worker_id`, `partition_id`, `size_bytes` |
+| `dispatch()` | `coordinator` | `worker_id`, `partition_index` (0..k), `size_bytes` |
 | `handle_message()` | `protocol` | `message_type`, `peer` |
 
 Source: PESQ-015 L4.
@@ -93,12 +93,22 @@ INFO relativist::coordinator: state transition from_state="WaitingForResults" to
 |---------|--------|
 | Grid round | `round` (u32) |
 | Worker operations | `worker_id` (WorkerId) |
-| Partition operations | `partition_id` (u32) |
+| Partition operations | `partition_index` (u32, 0..k position within round) |
 | Timing | `duration_ms` (u64) |
 | Reduction | `redexes` (usize), `interactions` (usize) |
 | Protocol | `message_type` (str), `size_bytes` (usize) |
 
 **R9.** The `fmt::Layer` MUST include the target (module path), thread ID, and timestamp in all output. File name and line number MAY be included but SHOULD be disabled by default (noise in production). **(MUST for target/thread/timestamp; SHOULD for file/line off by default)**
+
+**R9a.** The following events MUST be logged at ERROR level. **(MUST)**
+
+| Event Category | Condition | Module |
+|----------------|-----------|--------|
+| Invariant violation | Any check from `assert_all_invariants()` (SPEC-01, T1-T7) fails | `net`, `reduction`, `partition`, `merge` |
+| Protocol error | Checksum mismatch (SPEC-06, R29), message too large (SPEC-06, R9), connection lost (SPEC-06, R25) | `protocol` |
+| FSM error transition | Coordinator or worker FSM transitions to `Error` state (SPEC-13, R19/R24) | `coordinator`, `worker` |
+| Fatal error | Any `FatalError` event (SPEC-13, R21) | `coordinator`, `worker` |
+| Merge failure | Unresolved border (SPEC-05), merge invariant violation | `merge` |
 
 ### 3.2 Metrics (Prometheus)
 
@@ -139,12 +149,16 @@ pub struct CoordinatorMetrics {
     pub dispatch_bytes_total: Counter,
     /// Total bytes received back from workers.
     pub return_bytes_total: Counter,
+    /// Total interactions by rule type, across all workers and rounds.
+    /// Uses a `Family` with a `RuleLabel` that has 6 variants
+    /// (CON_CON, CON_DUP, CON_ERA, DUP_DUP, DUP_ERA, ERA_ERA).
+    pub interactions_by_rule_total: Family<Vec<(String, String)>, Counter>,
 }
 ```
 
 Source: PESQ-016 Section 2.1.
 
-**R13.** Worker-side metrics MUST be reported to the coordinator as part of the `ReturnPartition` protocol message (SPEC-06), NOT via per-worker HTTP endpoints. The coordinator MUST aggregate worker metrics into its own registry. **(MUST)**
+**R13.** Worker-side metrics MUST be reported to the coordinator as part of the `PartitionResult` protocol message (SPEC-06), NOT via per-worker HTTP endpoints. The coordinator MUST aggregate worker metrics into its own registry. **(MUST)**
 
 Source: PESQ-016 L4. Rationale: avoids requiring workers to run HTTP servers; keeps the metrics scrape target as a single endpoint on the coordinator.
 
@@ -170,20 +184,20 @@ Source: PESQ-016 L5.
 | `worker_id` | 8 (bounded by cluster size) | Yes |
 | `rule` | 6 (CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA) | Yes |
 | `type` (message type) | ~10 (bounded by protocol spec) | Yes |
-| `partition_id` | Unbounded | **NO -- DO NOT use as label** |
+| `partition_index` | Unbounded across rounds | **NO -- DO NOT use as Prometheus label** (acceptable as span field since spans are ephemeral) |
 | `round` | Unbounded | **NO -- DO NOT use as label** |
 
 Source: PESQ-016 Section 2.4.
 
 **R17.** All metric names MUST be prefixed with `relativist_` to avoid collisions when running alongside other instrumented services. **(MUST)**
 
-**R18.** The `CoordinatorMetrics` struct MUST provide a `register(registry: &mut Registry)` method that registers all metrics with their descriptions. **(SHOULD)**
+**R18.** The `CoordinatorMetrics` struct SHOULD provide a `register(registry: &mut Registry)` method that registers all metrics with their descriptions. The coordinator MAY register metrics inline instead. **(SHOULD)**
 
 ### 3.3 HTTP Endpoints
 
 **R19.** HTTP endpoints MUST be feature-gated under the `metrics` Cargo feature (same gate as Prometheus metrics). **(MUST)**
 
-**R20.** The coordinator MUST serve HTTP endpoints using `axum` on a dedicated port, separate from the binary grid protocol port (SPEC-06). The default metrics port MUST be `9090`, configurable via `--metrics-port`. **(MUST)**
+**R20.** The coordinator MUST serve HTTP endpoints using `axum` on a dedicated port, separate from the binary grid protocol port (SPEC-06). The default metrics port MUST be `9090`, configurable via `--metrics-port`. This argument MUST be added to the `CoordinatorArgs` struct defined in SPEC-13 R44, conditional on the `metrics` feature being enabled. **(MUST)**
 
 Source: PESQ-016 L2, L3.
 
@@ -191,15 +205,19 @@ Source: PESQ-016 L2, L3.
 
 | Route | Method | Response | Content-Type |
 |-------|--------|----------|-------------|
-| `GET /metrics` | GET | Prometheus text exposition format (OpenMetrics) | `application/openmetrics-text` |
+| `GET /metrics` | GET | Prometheus text exposition format (OpenMetrics) | `application/openmetrics-text; version=1.0.0; charset=utf-8` |
 | `GET /health` | GET | `"ok"` with status 200 | `text/plain` |
 | `GET /ready` | GET | Status 200 if ready, 503 if not ready | `text/plain` |
 
-**R22.** The `/ready` endpoint MUST return 200 OK when the coordinator FSM (SPEC-13, R19) is in state `WaitingForWorkers` or any subsequent state (`Partitioning`, `Dispatching`, `WaitingForResults`, `Merging`, `CheckTermination`, `Done`). It MUST return 503 Service Unavailable when the coordinator is in state `Init`. **(MUST)**
+**R22.** The `/ready` endpoint MUST return 200 OK when the coordinator FSM (SPEC-13, R19) is in any of these states: `WaitingForWorkers`, `Partitioning`, `Dispatching`, `WaitingForResults`, `Merging`, `CheckTermination`, `Done`. It MUST return 503 Service Unavailable when the coordinator is in state `Init` or `Error`. **(MUST)**
+
+**R22a.** The readiness check MUST use an explicit `AtomicBool` flag (`is_ready`) rather than numeric ordinal comparison on the state enum. The coordinator FSM MUST set `is_ready = true` when transitioning from `Init` to `WaitingForWorkers`, and MUST set `is_ready = false` when transitioning to `Error` state. This avoids fragile dependence on enum discriminant ordering. **(MUST)**
 
 **R23.** The axum HTTP server MUST run as a background tokio task within the coordinator's async runtime. It MUST NOT block the grid protocol event loop. **(MUST)**
 
 **R24.** The HTTP server MUST bind to the same address as the main coordinator listener (respecting `--bind`) but on the metrics port. **(SHOULD)**
+
+**R24a.** The HTTP server MUST be shut down when the coordinator FSM enters `Done` or `Error` state. The coordinator SHOULD use a `tokio_util::sync::CancellationToken` (or equivalent mechanism) to signal the background HTTP task to terminate gracefully. **(MUST for shutdown; SHOULD for mechanism)**
 
 ### 3.4 Distributed Tracing (OpenTelemetry)
 
@@ -227,7 +245,7 @@ Source: PESQ-014 Section 2.3.
 
 **R29.** When `otel` is enabled, the coordinator SHOULD create a root span for each grid round (`grid_cycle` span with field `round`). Workers SHOULD create child spans under the coordinator's trace context. **(SHOULD)**
 
-**R30.** The wire protocol (SPEC-06) MAY include an optional trace context header (trace_id + span_id, 32 bytes total) in `DispatchPartition` and `ReturnPartition` messages. When the `otel` feature is not enabled, this header MUST be omitted (zero overhead). **(MAY for inclusion; MUST for zero overhead when disabled)**
+**R30.** The wire protocol (SPEC-06) MAY include an optional trace context header (trace_id + span_id, 32 bytes total) in `AssignPartition` and `PartitionResult` messages. When the `otel` feature is not enabled, this header MUST be omitted (zero overhead). **(MAY for inclusion; MUST for zero overhead when disabled)**
 
 Source: PESQ-014 L3.
 
@@ -259,6 +277,9 @@ pub enum LogFormat {
 pub enum ProcessRole {
     Coordinator,
     Worker,
+    /// Local reduction mode (SPEC-13, R41: `relativist reduce`).
+    /// Logging is initialized; HTTP endpoints are NOT started.
+    Local,
 }
 
 /// Initialize the tracing subscriber with all configured layers.
@@ -277,6 +298,8 @@ pub fn init_tracing(config: ObservabilityConfig) {
 **R32.** `init_tracing()` MUST be called exactly once, before any other work. Calling it more than once MUST panic. **(MUST)**
 
 **R33.** `init_tracing()` MUST log an INFO event confirming successful initialization, including the active log format, active features (`metrics`, `otel`), and the default filter string. **(MUST)**
+
+**R33a.** In local mode (`ProcessRole::Local`, SPEC-13 R41), `init_tracing()` MUST be called with `ProcessRole::Local`. Structured logging (R1-R9, R9a) MUST apply in local mode. HTTP endpoints (R19-R24) MUST NOT be started in local mode. OTel resource `service.name` (R28) MUST be `"relativist-local"` when role is `Local`. **(MUST)**
 
 ### 3.6 Exclusions (v1)
 
@@ -337,23 +360,30 @@ main() or worker_main()
 #[cfg(feature = "metrics")]
 pub fn metrics_router(
     registry: std::sync::Arc<prometheus_client::registry::Registry>,
-    coordinator_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    coordinator_is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> axum::Router {
     use axum::{routing::get, extract::State, http::StatusCode, Router};
 
     #[derive(Clone)]
     struct AppState {
         registry: std::sync::Arc<prometheus_client::registry::Registry>,
-        coordinator_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        is_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
+
+    /// OpenMetrics Content-Type with version and charset parameters.
+    const OPENMETRICS_CONTENT_TYPE: &str =
+        "application/openmetrics-text; version=1.0.0; charset=utf-8";
 
     async fn metrics_handler(
         State(state): State<AppState>,
-    ) -> String {
+    ) -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
         let mut buf = String::new();
         prometheus_client::encoding::text::encode(&mut buf, &state.registry)
             .expect("encoding metrics");
-        buf
+        (
+            [(axum::http::header::CONTENT_TYPE, OPENMETRICS_CONTENT_TYPE)],
+            buf,
+        )
     }
 
     async fn health_handler() -> &'static str {
@@ -363,17 +393,16 @@ pub fn metrics_router(
     async fn ready_handler(
         State(state): State<AppState>,
     ) -> StatusCode {
-        // Init = 0, WaitingForWorkers = 1, ...
-        let state_val = state.coordinator_state
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if state_val >= 1 {
+        // Uses AtomicBool set by the coordinator FSM (R22a):
+        // true when in WaitingForWorkers..Done, false when in Init or Error.
+        if state.is_ready.load(std::sync::atomic::Ordering::Relaxed) {
             StatusCode::OK
         } else {
             StatusCode::SERVICE_UNAVAILABLE
         }
     }
 
-    let state = AppState { registry, coordinator_state };
+    let state = AppState { registry, is_ready: coordinator_is_ready };
 
     Router::new()
         .route("/metrics", get(metrics_handler))
@@ -385,22 +414,33 @@ pub fn metrics_router(
 
 ### 4.4 Worker Metrics Reporting
 
-Workers do not expose HTTP endpoints. Instead, worker-side measurements are included in the `ReturnPartition` message payload (SPEC-06):
+Workers do not expose HTTP endpoints. Instead, worker-side measurements piggyback on the existing `Message::PartitionResult` variant (SPEC-06, Section 4.1), which already carries a `stats: WorkerRoundStats` field (SPEC-05, R37; SPEC-06, R12).
+
+The canonical `WorkerRoundStats` (SPEC-05 R37) contains `worker_id`, `agents_before`, `agents_after`, and `local_redexes`. For Prometheus-specific observability, `WorkerRoundStats` SHOULD be extended with additional fields:
 
 ```rust
-/// Metrics reported by a worker alongside its reduced partition.
+/// Statistics of a single worker in a specific round.
+/// Canonical type defined in SPEC-05 R37, extended here for observability.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WorkerMetricsReport {
+pub struct WorkerRoundStats {
+    // --- Fields from SPEC-05 R37 (canonical) ---
+    pub worker_id: WorkerId,
+    pub agents_before: usize,
+    pub agents_after: usize,
+    pub local_redexes: usize,
+
+    // --- Fields added by SPEC-11 for Prometheus metrics (R13) ---
     /// Wall-clock reduction time in seconds.
     pub reduce_duration_secs: f64,
-    /// Number of redexes reduced in this round.
-    pub redexes_reduced: u64,
-    /// Interactions broken down by rule type.
+    /// Interactions broken down by rule type (indexed by rule ordinal:
+    /// 0=CON-CON, 1=CON-DUP, 2=CON-ERA, 3=DUP-DUP, 4=DUP-ERA, 5=ERA-ERA).
     pub interactions_by_rule: [u64; 6],
 }
 ```
 
-The coordinator aggregates these reports into its Prometheus registry upon receipt (R13).
+**Note:** This extension is additive and backward-compatible: all existing consumers of `WorkerRoundStats` continue to work since the original fields are preserved. The additional fields provide the per-rule breakdown needed for Prometheus metrics (R12, SC-008) and the timing data needed for coordinator-side aggregation. This extension SHOULD be reflected in SPEC-05 R37 during its next revision cycle.
+
+The coordinator aggregates the extended stats into its Prometheus registry upon receipt (R13).
 
 ### 4.5 Span Hierarchy for a Grid Round
 
@@ -409,15 +449,15 @@ The coordinator aggregates these reports into its Prometheus registry upon recei
   |
   +-- [split] input_agents=10000 k=4 strategy="id_range"  (coordinator, INFO)
   |
-  +-- [dispatch] worker_id=0 partition_id=0 size_bytes=...  (coordinator, DEBUG)
-  +-- [dispatch] worker_id=1 partition_id=1 size_bytes=...  (coordinator, DEBUG)
-  +-- [dispatch] worker_id=2 partition_id=2 size_bytes=...  (coordinator, DEBUG)
-  +-- [dispatch] worker_id=3 partition_id=3 size_bytes=...  (coordinator, DEBUG)
+  +-- [dispatch] worker_id=0 partition_index=0 size_bytes=...  (coordinator, DEBUG)
+  +-- [dispatch] worker_id=1 partition_index=1 size_bytes=...  (coordinator, DEBUG)
+  +-- [dispatch] worker_id=2 partition_index=2 size_bytes=...  (coordinator, DEBUG)
+  +-- [dispatch] worker_id=3 partition_index=3 size_bytes=...  (coordinator, DEBUG)
   |
-  +-- [reduce] partition_id=0 initial_redexes=500           (worker 0, INFO)
-  +-- [reduce] partition_id=1 initial_redexes=480           (worker 1, INFO)
-  +-- [reduce] partition_id=2 initial_redexes=510           (worker 2, INFO)
-  +-- [reduce] partition_id=3 initial_redexes=490           (worker 3, INFO)
+  +-- [reduce] partition_index=0 initial_redexes=500           (worker 0, INFO)
+  +-- [reduce] partition_index=1 initial_redexes=480           (worker 1, INFO)
+  +-- [reduce] partition_index=2 initial_redexes=510           (worker 2, INFO)
+  +-- [reduce] partition_index=3 initial_redexes=490           (worker 3, INFO)
   |
   +-- [merge] partition_count=4 border_redexes=12           (coordinator, INFO)
 ```
@@ -444,7 +484,7 @@ Source: PESQ-023 D3.
 
 **Why separate metrics port (R20)?** Mixing HTTP and binary TCP protocols on the same port creates parsing ambiguity and complicates connection handling. Standard practice in distributed systems (Kubernetes, Prometheus itself) is to serve observability endpoints on a dedicated port. Source: PESQ-016 L2.
 
-**Why worker metrics via protocol, not HTTP (R13)?** Requiring each worker to run an HTTP server adds deployment complexity (port management, discovery). Since workers already communicate with the coordinator via the wire protocol, piggy-backing metrics on `ReturnPartition` is simpler and sufficient for v1. The coordinator becomes the single scrape target. Source: PESQ-016 L4.
+**Why worker metrics via protocol, not HTTP (R13)?** Requiring each worker to run an HTTP server adds deployment complexity (port management, discovery). Since workers already communicate with the coordinator via the wire protocol, piggy-backing metrics on `PartitionResult` is simpler and sufficient for v1. The coordinator becomes the single scrape target. Source: PESQ-016 L4.
 
 **Why custom histogram buckets (R15)?** Default Prometheus histogram buckets (0.005 to 10.0) are optimized for HTTP request latencies. IC reduction rounds can range from sub-millisecond (small nets) to 30+ seconds (large nets). Custom buckets `[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0]` provide better resolution across this range. Source: PESQ-016 L5.
 
@@ -465,7 +505,7 @@ The Haskell prototype (`grid_computing_interaction_combinators_prototype_v1/`) h
 
 **What Relativist changes and why:**
 
-1. Structured logging with `tracing` replaces `putStrLn`, enabling machine-parseable output, level filtering, and correlation fields (round, worker_id, partition_id).
+1. Structured logging with `tracing` replaces `putStrLn`, enabling machine-parseable output, level filtering, and correlation fields (round, worker_id, partition_index).
 2. Prometheus exposition enables real-time metrics collection during long-running executions (critical for the benchmark suite, SPEC-09).
 3. Per-phase timing (split, dispatch, reduce, merge) enables the overhead breakdown analysis required by DISC-006 v2 and SPEC-09's overhead ratio metric.
 4. Optional OTel distributed tracing provides visibility into the full lifecycle of a grid round across coordinator and workers -- something impossible with the prototype's print-based approach.
@@ -482,13 +522,15 @@ The Haskell prototype (`grid_computing_interaction_combinators_prototype_v1/`) h
 
 **T4.** The `RUST_LOG` environment variable MUST correctly override default log levels: setting `RUST_LOG=relativist::reduction=trace` MUST cause TRACE events from the reduction module to appear in output. **(MUST)**
 
-**T5.** When the `metrics` feature is enabled, the `CoordinatorMetrics` registry MUST contain all expected metrics after one simulated grid round (counter values > 0, histogram observations > 0). **(MUST)**
+**T5.** When the `metrics` feature is enabled, the `CoordinatorMetrics` struct MUST be verified by: (a) creating a `CoordinatorMetrics` instance and registering it in a `Registry`, (b) calling metric update methods directly (e.g., `metrics.rounds_total.inc()`, `metrics.round_duration_seconds.observe(1.5)`, `metrics.interactions_by_rule_total.get_or_create(&rule_label).inc()`), and (c) asserting that `rounds_total.get() == 1`, `round_duration_seconds` has 1 observation, and `interactions_by_rule_total` has entries for the exercised rule label. This test is decoupled from the full grid cycle. **(MUST)**
 
 **T6.** `GET /health` MUST return HTTP 200 with body `"ok"`. **(MUST)**
 
-**T7.** `GET /ready` MUST return HTTP 503 when the coordinator state is `Init`, and HTTP 200 when the coordinator state is `WaitingForWorkers` or later. **(MUST)**
+**T7.** `GET /ready` MUST return HTTP 503 when the coordinator state is `Init`, HTTP 200 when the coordinator state is `WaitingForWorkers` or any subsequent working state, and HTTP 503 when the coordinator state is `Error`. **(MUST)**
 
 **T8.** `GET /metrics` MUST return a response parseable as Prometheus text exposition format (OpenMetrics). The response MUST contain at least one `relativist_` prefixed metric. **(MUST)**
+
+**T8a.** `GET /metrics` MUST return a response with `Content-Type` header containing `application/openmetrics-text`. **(MUST)**
 
 **T9.** When the `metrics` feature is NOT enabled, the HTTP server MUST NOT be started, and no metrics-related code should be compiled (verified by building without the feature and checking binary size or compile errors on direct metrics usage). **(MUST)**
 
@@ -496,4 +538,6 @@ The Haskell prototype (`grid_computing_interaction_combinators_prototype_v1/`) h
 
 ## 8. Open Questions
 
-None. All design decisions for v1 observability have been resolved by PESQ-014, PESQ-015, PESQ-016, and PESQ-023 (D5).
+**OQ-1 (cross-spec).** SPEC-11 extends `WorkerRoundStats` with `reduce_duration_secs` and `interactions_by_rule` fields. This extension SHOULD be reflected in SPEC-05 R37 and SPEC-06 R12 during their next revision cycle. Until then, the extended definition in this spec (Section 4.4) is normative for observability purposes.
+
+**OQ-2 (cross-spec).** SPEC-11 introduces `--metrics-port` (R20) and `--log-format` (R3) CLI arguments. These SHOULD be added to SPEC-13 R44/R45 (and SPEC-07 R3) during their next revision cycle. Until then, the requirements in this spec are normative.

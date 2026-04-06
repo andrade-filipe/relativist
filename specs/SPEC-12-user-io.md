@@ -1,6 +1,6 @@
 # SPEC-12: User I/O & Examples
 
-**Status:** Draft v1
+**Status:** Revised v2
 **Depends on:** SPEC-00 (Glossary), SPEC-02 (Net Representation), SPEC-07 (Deployment), SPEC-09 (Benchmarks), SPEC-13 (System Architecture), SPEC-14 (Encoding)
 **Gray zones resolved:** ---
 **Research consumed:** PESQ-002 (Apache Ignite architecture, CLI patterns), PESQ-024 (Architecture Recommendations, Section 7 CLI Design, Section 4 Data Flow)
@@ -14,6 +14,12 @@
 
 This spec defines the user-facing I/O layer of Relativist: the input formats for IC nets (binary, text DSL, JSON), the output formats for reduced nets and execution metrics, the CLI subcommands for local reduction (`reduce`), net inspection (`inspect`), and net generation (`generate`), the pre-built example net generators available through the CLI, and the human-readable output summary format. This is the spec that makes Relativist usable as a standalone tool independent of the benchmark suite (SPEC-09) and the distributed grid (SPEC-05/SPEC-06). The `reduce` and `inspect` subcommands enable testing and debugging of the core reduction engine (SPEC-03) without any network infrastructure.
 
+> **Cross-spec note (v2):** SPEC-12 introduces a 12th module (`io/`) not present in SPEC-13 R5's original 11-module list. This spec documents the required amendment: SPEC-13 R5 MUST be updated to include the `io` module. The pure parts of the `io` module (text DSL parser/serializer, generators) belong to the Core Layer; the impure parts (file I/O via `load_net`/`save_net`) belong to the Infrastructure Layer. See Section 4.3 for the module layout.
+>
+> **Format supersession note (v2):** SPEC-12 R1-R50 supersede SPEC-07 R22-R25 and SPEC-13 R42 for all file format specifications. The three-format support (binary, text DSL, JSON) defined here applies to the `reduce`, `inspect`, and `generate` subcommands. The `coordinator` and `worker` subcommands accept only `.bin` (bincode) for performance; the `local` subcommand (SPEC-07 R5, R18) also accepts only `.bin`.
+>
+> **Subcommand clarification (v2):** The `reduce` subcommand (SPEC-13 R41, R46) performs purely sequential reduction via `reduce_all()` -- no partitioning, no grid loop. The `local` subcommand (SPEC-07 R1, R5, R18) runs the full grid loop in-process with simulated workers and partitioning. Both subcommands coexist. SPEC-12 specifies `reduce`, `inspect`, and `generate`; it does not redefine `local`, `coordinator`, or `worker` (those remain defined by SPEC-07 and SPEC-13).
+
 ## 2. Definitions
 
 Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introduced or refined in this spec:
@@ -23,8 +29,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 | **Binary Format (.bin)** | The primary serialization format for IC nets: serde + bincode encoding of the `Net` struct (SPEC-02). Fastest to parse, most compact, used by benchmarks and programmatic workflows. File extension: `.bin`. |
 | **Text DSL (.ic)** | A human-readable text format for defining IC nets by hand. One agent per line, wires defined by named port references. File extension: `.ic`. Designed for small examples, documentation, and debugging. Not intended for large nets. |
 | **JSON Format (.json)** | serde JSON serialization of the `Net` struct. Verbose but interoperable with external tools, visualization pipelines, and web-based consumers. File extension: `.json`. |
-| **Input Format** | Any of the three supported formats (binary, text DSL, JSON) from which a `Net` can be loaded. The format is auto-detected by file extension or overridden by a `--format` flag. |
-| **Output Format** | The format in which a reduced `Net` is written. Defaults to the same format as the input. Overridable via `--format` on the output path. |
+| **Input Format** | Any of the three supported formats (binary, text DSL, JSON) from which a `Net` can be loaded. The format is auto-detected by file extension or overridden by the `--input-format` flag. |
+| **Output Format** | The format in which a reduced `Net` is written. Determined by the output file's extension. Not overridable by `--input-format` (which applies only to input). |
 | **Net Summary** | A structured report of a net's key statistics: agent count, wire count, redex count, agent type distribution (CON/DUP/ERA), free port count, and whether the net is in Normal Form. Produced by the `inspect` subcommand and printed after reduction. |
 | **Reduction Summary** | A human-readable report printed to stdout after any reduction (local or distributed). Contains input/output statistics, timing, interaction count, MIPS, and optional grid metrics (rounds, workers, speedup). |
 | **Example Net** | A pre-built parametric net generator accessible via the `generate` subcommand. Each example corresponds to a benchmark profile from SPEC-09 but is exposed as a first-class CLI feature for ad-hoc use. |
@@ -89,8 +95,11 @@ INT         ::= [0-9]+
 
 ```
 # CON-CON annihilation: two constructors connected at principal ports.
-# Auxiliary ports are connected cross-wise.
-# After reduction: 0 agents, free ports reconnected.
+# Input: auxiliary ports connected in parallel (left-left, right-right).
+# After CON-CON annihilation (cross reconnection rule): both agents are
+# removed and auxiliary targets are reconnected cross-wise. Since in this
+# example all auxiliary targets are ports of the two removed agents, the
+# result is an empty net (0 agents, 0 wires).
 agent a CON
 agent b CON
 wire a.principal b.principal
@@ -122,7 +131,7 @@ wire d.right free(3)
 
 ### 3.2 Output Formats
 
-**R18.** The `reduce` subcommand MUST write the reduced net to the path specified by `--output`, in the format determined by the output file's extension (or the `--format` flag). **(MUST)**
+**R18.** The `reduce` subcommand MUST write the reduced net to the path specified by `--output`, in the format determined by the output file's extension. The `--input-format` flag applies ONLY to input format detection (overriding extension-based detection on the input path); the output format ALWAYS follows the output file's extension. **(MUST)**
 
 **R19.** If `--output` is not specified, the `reduce` subcommand MUST NOT write a net file; it MUST only print the Reduction Summary to stdout. **(MUST)**
 
@@ -149,10 +158,10 @@ The metrics JSON object MUST contain at minimum:
 
 **R22.** For distributed execution (coordinator mode), the coordinator SHOULD additionally write a per-round CSV file if `--round-csv <PATH>` is specified. **(SHOULD)**
 
-The CSV schema MUST be:
+The CSV schema MUST be consistent with SPEC-07 R29's per-round metrics:
 
 ```
-round,duration_ms,local_redexes,border_redexes,interactions,agents_before,agents_after
+round,agents_before,agents_after,local_interactions,border_interactions,border_redexes,partition_time_ms,compute_time_ms,merge_time_ms,bytes_sent,bytes_received,network_send_time_ms,network_recv_time_ms
 ```
 
 ### 3.3 `relativist reduce` Subcommand
@@ -173,9 +182,9 @@ pub struct ReduceArgs {
     #[arg(long)]
     pub output: Option<PathBuf>,
 
-    /// Override input format detection.
+    /// Override input format detection (does not affect output format).
     #[arg(long, value_enum)]
-    pub format: Option<NetFormat>,
+    pub input_format: Option<NetFormat>,
 
     /// Path to write metrics JSON.
     #[arg(long)]
@@ -224,7 +233,7 @@ pub enum InspectOutputFormat {
 | Statistic | Description | Source |
 |-----------|-------------|--------|
 | Agent count | Total live agents (`agents.iter().filter(Option::is_some).count()`) | SPEC-02, R7 |
-| Wire count | Bidirectional connections / 2 | SPEC-02, R8 |
+| Wire count | Number of distinct agent-to-agent connections: pairs `(A, B)` where both `A` and `B` are `AgentPort` entries, `ports[A] == B`, and `A < B` by canonical ordering `(id_a * 3 + port_a)`. FreePort connections are NOT counted as wires; they are counted separately as "free port count." | SPEC-02, R8 |
 | Redex count | Current entries in the redex queue (after stale filtering) | SPEC-02, R9, R17 |
 | CON count | Agents with `symbol == Symbol::Con` | SPEC-02, R1 |
 | DUP count | Agents with `symbol == Symbol::Dup` | SPEC-02, R1 |
@@ -302,11 +311,15 @@ pub enum ExampleNet {
     MixedRules,
     /// ERA propagation chain of length N (Profile C). SPEC-09 R17.
     ErasurePropagation,
-    /// Church numeral encoding of N (Profile B). SPEC-14 R26.
+    /// Church numeral encoding of N (Profile B). SPEC-14 R4.
+    /// WARNING: Church generators SHOULD use small size values (N <= 10_000).
     ChurchNat,
-    /// Church addition: church(N/2) + church(N - N/2) (Profile B). SPEC-14 R26.
+    /// Church addition: church(N/2) + church(N - N/2) (Profile B). SPEC-14 R15.
+    /// WARNING: Church generators SHOULD use small size values (N <= 10_000).
     ChurchAdd,
-    /// Church multiplication: church(floor(sqrt(N))) * church(floor(sqrt(N))) (Profile B). SPEC-14 R26.
+    /// Church multiplication: church(floor(sqrt(N))) * church(floor(sqrt(N))) (Profile B). SPEC-14 R16.
+    /// WARNING: Church multiplication with large N may exhaust the AgentId space.
+    /// Recommended: N <= 1_000 for ChurchMul.
     ChurchMul,
 }
 ```
@@ -315,7 +328,7 @@ pub enum ExampleNet {
 
 **R35.** Generator functions MUST be pure functions with signature `fn generate_<name>(size: u32) -> Net`, reusable by both the `generate` subcommand and the benchmark suite (SPEC-09, `Benchmark::make_net`). **(MUST)**
 
-**R36.** The generators MUST be implemented in the `io` module (SPEC-13, R5) or a shared `examples` submodule, NOT duplicated between the CLI and the benchmark suite. **(MUST)**
+**R36.** The generators MUST be implemented in the `io/examples.rs` submodule (see Section 4.3), NOT duplicated between the CLI and the benchmark suite. The `io` module is introduced by SPEC-12 and requires an amendment to SPEC-13 R5 (see Section 1 cross-spec note). **(MUST)**
 
 **R37.** Generator: `ep_annihilation(n: u32) -> Net`. MUST produce N pairs of ERA agents connected at principal ports. Expected reduction result: 0 agents. **(MUST)**
 
@@ -363,13 +376,196 @@ pub fn ep_annihilation_con(n: u32) -> Net {
 }
 ```
 
-**R39.** Generator: `dual_tree(depth: u32) -> Net`. MUST produce two perfect binary trees of CON agents with the given depth, connected at the roots via principal ports. **(MUST)**
+**R38a.** Generator: `ep_annihilation_dup(n: u32) -> Net`. MUST produce N pairs of DUP agents connected at principal ports, with auxiliary ports connected to free ports. Structurally identical to R38 but using `Symbol::Dup`. **(MUST)**
+
+```rust
+/// Generate N DUP-DUP annihilation pairs.
+/// Each pair: two DUP agents, principals connected, auxiliaries to free ports.
+/// After reduction: 0 DUP agents, free ports reconnected in parallel pattern.
+pub fn ep_annihilation_dup(n: u32) -> Net {
+    let mut net = Net::new();
+    let mut free_id: u32 = 0;
+    for _ in 0..n {
+        let a = net.create_agent(Symbol::Dup);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+    }
+    net
+}
+```
+
+**R39.** Generator: `dual_tree(depth: u32) -> Net`. MUST produce two perfect binary trees of CON agents with the given depth, connected at the roots via principal ports. For `depth = 0`, produces 2 agents (two root CON agents) with 1 redex. **(MUST)**
+
+```rust
+/// Generate two perfect binary trees of CON agents connected at the roots.
+/// Each tree has 2^depth - 1 internal CON agents. Leaves connect to free ports.
+/// After reduction: cascading CON-CON annihilations at each level.
+///
+/// Tree construction (recursive):
+///   build_tree(net, depth) -> AgentId:
+///     let node = net.create_agent(Symbol::Con);
+///     if depth == 1:
+///       connect(node.p1, FreePort(next_free_id++))
+///       connect(node.p2, FreePort(next_free_id++))
+///     else:
+///       let left_child = build_tree(net, depth - 1)
+///       let right_child = build_tree(net, depth - 1)
+///       connect(node.p1, left_child.p0)
+///       connect(node.p2, right_child.p0)
+///     return node
+///
+///   root_a = build_tree(net, depth)
+///   root_b = build_tree(net, depth)
+///   connect(root_a.p0, root_b.p0)   // single initial redex
+pub fn dual_tree(depth: u32) -> Net;
+```
 
 **R40.** Generator: `con_dup_expansion(n: u32) -> Net`. MUST produce N CON-DUP pairs connected at principal ports, with auxiliary ports connected to free ports. **(MUST)**
 
+```rust
+/// Generate N CON-DUP commutation pairs.
+/// Each pair: one CON and one DUP agent, principals connected,
+/// auxiliaries to free ports.
+/// After reduction: each pair produces 4 new agents (2 CON + 2 DUP).
+pub fn con_dup_expansion(n: u32) -> Net {
+    let mut net = Net::new();
+    let mut free_id: u32 = 0;
+    for _ in 0..n {
+        let c = net.create_agent(Symbol::Con);
+        let d = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+        net.connect(PortRef::AgentPort(c, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(c, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(d, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(d, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+    }
+    net
+}
+```
+
 **R41.** Generator: `mixed_rules(n: u32) -> Net`. MUST produce a net containing N pairs of each of the 6 interaction rule types (CON-CON, DUP-DUP, ERA-ERA, CON-DUP, CON-ERA, DUP-ERA), for a total of 6N initial redex pairs. **(MUST)**
 
+Each pair type wiring:
+- **CON-CON:** Same as R38 (principals connected, auxiliaries to free ports).
+- **DUP-DUP:** Same as R38a (principals connected, auxiliaries to free ports).
+- **ERA-ERA:** Same as R37 (principals connected; ERA has no auxiliaries).
+- **CON-DUP:** Same as R40 (principals connected, auxiliaries to free ports).
+- **CON-ERA:** One CON agent and one ERA agent, principals connected. The CON's auxiliary ports (p1, p2) connect to free ports.
+- **DUP-ERA:** One DUP agent and one ERA agent, principals connected. The DUP's auxiliary ports (p1, p2) connect to free ports.
+
+```rust
+/// Generate a mixed net with N pairs of each of the 6 rule types.
+/// Total: 6N redex pairs. Auxiliaries of CON/DUP agents connect to free ports.
+/// This ensures all pair types are independent (no cross-pair interactions
+/// before reduction of the initial redexes).
+pub fn mixed_rules(n: u32) -> Net {
+    let mut net = Net::new();
+    let mut free_id: u32 = 0;
+    // Helper closure for creating a pair with auxiliaries to free ports
+    for _ in 0..n {
+        // 1. ERA-ERA
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // 2. CON-CON
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        for agent in [a, b] {
+            for port in [1, 2] {
+                net.connect(PortRef::AgentPort(agent, port), PortRef::FreePort(free_id));
+                free_id += 1;
+            }
+        }
+        // 3. DUP-DUP
+        let a = net.create_agent(Symbol::Dup);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        for agent in [a, b] {
+            for port in [1, 2] {
+                net.connect(PortRef::AgentPort(agent, port), PortRef::FreePort(free_id));
+                free_id += 1;
+            }
+        }
+        // 4. CON-DUP
+        let c = net.create_agent(Symbol::Con);
+        let d = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+        for agent in [c, d] {
+            for port in [1, 2] {
+                net.connect(PortRef::AgentPort(agent, port), PortRef::FreePort(free_id));
+                free_id += 1;
+            }
+        }
+        // 5. CON-ERA
+        let c = net.create_agent(Symbol::Con);
+        let e = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(e, 0));
+        for port in [1, 2] {
+            net.connect(PortRef::AgentPort(c, port), PortRef::FreePort(free_id));
+            free_id += 1;
+        }
+        // 6. DUP-ERA
+        let d = net.create_agent(Symbol::Dup);
+        let e = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(d, 0), PortRef::AgentPort(e, 0));
+        for port in [1, 2] {
+            net.connect(PortRef::AgentPort(d, port), PortRef::FreePort(free_id));
+            free_id += 1;
+        }
+    }
+    net
+}
+```
+
+> **Note (v2):** All pair types in `mixed_rules` have their auxiliary ports connected to fresh free ports, ensuring no cross-pair interactions occur before the initial redexes are resolved. Post-reduction interactions between derived agents are possible (e.g., agents created by CON-DUP commutation may form new redexes with agents from other pairs if they share free port connections), but since all free port IDs are unique, this does not happen: the pairs are fully independent.
+
 **R42.** Generators for `tree_sum`, `tree_sum_balanced`, and `erasure_propagation` MUST follow the benchmark definitions in SPEC-09 (R14, R15, R17). **(MUST)**
+
+**R42a.** Generator: `erasure_propagation(n: u32) -> Net`. MUST produce a chain of N CON agents connected via auxiliary-to-principal links, with an ERA agent connected at the principal port of the first CON in the chain. The last CON's auxiliary ports connect to free ports. **(MUST)**
+
+```rust
+/// Generate an erasure propagation chain of length N.
+/// Structure: ERA --p0--> CON_0 --p1.p0--> CON_1 --p1.p0--> ... --p1.p0--> CON_{N-1}
+/// The ERA agent's principal port connects to CON_0's principal port (initial redex).
+/// Each CON_i.p1 connects to CON_{i+1}.p0 (feeds next principal port).
+/// Each CON_i.p2 connects to a free port (dangling branch erased during propagation).
+/// CON_{N-1}.p1 and CON_{N-1}.p2 both connect to free ports.
+/// After reduction: ERA propagates through the chain, producing 2 ERAs per step,
+/// which erase the free-port branches. Result: 0 agents.
+pub fn erasure_propagation(n: u32) -> Net {
+    let mut net = Net::new();
+    let mut free_id: u32 = 0;
+    if n == 0 { return net; }
+    let era = net.create_agent(Symbol::Era);
+    let mut prev_id = era;
+    for i in 0..n {
+        let con = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(prev_id, if i == 0 { 0 } else { 1 }), PortRef::AgentPort(con, 0));
+        net.connect(PortRef::AgentPort(con, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        if i == n - 1 {
+            // Last CON: p1 also connects to free port
+            net.connect(PortRef::AgentPort(con, 1), PortRef::FreePort(free_id));
+            free_id += 1;
+        }
+        prev_id = con;
+    }
+    net
+}
+```
 
 **R43.** After generation, the `generate` subcommand MUST print a brief confirmation to stdout. **(MUST)**
 
@@ -384,6 +580,10 @@ Generated: ep-annihilation (size=1000)
 
 **R44.** After any reduction (local via `reduce` or distributed via `coordinator`), Relativist MUST print a Reduction Summary to stdout. **(MUST)**
 
+**R44a.** For the `reduce` subcommand, `duration_secs` MUST measure the wall-clock time of the `reduce_all` call only (excluding file I/O -- loading and saving). MIPS MUST be computed as `total_interactions / duration_secs / 1_000_000`. **(MUST)**
+
+**R44b.** For the `coordinator` subcommand, the `Speedup`, `Efficiency`, and `Overhead` fields in the summary MUST be omitted unless the user provides `--baseline-secs <FLOAT>` (wall-clock seconds of a sequential reduction run for comparison). If `--baseline-secs` is not provided, those lines MUST NOT appear in the summary. The benchmark suite (SPEC-09) computes these metrics by running the sequential baseline automatically (SPEC-09 R3); the coordinator summary is not required to do so. **(MUST)**
+
 **R45.** The Reduction Summary MUST include at minimum the following fields. **(MUST)**
 
 ```
@@ -395,7 +595,7 @@ Duration:    1.234s
 MIPS:        0.776
 ```
 
-**R46.** For distributed execution (coordinator mode), the summary MUST additionally include grid-specific metrics. **(MUST)**
+**R46.** For distributed execution (coordinator mode), the summary MUST additionally include grid-specific metrics. The `Speedup`, `Efficiency`, and `Overhead` lines appear ONLY when `--baseline-secs` is provided (see R44b). **(MUST)**
 
 ```
 === Relativist Reduction Complete ===
@@ -406,9 +606,9 @@ Duration:    1.234s
 MIPS:        0.776
 Rounds:      7
 Workers:     4
-Speedup:     3.2x (vs sequential baseline)
-Efficiency:  0.80
-Overhead:    22.3%
+Speedup:     3.2x (vs sequential baseline)    # only if --baseline-secs provided
+Efficiency:  0.80                              # only if --baseline-secs provided
+Overhead:    22.3%                             # only if --baseline-secs provided
 ```
 
 **R47.** If the net did NOT reach Normal Form (e.g., `--max-interactions` or `--max-rounds` limit reached), the summary MUST indicate the reason. **(MUST)**
@@ -429,7 +629,7 @@ Output:      420 agents, 630 wires, 15 redexes (NOT normal form: max-interaction
 
 **R49.** If the file extension is not recognized, Relativist MUST return an error: `"Unrecognized file extension '{ext}'. Supported: .bin, .ic, .json"`. **(MUST)**
 
-**R50.** The `--format` flag MUST override extension-based detection when provided. **(MUST)**
+**R50.** The `--input-format` flag (formerly `--format`) MUST override input extension-based detection when provided. Output format ALWAYS follows the output file's extension. **(MUST)**
 
 ```rust
 /// Supported net file formats.
@@ -450,31 +650,35 @@ pub enum NetFormat {
 
 ```rust
 /// Load a Net from a file, auto-detecting format by extension.
-pub fn load_net(path: &Path) -> Result<Net, IoError>;
+pub fn load_net(path: &Path) -> Result<Net, FileIoError>;
 
 /// Load a Net from a file with explicit format.
-pub fn load_net_with_format(path: &Path, format: NetFormat) -> Result<Net, IoError>;
+pub fn load_net_with_format(path: &Path, format: NetFormat) -> Result<Net, FileIoError>;
 
 /// Save a Net to a file, auto-detecting format by extension.
-pub fn save_net(net: &Net, path: &Path) -> Result<(), IoError>;
+pub fn save_net(net: &Net, path: &Path) -> Result<(), FileIoError>;
 
 /// Save a Net with explicit format.
-pub fn save_net_with_format(net: &Net, path: &Path, format: NetFormat) -> Result<(), IoError>;
+pub fn save_net_with_format(net: &Net, path: &Path, format: NetFormat) -> Result<(), FileIoError>;
 
 /// Parse a Net from a text DSL string.
-pub fn parse_ic(input: &str) -> Result<Net, ParseError>;
+pub fn parse_ic(input: &str) -> Result<Net, FileIoError>;
 
 /// Serialize a Net to a text DSL string.
 pub fn format_ic(net: &Net) -> String;
 ```
 
-**R52.** The `IoError` type MUST be defined with `thiserror` and MUST distinguish between I/O errors, parse errors, and format errors. **(MUST)**
+> **Note (v2):** The `parse_ic` function returns `Result<Net, FileIoError>` (not a separate `ParseError` type). The `FileIoError::Parse` variant carries line and message information sufficient for all parse error cases. This avoids introducing a redundant error type.
+
+**R52.** The `FileIoError` type MUST be defined with `thiserror` and MUST distinguish between I/O errors, parse errors, and format errors. **(MUST)**
+
+> **Note (v2):** The type is named `FileIoError` (not `IoError`) to avoid name collision with `std::io::Error` and to prevent duplicate `#[from] std::io::Error` conversions when composed into SPEC-13 R17's `RelativistError`. SPEC-13 R17's `Io(#[from] std::io::Error)` variant MUST be replaced by `FileIo(#[from] FileIoError)` when the `io` module is added.
 
 ```rust
-/// Errors from the I/O subsystem.
+/// Errors from the file I/O subsystem.
 #[derive(Debug, thiserror::Error)]
-pub enum IoError {
-    #[error("I/O error: {0}")]
+pub enum FileIoError {
+    #[error("file I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("parse error at line {line}: {message}")]
     Parse { line: usize, message: String },
@@ -490,6 +694,30 @@ pub enum IoError {
 ### 3.9 Compute Subcommand (SPEC-14)
 
 **R53.** Relativist MUST provide a `compute` subcommand that encodes an arithmetic expression as an IC net, reduces it (locally or distributedly), and decodes the result. The full specification is in SPEC-14 (R22-R25). **(MUST)**
+
+### 3.10 Text DSL Root Declaration Semantics (v2)
+
+**R54.** At most one `root` declaration is allowed per `.ic` file. If multiple `root` declarations appear, the parser MUST produce a parse error: `"duplicate root declaration at line {line}"`. **(MUST)**
+
+**R55.** If no `root` declaration is present, `net.root` MUST be set to `None`. **(MUST)**
+
+**R56.** The `root` port reference MUST refer to a valid port in the constructed net. The parser MUST validate this alongside T1 and I2 checks (R11). Both `AgentPort` and `FreePort` references are valid for `root` (FreePort is a valid use case for Lafont interface ports, cf. SPEC-14 R9 where `net.root = Some(FreePort(0))`). **(MUST)**
+
+**R57.** The `root` port is NOT a wire -- it sets the `net.root` field. The root port is NOT counted in the wire count reported by `inspect`. If the root references a FreePort, that FreePort IS counted in the free port count. **(MUST)**
+
+### 3.11 Text DSL Edge Cases (v2)
+
+**R58.** A `wire` declaration where both port references are identical (e.g., `wire a.left a.left`) MUST be rejected with a parse error: `"port cannot be connected to itself at line {line}"`. Self-loops (port-to-self) violate T1's "exactly one *other* port" requirement. **(MUST)**
+
+**R59.** A `wire` declaration connecting two FreePort references (e.g., `wire free(0) free(1)`) MUST be rejected with a parse error: `"free-to-free wires are not supported; at least one endpoint must be an agent port, at line {line}"`. The port array (SPEC-02 R8) has no slots for free ports, so free-to-free connections cannot be stored. **(MUST)**
+
+### 3.12 Empty Net and Size Zero (v2)
+
+**R60.** All generators MUST accept `size = 0` as a valid input. For `size = 0`, the generator MUST produce an empty net (0 agents, 0 redexes). **(MUST)**
+
+### 3.13 Generator Arity-Aware Validation (v2)
+
+**R61.** The T1 validation in R34 MUST iterate only over ports `0..=arity(agent.symbol)` for each live agent, skipping port array slots beyond the agent's arity. For ERA agents (arity 0), only port 0 is checked. Port array slots at indices `id*3+1` and `id*3+2` for ERA agents are unused and MUST NOT be validated against T1. This is consistent with SPEC-01 T1's formal statement: "for every port index `p` in `0..=arity(a.symbol)`." **(MUST)**
 
 ---
 
@@ -516,16 +744,22 @@ The serializer produces a text DSL string from a `Net`:
 
 ### 4.3 Generator Sharing Between CLI and Benchmarks
 
-The generators defined in R37-R42 reside in a shared location (the `io` module or a dedicated `examples` submodule). Both the `generate` CLI subcommand and the `Benchmark` trait implementations (SPEC-09) call the same generator functions. This prevents duplication and ensures that CLI-generated nets and benchmark nets are identical for the same parameters.
+The generators defined in R37-R42a reside in a shared location within the `io` module. Both the `generate` CLI subcommand and the `Benchmark` trait implementations (SPEC-09) call the same generator functions. This prevents duplication and ensures that CLI-generated nets and benchmark nets are identical for the same parameters.
+
+> **Note (v2):** The `io` module is a 12th module not present in SPEC-13 R5's original 11-module list. SPEC-13 R5 MUST be amended to include it. The module contains both Core Layer and Infrastructure Layer code, organized as follows:
 
 ```
 io/
-├── mod.rs          # load_net, save_net, parse_ic, format_ic
-├── binary.rs       # bincode serialization/deserialization
-├── text.rs         # Text DSL parser and serializer
-├── json.rs         # JSON serialization (MAY be stub in v1)
-└── examples.rs     # Generator functions: ep_annihilation, dual_tree, etc.
+├── mod.rs          # Re-exports; load_net, save_net (Infrastructure: file I/O)
+├── binary.rs       # bincode serialization/deserialization (Infrastructure: file I/O)
+├── text.rs         # Text DSL parser and serializer (Core: pure string functions)
+├── json.rs         # JSON serialization (Infrastructure: MAY be stub in v1)
+└── examples.rs     # Generator functions (Core: pure functions, no I/O)
 ```
+
+The Core Layer parts (`text.rs`, `examples.rs`) are pure synchronous functions with no I/O and no tokio dependency. The Infrastructure Layer parts (`mod.rs` load/save, `binary.rs`, `json.rs`) perform file system I/O. This split allows the generators and parser to be tested without I/O, consistent with SPEC-13 R6-R8's Core/Infrastructure separation.
+
+Church numeral generators in `examples.rs` are thin wrappers calling `encoding::encode_nat`, `encoding::build_add`, and `encoding::build_mul` from the `encoding` module (SPEC-14). The `io` module depends on `encoding` for these generators; this is a Core-to-Core dependency, which is permitted.
 
 ### 4.4 Net Summary Computation
 
@@ -544,8 +778,25 @@ pub fn net_summary(net: &Net) -> NetSummary {
             Symbol::Era => era += 1,
         }
     }
-    // ... wire count, redex count, free port count ...
-    NetSummary { agent_count, con, dup, era, /* ... */ }
+    // Wire count: count distinct agent-to-agent connections.
+    let mut wires = 0u32;
+    let mut free_ports = 0u32;
+    for agent in net.agents.iter().flatten() {
+        for p in 0..=arity(agent.symbol) {
+            let idx = agent.id as usize * 3 + p as usize;
+            match net.ports[idx] {
+                PortRef::AgentPort(other_id, other_p) => {
+                    let other_idx = other_id as usize * 3 + other_p as usize;
+                    if idx < other_idx { wires += 1; }
+                }
+                PortRef::FreePort(_) => { free_ports += 1; }
+            }
+        }
+    }
+    // Redex count: filter stale entries from the queue.
+    let redexes = /* stale-filtered count, see SPEC-02 R17 */;
+    NetSummary { agents: agent_count, wires, redexes, con, dup, era, free_ports,
+                 normal_form: redexes == 0 }
 }
 
 /// Summary statistics of a net.
@@ -559,6 +810,29 @@ pub struct NetSummary {
     pub era: u32,
     pub free_ports: u32,
     pub normal_form: bool,
+}
+
+/// Summary of a reduction execution (local or distributed).
+/// Used for both stdout printing (R44-R47) and metrics JSON output (R21).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReductionSummary {
+    pub input: NetSummary,
+    pub output: NetSummary,
+    pub total_interactions: u64,
+    pub duration_secs: f64,
+    pub mips: f64,
+    pub normal_form: bool,
+    /// Reason for stopping if not in Normal Form (e.g., "max-interactions reached").
+    pub termination_reason: Option<String>,
+    // --- Grid-specific fields (None for local `reduce`) ---
+    pub rounds: Option<u32>,
+    pub workers: Option<u32>,
+    /// Present only if --baseline-secs is provided (R44b).
+    pub speedup: Option<f64>,
+    /// Present only if --baseline-secs is provided.
+    pub efficiency: Option<f64>,
+    /// Present only if --baseline-secs is provided.
+    pub overhead_pct: Option<f64>,
 }
 ```
 
@@ -614,7 +888,7 @@ The Haskell prototype defines generators in dedicated modules (`IC.Benchmark.EPA
 
 **T4.** Each generator MUST produce a valid net (invariants T1-T7 from SPEC-01) for N in {1, 10, 100, 1000}. Validated via `debug_assert` in debug mode and explicit test assertions. **(MUST)**
 
-**T5.** `inspect` correctness: for a known net (e.g., `ep_annihilation(10)`), verify that all reported statistics match expected values (20 agents, 10 redexes, 0 CON, 0 DUP, 20 ERA, 0 free ports, not normal form). **(MUST)**
+**T5.** `inspect` correctness: for a known net (e.g., `ep_annihilation(10)`), verify that all reported statistics match expected values (20 agents, 10 redexes, 0 CON, 0 DUP, 20 ERA, 0 free ports, not normal form). Note: for freshly generated nets (no reductions applied), the redex queue contains no stale entries, so the reported redex count equals the raw queue length. **(MUST)**
 
 **T6.** `reduce` correctness: for `ep_annihilation(10)`, verify that the output net has 0 agents and 0 redexes (Normal Form). **(MUST)**
 
@@ -623,6 +897,16 @@ The Haskell prototype defines generators in dedicated modules (`IC.Benchmark.EPA
 **T8.** File format detection: verify that `.bin`, `.ic`, `.json` extensions are correctly mapped to the corresponding format. Verify that `.xyz` returns `UnrecognizedFormat` error. **(MUST)**
 
 **T9.** Generator consistency: for each `ExampleNet` variant, verify that `generate` CLI produces the same net as the corresponding `Benchmark::make_net` in the benchmark suite (SPEC-09). **(MUST)**
+
+**T10.** Size zero: for each generator, `generate(0)` MUST produce an empty net (0 agents, 0 redexes) and `reduce` on that net MUST yield 0 interactions (already in Normal Form). **(MUST)**
+
+**T11.** Text DSL root declaration: (a) a file with two `root` declarations MUST produce a parse error; (b) a file with no `root` declaration MUST produce a net with `root == None`; (c) `root free(0)` MUST set `net.root = Some(FreePort(0))`. **(MUST)**
+
+**T12.** Text DSL self-loop: `wire a.left a.left` MUST produce a parse error ("port cannot be connected to itself"). **(MUST)**
+
+**T13.** Text DSL free-to-free: `wire free(0) free(1)` MUST produce a parse error ("free-to-free wires are not supported"). **(MUST)**
+
+**T14.** Empty net handling: `inspect` on an empty net MUST report (0 agents, 0 wires, 0 redexes, normal_form: true). `reduce` on an empty net MUST complete with 0 interactions. **(MUST)**
 
 ---
 

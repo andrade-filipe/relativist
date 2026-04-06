@@ -84,11 +84,11 @@ The user reviews the revised spec, defender response, and task impact report. Ap
 
 | Spec | Current Status | Round 1 | Round 2 | Task Update | Final Status |
 |------|---------------|---------|---------|-------------|-------------|
-| SPEC-13 (System Architecture) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
-| SPEC-14 (Arithmetic Encoding) | Draft v1 | DONE (MAJOR REVISION) | TODO | TODO | — |
-| SPEC-10 (Security) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
-| SPEC-11 (Observability) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
-| SPEC-12 (User I/O) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
+| SPEC-13 (System Architecture) | Revised v2 | DONE (NEEDS REVISION) | DONE (12A/3P/1N) | TODO | — |
+| SPEC-14 (Arithmetic Encoding) | Revised v2 | DONE (MAJOR REVISION) | DONE (14A/2P/2N) | TODO | — |
+| SPEC-10 (Security) | Revised v2 | DONE (NEEDS REVISION) | DONE (10A/4P/0N) | TODO | — |
+| SPEC-11 (Observability) | Revised v2 | DONE (NEEDS REVISION) | DONE (13A/3P/0N) | TODO | — |
+| SPEC-12 (User I/O) | Revised v2 | DONE (NEEDS REVISION) | DONE (17A/3P/0N) | TODO | — |
 
 ### Execution Order (based on dependency chain)
 

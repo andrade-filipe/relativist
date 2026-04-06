@@ -1,6 +1,6 @@
 # SPEC-13: System Architecture
 
-**Status:** Draft v1
+**Status:** Revised v2
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-09 (Benchmarks)
 **Gray zones resolved:** ---
 **Research consumed:** PESQ-010 (Coordinator-Worker Patterns), PESQ-012 (MapReduce/Dataflow/BSP Comparison), PESQ-013 (State Machines for Distributed Protocols), PESQ-023 (Decision Matrix: D1-D8), PESQ-024 (Architecture Recommendations)
@@ -44,7 +44,9 @@ Rationale: Barrier synchronization is required by P3 of the formal argument (ARG
 
 **R3.** The grid loop MUST terminate when `border_redexes(merged_net) == 0` AND `local_redexes(merged_net) == 0`, i.e., the merged net is in Normal Form (SPEC-05, R10). **(MUST)**
 
-**R4.** Relativist MUST NOT implement MapReduce (lacks iterative rounds with structural merge) or Dataflow (wrong abstraction -- IC reduction is a single repeated operation, not a DAG of distinct operations). The BSP classification MUST be documented in the coordinator's module-level documentation. **(MUST)**
+**R4.** The BSP classification MUST be documented in the coordinator's module-level documentation (e.g., `//! Relativist uses the BSP programming model...`). **(MUST)**
+
+**R4a.** Relativist MUST NOT implement MapReduce (lacks iterative rounds with structural merge) or Dataflow (wrong abstraction -- IC reduction is a single repeated operation, not a DAG of distinct operations). See also R49 (v1 exclusions). **(MUST NOT)**
 
 Rationale: PESQ-012 provides exhaustive comparison. The BSP mapping is exact: superstep = grid round, local computation = reduce(partition), communication = ReturnPartition, barrier = coordinator waits for all workers.
 
@@ -263,13 +265,15 @@ pub enum RelativistError {
 
 **R19.** The coordinator MUST implement a finite state machine with the following states. **(MUST)**
 
+> **Note:** SPEC-13 R19-R22 supersede SPEC-06 R26-R28 for the coordinator FSM definition. SPEC-06's FSM was a behavioral specification using informal state names; SPEC-13 provides the concrete enum-based FSM that the implementation MUST use. Where names differ from SPEC-06 (e.g., `Distributing` -> `Dispatching`, `WaitingWorkers` -> `WaitingForWorkers`), SPEC-13 names are authoritative. SPEC-06's `Idle` state is replaced by the `CheckTermination` state, which explicitly checks whether the merged net is in Normal Form before deciding to continue or terminate. SPEC-06's `ShuttingDown` state is subsumed by the `Done` state's `ShutdownAll` action.
+
 ```rust
 /// Coordinator states.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum CoordinatorState {
     /// Initial state. Loading configuration, binding TCP listener.
     Init,
-    /// Waiting for the minimum number of workers to register.
+    /// Waiting for the minimum number of workers to connect.
     WaitingForWorkers,
     /// Partitioning the net into sub-nets for distribution.
     Partitioning,
@@ -277,11 +281,13 @@ pub enum CoordinatorState {
     Dispatching,
     /// Waiting for all workers to return their reduced partitions.
     WaitingForResults,
-    /// Merging returned partitions and resolving border redexes.
+    /// Merging returned partitions and running reduce_all on the merged net
+    /// to resolve border redexes and any derived redexes (SPEC-05 R15-R18).
     Merging,
-    /// Checking if the merged net has reached Normal Form.
+    /// Checking if the merged-and-reduced net is in Normal Form.
+    /// If yes -> Done. If no -> Partitioning (next round).
     CheckTermination,
-    /// Reduction complete. Writing output and shutting down.
+    /// Reduction complete. Writing output, sending Shutdown to all workers.
     Done,
     /// Fatal error. Shutting down.
     Error,
@@ -291,27 +297,54 @@ pub enum CoordinatorState {
 **R20.** The coordinator FSM MUST follow the stimulus-response pattern: a pure function `transition(state, event) -> (new_state, Vec<Action>)` that takes the current state and an event, and returns the new state plus a list of side-effectful actions to execute. **(MUST)**
 
 ```rust
+/// A handle to a connected worker, held by the coordinator.
+pub struct WorkerHandle {
+    /// The worker's unique identifier, assigned upon connection.
+    pub id: WorkerId,
+    /// The transport channel to this worker.
+    pub transport: Box<dyn Transport>,
+}
+
+/// Identifier for a timer managed by the coordinator's async runtime.
+type TimerId = u32;
+
 /// Events that drive the coordinator FSM.
 #[derive(Debug, Clone)]
 pub enum CoordinatorEvent {
     ConfigLoaded,
-    WorkerRegistered(WorkerId),
+    WorkerConnected(WorkerId),
     SplitComplete(Vec<Partition>),
     AllDispatched,
     PartitionReturned { worker_id: WorkerId, partition: Partition },
-    HeartbeatTimeout(WorkerId),
-    MergeComplete { net: Net, border_redex_count: usize },
+    /// Phase-level inactivity timeout: no PartitionResult received from this
+    /// worker within the configured `collect_timeout` (SPEC-06 R30-R31).
+    PhaseTimeout(WorkerId),
+    /// Merge and post-merge reduce_all completed. `is_normal_form` indicates
+    /// whether the merged-and-reduced net has an empty redex queue.
+    MergeComplete { net: Net, is_normal_form: bool },
     FatalError(String),
 }
 
 /// Actions the coordinator runtime must execute.
+/// These are side effects produced by the pure transition function.
+/// The async event loop is responsible for executing them.
+///
+/// `InvokeSplit` and `InvokeMerge` are dispatched as actions (not called
+/// inside the transition function) to preserve stimulus-response purity.
+/// The runtime executes them (via `spawn_blocking` for large nets if needed)
+/// and fires `SplitComplete` / `MergeComplete` events back into the FSM.
 #[derive(Debug)]
 pub enum CoordinatorAction {
     BindListener(SocketAddr),
     SendMessage(WorkerId, Message),
+    /// Invoke split(net, k) as a (possibly blocking) action. Fires
+    /// SplitComplete(partitions) when done.
+    InvokeSplit { net: Net, num_workers: usize },
+    /// Invoke merge(partitions) + reduce_all(merged_net) as a (possibly
+    /// blocking) action. Fires MergeComplete { net, is_normal_form } when done.
+    InvokeMergeAndReduce(Vec<Partition>),
     StartTimer(TimerId, Duration),
     CancelTimer(TimerId),
-    EmitMetric(MetricEvent),
     LogTransition { from: CoordinatorState, to: CoordinatorState },
     WriteOutput(Net),
     ShutdownAll,
@@ -323,16 +356,21 @@ pub enum CoordinatorAction {
 | From | Event | To | Actions |
 |------|-------|----|---------|
 | Init | ConfigLoaded | WaitingForWorkers | BindListener, LogTransition |
-| WaitingForWorkers | WorkerRegistered(id) [count < min] | WaitingForWorkers | SendMessage(id, RegisterAck) |
-| WaitingForWorkers | WorkerRegistered(id) [count >= min] | Partitioning | SendMessage(id, RegisterAck), LogTransition |
+| WaitingForWorkers | WorkerConnected(id) [count < min] | WaitingForWorkers | LogTransition |
+| WaitingForWorkers | WorkerConnected(id) [count >= min] | Partitioning | InvokeSplit, LogTransition |
 | Partitioning | SplitComplete(parts) | Dispatching | LogTransition |
-| Dispatching | AllDispatched | WaitingForResults | StartTimer(round_timer), LogTransition |
-| WaitingForResults | PartitionReturned(id, P) [not all] | WaitingForResults | EmitMetric |
-| WaitingForResults | PartitionReturned(id, P) [all received] | Merging | CancelTimer, LogTransition |
-| WaitingForResults | HeartbeatTimeout(id) | Error | LogTransition, ShutdownAll |
-| Merging | MergeComplete(net, 0) | Done | WriteOutput, ShutdownAll, LogTransition |
-| Merging | MergeComplete(net, n) [n > 0] | Partitioning | LogTransition |
+| Dispatching | AllDispatched | WaitingForResults | StartTimer(collect_timer), LogTransition |
+| WaitingForResults | PartitionReturned(id, P) [not all] | WaitingForResults | --- |
+| WaitingForResults | PartitionReturned(id, P) [all received] | Merging | CancelTimer, InvokeMergeAndReduce, LogTransition |
+| WaitingForResults | PhaseTimeout(id) | Error | LogTransition, ShutdownAll |
+| Merging | MergeComplete(net, _) | CheckTermination | LogTransition |
+| CheckTermination | [is_normal_form == true] | Done | WriteOutput, ShutdownAll, LogTransition |
+| CheckTermination | [is_normal_form == false] | Partitioning | InvokeSplit, LogTransition |
 | Any | FatalError(e) | Error | LogTransition, ShutdownAll |
+
+> **Note on worker registration:** Worker registration is implicit upon TCP connection acceptance, consistent with SPEC-06 R24 ("The coordinator MUST wait for all num_workers workers to connect"). There are no explicit `Register`/`RegisterAck` messages in the protocol. The coordinator assigns a `WorkerId` upon accepting a connection and fires `WorkerConnected(id)` into the FSM.
+
+> **Note on Merging state:** The `Merging` state encompasses both the merge operation (SPEC-05 R1-R11) and the post-merge `reduce_all` invocation (SPEC-05 R15-R18). The `InvokeMergeAndReduce` action performs both steps as a single unit and reports `is_normal_form` based on whether the redex queue is empty after `reduce_all`.
 
 **R22.** The coordinator FSM MUST be enum-based (not typestate). Typestate encoding would make serialization, logging, and testing harder for no benefit at this scale (PESQ-013 L1). **(MUST)**
 
@@ -365,13 +403,17 @@ pub enum WorkerState {
 
 | From | Event | To | Actions |
 |------|-------|----|---------|
-| Init | Connected | Idle | SendMessage(Register) |
+| Init | Connected | Idle | LogTransition |
 | Idle | ReceivePartition(P) | Reducing | LogTransition |
 | Reducing | ReductionComplete(P') | Returning | LogTransition |
 | Returning | SendComplete | Idle | LogTransition |
 | Idle | Shutdown | Done | CloseConnection, LogTransition |
 | Reducing | ReductionError(e) | Error | SendMessage(Error(e)), LogTransition |
-| Any | ConnectionLost | Init | AttemptReconnect, LogTransition |
+| Any | ConnectionLost | Error | LogTransition, ShutdownSelf |
+
+> **Note on ConnectionLost:** The worker does NOT attempt to reconnect. Per SPEC-06 R25, the coordinator aborts the grid loop upon connection loss. Worker reconnection would be pointless since the coordinator has already shut down. Reconnection logic is a fault tolerance concern (Z5, out of scope for v1).
+
+> **Note on worker registration:** Worker registration is implicit. The worker connects via TCP (with retry per SPEC-06 R23), and the coordinator accepts the connection. There is no explicit `Register` message; the TCP connection itself is the registration event.
 
 **R26.** The worker MUST perform local reduction synchronously (blocking the current task) using `reduce_all` from the `reduction` module (SPEC-03). The worker's async runtime is used for receiving and sending messages, not for parallelizing reduction. **(MUST)**
 
@@ -436,7 +478,7 @@ otel = ["dep:opentelemetry", "dep:opentelemetry-sdk", "dep:opentelemetry-otlp", 
 full = ["tls", "metrics", "otel"]
 ```
 
-**R38.** The default feature set MUST be empty (no optional features enabled). A plain `cargo build` MUST produce a functional binary with TCP communication, structured logging, and token authentication -- but without TLS, Prometheus metrics, or OpenTelemetry tracing. **(MUST)**
+**R38.** The `default` Cargo feature set MUST be empty (`default = []` in `Cargo.toml`). All always-on dependencies from R11 are unconditional and do not require feature gates. A plain `cargo build` MUST produce a functional binary with TCP communication, structured logging, and token authentication -- but without TLS, Prometheus metrics, or OpenTelemetry tracing. **(MUST)**
 
 **R39.** Feature-gated code MUST use `#[cfg(feature = "...")]` attributes. Feature-gated modules SHOULD provide no-op stubs when the feature is disabled, so that calling code does not need extensive `#[cfg]` blocks. **(MUST for cfg; SHOULD for stubs)**
 
@@ -446,28 +488,34 @@ full = ["tls", "metrics", "otel"]
 
 ```
 1. Input: Parse IC net from file (.bin / .json) -> Net
-2. Coordinator::Init: Load config, bind TCP, wait for workers
-3. Workers register: Each worker connects, sends Register, receives RegisterAck
+2. Coordinator::Init: Load config, bind TCP, wait for worker connections
+3. Workers connect: Each worker establishes TCP connection (registration is
+   implicit upon connection acceptance, consistent with SPEC-06 R24)
 4. BSP Loop (repeated until Normal Form):
    a. split(net, k) -> [P1, P2, ..., Pk]         (SPEC-04)
    b. dispatch(Pi -> Worker_i) for all i           (SPEC-06)
    c. Workers: reduce_all(Pi) -> Pi'               (SPEC-03)
    d. Coordinator: collect all Pi'                  (SPEC-06)
-   e. merge([P1', P2', ..., Pk']) -> net'           (SPEC-05)
-   f. Check: is net' in Normal Form?
-      - No:  net = net', goto step 4a
+   e. merge([P1', P2', ..., Pk']) -> net'           (SPEC-05 R1-R11)
+   f. reduce_all(net') -> net''                     (SPEC-03, SPEC-05 R15-R18)
+   g. Check: is net'' in Normal Form? (redex queue empty)
+      - No:  net = net'', goto step 4a
       - Yes: proceed to step 5
 5. Output: Write reduced net + metrics
 6. Shutdown: Send Shutdown to all workers, close connections
 ```
 
-**R41.** The local execution mode (`relativist reduce`) MUST bypass the coordinator/worker/protocol infrastructure entirely. It MUST call `reduce_all` directly on the parsed net. The result MUST be identical to running the grid with any number of workers (Fundamental Property, SPEC-01 G1). **(MUST)**
+> **Note:** Step 4f is critical for correctness. SPEC-05 R15 mandates that `reduce_all` is invoked on the merged net to resolve border redexes and any derived redexes (including CON-DUP cascades per R17). Without this step, border redexes would accumulate, violating D3 (Completeness of Border Redex Resolution = Premise P3 of ARG-001).
+
+**R41.** The direct reduction mode (`relativist reduce`) MUST bypass the coordinator/worker/protocol/partitioning infrastructure entirely. It MUST call `reduce_all` (SPEC-03) directly on the parsed net. The result MUST be structurally identical (isomorphic) to running the grid with any number of workers (Fundamental Property, SPEC-01 G1). **(MUST)**
+
+**R41a.** The in-memory grid mode (`relativist local`) MUST execute the full grid cycle in-process per SPEC-07 R18, using `ChannelTransport` (R31) instead of TCP. Its result MUST also be isomorphic to the `reduce` result (G1). **(MUST)**
 
 **R42.** The input format for nets MUST be bincode (SPEC-02, SPEC-06). The system SHOULD also accept a human-readable JSON format for debugging and test fixture creation. **(MUST for bincode; SHOULD for JSON)**
 
 ### 3.11 CLI Design
 
-**R43.** The CLI MUST use `clap` with the derive API and MUST provide at least the following subcommands. **(MUST)**
+**R43.** The CLI MUST use `clap` with the derive API and MUST provide at least the following subcommands. SPEC-13 adds `reduce`, `inspect`, and `compute` to the original 4 subcommands from SPEC-07 R1 (`coordinator`, `worker`, `local`, `generate`), without removing any. **(MUST)**
 
 ```rust
 /// Relativist: Distributed Interaction Combinator Reduction Engine
@@ -478,7 +526,13 @@ pub enum Cli {
     Coordinator(CoordinatorArgs),
     /// Run as worker: connect to coordinator, reduce partitions.
     Worker(WorkerArgs),
-    /// Run local reduction (no distribution).
+    /// Run in-memory grid simulation (SPEC-07 R18, SPEC-05 run_grid).
+    /// Executes the full BSP cycle in-process with ChannelTransport.
+    /// Used for benchmarks (SPEC-09 Local mode) and integration tests.
+    Local(LocalArgs),
+    /// Run purely local reduction (no distribution, no partitioning).
+    /// Calls reduce_all directly on the parsed net.
+    /// Used for baseline comparison and verifying G1.
     Reduce(ReduceArgs),
     /// Inspect an IC net file (print summary statistics).
     Inspect(InspectArgs),
@@ -489,11 +543,15 @@ pub enum Cli {
 }
 ```
 
+> **Note on `local` vs `reduce`:** These are semantically different operations. `local` runs the full grid cycle (split, reduce, merge, check) in-process with simulated workers (SPEC-07 R18), exercising the partitioning and merge code paths. `reduce` calls `reduce_all` directly without any partitioning or merge, serving as the sequential baseline. Both are needed: `local` for in-memory grid benchmarks (SPEC-09), `reduce` for the reference sequential result (G1 verification).
+
 **R44.** The `coordinator` subcommand MUST accept at minimum: `--bind` (socket address, default `127.0.0.1:9000`), `--workers` (minimum worker count before starting), `--input` (path to net file), `--output` (path for result, optional), and optional TLS arguments (`--tls-cert`, `--tls-key`) when the `tls` feature is enabled. **(MUST)**
 
 **R45.** The `worker` subcommand MUST accept at minimum: `--coordinator` (address of coordinator), `--token` (authentication token, optional), and optional `--tls-ca` when the `tls` feature is enabled. **(MUST)**
 
-**R46.** The `reduce` subcommand MUST accept at minimum: `--input` (path to net file) and `--output` (path for result, optional). It MUST perform purely local reduction without any network communication. **(MUST)**
+**R45a.** The `local` subcommand MUST accept the arguments defined in SPEC-07 R5: `--workers`, `--net`, `--max-rounds`, `--output`, `--metrics`, `--strategy`. It MUST execute the full grid cycle in-process (SPEC-07 R18). **(MUST)**
+
+**R46.** The `reduce` subcommand MUST accept at minimum: `--input` (path to net file) and `--output` (path for result, optional). It MUST perform purely local reduction (calling `reduce_all` directly) without any partitioning, merging, or network communication. **(MUST)**
 
 **R47.** The `inspect` subcommand MUST accept a path to a net file and print: agent count, wire count, redex count, agent distribution by symbol (CON, DUP, ERA), and whether the net is in Normal Form. **(MUST)**
 
@@ -521,6 +579,12 @@ pub enum Cli {
 
 **R50.** The v1 exclusions SHOULD be documented in a `ROADMAP.md` file in the repository, noting which items are candidates for future work. **(SHOULD)**
 
+### 3.13 Additional Requirements (from review)
+
+**R51.** The implementer SHOULD use Rust's native async traits (stabilized in Rust 1.75+) for the `Transport` trait if they support `Box<dyn Transport>` dispatch. If native async traits do not support dynamic dispatch for the required use case, `async_trait` is acceptable. **(SHOULD)**
+
+**R52.** Relativist SHOULD provide a `SerializingChannelTransport` that wraps `ChannelTransport` and performs a bincode serialize/deserialize round-trip on every `send`/`recv`. At minimum, one integration test per benchmark (SPEC-08) SHOULD use the serializing variant to verify that `Message` serialization is correct (SPEC-06 R14: `deserialize(serialize(msg)) == msg`). **(SHOULD)**
+
 ---
 
 ## 4. Design
@@ -528,10 +592,10 @@ pub enum Cli {
 ### 4.1 System Diagram
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      CLI (clap)                          │
-│  coordinator | worker | reduce | inspect | generate | compute │
-└──────────┬────────────────┬──────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                           CLI (clap)                             │
+│  coordinator | worker | local | reduce | inspect | generate | compute │
+└──────────┬────────────────┬──────────────────────────────────────┘
            │                │
      ┌─────▼──────┐   ┌────▼─────┐
      │ Coordinator │   │  Worker   │
@@ -570,14 +634,16 @@ async fn run_coordinator(config: CoordinatorConfig) -> Result<Net, CoordinatorEr
 
     // Feed initial event
     let (state, actions) = transition(state, CoordinatorEvent::ConfigLoaded);
-    execute_actions(actions);
+    execute_actions(actions);  // actions may include InvokeSplit, InvokeMergeAndReduce
 
     loop {
-        // Multiplex events from connections, timers, internal signals
+        // Multiplex events from connections, timers, internal signals,
+        // and completion of blocking tasks (split, merge+reduce_all)
         let event = tokio::select! {
-            conn = listener.accept() => { /* wrap as WorkerRegistered */ },
+            conn = listener.accept() => { /* wrap as WorkerConnected */ },
             msg = recv_from_any_worker(&workers) => { /* wrap as PartitionReturned */ },
-            _ = timer.tick() => { /* wrap as HeartbeatTimeout */ },
+            _ = timer.tick() => { /* wrap as PhaseTimeout */ },
+            result = blocking_task_complete() => { /* wrap as SplitComplete or MergeComplete */ },
         };
 
         let (new_state, actions) = transition(state, event);
@@ -594,14 +660,15 @@ async fn run_coordinator(config: CoordinatorConfig) -> Result<Net, CoordinatorEr
 }
 ```
 
-This is pseudocode illustrating the pattern. The actual implementation will differ in details but MUST follow this structure: an event loop feeding events into a pure transition function.
+This is pseudocode illustrating the pattern. The actual implementation will differ in details but MUST follow this structure: an event loop feeding events into a pure transition function. Note that `split()` and `merge()` are CPU-bound Core Layer operations invoked as actions (`InvokeSplit`, `InvokeMergeAndReduce`), not called inside the transition function. The action executor dispatches them (via `spawn_blocking` for large nets) and fires completion events (`SplitComplete`, `MergeComplete`) back into the FSM. This preserves the purity of the transition function.
 
 ### 4.3 Worker Main Loop
 
 ```
 async fn run_worker(config: WorkerConfig) -> Result<(), WorkerError> {
+    // Connect to coordinator (with retry per SPEC-06 R23).
+    // Registration is implicit: the TCP connection itself is the registration.
     let mut transport = TcpTransport::connect(&config.coordinator_addr).await?;
-    transport.send(&Message::Register { /* ... */ }).await?;
 
     loop {
         let msg = transport.recv().await?;
@@ -612,7 +679,7 @@ async fn run_worker(config: WorkerConfig) -> Result<(), WorkerError> {
                     reduce_all(partition.into_net())
                 }).await?;
 
-                transport.send(&Message::ReturnPartition {
+                transport.send(&Message::PartitionResult {
                     partition: reduced.into_partition(),
                 }).await?;
             }
@@ -660,9 +727,11 @@ For integration testing without TCP:
 ```rust
 /// Run a complete grid cycle in-memory using ChannelTransport.
 /// This is the `Local` mode used in SPEC-09 benchmarks.
+/// Signature aligned with SPEC-05 R25's `run_grid`.
 pub async fn run_grid_local(
     net: Net,
-    num_workers: usize,
+    num_workers: u32,
+    strategy: impl PartitionStrategy,
 ) -> Result<(Net, GridMetrics), RelativistError> {
     // Create channel pairs for each worker
     let mut channels: Vec<(ChannelTransport, ChannelTransport)> = (0..num_workers)
@@ -730,7 +799,7 @@ PESQ-010 L6 and L7: Relativist's BSP model requires centralized merge. The coord
 | Error handling | Haskell exceptions + `Either` | thiserror enums with classification |
 | Transport abstraction | None (TCP hardcoded in Protocol.hs) | `trait Transport` with TCP and Channel impls |
 | Feature flags | None | tls, metrics, otel |
-| CLI | Basic argument parsing | clap with 5 subcommands |
+| CLI | Basic argument parsing | clap with 7 subcommands |
 | Async model | GHC threads + forkIO | tokio + spawn_blocking |
 | Observability | printf debugging | tracing + optional Prometheus + optional OTel |
 
@@ -753,7 +822,7 @@ PESQ-010 L6 and L7: Relativist's BSP model requires centralized merge. The coord
 
 ## 7. Open Questions
 
-1. **async_trait vs native async traits.** Rust's native async traits (stabilized in Rust 1.75) may be usable instead of the `async_trait` crate for the `Transport` trait. The implementer SHOULD evaluate whether native async traits meet the needs (dynamic dispatch via `Box<dyn Transport>` requires `async_trait` or manual boxing). **(Does NOT block implementation; choose at implementation time.)**
+1. ~~**async_trait vs native async traits.**~~ **RESOLVED (promoted to R51).** See Section 3.13.
 
 2. **Coordinator backpressure.** If a worker returns a very large partition while the coordinator is still merging a previous round's results, the coordinator's receive buffer may grow. The coordinator SHOULD implement backpressure (e.g., limit the number of in-flight rounds to 1), but the exact mechanism is left to the implementer. **(Does NOT block implementation; BSP naturally limits this to 1 round.)**
 
@@ -761,4 +830,4 @@ PESQ-010 L6 and L7: Relativist's BSP model requires centralized merge. The coord
 
 4. **Config file support.** R43-R48 define CLI arguments. A TOML/YAML config file MAY be added as an alternative to long CLI argument lists, especially for multi-machine deployments. **(Does NOT block implementation; CLI-first, config-file later.)**
 
-5. **ChannelTransport serialization option.** The `ChannelTransport` bypasses serialization for speed. For testing serialization correctness in integration tests, a variant that serializes/deserializes through bincode (round-trip) MAY be provided. **(Does NOT block implementation.)**
+5. ~~**ChannelTransport serialization option.**~~ **RESOLVED (promoted to R52).** See Section 3.13.

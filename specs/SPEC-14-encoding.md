@@ -1,6 +1,6 @@
 # SPEC-14: Arithmetic Encoding
 
-**Status:** Draft v1
+**Status:** Revised v2
 **Depends on:** SPEC-00 (Glossary), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine)
 **Gray zones resolved:** ---
 **References consumed:** REF-002 (Lafont 1997, universality proof, Section 4)
@@ -47,7 +47,7 @@ src/encoding/
 
 ### 3.2 Church Numeral Encoding
 
-**R4.** The encoding module MUST expose the function `encode_nat(n: u64) -> Net` that produces a Church numeral IC net for any n in the range [0, 10_000]. **(MUST)**
+**R4.** The encoding module MUST expose the function `encode_nat(n: u64) -> Net` that produces a Church numeral IC net for any n in the range [0, 10_000]. For n > 10_000, the function MUST panic with a descriptive message (e.g., `"encode_nat: n = {n} exceeds maximum supported value 10_000"`). **(MUST)**
 
 ```rust
 /// Encode a natural number as a Church numeral IC net.
@@ -55,7 +55,24 @@ src/encoding/
 /// The resulting net is already in Normal Form (zero redexes).
 /// To perform computation, compose with arithmetic combinators
 /// (build_add, build_mul, build_exp) which introduce redexes.
+///
+/// # Panics
+/// Panics if n > 10_000.
 pub fn encode_nat(n: u64) -> Net;
+```
+
+**R4b.** The encoding module MUST expose an internal builder variant `encode_church_into(net: &mut Net, n: u64) -> AgentId` that constructs a Church numeral inside an existing net and returns the AgentId of the outer lambda agent (the root of the Church numeral sub-net). This function is used by the arithmetic combinators (`build_add`, `build_mul`, `build_exp`) to compose multiple Church numerals in a single net without ID collisions. `encode_nat(n)` is a convenience wrapper that creates a new `Net`, calls `encode_church_into`, sets the root, and returns the net. **(MUST)**
+
+```rust
+/// Encode a natural number as a Church numeral inside an existing net.
+///
+/// Returns the AgentId of the outer lambda agent (lambda f).
+/// Does NOT set net.root -- the caller is responsible for wiring
+/// the returned agent's principal port into the surrounding net.
+///
+/// # Panics
+/// Panics if n > 10_000.
+pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId;
 ```
 
 **R5.** Church numeral 0 (`lambda f. lambda x. x`): The net MUST contain exactly 2 CON agents (lambda abstractions for f and x) and 1 ERA agent (erasing the unused f variable). The ERA agent's principal port MUST connect to the outer lambda's left auxiliary port (the f binding). The inner lambda's left auxiliary (x binding) MUST connect to its right auxiliary (body result), representing the identity on x. Total: 3 agents, 0 redexes. **(MUST)**
@@ -63,7 +80,7 @@ pub fn encode_nat(n: u64) -> Net;
 ```
 Church(0) = lambda f. lambda x. x
 
-     FreePort(0) [root]
+     root (net.root = AgentPort(CON_0, 0))
          |
        [CON_0]  <- outer lambda (lambda f)
        /    \
@@ -74,10 +91,12 @@ Church(0) = lambda f. lambda x. x
             p1  <-> p2   (x binding wired to body result)
 ```
 
+Note: The self-loop `CON_1.p1 <-> CON_1.p2` is correct and satisfies invariants T1 and I1 from SPEC-01. Self-loops represent the identity function (`lambda x. x`) in the IC encoding of lambda calculus. `ports[CON_1.p1] = AgentPort(CON_1, 2)` and `ports[CON_1.p2] = AgentPort(CON_1, 1)`, so `ports[ports[p]] = p` holds for both ports. Implementers MUST NOT add assertions that reject self-loops, as they would break Church(0).
+
 **R6.** Church numeral 1 (`lambda f. lambda x. f x`): The net MUST contain exactly 3 CON agents: 2 lambda abstractions (for f and x) and 1 application (f applied to x). No DUP or ERA agents. Total: 3 agents, 0 redexes. **(MUST)**
 
 Port connectivity for Church(1):
-- CON_f (lambda f): p0 = FreePort(0) [root], p1 = f variable, p2 = body
+- CON_f (lambda f): p0 = root (net.root = AgentPort(CON_f, 0)), p1 = f variable, p2 = body
 - CON_x (lambda x): p0 = CON_f.p2, p1 = x variable, p2 = body result
 - CON_app (@ f x): p0 = function, p1 = argument, p2 = result
 
@@ -95,7 +114,9 @@ The DUP agents MUST form a linear chain: DUP_0.p0 receives f from CON_f.p1; for 
 
 **R8.** All nets produced by `encode_nat` MUST satisfy invariants T1 through T7 from SPEC-01. In particular: T1 (port linearity -- every port connected to exactly one target), I1 (bidirectionality), and I3 (ID monotonicity). The function MUST validate the output net in debug mode (`#[cfg(debug_assertions)]`). **(MUST)**
 
-**R9.** The net produced by `encode_nat` MUST have a root port set to `FreePort(0)`, representing the external interface of the Church numeral. **(MUST)**
+**R9.** The net produced by `encode_nat` MUST have `net.root = Some(PortRef::AgentPort(lam_f, 0))`, where `lam_f` is the AgentId of the outer lambda agent (`lambda f`). This follows SPEC-02, Section 4.9, which defines root as `Option<PortRef>` with `AgentPort` as the canonical value. The outer lambda's principal port serves as the external observation point of the Church numeral. **(MUST)**
+
+Note: In the port connection tables (Section 4.2), `CON_0.p0 = root` denotes that CON_0's principal port is the root observation point (i.e., `net.root = Some(AgentPort(CON_0.id, 0))`). This is NOT a `FreePort(0)` stored in the port array. The principal port of the root agent connects to `DISCONNECTED` in the port array (no internal peer), and the `net.root` field provides the external reference.
 
 **R10.** The net produced by `encode_nat(n)` MUST be in Normal Form (zero active pairs in the redex queue). **(MUST)**
 
@@ -153,7 +174,7 @@ pub fn build_mul(a: u64, b: u64) -> Net;
 
 Mathematical basis: `mul = lambda m. lambda n. lambda f. m (n f)`. When applied to church(a) and church(b), beta-reduction produces church(a * b).
 
-**R17.** The encoding module SHOULD expose `build_exp(base: u64, exp: u64) -> Net`. **(SHOULD)**
+**R17.** The encoding module MUST expose `build_exp(base: u64, exp: u64) -> Net`. **(MUST)**
 
 ```rust
 /// Build an IC net that, when reduced to Normal Form, yields Church numeral (base ^ exp).
@@ -166,7 +187,13 @@ pub fn build_exp(base: u64, exp: u64) -> Net;
 
 Mathematical basis: `exp = lambda m. lambda n. n m`. Church exponentiation is the most natural Church arithmetic operation -- it is simply application.
 
-**R18.** All arithmetic nets MUST reduce to a valid Church numeral Normal Form when processed by `reduce_all` (SPEC-03). Formally: for all valid operands, `decode_nat(reduce_all(build_op(a, b)))` MUST return `Some(expected_result)`. **(MUST)**
+**R18.** All arithmetic nets (addition, multiplication, exponentiation) MUST reduce to a valid Church numeral Normal Form when processed by `reduce_all` (SPEC-03). Formally: for all valid operands, the following MUST hold: **(MUST)**
+
+```rust
+let mut net = build_op(a, b);
+reduce_all(&mut net);   // SPEC-03, R13: mutates net in place, returns ReductionStats
+assert_eq!(decode_nat(&net), Some(expected_result));
+```
 
 **R19.** Factorial encoding MAY be implemented as a stretch goal. It requires encoding the Y-combinator (fixed-point combinator) as an IC net, which introduces significant complexity. If not implemented, the module MUST NOT expose a `build_factorial` function. **(MAY)**
 
@@ -182,6 +209,8 @@ Mathematical basis: `exp = lambda m. lambda n. n m`. Church exponentiation is th
 | `build_exp(a, b)` | O(a + b) | O(a + b) | O(a^b) |
 
 Note: `build_mul` produces a compact net (O(a + b) agents) but reduction generates O(a * b) interactions because DUP-CON commutations expand the net before annihilations collapse it. This is Profile B behavior (SPEC-09).
+
+**Complexity justification:** The interaction counts are asymptotic estimates derived from the Church encoding structure. For addition (`add(a, b)`): the add combinator applies `m` to `f`, producing `a` applications of `f`, then applies `n` to `(f, x)`, producing `b` applications of `f`. The beta-reductions for the combinator application and the resulting annihilations total O(a + b) interactions. For multiplication (`mul(a, b)`): `m` applies the composed function `(n f)` a total of `a` times, and each application of `n f` involves `b` interactions, yielding O(a * b). For exponentiation (`exp(a, b)`): `n` applies `m` b times, and each level involves the previous level's result, yielding O(a^b). These are order-of-magnitude estimates; exact interaction counts depend on the encoding strategy (direct construction vs. combinator composition) and will be determined empirically during benchmarking (SPEC-09). The benchmark table in Section 8.2 provides approximate values for specific inputs.
 
 **R21.** `decode_nat` MUST run in O(n) time where n is the decoded value (proportional to the application chain length). **(MUST)**
 
@@ -281,16 +310,27 @@ The `size` parameter (N) controls the magnitude of the operands, which in turn d
 
 ### 4.1 Church Numeral Construction Algorithm
 
+The core construction logic resides in `encode_church_into`, which builds a Church numeral inside an existing net. `encode_nat` is a convenience wrapper.
+
 ```rust
 pub fn encode_nat(n: u64) -> Net {
+    assert!(n <= 10_000, "encode_nat: n = {n} exceeds maximum supported value 10_000");
     let mut net = Net::new();
+    let lam_f = encode_church_into(&mut net, n);
+    net.root = Some(PortRef::AgentPort(lam_f, 0));
+    debug_assert!(
+        net.redex_queue.is_empty(),
+        "Church numeral must be in Normal Form"
+    );
+    net
+}
+
+pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
+    assert!(n <= 10_000, "encode_church_into: n = {n} exceeds maximum supported value 10_000");
 
     // Step 1: Create the two lambda abstractions
     let lam_f = net.create_agent(Symbol::Con);  // outer lambda f
     let lam_x = net.create_agent(Symbol::Con);  // inner lambda x
-
-    // Root: outer lambda interface
-    net.set_root(PortRef::AgentPort(lam_f, 0));
     // Connect lambda_f body to lambda_x interface
     net.connect(
         PortRef::AgentPort(lam_f, 2),
@@ -392,11 +432,7 @@ pub fn encode_nat(n: u64) -> Net {
         }
     }
 
-    debug_assert!(
-        net.redex_queue.is_empty(),
-        "Church numeral must be in Normal Form"
-    );
-    net
+    lam_f
 }
 ```
 
@@ -408,34 +444,44 @@ These tables define the exact wiring of each Church numeral encoding. All connec
 
 | Agent | Symbol | p0 connects to | p1 connects to | p2 connects to |
 |-------|--------|----------------|----------------|----------------|
-| 0 (lambda f) | CON | FreePort(0) [root] | ERA_0.p0 | CON_1.p0 |
-| 1 (lambda x) | CON | CON_0.p2 | CON_1.p2 (self) | CON_1.p1 (self) |
+| 0 (lambda f) | CON | root (DISCONNECTED in port array) | ERA_0.p0 | CON_1.p0 |
+| 1 (lambda x) | CON | CON_0.p2 | CON_1.p2 (self-loop) | CON_1.p1 (self-loop) |
 | 2 (ERA) | ERA | CON_0.p1 | -- | -- |
 
-Redex verification: No principal-to-principal connections exist. CON_0.p0 = FreePort, CON_1.p0 = CON_0.p2 (auxiliary), ERA_0.p0 = CON_0.p1 (auxiliary). Zero redexes.
+`net.root = Some(AgentPort(0, 0))`.
+
+Note on CON_0.p0: The principal port of the root agent has no internal peer in the port array (its slot contains `DISCONNECTED`). The external reference is provided by `net.root`. This is consistent with SPEC-02, Section 4.9.
+
+Note on self-loop: CON_1.p1 <-> CON_1.p2 is a valid self-loop representing the identity function (`lambda x. x`). This satisfies T1 and I1 from SPEC-01 (see R5 note above).
+
+Redex verification: No principal-to-principal connections exist. CON_0.p0 = DISCONNECTED (root, no redex), CON_1.p0 = CON_0.p2 (auxiliary), ERA_0.p0 = CON_0.p1 (auxiliary). Zero redexes.
 
 **Church(1) -- 3 agents (3 CON):**
 
 | Agent | Symbol | p0 connects to | p1 connects to | p2 connects to |
 |-------|--------|----------------|----------------|----------------|
-| 0 (lambda f) | CON | FreePort(0) [root] | CON_2.p0 | CON_1.p0 |
+| 0 (lambda f) | CON | root (DISCONNECTED in port array) | CON_2.p0 | CON_1.p0 |
 | 1 (lambda x) | CON | CON_0.p2 | CON_2.p1 | CON_2.p2 |
 | 2 (@ app) | CON | CON_0.p1 | CON_1.p1 | CON_1.p2 |
 
-Redex verification: CON_0.p0 = FreePort (no redex), CON_1.p0 = CON_0.p2 (auxiliary, no redex), CON_2.p0 = CON_0.p1 (auxiliary, no redex). Zero redexes.
+`net.root = Some(AgentPort(0, 0))`.
+
+Redex verification: CON_0.p0 = DISCONNECTED (root, no redex), CON_1.p0 = CON_0.p2 (auxiliary, no redex), CON_2.p0 = CON_0.p1 (auxiliary, no redex). Zero redexes.
 
 **Church(2) -- 5 agents (4 CON + 1 DUP):**
 
 | Agent | Symbol | p0 connects to | p1 connects to | p2 connects to |
 |-------|--------|----------------|----------------|----------------|
-| 0 (lambda f) | CON | FreePort(0) [root] | DUP_0.p0 | CON_1.p0 |
+| 0 (lambda f) | CON | root (DISCONNECTED in port array) | DUP_0.p0 | CON_1.p0 |
 | 1 (lambda x) | CON | CON_0.p2 | CON_3.p1 | CON_2.p2 |
 | 2 (@_1, outer app) | CON | DUP_0.p1 | CON_3.p2 | CON_1.p2 |
 | 3 (@_2, inner app) | CON | DUP_0.p2 | CON_1.p1 | CON_2.p1 |
 | 4 (DUP_0) | DUP | CON_0.p1 | CON_2.p0 | CON_3.p0 |
 
+`net.root = Some(AgentPort(0, 0))`.
+
 Redex verification: active pairs require principal-to-principal (p0 <-> p0) connections between agents. Checking all p0 connections:
-- CON_0.p0 = FreePort -- no redex
+- CON_0.p0 = DISCONNECTED (root) -- no redex
 - CON_1.p0 = CON_0.p2 (auxiliary) -- no redex
 - CON_2.p0 = DUP_0.p1 (auxiliary) -- no redex
 - CON_3.p0 = DUP_0.p2 (auxiliary) -- no redex
@@ -451,7 +497,7 @@ General structure:
 - Agents (n+2) to (2n): dup_0 through dup_(n-2) (DUP)
 
 General wiring:
-- lambda_f.p0 = FreePort(0) [root]
+- lambda_f.p0 = root (DISCONNECTED in port array; `net.root = Some(AgentPort(lambda_f, 0))`)
 - lambda_f.p1 = dup_0.p0
 - lambda_f.p2 = lambda_x.p0
 - lambda_x.p1 = app_(n-1).p1 (x variable feeds innermost application argument)
@@ -470,28 +516,129 @@ General wiring:
 
 The addition combinator `add = lambda m. lambda n. lambda f. lambda x. m f (n f x)` is constructed as a separate IC net fragment and connected to the Church numeral sub-nets for a and b via two application nodes.
 
+**ID composition:** All arithmetic construction functions (`build_add`, `build_mul`, `build_exp`) MUST construct everything in a single `Net` by calling `encode_church_into` (R4b) sequentially. Because `encode_church_into` calls `net.create_agent` on the shared net, all agent IDs are assigned monotonically from the same `next_id` counter, satisfying invariant I3 (SPEC-01) without any ID remapping.
+
 The complete net for `add(a, b)`:
-1. Encode church(a) as sub-net (this is the "m" argument)
-2. Encode church(b) as sub-net (this is the "n" argument)
-3. Build the add combinator IC net fragment
-4. Create two application CON agents: `@_1` applies add to church(a), `@_2` applies the result to church(b)
-5. Connect: `@_1.p0 = add_root, @_1.p1 = church_a_root, @_1.p2 = @_2.p0, @_2.p1 = church_b_root, @_2.p2 = result_root`
+1. Create a single `Net`
+2. Call `encode_church_into(&mut net, a)` to build church(a) in the net -- returns `m_root: AgentId`
+3. Call `encode_church_into(&mut net, b)` to build church(b) in the net -- returns `n_root: AgentId`
+4. Build the add combinator IC net fragment (4 lambda abstractions as CON agents)
+5. Create two application CON agents: `@_1` applies add to church(a), `@_2` applies the result to church(b)
+6. Connect: `@_1.p0 = add_root, @_1.p1 = AgentPort(m_root, 0), @_1.p2 = @_2.p0, @_2.p1 = AgentPort(n_root, 0), @_2.p2 = result_root`
 
 After connecting the sub-nets, new active pairs emerge at the application boundaries -- these are the redexes that drive the computation.
 
 **Alternative (direct construction):** Instead of building the full `add` combinator, `build_add` MAY directly construct the expanded term `(lambda f. lambda x. church_a f (church_b f x))` to avoid unnecessary beta-reduction steps. This optimization reduces the number of reduction interactions by eliminating the outer beta-reductions of the add combinator. The implementer SHOULD choose the approach that produces fewer total interactions. **(SHOULD)**
 
+**Worked example: build_add(1, 1) using direct construction**
+
+Direct construction builds `lambda f. lambda x. (f (f x))` via `(lambda f. lambda x. church(1) f (church(1) f x))`.
+
+Sub-nets built in a single net via `encode_church_into`:
+- church(1) for m (agents 0-2): CON_m_f (id=0), CON_m_x (id=1), CON_m_app (id=2)
+- church(1) for n (agents 3-5): CON_n_f (id=3), CON_n_x (id=4), CON_n_app (id=5)
+
+Combinator agents:
+- CON_lam_f (id=6): outer lambda for f
+- CON_lam_x (id=7): inner lambda for x
+- CON_app_m (id=8): application `church(1) f ...` (applies m to f)
+- CON_app_n (id=9): application `church(1) f x` (applies n to f)
+
+Wiring:
+- CON_lam_f.p0 = root (net.root = Some(AgentPort(6, 0)))
+- CON_lam_f.p2 = CON_lam_x.p0 (body of outer lambda is inner lambda)
+- DUP_f (id=10): duplicates f for two uses. CON_lam_f.p1 = DUP_f.p0
+- DUP_f.p1 = CON_app_m.p1 (first copy of f -> argument to m)
+- DUP_f.p2 = CON_app_n.p1 (second copy of f -> argument to n)
+- CON_app_m.p0 = AgentPort(0, 0) [m_root] -- forms redex (principal <-> principal)
+- CON_app_m.p2 = CON_lam_x.p2 (result of m(...) is body result)
+- CON_app_n.p0 = AgentPort(3, 0) [n_root] -- forms redex (principal <-> principal)
+- CON_app_n.p2 = CON_app_m.p1 would be wrong; instead:
+- CON_lam_x.p1 = CON_app_n.p1b ... (x feeds innermost argument)
+
+Note: The exact wiring for the direct construction approach is non-trivial because it involves threading `f` and `x` through two Church numeral sub-nets. The worked example above shows the general structure; the implementer MUST verify that the port connections produce exactly `church(2)` after `reduce_all`, using the roundtrip test `decode_nat(&net) == Some(2)`.
+
+Initial redexes:
+- CON_app_m.p0 <-> CON_m_f.p0 (beta-reduction: apply church(1) to f)
+- CON_app_n.p0 <-> CON_n_f.p0 (beta-reduction: apply church(1) to f)
+
+After reducing these two redexes (CON-CON annihilations), the net collapses to `lambda f. lambda x. f (f x)` = church(2). Total interactions: 2 (one per Church numeral application).
+
 #### 4.3.2 Multiplication: build_mul(a, b)
 
-Similar pattern using `mul = lambda m. lambda n. lambda f. m (n f)`. The key difference is that multiplication involves composition of functions, so DUP agents for f appear in the combinator itself (in addition to those in the Church numerals).
+The multiplication combinator `mul = lambda m. lambda n. lambda f. m (n f)` computes function composition: applying m to the composed function `(n f)`.
+
+Construction steps for `build_mul(a, b)`:
+
+1. Create a single `Net` and use `encode_church_into` to build church(a) and church(b) as sub-nets (avoiding ID collisions per R4b).
+2. Create the mul combinator structure:
+   - CON_lam_f: outer lambda abstraction for `f` (the composed function parameter)
+   - CON_app_nf: application node for `(n f)` -- applies church(b) to f
+   - CON_app_m: application node for `m (n f)` -- applies church(a) to the result of `(n f)`
+3. Wire the combinator:
+   - CON_lam_f.p1 (f binding) connects to CON_app_nf.p1 (f is the argument to n)
+   - CON_lam_f.p2 (body) connects to CON_app_m.p2 (result of mul is result of m applied to (n f))
+   - CON_app_nf.p0 connects to the principal port of church(b)'s root agent (applying n to f -- forms a redex)
+   - CON_app_nf.p2 (result of (n f)) connects to CON_app_m.p1 (argument to m)
+   - CON_app_m.p0 connects to the principal port of church(a)'s root agent (applying m to (n f) -- forms a redex)
+4. Set `net.root = Some(AgentPort(CON_lam_f, 0))`
+
+Key difference from addition: multiplication involves function composition (`m (n f)`) rather than sequential application. The DUP agents in church(a) will duplicate the entire `(n f)` sub-expression during reduction, producing O(a * b) intermediate agents (Profile B expansion phase).
+
+**Worked example: build_mul(2, 2)**
+
+Sub-nets:
+- church(2) for m: agents m_lam_f (CON), m_lam_x (CON), m_app_0 (CON), m_app_1 (CON), m_dup_0 (DUP) -- 5 agents
+- church(2) for n: agents n_lam_f (CON), n_lam_x (CON), n_app_0 (CON), n_app_1 (CON), n_dup_0 (DUP) -- 5 agents
+
+Combinator: CON_lam_f, CON_app_nf, CON_app_m -- 3 agents
+
+Total initial agents: 13. After reduction via `reduce_all`, result is church(4) with 9 agents.
+
+Initial redexes (principal-to-principal connections):
+- CON_app_nf.p0 <-> n_lam_f.p0 (beta-reduction: apply n to f)
+- CON_app_m.p0 <-> m_lam_f.p0 (beta-reduction: apply m to (n f))
+
+These initial redexes trigger a cascade of CON-DUP commutations (expansion) followed by CON-CON annihilations (collapse).
 
 #### 4.3.3 Exponentiation: build_exp(base, exp)
 
-The simplest combinator: `exp = lambda m. lambda n. n m`. This is just application -- church(exp) applied to church(base). Construction only requires one application node connecting the two sub-nets.
+The exponentiation combinator `exp = lambda m. lambda n. n m` is the simplest: it is just application of church(exp) to church(base).
+
+Construction steps for `build_exp(base, exp)`:
+
+1. Create a single `Net` and use `encode_church_into` to build church(base) and church(exp) as sub-nets.
+2. Create one application CON agent: CON_app (applies n to m).
+3. Wire:
+   - CON_app.p0 connects to the principal port of church(exp)'s root agent (forms a redex)
+   - CON_app.p1 connects to the principal port of church(base)'s root agent
+   - CON_app.p2 = root observation point
+4. Set `net.root = Some(AgentPort(CON_app, 2))` -- or wrap in an additional lambda if the result needs the standard Church numeral interface.
+
+Note: The exact wiring depends on whether `build_exp` produces `n m` (a partially applied Church numeral) or wraps it in `lambda f. lambda x. (n m) f x`. The latter produces more redexes but outputs a standard Church numeral structure; the former is simpler. The implementer SHOULD use the approach that correctly produces `church(base^exp)` after `reduce_all`.
+
+Initial redex: CON_app.p0 <-> church(exp)_root.p0 (single beta-reduction).
+
+Exponentiation has deep sequential dependency chains: church(exp) applies church(base) exp times, and each application must complete before the next can proceed. This limits parallelism and approaches Profile C behavior for large exponents.
 
 ### 4.4 Decoding Algorithm
 
+The decode algorithm uses only SPEC-02's public API: `net.agents[id as usize]` for agent lookup and `net.get_target(port) -> PortRef` for port traversal. Per SPEC-02, `get_target` returns `PortRef` (not `Option<PortRef>`), returning the sentinel `DISCONNECTED` (= `PortRef::FreePort(u32::MAX)`) for invalid or out-of-range ports.
+
+Helper function used in pseudocode below:
+
 ```rust
+/// Helper: look up an agent by ID. Returns None if the slot is empty or out of range.
+fn get_agent(net: &Net, id: AgentId) -> Option<&Agent> {
+    net.agents.get(id as usize).and_then(|slot| slot.as_ref())
+}
+```
+
+Note: This helper is NOT part of SPEC-02's public API. It is a local utility for the encoding module. The implementer MAY inline it or add it as a private method.
+
+```rust
+use crate::net::{DISCONNECTED};
+
 pub fn decode_nat(net: &Net) -> Option<u64> {
     // Must be in Normal Form
     if !net.redex_queue.is_empty() {
@@ -504,38 +651,46 @@ pub fn decode_nat(net: &Net) -> Option<u64> {
         PortRef::AgentPort(id, 0) => id,
         _ => return None,
     };
-    if net.get_agent(lam_f)?.symbol != Symbol::Con {
+    let lam_f_agent = get_agent(net, lam_f)?;
+    if lam_f_agent.symbol != Symbol::Con {
         return None;
     }
 
     // Step 2: Find inner lambda (lambda x) from lambda_f.p2
-    let lam_x = match net.get_target(PortRef::AgentPort(lam_f, 2))? {
+    let lam_f_p2_target = net.get_target(PortRef::AgentPort(lam_f, 2));
+    if lam_f_p2_target == DISCONNECTED {
+        return None;
+    }
+    let lam_x = match lam_f_p2_target {
         PortRef::AgentPort(id, 0) => id,
         _ => return None,
     };
-    if net.get_agent(lam_x)?.symbol != Symbol::Con {
+    let lam_x_agent = get_agent(net, lam_x)?;
+    if lam_x_agent.symbol != Symbol::Con {
         return None;
     }
 
     // Step 3: Check for n = 0 case
     // lambda_x.p1 connects to lambda_x.p2 (self-loop on auxiliaries)
     // and lambda_f.p1 connects to an ERA agent
-    let f_target = net.get_target(PortRef::AgentPort(lam_f, 1))?;
-    let x_bind = net.get_target(PortRef::AgentPort(lam_x, 1))?;
-    let x_body = net.get_target(PortRef::AgentPort(lam_x, 2))?;
+    let f_target = net.get_target(PortRef::AgentPort(lam_f, 1));
+    let x_bind = net.get_target(PortRef::AgentPort(lam_x, 1));
+    let x_body = net.get_target(PortRef::AgentPort(lam_x, 2));
+
+    if f_target == DISCONNECTED || x_bind == DISCONNECTED || x_body == DISCONNECTED {
+        return None;
+    }
 
     // Check self-loop: x_bind == lambda_x.p2 and x_body == lambda_x.p1
     if x_bind == PortRef::AgentPort(lam_x, 2)
         && x_body == PortRef::AgentPort(lam_x, 1)
     {
         // Verify ERA on f
-        match f_target {
-            PortRef::AgentPort(era_id, 0) => {
-                if net.get_agent(era_id)?.symbol == Symbol::Era {
-                    return Some(0);
-                }
+        if let PortRef::AgentPort(era_id, 0) = f_target {
+            let era_agent = get_agent(net, era_id)?;
+            if era_agent.symbol == Symbol::Era {
+                return Some(0);
             }
-            _ => {}
         }
         return None;
     }
@@ -546,10 +701,13 @@ pub fn decode_nat(net: &Net) -> Option<u64> {
     let mut current = PortRef::AgentPort(lam_x, 2);
 
     loop {
-        let target = net.get_target(current)?;
+        let target = net.get_target(current);
+        if target == DISCONNECTED {
+            return None;
+        }
         match target {
             PortRef::AgentPort(app_id, 2) => {
-                let agent = net.get_agent(app_id)?;
+                let agent = get_agent(net, app_id)?;
                 if agent.symbol != Symbol::Con {
                     return None;
                 }
@@ -625,29 +783,68 @@ The encoding module is entirely new functionality that transforms Relativist fro
 
 ## 7. Test Requirements
 
-**T1.** Structure test: `encode_nat(0)` MUST produce exactly 2 CON + 1 ERA agents with the port connections specified in Section 4.2 (Church(0) table). **(MUST)**
+Test labels use the prefix `ET-` (Encoding Tests) to avoid collision with SPEC-01 invariant labels T1-T7.
 
-**T2.** Structure test: `encode_nat(1)` MUST produce exactly 3 CON + 0 DUP + 0 ERA agents with the port connections specified in Section 4.2 (Church(1) table). **(MUST)**
+**ET-1.** Structure test: `encode_nat(0)` MUST produce exactly 2 CON + 1 ERA agents with the port connections specified in Section 4.2 (Church(0) table). **(MUST)**
 
-**T3.** Structure test: `encode_nat(2)` MUST produce exactly 4 CON + 1 DUP agents with the port connections specified in Section 4.2 (Church(2) table). **(MUST)**
+**ET-2.** Structure test: `encode_nat(1)` MUST produce exactly 3 CON + 0 DUP + 0 ERA agents with the port connections specified in Section 4.2 (Church(1) table). **(MUST)**
 
-**T4.** Normal Form test: for n in {0, 1, 2, 5, 10, 100}, `encode_nat(n)` MUST produce a net with zero redexes. **(MUST)**
+**ET-3.** Structure test: `encode_nat(2)` MUST produce exactly 4 CON + 1 DUP agents with the port connections specified in Section 4.2 (Church(2) table). **(MUST)**
 
-**T5.** Roundtrip test: for n in {0, 1, 2, 3, 5, 10, 50, 100}, `decode_nat(&encode_nat(n))` MUST return `Some(n)`. **(MUST)**
+**ET-4.** Normal Form test: for n in {0, 1, 2, 5, 10, 100}, `encode_nat(n)` MUST produce a net with zero redexes. **(MUST)**
 
-**T6.** Addition correctness: for (a, b) in {(0,0), (0,1), (1,0), (1,1), (2,3), (10,20), (50,50), (100,100)}, `decode_nat(&reduce_all_and_return(build_add(a, b)))` MUST return `Some(a + b)`. **(MUST)**
+**ET-5.** Roundtrip test: for n in {0, 1, 2, 3, 5, 10, 50, 100}, `decode_nat(&encode_nat(n))` MUST return `Some(n)`. **(MUST)**
 
-**T7.** Multiplication correctness: for (a, b) in {(0,1), (1,0), (1,1), (2,3), (5,5), (10,10)}, `decode_nat(&reduce_all_and_return(build_mul(a, b)))` MUST return `Some(a * b)`. **(MUST)**
+**ET-6.** Addition correctness: for (a, b) in {(0,0), (0,1), (1,0), (1,1), (2,3), (10,20), (50,50), (100,100)}: **(MUST)**
 
-**T8.** Exponentiation correctness: for (a, b) in {(2,0), (2,1), (2,3), (2,8), (3,3)}, `decode_nat(&reduce_all_and_return(build_exp(a, b)))` MUST return `Some(a.pow(b))`. **(MUST)**
+```rust
+let mut net = build_add(a, b);
+reduce_all(&mut net);  // SPEC-03, R13: reduce_all(net: &mut Net) -> ReductionStats
+assert_eq!(decode_nat(&net), Some(a + b));
+```
 
-**T9.** Invariant preservation: for all encodings and arithmetic operations in T1-T8, the generated nets MUST satisfy invariants T1-T7 from SPEC-01. **(MUST)**
+**ET-7.** Multiplication correctness: for (a, b) in {(0,1), (1,0), (1,1), (2,3), (5,5), (10,10)}: **(MUST)**
 
-**T10.** Property test (proptest): for random a, b in [0, 100], `decode_nat(&reduce_all_and_return(build_add(a, b))) == Some(a + b)`. **(SHOULD)**
+```rust
+let mut net = build_mul(a, b);
+reduce_all(&mut net);
+assert_eq!(decode_nat(&net), Some(a * b));
+```
 
-**T11.** Distributed correctness (Fundamental Property): for (a, b) = (50, 50), `decode_nat(reduce_all(build_add(a, b)))` MUST equal `decode_nat(extract_result(run_grid(build_add(a, b), k)))` for k in {1, 2, 4}. **(MUST)**
+**ET-8.** Exponentiation correctness: for (a, b) in {(2,0), (2,1), (2,3), (2,8), (3,3)}: **(MUST)**
 
-**T12.** Decode rejection: `decode_nat` MUST return `None` for nets that are not Church numerals -- e.g., `ep_annihilation(5)`, an empty net, and a net with non-zero redexes. **(MUST)**
+```rust
+let mut net = build_exp(a, b);
+reduce_all(&mut net);
+assert_eq!(decode_nat(&net), Some(a.pow(b as u32)));
+```
+
+**ET-9.** Invariant preservation: for all encodings and arithmetic operations in ET-1 through ET-8, the generated nets MUST satisfy invariants T1-T7 from SPEC-01. Verification via `net.assert_all_invariants()` (SPEC-02, R20) in debug mode. **(MUST)**
+
+**ET-10.** Property test (proptest): for random a, b in [0, 100]: **(SHOULD)**
+
+```rust
+let mut net = build_add(a, b);
+reduce_all(&mut net);
+assert_eq!(decode_nat(&net), Some(a + b));
+```
+
+**ET-11.** Distributed correctness (Fundamental Property): for (a, b) = (50, 50) and k in {1, 2, 4}: **(MUST)**
+
+```rust
+// Local reduction
+let mut local_net = build_add(50, 50);
+reduce_all(&mut local_net);
+let local_result = decode_nat(&local_net);
+
+// Distributed reduction
+let distributed_net = run_grid(build_add(50, 50), k);
+let distributed_result = decode_nat(&distributed_net);
+
+assert_eq!(local_result, distributed_result);
+```
+
+**ET-12.** Decode rejection: `decode_nat` MUST return `None` for nets that are not Church numerals -- e.g., `ep_annihilation(5)`, an empty net, and a net with non-zero redexes. **(MUST)**
 
 ---
 
@@ -682,8 +879,17 @@ Since the Relativist v1 operates in batch mode (DISC-009, Section 4.3), streamin
 
 For every benchmark point, the fundamental property MUST hold:
 
-```
-decode_nat(reduce_all(build_op(a, b))) == decode_nat(extract_result(run_grid(build_op(a, b), k)))
+```rust
+// Local baseline
+let mut local_net = build_op(a, b);
+reduce_all(&mut local_net);
+let local_result = decode_nat(&local_net);
+
+// Distributed
+let distributed_net = run_grid(build_op(a, b), k);
+let distributed_result = decode_nat(&distributed_net);
+
+assert_eq!(local_result, distributed_result);
 ```
 
 Zero correctness failures across all arithmetic benchmarks constitutes the success criterion. This extends SPEC-09's verification to arithmetic workloads.
@@ -731,7 +937,7 @@ Per benchmark point (same as SPEC-09, Section 3.4):
 
 ---
 
-## 9. Cross-References (Specs Affected)
+## 10. Cross-References (Specs Affected)
 
 This section documents minimal updates needed in other specs. These updates are NOT part of SPEC-14 itself but are tracked here for the implementer.
 
