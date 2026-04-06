@@ -247,6 +247,21 @@ impl Net {
         }
         self.get_target(PortRef::AgentPort(a, 0)) == PortRef::AgentPort(b, 0)
     }
+
+    /// Returns the number of live (non-`None`) agents in the net.
+    ///
+    /// Complexity: O(A) where A is the arena length.
+    pub fn count_live_agents(&self) -> usize {
+        self.agents.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// Returns an iterator over all live agents in the net.
+    ///
+    /// Skips `None` slots (removed or never-created agents).
+    /// This encapsulates the internal `Vec<Option<Agent>>` representation.
+    pub fn live_agents(&self) -> impl Iterator<Item = &Agent> {
+        self.agents.iter().filter_map(|slot| slot.as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -783,5 +798,67 @@ mod tests {
     fn test_is_valid_redex_out_of_bounds() {
         let net = Net::new();
         assert!(!net.is_valid_redex(999, 888));
+    }
+
+    // --- count_live_agents / live_agents tests (TASK-0231) ---
+
+    // T1: Empty net has 0 live agents
+    #[test]
+    fn test_count_live_agents_empty() {
+        let net = Net::new();
+        assert_eq!(net.count_live_agents(), 0);
+    }
+
+    // T2: 3 agents created
+    #[test]
+    fn test_count_live_agents_three() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con);
+        net.create_agent(Symbol::Dup);
+        net.create_agent(Symbol::Era);
+        assert_eq!(net.count_live_agents(), 3);
+    }
+
+    // T3: 5 created, 2 removed
+    #[test]
+    fn test_count_live_agents_after_removal() {
+        let mut net = Net::new();
+        let ids: Vec<_> = (0..5).map(|_| net.create_agent(Symbol::Con)).collect();
+        net.remove_agent(ids[1]);
+        net.remove_agent(ids[3]);
+        assert_eq!(net.count_live_agents(), 3);
+    }
+
+    // T4: live_agents yields agents in order, skipping None
+    #[test]
+    fn test_live_agents_iterator() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id=0
+        net.create_agent(Symbol::Dup); // id=1
+        net.create_agent(Symbol::Era); // id=2
+        net.remove_agent(1);
+        let live: Vec<_> = net.live_agents().collect();
+        assert_eq!(live.len(), 2);
+        assert_eq!(live[0].symbol, Symbol::Con);
+        assert_eq!(live[1].symbol, Symbol::Era);
+    }
+
+    // T5: Consistency: live_agents().count() == count_live_agents()
+    #[test]
+    fn test_live_agents_count_consistency() {
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Con);
+        }
+        net.remove_agent(3);
+        net.remove_agent(7);
+        assert_eq!(net.live_agents().count(), net.count_live_agents());
+    }
+
+    // T6: live_agents on empty net yields 0
+    #[test]
+    fn test_live_agents_empty() {
+        let net = Net::new();
+        assert_eq!(net.live_agents().count(), 0);
     }
 }
