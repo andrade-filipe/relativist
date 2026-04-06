@@ -33,22 +33,33 @@ pub fn max_freeport_id(net: &Net) -> Option<u32> {
 
 /// Computes the static ID space ranges for `num_workers` workers (SPEC-04 Section 4.7).
 ///
-/// Divides the `u32` space (~4.29 billion IDs) into `num_workers` contiguous
-/// ranges. The last worker receives any remainder from integer division.
+/// Each worker gets a compact, disjoint ID range starting from `base_next_id`.
+/// The chunk size is proportional to the existing net size with a minimum of
+/// 100,000 IDs per worker, providing ample room for agent creation during
+/// local reduction without allocating multi-billion-entry sparse arrays.
+///
+/// The last worker's range extends to `u32::MAX` as a safety margin.
 ///
 /// Panics if `num_workers == 0`.
-pub fn compute_id_ranges(num_workers: u32) -> Vec<IdRange> {
+pub fn compute_id_ranges(num_workers: u32, base_next_id: u32) -> Vec<IdRange> {
     assert!(num_workers > 0, "num_workers must be >= 1");
 
-    let chunk_size = u32::MAX / num_workers;
+    // Each worker gets enough IDs for substantial agent creation.
+    // Minimum 100K per worker; proportional to existing net size.
+    let min_chunk: u64 = 100_000;
+    let proportional: u64 = (base_next_id as u64).saturating_mul(10);
+    let chunk_size: u64 = min_chunk.max(proportional);
+
     (0..num_workers)
         .map(|i| {
-            let start = i * chunk_size;
-            let end = if i == num_workers - 1 {
-                u32::MAX
+            let start_64 = base_next_id as u64 + (i as u64) * chunk_size;
+            let end_64 = if i == num_workers - 1 {
+                u32::MAX as u64
             } else {
-                (i + 1) * chunk_size
+                base_next_id as u64 + ((i + 1) as u64) * chunk_size
             };
+            let start = (start_64.min(u32::MAX as u64 - 1)) as u32;
+            let end = (end_64.min(u32::MAX as u64)) as u32;
             IdRange { start, end }
         })
         .collect()
@@ -289,68 +300,77 @@ mod tests {
     // compute_id_ranges tests
     // -----------------------------------------------------------------------
 
-    // R1: Single worker gets entire range
+    // R1: Single worker gets range from base to u32::MAX
     #[test]
     fn test_id_ranges_single_worker() {
-        let ranges = compute_id_ranges(1);
+        let ranges = compute_id_ranges(1, 10);
         assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].start, 10);
         assert_eq!(ranges[0].end, u32::MAX);
     }
 
-    // R2: Two workers split the range
+    // R2: Two workers produce contiguous disjoint ranges
     #[test]
     fn test_id_ranges_two_workers() {
-        let ranges = compute_id_ranges(2);
+        let ranges = compute_id_ranges(2, 100);
         assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].start, 100);
         assert_eq!(ranges[1].end, u32::MAX);
         // Contiguous: first ends where second starts
         assert_eq!(ranges[0].end, ranges[1].start);
     }
 
-    // R3: 8 workers (TCC scope)
+    // R3: 8 workers produce contiguous ranges
     #[test]
     fn test_id_ranges_eight_workers() {
-        let ranges = compute_id_ranges(8);
+        let ranges = compute_id_ranges(8, 0);
         assert_eq!(ranges.len(), 8);
         assert_eq!(ranges[0].start, 0);
         assert_eq!(ranges[7].end, u32::MAX);
-        // All contiguous
         for i in 0..7 {
             assert_eq!(ranges[i].end, ranges[i + 1].start);
         }
     }
 
-    // R4: Ranges are disjoint and cover full u32 space
+    // R4: Ranges from non-zero base are disjoint and contiguous
     #[test]
-    fn test_id_ranges_cover_full_space() {
-        let ranges = compute_id_ranges(4);
-        assert_eq!(ranges[0].start, 0);
+    fn test_id_ranges_nonzero_base() {
+        let base = 50;
+        let ranges = compute_id_ranges(4, base);
+        assert_eq!(ranges[0].start, base);
         assert_eq!(ranges[3].end, u32::MAX);
         for i in 0..3 {
             assert_eq!(ranges[i].end, ranges[i + 1].start);
         }
     }
 
-    // R5: Last worker gets remainder
+    // R5: Last worker extends to u32::MAX
     #[test]
-    fn test_id_ranges_last_worker_remainder() {
-        let ranges = compute_id_ranges(3);
-        let chunk = u32::MAX / 3;
-        // First two workers get exactly chunk_size IDs
-        assert_eq!(ranges[0].end - ranges[0].start, chunk);
-        assert_eq!(ranges[1].end - ranges[1].start, chunk);
-        // Last worker extends to u32::MAX
+    fn test_id_ranges_last_worker_extends_to_max() {
+        let ranges = compute_id_ranges(3, 10);
         assert_eq!(ranges[2].end, u32::MAX);
-        assert!(ranges[2].end - ranges[2].start >= chunk);
+        // All ranges have positive size
+        for r in &ranges {
+            assert!(r.end > r.start);
+        }
+    }
+
+    // R6: Each worker gets at least 100K IDs (min chunk guarantee)
+    #[test]
+    fn test_id_ranges_min_chunk_size() {
+        let ranges = compute_id_ranges(4, 5);
+        // With base=5, proportional=50 < min=100_000, so chunk=100_000
+        // Worker 0: [5, 100_005), Worker 1: [100_005, 200_005), etc.
+        for i in 0..3 {
+            assert!(ranges[i].end - ranges[i].start >= 100_000);
+        }
     }
 
     // E2: Panics on 0 workers
     #[test]
     #[should_panic(expected = "num_workers must be >= 1")]
     fn test_id_ranges_zero_workers_panics() {
-        compute_id_ranges(0);
+        compute_id_ranges(0, 0);
     }
 
     // -----------------------------------------------------------------------

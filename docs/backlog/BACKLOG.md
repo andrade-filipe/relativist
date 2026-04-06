@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (49 done, 0 in progress, 156 todo, 1 obsoleted)
+**Total tasks:** 206 (67 done, 0 in progress, 138 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -77,24 +77,24 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0060 | Define GridMetrics struct | P0 | TODO | none | S |
-| TASK-0061 | Define WorkerRoundStats struct (6-field, serde, MUST) | P0 | TODO | none | S |
-| TASK-0062 | Define GridConfig struct | P0 | TODO | none | S |
-| TASK-0063 | Implement rebuild_free_port_index | P0 | TODO | Phase 1 | M |
-| TASK-0064 | Implement is_principal_pair helper | P0 | TODO | Phase 1 | S |
-| TASK-0065 | Merge function - unite agents + internal connections | P0 | TODO | 0060, 0064 | M |
-| TASK-0066 | Merge function - restore boundary connections | P0 | TODO | 0065, 0064 | M |
-| TASK-0067 | Merge debug assertions | P1 | TODO | 0066 | S |
-| TASK-0068 | Implement drain_stale_redexes | P0 | TODO | Phase 1 | S |
-| TASK-0069 | run_grid skeleton with termination logic | P0 | TODO | 0060, 0062, 0068 | M |
-| TASK-0070 | run_grid Phase 1 (split) + Phase 2 (local reduce) | P0 | TODO | 0069, 0063, 0061 | M |
-| TASK-0071 | run_grid Phase 3 (merge + resolve borders + metrics) | P0 | TODO | 0070, 0066 | M |
-| TASK-0072 | n==1 optimization in run_grid | P1 | TODO | 0069 | S |
-| TASK-0073 | Implement count_live_agents helper | P0 | TODO | 0231 | S |
-| TASK-0074 | Integration test: split/merge identity (D1) | P0 | TODO | 0066 | M |
-| TASK-0075 | Integration test: Fundamental Property G1 | P0 | TODO | 0071 | M |
-| TASK-0076 | Merge module exports and wiring | P0 | TODO | 0060-0065 | S |
-| TASK-0230 | Implement verify_no_redexes_full_scan (R41) | P1 | TODO | 0014, 0064, Phase 1 | S |
+| TASK-0060 | Define GridMetrics struct | P0 | **DONE** | none | S |
+| TASK-0061 | Define WorkerRoundStats struct (6-field, serde, MUST) | P0 | **DONE** | none | S |
+| TASK-0062 | Define GridConfig struct | P0 | **DONE** | none | S |
+| TASK-0063 | Implement rebuild_free_port_index | P0 | **DONE** | Phase 1 | M |
+| TASK-0064 | Implement is_principal_pair helper | P0 | **DONE** | Phase 1 | S |
+| TASK-0065 | Merge function - unite agents + internal connections | P0 | **DONE** | 0060, 0064 | M |
+| TASK-0066 | Merge function - restore boundary connections | P0 | **DONE** | 0065, 0064 | M |
+| TASK-0067 | Merge debug assertions | P1 | **DONE** | 0066 | S |
+| TASK-0068 | Implement drain_stale_redexes | P0 | **DONE** | Phase 1 | S |
+| TASK-0069 | run_grid skeleton with termination logic | P0 | **DONE** | 0060, 0062, 0068 | M |
+| TASK-0070 | run_grid Phase 1 (split) + Phase 2 (local reduce) | P0 | **DONE** | 0069, 0063, 0061 | M |
+| TASK-0071 | run_grid Phase 3 (merge + resolve borders + metrics) | P0 | **DONE** | 0070, 0066 | M |
+| TASK-0072 | n==1 optimization in run_grid | P1 | **DONE** | 0069 | S |
+| TASK-0073 | Implement count_live_agents helper | P0 | **DONE** | 0231 | S |
+| TASK-0074 | Integration test: split/merge identity (D1) | P0 | **DONE** | 0066 | M |
+| TASK-0075 | Integration test: Fundamental Property G1 | P0 | **DONE** | 0071 | M |
+| TASK-0076 | Merge module exports and wiring | P0 | **DONE** | 0060-0065 | S |
+| TASK-0230 | Implement verify_no_redexes_full_scan (R41) | P1 | **DONE** | 0014, 0064, Phase 1 | S |
 
 ## Phase 5: Wire Protocol (SPEC-06)
 

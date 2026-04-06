@@ -36,7 +36,7 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
     let wire_class = classify_wires(&net, &sigma, num_workers);
 
     // Step 5 + 6: Build sub-nets and compute ID ranges
-    let id_ranges = compute_id_ranges(num_workers);
+    let id_ranges = compute_id_ranges(num_workers, net.next_id);
     let mut partitions = Vec::with_capacity(num_workers as usize);
 
     for i in 0..num_workers as usize {

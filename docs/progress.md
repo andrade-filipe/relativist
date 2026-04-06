@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
-**Last updated:** 2026-04-05
-**Updated by:** ESPECIALISTA EM SPECS — SPEC-06 adversarial review + revision (Revised v2 -> Revised v3)
+**Last updated:** 2026-04-06
+**Updated by:** Development — Phase 4 (SPEC-05 Merge & Grid Cycle) COMPLETE
 
 ---
 
@@ -20,8 +20,12 @@
 | Git workflow | COMPLETE | docs/GIT-WORKFLOW.md (GitHub Flow, conventional commits, SSH auth) |
 | Development pipeline | DEFINED | 6 agents + DEVELOPMENT-PIPELINE.md + backlog structure |
 | Human Check | COMPLETE | Blocos 1-8 reviewed. All OQs resolved across SPEC-01, 02, 07 |
-| Task decomposition | IN PROGRESS | Running task-splitter on SPEC-02 through SPEC-06 (Phases 1-5) |
-| Implementation | NOT STARTED | Awaiting task decomposition completion |
+| Task decomposition | COMPLETE | 206 tasks across 11 phases (SPEC-02 through SPEC-14) |
+| Phase 1: Core Types | COMPLETE | SPEC-02: 20/20 tasks done, v0.1.0 tagged |
+| Phase 2: Reduction | COMPLETE | SPEC-03: 12/12 tasks done, v0.2.0 tagged |
+| Phase 3: Partition | COMPLETE | SPEC-04: 13/17 P0 tasks done, v0.3.0 tagged (291 tests) |
+| Phase 4: Merge & Grid | COMPLETE | SPEC-05: 18/18 tasks done, v0.4.0 pending (341 tests) |
+| Phase 5-11 | NOT STARTED | Wire Protocol, CLI, Security, Observability, I/O, Benchmarks, Encoding |
 
 ---
 
