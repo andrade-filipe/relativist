@@ -133,6 +133,15 @@ pub const fn total_ports(symbol: Symbol) -> u8 {
     arity(symbol) + 1
 }
 
+/// Maps `FreePort(bid)` identifiers to the `AgentPort` they are connected to.
+///
+/// Used by the partitioner (SPEC-04) and merger (SPEC-05) to resolve
+/// boundary connections. `FreePort` references have no slot in the port
+/// array, so the `BorderMap` provides the reverse lookup.
+///
+/// Maintained externally to the `Net` struct — it is NOT a field of `Net`.
+pub type BorderMap = std::collections::HashMap<u32, PortRef>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
