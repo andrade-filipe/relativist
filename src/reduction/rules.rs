@@ -3,7 +3,7 @@
 //! Contains the 4 interaction functions (interact_void, interact_anni,
 //! interact_eras, interact_comm) and the safe link procedure.
 
-use crate::net::{Net, PortRef};
+use crate::net::{AgentId, Net, PortRef};
 
 /// Safe link: wraps `Net::connect` with a guard for removed agents (R25).
 ///
@@ -36,6 +36,23 @@ fn link(net: &mut Net, a: PortRef, b: PortRef) {
         return;
     }
     net.connect(a, b);
+}
+
+/// Void: two ERA agents annihilate without creating anything (SPEC-03 Section 4.1.3).
+///
+/// Precondition: both agent IDs MUST refer to live agents
+///   (`agents[id].is_some()`) and both MUST be Era. This precondition
+///   is guaranteed by `reduce_step`'s validity check (R12).
+/// Postcondition: both removed. No agents created, no reconnections.
+///
+/// Agent balance: -2. Link calls: 0.
+/// Complexity: O(1).
+///
+/// Invariants preserved: T1 (ERA has no auxiliary ports, so removing them
+/// leaves no dangling ports), I1/I2 (`remove_agent` cleans up port array slots).
+pub fn interact_void(net: &mut Net, a: AgentId, b: AgentId) {
+    net.remove_agent(a);
+    net.remove_agent(b);
 }
 
 #[cfg(test)]
@@ -167,7 +184,7 @@ mod tests {
         // but the function should not panic.
     }
 
-    // --- E2: Self-referencing annihilation pattern (integration-level) ---
+    // --- E2: Self-referencing annihilation pattern (integration-level, link) ---
 
     #[test]
     fn test_self_referencing_annihilation_pattern() {
@@ -215,5 +232,109 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ===================================================================
+    // interact_void tests (TASK-0023)
+    // ===================================================================
+
+    /// Helper: create two ERA agents connected at their principal ports.
+    /// Returns (net, era_a_id, era_b_id).
+    fn setup_era_pair() -> (Net, AgentId, AgentId) {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        (net, a, b)
+    }
+
+    // T1: Two ERA agents connected at principal ports -- both removed after interact_void
+    #[test]
+    fn test_interact_void_removes_both_agents() {
+        let (mut net, a, b) = setup_era_pair();
+
+        assert!(net.get_agent(a).is_some());
+        assert!(net.get_agent(b).is_some());
+
+        interact_void(&mut net, a, b);
+
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+    }
+
+    // T2: Net agent count decreases by exactly 2
+    #[test]
+    fn test_interact_void_decreases_agent_count_by_two() {
+        let (mut net, a, b) = setup_era_pair();
+
+        let count_before = net.count_live_agents();
+        assert_eq!(count_before, 2);
+
+        interact_void(&mut net, a, b);
+
+        let count_after = net.count_live_agents();
+        assert_eq!(count_after, 0);
+        assert_eq!(count_before - count_after, 2);
+    }
+
+    // T3: Ports of removed agents are DISCONNECTED
+    #[test]
+    fn test_interact_void_ports_are_disconnected() {
+        let (mut net, a, b) = setup_era_pair();
+
+        interact_void(&mut net, a, b);
+
+        // Principal ports (port 0) must be DISCONNECTED
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 0)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
+
+        // Auxiliary slots (ports 1, 2) were never connected and remain DISCONNECTED.
+        // ERA has arity 0, but the 3-slot layout means slots 1 and 2 exist.
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 1)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 2)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 1)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
+    }
+
+    // T4: Stale redex left in queue after removal
+    #[test]
+    fn test_interact_void_leaves_stale_redex_in_queue() {
+        let (mut net, a, b) = setup_era_pair();
+
+        // connect() pushed a redex (a, b) to the queue
+        assert!(!net.redex_queue.is_empty());
+
+        interact_void(&mut net, a, b);
+
+        // interact_void does NOT drain the queue -- stale entry persists
+        assert!(!net.redex_queue.is_empty());
+        // The stale redex is no longer valid
+        assert!(!net.is_valid_redex(a, b));
+    }
+
+    // E1: Other agents in the net are unaffected
+    #[test]
+    fn test_interact_void_does_not_affect_other_agents() {
+        let mut net = Net::new();
+        let con = net.create_agent(Symbol::Con);
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+
+        // Connect CON's principal port to a free port (so it has a defined target)
+        net.connect(PortRef::AgentPort(con, 0), PortRef::FreePort(0));
+        // Connect the two ERAs at their principal ports
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        assert_eq!(net.count_live_agents(), 3);
+
+        interact_void(&mut net, a, b);
+
+        // CON is still live and its ports are intact
+        assert_eq!(net.count_live_agents(), 1);
+        assert!(net.get_agent(con).is_some());
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(con, 0)),
+            PortRef::FreePort(0)
+        );
     }
 }
