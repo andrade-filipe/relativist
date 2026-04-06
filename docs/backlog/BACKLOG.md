@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (6 done, 0 in progress, 199 todo, 1 obsoleted)
+**Total tasks:** 206 (20 done, 0 in progress, 185 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -17,20 +17,20 @@
 | TASK-0004 | Define PortRef enum | P0 | **DONE** | 0003 | S |
 | TASK-0005 | Define Agent struct | P0 | **DONE** | 0002, 0003 | S |
 | TASK-0006 | Define arity and total_ports functions | P0 | **DONE** | 0002 | S |
-| TASK-0007 | Define PORTS_PER_SLOT, port_index, DISCONNECTED | P0 | TODO | 0003, 0004 | S |
-| TASK-0008 | Define Net struct and constructors | P0 | TODO | 0004, 0005, 0007 | M |
-| TASK-0009 | Implement create_agent | P0 | TODO | 0008, 0006 | S |
-| TASK-0010 | Implement get_target and set_port helpers | P0 | TODO | 0008, 0007 | S |
-| TASK-0011 | Implement connect | P0 | TODO | 0010 | S |
-| TASK-0012 | Implement disconnect | P0 | TODO | 0010 | S |
-| TASK-0013 | Implement remove_agent | P0 | TODO | 0009, 0012, 0006 | S |
-| TASK-0014 | Implement is_reduced and is_valid_redex | P0 | TODO | 0010, 0008, 0019 | S |
-| TASK-0015 | Implement debug assertions (I1, I2, I3, I6, I7) | P0 | TODO | 0010, 0009, 0006 | M |
-| TASK-0016 | Define BorderMap type alias | P1 | TODO | 0004 | S |
-| TASK-0017 | Add serde + bincode serialization | P1 | TODO | 0008 | S |
-| TASK-0018 | Verify PartialEq and Eq for Net | P1 | TODO | 0008 | S |
-| TASK-0019 | Implement get_agent and get_agent_mut accessors | P0 | TODO | 0008 | S |
-| TASK-0231 | Implement count_live_agents and live_agents on Net | P0 | TODO | 0008 | S |
+| TASK-0007 | Define PORTS_PER_SLOT, port_index, DISCONNECTED | P0 | **DONE** | 0003, 0004 | S |
+| TASK-0008 | Define Net struct and constructors | P0 | **DONE** | 0004, 0005, 0007 | M |
+| TASK-0009 | Implement create_agent | P0 | **DONE** | 0008, 0006 | S |
+| TASK-0010 | Implement get_target and set_port helpers | P0 | **DONE** | 0008, 0007 | S |
+| TASK-0011 | Implement connect | P0 | **DONE** | 0010 | S |
+| TASK-0012 | Implement disconnect | P0 | **DONE** | 0010 | S |
+| TASK-0013 | Implement remove_agent | P0 | **DONE** | 0009, 0012, 0006 | S |
+| TASK-0014 | Implement is_reduced and is_valid_redex | P0 | **DONE** | 0010, 0008, 0019 | S |
+| TASK-0015 | Implement debug assertions (I1, I2, I3, I6, I7) | P0 | **DONE** | 0010, 0009, 0006 | M |
+| TASK-0016 | Define BorderMap type alias | P1 | **DONE** | 0004 | S |
+| TASK-0017 | Add serde + bincode serialization | P1 | **DONE** | 0008 | S |
+| TASK-0018 | Verify PartialEq and Eq for Net | P1 | **DONE** | 0008 | S |
+| TASK-0019 | Implement get_agent and get_agent_mut accessors | P0 | **DONE** | 0008 | S |
+| TASK-0231 | Implement count_live_agents and live_agents on Net | P0 | **DONE** | 0008 | S |
 
 ## Phase 2: Reduction Engine (SPEC-03)
 
