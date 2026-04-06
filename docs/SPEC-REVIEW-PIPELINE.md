@@ -84,11 +84,11 @@ The user reviews the revised spec, defender response, and task impact report. Ap
 
 | Spec | Current Status | Round 1 | Round 2 | Task Update | Final Status |
 |------|---------------|---------|---------|-------------|-------------|
-| SPEC-13 (System Architecture) | Revised v2 | DONE (NEEDS REVISION) | DONE (12A/3P/1N) | TODO | — |
-| SPEC-14 (Arithmetic Encoding) | Revised v2 | DONE (MAJOR REVISION) | DONE (14A/2P/2N) | TODO | — |
-| SPEC-10 (Security) | Revised v2 | DONE (NEEDS REVISION) | DONE (10A/4P/0N) | TODO | — |
-| SPEC-11 (Observability) | Revised v2 | DONE (NEEDS REVISION) | DONE (13A/3P/0N) | TODO | — |
-| SPEC-12 (User I/O) | Revised v2 | DONE (NEEDS REVISION) | DONE (17A/3P/0N) | TODO | — |
+| SPEC-13 (System Architecture) | Revised v2 | DONE (NEEDS REVISION) | DONE (12A/3P/1N) | DONE (8u/1n) | Human Approval |
+| SPEC-14 (Arithmetic Encoding) | Revised v2 | DONE (MAJOR REVISION) | DONE (14A/2P/2N) | DONE (2u/12n) | Human Approval |
+| SPEC-10 (Security) | Revised v2 | DONE (NEEDS REVISION) | DONE (10A/4P/0N) | DONE (18u/0n) | Human Approval |
+| SPEC-11 (Observability) | Revised v2 | DONE (NEEDS REVISION) | DONE (13A/3P/0N) | DONE (16u/2n) | Human Approval |
+| SPEC-12 (User I/O) | Revised v2 | DONE (NEEDS REVISION) | DONE (17A/3P/0N) | DONE (19u/0n) | Human Approval |
 
 ### Execution Order (based on dependency chain)
 
