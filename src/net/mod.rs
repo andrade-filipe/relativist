@@ -7,7 +7,5 @@ pub mod core;
 pub mod debug;
 pub mod types;
 
-#[allow(unused_imports)]
 pub use core::*;
-#[allow(unused_imports)]
 pub use types::*;
