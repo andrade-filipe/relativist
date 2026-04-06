@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (39 done, 0 in progress, 166 todo, 1 obsoleted)
+**Total tasks:** 206 (49 done, 0 in progress, 156 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -59,19 +59,19 @@
 | TASK-0043 | Define PartitionStrategy trait | P0 | **DONE** | 0040 | S |
 | TASK-0044 | Implement ContiguousIdStrategy | P0 | **DONE** | 0043 | M |
 | TASK-0045 | Helper function max_freeport_id | P0 | **DONE** | none | S |
-| TASK-0046 | Wire classification logic | P0 | TODO | 0045 | M |
+| TASK-0046 | Wire classification logic | P0 | **DONE** | 0045 | M |
 | TASK-0047 | Compute static ID space ranges | P0 | **DONE** | 0040 | S |
-| TASK-0048 | split() trivial case (n=1) | P0 | TODO | 0042 | S |
-| TASK-0049 | split() general case orchestrator | P0 | TODO | 0048, 0044, 0046, 0047, 0050-0054, 0219, 0220 | M |
-| TASK-0050 | Build sub-net for one partition | P0 | TODO | 0046 | M |
-| TASK-0051 | Redex queue population for partitions | P0 | TODO | 0050 | S |
-| TASK-0052 | FreePort index construction per partition | P0 | TODO | 0046 | S |
+| TASK-0048 | split() trivial case (n=1) | P0 | **DONE** | 0042 | S |
+| TASK-0049 | split() general case orchestrator | P0 | **DONE** | 0048, 0044, 0046, 0047, 0050-0054, 0219, 0220 | M |
+| TASK-0050 | Build sub-net for one partition | P0 | **DONE** | 0046 | M |
+| TASK-0051 | Redex queue population for partitions | P0 | **DONE** | 0050 | S |
+| TASK-0052 | FreePort index construction per partition | P0 | **DONE** | 0046 | S |
 | TASK-0053 | Debug assertion for C1 | P1 | TODO | 0041 | S |
 | TASK-0054 | Debug assertions for C2 and C3 | P1 | TODO | 0041, 0042 | M |
 | TASK-0055 | FreePort index lazy reconstruction | P1 | TODO | 0041 | S |
 | TASK-0056 | ID range exhaustion error handling | P2 | TODO | 0040 | S |
 | TASK-0219 | Stale boundary FreePort precondition assertion | P1 | TODO | 0045 | S |
-| TASK-0220 | Root port propagation during split (R28) | P0 | TODO | 0050 | S |
+| TASK-0220 | Root port propagation during split (R28) | P0 | **DONE** | 0050 | S |
 
 ## Phase 4: Merge & Grid Cycle (SPEC-05)
 
