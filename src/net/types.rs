@@ -41,10 +41,36 @@ pub enum Symbol {
     Era = 2,
 }
 
+/// A reference to a specific port in the net.
+///
+/// This is the most-used type in Relativist — it appears in the port array,
+/// in connect/disconnect arguments, in debug assertions, and in serialized messages.
+///
+/// **`AgentPort(id, port)`**: a port belonging to agent `id` at slot `port`.
+/// Port 0 is the principal port; ports 1 and 2 are auxiliary (left and right).
+///
+/// **`FreePort(index)`**: serves dual purpose (SPEC-00 Sections 6.1, 6.2):
+/// - *Lafont free ports*: the external interface of the net (inputs/outputs).
+/// - *Boundary free ports*: synthetic markers inserted by the partitioner,
+///   carrying a `borderId` for merge resolution (DISC-004 v2 Section 1.4).
+///
+/// Both are structurally identical at the type level; the distinction is
+/// semantic and resolved by context (the border map in SPEC-04/SPEC-05).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PortRef {
+    /// Port of an agent: `(agent_id, port_id)`.
+    /// Port 0 = principal, 1 = left auxiliary, 2 = right auxiliary.
+    AgentPort(AgentId, PortId),
+    /// Free port identified by a unique integer index.
+    /// Used for Lafont interface ports and boundary sentinels during partitioning.
+    /// `FreePort(u32::MAX)` is reserved as the `DISCONNECTED` sentinel (see TASK-0007).
+    FreePort(u32),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     // T1: Symbol has exactly 3 variants (exhaustive match compiles)
     #[test]
@@ -177,5 +203,85 @@ mod tests {
         let ports = [10, 20, 30];
         let p: PortId = 1;
         assert_eq!(ports[p as usize], 20);
+    }
+
+    // --- PortRef tests (TASK-0004) ---
+
+    // T1: Variant discrimination
+    #[test]
+    fn test_portref_variant_discrimination() {
+        assert_ne!(PortRef::AgentPort(0, 0), PortRef::FreePort(0));
+    }
+
+    // T2: AgentPort equality
+    #[test]
+    fn test_portref_agent_port_equality() {
+        assert_eq!(PortRef::AgentPort(5, 1), PortRef::AgentPort(5, 1));
+        assert_ne!(PortRef::AgentPort(5, 1), PortRef::AgentPort(5, 2));
+        assert_ne!(PortRef::AgentPort(5, 1), PortRef::AgentPort(6, 1));
+    }
+
+    // T3: FreePort equality
+    #[test]
+    fn test_portref_free_port_equality() {
+        assert_eq!(PortRef::FreePort(42), PortRef::FreePort(42));
+        assert_ne!(PortRef::FreePort(42), PortRef::FreePort(43));
+    }
+
+    // T4: Copy semantics
+    #[test]
+    fn test_portref_copy() {
+        let p = PortRef::AgentPort(1, 0);
+        let p2 = p; // Copy
+        assert_eq!(p, p2); // original still usable after copy
+    }
+
+    // T5: Pattern matching extracts correct fields
+    #[test]
+    fn test_portref_pattern_matching() {
+        match PortRef::AgentPort(7, 2) {
+            PortRef::AgentPort(id, port) => {
+                assert_eq!(id, 7);
+                assert_eq!(port, 2);
+            }
+            _ => panic!("wrong variant"),
+        }
+        match PortRef::FreePort(99) {
+            PortRef::FreePort(bid) => assert_eq!(bid, 99),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // T6: Serde round-trip
+    #[test]
+    fn test_portref_serde_roundtrip() {
+        for pr in [PortRef::AgentPort(100, 0), PortRef::FreePort(55)] {
+            let bytes = bincode::serialize(&pr).unwrap();
+            let des: PortRef = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(pr, des);
+        }
+    }
+
+    // T7: Hash (usable in HashSet)
+    #[test]
+    fn test_portref_hash() {
+        let mut set = HashSet::new();
+        set.insert(PortRef::AgentPort(1, 0));
+        set.insert(PortRef::FreePort(1));
+        assert_eq!(set.len(), 2);
+    }
+
+    // T8: Debug formatting
+    #[test]
+    fn test_portref_debug() {
+        assert!(format!("{:?}", PortRef::AgentPort(3, 1)).contains("AgentPort"));
+        assert!(format!("{:?}", PortRef::FreePort(7)).contains("FreePort"));
+    }
+
+    // E1: FreePort(u32::MAX) is structurally valid
+    #[test]
+    fn test_portref_freeport_max() {
+        let p = PortRef::FreePort(u32::MAX);
+        assert_eq!(p, PortRef::FreePort(u32::MAX));
     }
 }
