@@ -126,6 +126,55 @@ pub fn interact_eras(net: &mut Net, node_id: AgentId, era_id: AgentId) {
     link(net, PortRef::AgentPort(e2, 0), a2);
 }
 
+/// Commutation: CON and DUP commute, creating 4 new agents (SPEC-03 Section 4.1.4).
+///
+/// This is the ONLY rule that INCREASES the number of agents in the net.
+/// It creates 2 new DUP agents (inheriting the CON's auxiliary positions)
+/// and 2 new CON agents (inheriting the DUP's auxiliary positions),
+/// connected in a crossed internal pattern.
+///
+/// The expansion is what drives the parallelism potential: more agents
+/// means more potential redexes for distributed reduction.
+///
+/// Precondition: `con_id` MUST be Con, `dup_id` MUST be Dup.
+///   Guaranteed by `normalize_pair` (R9) and `reduce_step` (R12).
+/// Postcondition: both removed; 4 new agents created and fully wired.
+///
+/// Agent balance: +2 (removes 2, creates 4). Link calls: 8 (4 external + 4 internal).
+/// Complexity: O(1).
+pub fn interact_comm(net: &mut Net, con_id: AgentId, dup_id: AgentId) {
+    // Read all auxiliary port targets BEFORE removing agents
+    let a1 = net.get_target(PortRef::AgentPort(con_id, 1));
+    let a2 = net.get_target(PortRef::AgentPort(con_id, 2));
+    let b1 = net.get_target(PortRef::AgentPort(dup_id, 1));
+    let b2 = net.get_target(PortRef::AgentPort(dup_id, 2));
+
+    net.remove_agent(con_id);
+    net.remove_agent(dup_id);
+
+    // Create 4 new agents: 2 DUP + 2 CON
+    let p = net.create_agent(Symbol::Dup); // DUP: inherits side of con.1
+    let q = net.create_agent(Symbol::Dup); // DUP: inherits side of con.2
+    let r = net.create_agent(Symbol::Con); // CON: inherits side of dup.1
+    let s = net.create_agent(Symbol::Con); // CON: inherits side of dup.2
+
+    // External wires: principal ports of new agents <-> old neighbors
+    // Note: old neighbors (a1, a2, b1, b2) may be FreePort(bid) in
+    // partitioned sub-nets. The link helper handles this correctly (R26).
+    link(net, PortRef::AgentPort(p, 0), a1);
+    link(net, PortRef::AgentPort(q, 0), a2);
+    link(net, PortRef::AgentPort(r, 0), b1);
+    link(net, PortRef::AgentPort(s, 0), b2);
+
+    // Internal wires: auxiliary ports of new agents to each other (crossed)
+    // These are always AgentPort-to-AgentPort (never FreePort), so we can
+    // call net.connect directly -- no removed-agent guard needed.
+    net.connect(PortRef::AgentPort(p, 1), PortRef::AgentPort(r, 1));
+    net.connect(PortRef::AgentPort(p, 2), PortRef::AgentPort(s, 1));
+    net.connect(PortRef::AgentPort(q, 1), PortRef::AgentPort(r, 2));
+    net.connect(PortRef::AgentPort(q, 2), PortRef::AgentPort(s, 2));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,5 +968,347 @@ mod tests {
         assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
         assert_eq!(net.get_target(PortRef::AgentPort(b, 1)), DISCONNECTED);
         assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
+    }
+
+    // ===================================================================
+    // interact_comm tests (TASK-0026)
+    // ===================================================================
+
+    /// Helper: create CON(a)<->DUP(b) active pair with 4 context agents on aux ports.
+    /// Returns (net, con_id, dup_id, x, y, z, w) where:
+    ///   x is on con.1, y on con.2, z on dup.1, w on dup.2
+    fn setup_con_dup_with_context() -> (Net, AgentId, AgentId, AgentId, AgentId, AgentId, AgentId) {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con); // con
+        let b = net.create_agent(Symbol::Dup); // dup
+        let x = net.create_agent(Symbol::Con); // context for con.1
+        let y = net.create_agent(Symbol::Con); // context for con.2
+        let z = net.create_agent(Symbol::Dup); // context for dup.1
+        let w = net.create_agent(Symbol::Dup); // context for dup.2
+
+        // Active pair
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // Aux ports to context (using their aux port 1)
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::AgentPort(z, 1));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::AgentPort(w, 1));
+
+        (net, a, b, x, y, z, w)
+    }
+
+    // T1: CON-DUP creates 4 new agents (2 DUP + 2 CON)
+    #[test]
+    fn test_interact_comm_creates_4_agents() {
+        let (mut net, a, b, _, _, _, _) = setup_con_dup_with_context();
+
+        interact_comm(&mut net, a, b);
+
+        // Original pair removed
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+
+        // 4 context agents + 4 new agents = 8 live agents
+        // (6 original - 2 removed + 4 created = 8)
+        assert_eq!(net.count_live_agents(), 8);
+    }
+
+    // T2: Agent balance is +2
+    #[test]
+    fn test_interact_comm_agent_balance() {
+        let (mut net, a, b, _, _, _, _) = setup_con_dup_with_context();
+
+        let before = net.count_live_agents(); // 6
+        interact_comm(&mut net, a, b);
+        let after = net.count_live_agents(); // 8
+
+        assert_eq!(after as i32 - before as i32, 2);
+    }
+
+    // T3: External wires correct
+    #[test]
+    fn test_interact_comm_external_wires() {
+        let (mut net, a, b, x, y, z, w) = setup_con_dup_with_context();
+
+        net.redex_queue.clear();
+        interact_comm(&mut net, a, b);
+
+        // x.1 was connected to con.1, should now point to new DUP(p).p0
+        let x1_target = net.get_target(PortRef::AgentPort(x, 1));
+        if let PortRef::AgentPort(p, 0) = x1_target {
+            assert_eq!(net.get_agent(p).unwrap().symbol, Symbol::Dup);
+        } else {
+            panic!("Expected x.1 -> DUP.p0, got {:?}", x1_target);
+        }
+
+        // y.1 was connected to con.2, should now point to new DUP(q).p0
+        let y1_target = net.get_target(PortRef::AgentPort(y, 1));
+        if let PortRef::AgentPort(q, 0) = y1_target {
+            assert_eq!(net.get_agent(q).unwrap().symbol, Symbol::Dup);
+        } else {
+            panic!("Expected y.1 -> DUP.p0, got {:?}", y1_target);
+        }
+
+        // z.1 was connected to dup.1, should now point to new CON(r).p0
+        let z1_target = net.get_target(PortRef::AgentPort(z, 1));
+        if let PortRef::AgentPort(r, 0) = z1_target {
+            assert_eq!(net.get_agent(r).unwrap().symbol, Symbol::Con);
+        } else {
+            panic!("Expected z.1 -> CON.p0, got {:?}", z1_target);
+        }
+
+        // w.1 was connected to dup.2, should now point to new CON(s).p0
+        let w1_target = net.get_target(PortRef::AgentPort(w, 1));
+        if let PortRef::AgentPort(s, 0) = w1_target {
+            assert_eq!(net.get_agent(s).unwrap().symbol, Symbol::Con);
+        } else {
+            panic!("Expected w.1 -> CON.p0, got {:?}", w1_target);
+        }
+    }
+
+    // T4: Internal wires correct -- crossed pattern
+    #[test]
+    fn test_interact_comm_internal_wires() {
+        let (mut net, a, b, x, y, z, w) = setup_con_dup_with_context();
+
+        interact_comm(&mut net, a, b);
+
+        // Extract new agent IDs from external wire endpoints
+        let p = match net.get_target(PortRef::AgentPort(x, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            other => panic!("Expected AgentPort, got {:?}", other),
+        };
+        let q = match net.get_target(PortRef::AgentPort(y, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            other => panic!("Expected AgentPort, got {:?}", other),
+        };
+        let r = match net.get_target(PortRef::AgentPort(z, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            other => panic!("Expected AgentPort, got {:?}", other),
+        };
+        let s = match net.get_target(PortRef::AgentPort(w, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            other => panic!("Expected AgentPort, got {:?}", other),
+        };
+
+        // Internal crossed wires:
+        // p.1 <-> r.1
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(p, 1)),
+            PortRef::AgentPort(r, 1)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(r, 1)),
+            PortRef::AgentPort(p, 1)
+        );
+
+        // p.2 <-> s.1
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(p, 2)),
+            PortRef::AgentPort(s, 1)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(s, 1)),
+            PortRef::AgentPort(p, 2)
+        );
+
+        // q.1 <-> r.2
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(q, 1)),
+            PortRef::AgentPort(r, 2)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(r, 2)),
+            PortRef::AgentPort(q, 1)
+        );
+
+        // q.2 <-> s.2
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(q, 2)),
+            PortRef::AgentPort(s, 2)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(s, 2)),
+            PortRef::AgentPort(q, 2)
+        );
+    }
+
+    // T5: New agents have correct symbols
+    #[test]
+    fn test_interact_comm_new_agent_symbols() {
+        let (mut net, a, b, x, y, z, w) = setup_con_dup_with_context();
+
+        interact_comm(&mut net, a, b);
+
+        // p, q = DUP (inherit CON side); r, s = CON (inherit DUP side)
+        let p = match net.get_target(PortRef::AgentPort(x, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            _ => panic!(),
+        };
+        let q = match net.get_target(PortRef::AgentPort(y, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            _ => panic!(),
+        };
+        let r = match net.get_target(PortRef::AgentPort(z, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            _ => panic!(),
+        };
+        let s = match net.get_target(PortRef::AgentPort(w, 1)) {
+            PortRef::AgentPort(id, 0) => id,
+            _ => panic!(),
+        };
+
+        assert_eq!(net.get_agent(p).unwrap().symbol, Symbol::Dup);
+        assert_eq!(net.get_agent(q).unwrap().symbol, Symbol::Dup);
+        assert_eq!(net.get_agent(r).unwrap().symbol, Symbol::Con);
+        assert_eq!(net.get_agent(s).unwrap().symbol, Symbol::Con);
+    }
+
+    // T6: New redex detection from external wires
+    #[test]
+    fn test_interact_comm_new_redex_detection() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        let c = net.create_agent(Symbol::Con); // will form redex with new DUP(p)
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // con.1 -> c.p0 (principal port! new DUP(p).p0 <-> c.p0 = redex)
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(2));
+
+        net.redex_queue.clear();
+        interact_comm(&mut net, a, b);
+
+        // c should be involved in a new redex (with new DUP)
+        assert!(net.redex_queue.iter().any(|&(x, y)| x == c || y == c));
+    }
+
+    // T7: Internal wires do NOT generate redexes
+    #[test]
+    fn test_interact_comm_internal_wires_no_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // All aux ports to FreePort (no external principal ports)
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+
+        net.redex_queue.clear();
+        interact_comm(&mut net, a, b);
+
+        // No redexes: all external wires go to FreePort (not principal),
+        // and all internal wires are aux-to-aux.
+        assert!(net.redex_queue.is_empty());
+    }
+
+    // E1: FreePort aux targets (boundary sentinel, R26)
+    #[test]
+    fn test_interact_comm_with_freeport() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(10));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(20));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(30));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(40));
+
+        interact_comm(&mut net, a, b);
+
+        // Find new agents by scanning live agents (excluding removed a, b)
+        let new_agents: Vec<_> = net
+            .live_agents()
+            .filter(|agent| agent.id != a && agent.id != b)
+            .collect();
+        assert_eq!(new_agents.len(), 4);
+
+        // New DUPs' principal ports should point to FreePort(10) and FreePort(20)
+        let dup_agents: Vec<_> = new_agents
+            .iter()
+            .filter(|a| a.symbol == Symbol::Dup)
+            .collect();
+        assert_eq!(dup_agents.len(), 2);
+        let dup_targets: Vec<_> = dup_agents
+            .iter()
+            .map(|a| net.get_target(PortRef::AgentPort(a.id, 0)))
+            .collect();
+        assert!(dup_targets.contains(&PortRef::FreePort(10)));
+        assert!(dup_targets.contains(&PortRef::FreePort(20)));
+
+        // New CONs' principal ports should point to FreePort(30) and FreePort(40)
+        let con_agents: Vec<_> = new_agents
+            .iter()
+            .filter(|a| a.symbol == Symbol::Con)
+            .collect();
+        assert_eq!(con_agents.len(), 2);
+        let con_targets: Vec<_> = con_agents
+            .iter()
+            .map(|a| net.get_target(PortRef::AgentPort(a.id, 0)))
+            .collect();
+        assert!(con_targets.contains(&PortRef::FreePort(30)));
+        assert!(con_targets.contains(&PortRef::FreePort(40)));
+    }
+
+    // E2: Other agents in the net are unaffected
+    #[test]
+    fn test_interact_comm_does_not_affect_other_agents() {
+        let (mut net, a, b, x, _, _, _) = setup_con_dup_with_context();
+        let extra = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(extra, 0), PortRef::FreePort(99));
+
+        interact_comm(&mut net, a, b);
+
+        assert!(net.get_agent(extra).is_some());
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(extra, 0)),
+            PortRef::FreePort(99)
+        );
+        assert!(net.get_agent(x).is_some());
+    }
+
+    // E3: PortRef values survive Vec reallocation
+    #[test]
+    fn test_interact_comm_portref_survives_realloc() {
+        // Create a minimal net to force potential reallocation
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        let c = net.create_agent(Symbol::Con);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(c, 2));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(1));
+
+        // This will create 4 new agents, potentially reallocating the Vec
+        interact_comm(&mut net, a, b);
+
+        // If PortRef was pointer-based, c's connections would be corrupted.
+        // Since PortRef is index-based (AgentPort(id, port)), reallocation is safe.
+        // c should be connected to two new DUP agents' principal ports.
+        let c1_target = net.get_target(PortRef::AgentPort(c, 1));
+        let c2_target = net.get_target(PortRef::AgentPort(c, 2));
+        // Both should be valid AgentPort references to new DUP agents
+        if let PortRef::AgentPort(p, 0) = c1_target {
+            assert!(net.get_agent(p).is_some());
+            assert_eq!(net.get_agent(p).unwrap().symbol, Symbol::Dup);
+        } else {
+            panic!("Expected AgentPort, got {:?}", c1_target);
+        }
+        if let PortRef::AgentPort(q, 0) = c2_target {
+            assert!(net.get_agent(q).is_some());
+            assert_eq!(net.get_agent(q).unwrap().symbol, Symbol::Dup);
+        } else {
+            panic!("Expected AgentPort, got {:?}", c2_target);
+        }
     }
 }
