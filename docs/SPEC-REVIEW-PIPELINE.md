@@ -88,7 +88,7 @@ The user reviews the revised spec, defender response, and task impact report. Ap
 | SPEC-14 (Arithmetic Encoding) | Draft v1 | DONE (MAJOR REVISION) | TODO | TODO | — |
 | SPEC-10 (Security) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
 | SPEC-11 (Observability) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
-| SPEC-12 (User I/O) | Draft v1 | TODO | TODO | TODO | — |
+| SPEC-12 (User I/O) | Draft v1 | DONE (NEEDS REVISION) | TODO | TODO | — |
 
 ### Execution Order (based on dependency chain)
 
