@@ -132,13 +132,37 @@ impl Net {
     ///
     /// This is intentionally private — external code should use `connect`
     /// and `disconnect` to maintain bidirectionality (SPEC-01 T1/I1).
-    #[allow(dead_code)] // Used by connect/disconnect (TASK-0011/0012)
     fn set_port(&mut self, port: PortRef, target: PortRef) {
         if let PortRef::AgentPort(id, p) = port {
             let idx = super::types::port_index(id, p);
             if idx < self.ports.len() {
                 self.ports[idx] = target;
             }
+        }
+    }
+
+    /// Establishes a bidirectional connection between two ports.
+    ///
+    /// Writes both directions in the port array: `a -> b` and `b -> a`.
+    /// If both are principal ports (`AgentPort(_, 0)`), inserts the pair
+    /// into the redex queue for incremental reduction (SPEC-02 R9, R13).
+    ///
+    /// Self-loop policy (R18b): intra-agent connections (different ports
+    /// of the same agent) are valid. Same-port self-connections are
+    /// rejected by a debug assertion.
+    ///
+    /// Complexity: O(1).
+    /// Postcondition: `get_target(a) == b && get_target(b) == a`.
+    pub fn connect(&mut self, a: PortRef, b: PortRef) {
+        debug_assert_ne!(a, b, "Same-port self-connection is invalid: {:?}", a);
+
+        self.set_port(a, b);
+        self.set_port(b, a);
+
+        // Incremental redex detection: if both are principal ports,
+        // an active pair is formed.
+        if let (PortRef::AgentPort(id_a, 0), PortRef::AgentPort(id_b, 0)) = (a, b) {
+            self.redex_queue.push_back((id_a, id_b));
         }
     }
 }
@@ -365,5 +389,97 @@ mod tests {
         for p in 0..3u8 {
             assert_eq!(net.get_target(PortRef::AgentPort(id, p)), DISCONNECTED);
         }
+    }
+
+    // --- connect tests (TASK-0011) ---
+
+    // T1: Bidirectional linkage
+    #[test]
+    fn test_connect_bidirectional() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 2));
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(a, 1)),
+            PortRef::AgentPort(b, 2)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(b, 2)),
+            PortRef::AgentPort(a, 1)
+        );
+    }
+
+    // T2: Principal-principal connection enqueues redex
+    #[test]
+    fn test_connect_principal_enqueues_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        assert_eq!(net.redex_queue.len(), 1);
+        assert_eq!(net.redex_queue[0], (a, b));
+    }
+
+    // T3: Principal-auxiliary does NOT enqueue redex
+    #[test]
+    fn test_connect_principal_auxiliary_no_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 1));
+        assert!(net.redex_queue.is_empty());
+    }
+
+    // T4: Auxiliary-auxiliary does NOT enqueue redex
+    #[test]
+    fn test_connect_auxiliary_auxiliary_no_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 2));
+        assert!(net.redex_queue.is_empty());
+    }
+
+    // T5: Connect AgentPort to FreePort
+    #[test]
+    fn test_connect_agent_to_freeport() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(42));
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(a, 0)),
+            PortRef::FreePort(42)
+        );
+        // FreePort side: no slot, get_target returns DISCONNECTED
+        assert_eq!(net.get_target(PortRef::FreePort(42)), DISCONNECTED);
+        // No redex: FreePort is not AgentPort(_, 0)
+        assert!(net.redex_queue.is_empty());
+    }
+
+    // T6: Intra-agent connection is valid (R18b)
+    #[test]
+    fn test_connect_intra_agent() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(a, 2));
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(a, 1)),
+            PortRef::AgentPort(a, 2)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(a, 2)),
+            PortRef::AgentPort(a, 1)
+        );
+    }
+
+    // T7: Same-port self-connection panics in debug mode (R18b)
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "Same-port self-connection is invalid")]
+    fn test_connect_self_loop_panics() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(a, 1));
     }
 }
