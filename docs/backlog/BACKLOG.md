@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-05
-**Total tasks:** 180 (0 done, 0 in progress, 180 todo)
+**Total tasks:** 195 (0 done, 0 in progress, 195 todo)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -111,6 +111,7 @@
 | TASK-0094 | Implement GridMetrics network extensions | P1 | TODO | 0080 | S |
 | TASK-0095 | Implement in-memory transport for testing | P1 | TODO | 0085, 0086 | S |
 | TASK-0096 | Add protocol crate dependencies to Cargo.toml | P0 | TODO | none | S |
+| TASK-0212 | Implement SerializingChannelTransport | P1 | TODO | 0095, 0085, 0086 | S |
 
 ## Phase 6: CLI & Config (SPEC-07 + SPEC-13)
 
@@ -142,7 +143,7 @@
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
 | TASK-0120 | Convert security module to directory structure | P0 | TODO | none | S |
-| TASK-0121 | Define SecurityError enum | P0 | TODO | 0120 | S |
+| TASK-0121 | Define TokenError and SecurityError enums | P0 | TODO | 0120 | S |
 | TASK-0122 | Define SecurityTier enum and tier detection logic | P0 | TODO | 0120, 0121 | S |
 | TASK-0123 | Define AuthToken struct with generation and serialization | P0 | TODO | 0120, 0121 | M |
 | TASK-0124 | Implement AuthToken constant-time verification | P0 | TODO | 0123 | S |
@@ -157,7 +158,7 @@
 | TASK-0133 | Implement TLS handshake integration for worker | P1 | TODO | 0131, 0093 | M |
 | TASK-0134 | Implement connection limits | P2 | TODO | 0125, 0088 | S |
 | TASK-0135 | Implement idle connection timeout | P2 | TODO | 0125, 0088 | S |
-| TASK-0136 | Implement message size pre-validation in recv_frame | P0 | TODO | 0086, 0125 | S |
+| TASK-0136 | Verify message size pre-validation in recv_frame | P0 | TODO | 0086 | S |
 | TASK-0137 | Add security crate dependencies to Cargo.toml | P0 | TODO | none | S |
 | TASK-0138 | Implement SecurityConfig builder from CLI flags | P0 | TODO | 0122, 0123, 0125, 0126, 0130, 0131 | M |
 | TASK-0139 | Security integration tests | P1 | TODO | 0128, 0129, 0132, 0133, 0136, 0138 | L |
@@ -178,7 +179,7 @@
 | TASK-0149 | Add FSM state transition logging | P1 | TODO | 0144, Phase 5 | M |
 | TASK-0150 | Define CoordinatorMetrics struct and registration | P0 | TODO | 0140 | M |
 | TASK-0151 | Define protocol metrics | P1 | TODO | 0150 | M |
-| TASK-0152 | Define WorkerMetricsReport struct | P0 | TODO | 0140 | S |
+| TASK-0152 | Extend WorkerRoundStats with observability fields | P0 | TODO | 0061 | S |
 | TASK-0153 | Implement coordinator metric aggregation from worker reports | P1 | TODO | 0150, 0152 | M |
 | TASK-0154 | Add axum dependency and scaffold metrics_router | P0 | TODO | 0140, 0150 | S |
 | TASK-0155 | Implement /health and /ready endpoints | P0 | TODO | 0154 | S |
@@ -186,13 +187,15 @@
 | TASK-0157 | Implement axum HTTP server spawn as background tokio task | P0 | TODO | 0154, 0155, 0156 | M |
 | TASK-0158 | Add OTel dependencies and init_tracing OTel layer | P2 | TODO | 0144 | M |
 | TASK-0159 | Optional trace context in wire protocol messages | P2 | TODO | 0158, Phase 5 | M |
+| TASK-0213 | Implement ERROR-level logging requirements (R9a) | P1 | TODO | 0144, Phase 1-6 | M |
+| TASK-0214 | Wire AtomicBool readiness flag in coordinator FSM (R22a) | P1 | TODO | 0108, 0154 | S |
 
 ## Phase 9: User I/O (SPEC-12)
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
 | TASK-0160 | Convert io module to directory structure | P0 | TODO | none | S |
-| TASK-0161 | Define IoError, NetFormat, and InspectOutputFormat types | P0 | TODO | 0160 | S |
+| TASK-0161 | Define FileIoError, NetFormat, and InspectOutputFormat types | P0 | TODO | 0160 | S |
 | TASK-0162 | Define NetSummary and ReductionSummary structs | P0 | TODO | 0160 | S |
 | TASK-0163 | Implement binary format load/save | P0 | TODO | 0160, 0161 | S |
 | TASK-0164 | Text DSL parser - lexing and declaration collection (Pass 1) | P0 | TODO | 0160, 0161 | M |
@@ -208,7 +211,7 @@
 | TASK-0174 | Implement generator - dual_tree | P0 | TODO | 0171, Phase 1 | M |
 | TASK-0175 | Implement generator - mixed_rules | P0 | TODO | 0171, Phase 1 | M |
 | TASK-0176 | Implement generators - tree_sum and tree_sum_balanced | P1 | TODO | 0171, 0174, Phase 1 | M |
-| TASK-0177 | Implement generators - erasure_propagation and Church encodings | P1 | TODO | 0171, Phase 1 | M |
+| TASK-0177 | Implement generators - erasure_propagation and Church encodings | P1 | TODO | 0171, 0202, 0204, 0205, Phase 1 | M |
 | TASK-0178 | Define CLI argument structs for I/O subcommands | P0 | TODO | 0161, 0162, 0171 | M |
 | TASK-0179 | Integration tests for I/O roundtrips and generators | P1 | TODO | 0163-0177, Phase 2 | L |
 
@@ -236,3 +239,20 @@
 | TASK-0197 | Implement derived metrics computation and aggregation | P0 | TODO | 0183, 0184, 0186 | M |
 | TASK-0198 | Implement benchmark suite runner (run_benchmark_suite) | P0 | TODO | 0182-0197, Phase 2, Phase 4 | M |
 | TASK-0199 | Implement CLI binary and Criterion micro-benchmarks | P1 | TODO | 0198, 0184 | M |
+
+## Phase 11: Encoding (SPEC-14)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0200 | Scaffold encoding module directory structure | P0 | TODO | Phase 1 | S |
+| TASK-0201 | Implement encode_church_into (core Church numeral builder) | P0 | TODO | 0200, Phase 1 | M |
+| TASK-0202 | Implement encode_nat (Church numeral wrapper) | P0 | TODO | 0201 | S |
+| TASK-0203 | Implement decode_nat (Church numeral readback) | P0 | TODO | 0200, Phase 1 | M |
+| TASK-0204 | Implement build_add (Church addition) | P0 | TODO | 0201, 0200 | M |
+| TASK-0205 | Implement build_mul (Church multiplication) | P0 | TODO | 0201, 0200 | M |
+| TASK-0206 | Implement build_exp (Church exponentiation) | P0 | TODO | 0201, 0200 | M |
+| TASK-0207 | Implement encoding unit tests (ET-1 through ET-5, ET-9, ET-12) | P0 | TODO | 0201, 0202, 0203 | M |
+| TASK-0208 | Implement arithmetic correctness tests (ET-6, ET-7, ET-8, ET-10) | P0 | TODO | 0204, 0205, 0206, 0203, Phase 2 | M |
+| TASK-0209 | Implement distributed correctness test (ET-11) | P1 | TODO | 0204, 0203, Phase 4 | M |
+| TASK-0210 | Implement compute CLI subcommand | P0 | TODO | 0200, 0204-0206, 0203, Phase 2, 0100 | M |
+| TASK-0211 | Implement arithmetic benchmark scenarios (ARITH-*) | P1 | TODO | 0204-0206, 0203, 0182, Phase 2, Phase 4 | L |
