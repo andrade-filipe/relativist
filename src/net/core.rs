@@ -920,4 +920,51 @@ mod tests {
         let des = Net::from_bytes(&bytes).unwrap();
         assert_eq!(des.root, Some(PortRef::AgentPort(a, 0)));
     }
+
+    // --- PartialEq/Eq verification tests (TASK-0018) ---
+
+    // T1: Nets differing in next_id are NOT equal
+    #[test]
+    fn test_net_neq_next_id() {
+        let mut a = Net::new();
+        let mut b = Net::new();
+        a.next_id = 5;
+        b.next_id = 10;
+        assert_ne!(a, b);
+    }
+
+    // T2: Nets differing in agents are NOT equal
+    #[test]
+    fn test_net_neq_agents() {
+        let mut a = Net::new();
+        let mut b = Net::new();
+        a.create_agent(Symbol::Con);
+        b.create_agent(Symbol::Dup);
+        assert_ne!(a, b);
+    }
+
+    // T3: Nets with same agents but different connections are NOT equal
+    #[test]
+    fn test_net_neq_ports() {
+        let mut a = Net::new();
+        let mut b = Net::new();
+        let id_a = a.create_agent(Symbol::Con);
+        let id_a2 = a.create_agent(Symbol::Dup);
+        let id_b = b.create_agent(Symbol::Con);
+        let id_b2 = b.create_agent(Symbol::Dup);
+        a.connect(PortRef::AgentPort(id_a, 1), PortRef::AgentPort(id_a2, 1));
+        b.connect(PortRef::AgentPort(id_b, 1), PortRef::AgentPort(id_b2, 2));
+        assert_ne!(a, b);
+    }
+
+    // T4: Serde round-trip structural equality
+    #[test]
+    fn test_net_serde_structural_equality() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        let des = Net::from_bytes(&net.to_bytes().unwrap()).unwrap();
+        assert_eq!(net, des);
+    }
 }
