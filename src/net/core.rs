@@ -165,6 +165,22 @@ impl Net {
             self.redex_queue.push_back((id_a, id_b));
         }
     }
+
+    /// Removes the bidirectional connection of a port.
+    ///
+    /// Both the port itself and its former target are set to `DISCONNECTED`.
+    /// If the port is already disconnected, this is a no-op.
+    /// Does NOT remove stale entries from the redex queue — those are
+    /// discarded at dequeue time (SPEC-01 I4, SPEC-02 R17).
+    ///
+    /// Complexity: O(1).
+    pub fn disconnect(&mut self, port: PortRef) {
+        let target = self.get_target(port);
+        if target != DISCONNECTED {
+            self.set_port(target, DISCONNECTED);
+        }
+        self.set_port(port, DISCONNECTED);
+    }
 }
 
 #[cfg(test)]
@@ -481,5 +497,49 @@ mod tests {
         let mut net = Net::new();
         let a = net.create_agent(Symbol::Con);
         net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(a, 1));
+    }
+
+    // --- disconnect tests (TASK-0012) ---
+
+    // T1: Disconnect breaks both sides
+    #[test]
+    fn test_disconnect_both_sides() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 2));
+        net.disconnect(PortRef::AgentPort(a, 1));
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 1)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
+    }
+
+    // T2: Disconnect already-disconnected port is no-op
+    #[test]
+    fn test_disconnect_already_disconnected() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        // Port is already DISCONNECTED after creation
+        net.disconnect(PortRef::AgentPort(a, 0)); // no panic
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 0)), DISCONNECTED);
+    }
+
+    // T3: Disconnect FreePort is no-op
+    #[test]
+    fn test_disconnect_freeport_noop() {
+        let mut net = Net::new();
+        net.disconnect(PortRef::FreePort(99)); // no panic
+    }
+
+    // E8: Disconnect one side of a connection, other side becomes DISCONNECTED
+    #[test]
+    fn test_disconnect_from_target_side() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // Disconnect from b's side
+        net.disconnect(PortRef::AgentPort(b, 0));
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 0)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
     }
 }
