@@ -45,6 +45,18 @@ pub struct Partition {
     pub border_id_end: u32,
 }
 
+/// The complete partitioning plan (SPEC-04 Section 4.1).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PartitionPlan {
+    /// List of partitions, one per worker. `partitions[i].worker_id == i`.
+    pub partitions: Vec<Partition>,
+
+    /// Border map: borderId -> (original_endpoint_A, original_endpoint_B).
+    /// Records the two endpoints of each wire that was cut.
+    /// Used by the merge protocol (SPEC-05) to restore connections.
+    pub borders: HashMap<u32, (PortRef, PortRef)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +217,70 @@ mod tests {
         let p = make_empty_partition();
         assert!(p.free_port_index.is_empty());
         assert_eq!(p.border_id_start, p.border_id_end);
+    }
+
+    // -----------------------------------------------------------------------
+    // PartitionPlan tests
+    // -----------------------------------------------------------------------
+
+    // T1: PartitionPlan has partitions and borders fields
+    #[test]
+    fn test_partition_plan_fields() {
+        let plan = PartitionPlan {
+            partitions: vec![make_empty_partition()],
+            borders: HashMap::new(),
+        };
+        assert_eq!(plan.partitions.len(), 1);
+        assert!(plan.borders.is_empty());
+    }
+
+    // T2: PartitionPlan derives Debug, Clone, Serialize, Deserialize
+    #[test]
+    fn test_partition_plan_derives() {
+        let plan = PartitionPlan {
+            partitions: vec![],
+            borders: HashMap::new(),
+        };
+        let cloned = plan.clone();
+        assert!(cloned.partitions.is_empty());
+        assert!(format!("{:?}", plan).contains("PartitionPlan"));
+    }
+
+    // T3: borders is HashMap<u32, (PortRef, PortRef)>
+    #[test]
+    fn test_partition_plan_borders() {
+        let mut borders = HashMap::new();
+        borders.insert(1, (PortRef::AgentPort(0, 1), PortRef::AgentPort(2, 0)));
+        let plan = PartitionPlan {
+            partitions: vec![],
+            borders,
+        };
+        let (a, b) = plan.borders[&1];
+        assert_eq!(a, PortRef::AgentPort(0, 1));
+        assert_eq!(b, PortRef::AgentPort(2, 0));
+    }
+
+    // T4: PartitionPlan round-trips through bincode
+    #[test]
+    fn test_partition_plan_serde() {
+        let plan = PartitionPlan {
+            partitions: vec![make_empty_partition()],
+            borders: HashMap::new(),
+        };
+        let bytes = bincode::serialize(&plan).unwrap();
+        let restored: PartitionPlan = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(restored.partitions.len(), 1);
+        assert!(restored.borders.is_empty());
+    }
+
+    // E1: Empty plan (no partitions, no borders)
+    #[test]
+    fn test_partition_plan_empty() {
+        let plan = PartitionPlan {
+            partitions: vec![],
+            borders: HashMap::new(),
+        };
+        assert!(plan.partitions.is_empty());
+        assert!(plan.borders.is_empty());
     }
 }
