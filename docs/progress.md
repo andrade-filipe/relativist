@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
-**Last updated:** 2026-04-04
-**Updated by:** ORCHESTRATOR — Human Check complete (blocos 1-8). All OQs resolved. Scaffolding done. Task decomposition in progress.
+**Last updated:** 2026-04-05
+**Updated by:** ESPECIALISTA EM SPECS — SPEC-06 adversarial review + revision (Revised v2 -> Revised v3)
 
 ---
 
@@ -9,8 +9,8 @@
 
 | Phase | Status | Detail |
 |-------|--------|--------|
-| Specs (core) | 10/10 COMPLETE | SPEC-00 to SPEC-09 revised in English (v2, with DISCs + ARGs) |
-| Specs (end-to-end) | 4/4 DRAFT v1 | SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture) — all Draft v1 |
+| Specs (core) | 10/10 COMPLETE | SPEC-00 to SPEC-09 revised in English (v2+; SPEC-02/03/04/06/08/09 at v3, SPEC-13 at Revised v2 via adversarial review) |
+| Specs (end-to-end) | 4/4 DRAFT v1 | SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture) — SPEC-13 revised to v2, others Draft v1 |
 | Research library | 24/24 COMPLETE | PESQ-001 to PESQ-024 in `docs/pesquisa/` |
 | Open decisions | 8/8 RESOLVED | See PESQ-023 (Decision Matrix) |
 | Open-source setup | COMPLETE | LICENCE, README, CONTRIBUTING, GitHub templates (.github/) |
@@ -129,3 +129,7 @@ Documented for future work, not implementation scope. See **[ROADMAP.md](ROADMAP
 | 2026-04-04 | HVM2-style compact repr → ROADMAP | Documented as v2 optimization (ROADMAP 2.15), not v1 scope |
 | 2026-04-04 | Task decomposition started | Phases 1-5 (SPEC-02 to SPEC-06) being split in parallel |
 | 2026-03-26 | proptest for invariants | PESQ-022: P1, P2, P3, T1-T7, D1-D6 verified by property tests |
+| 2026-04-05 | SPEC-04 adversarial review + revision | Round 1 critic (14 issues: 1 CRITICAL, 4 HIGH, 4 MEDIUM, 5 LOW). Round 2 defender: 10 ACCEPTED, 4 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: SC-001 (split/SPEC-13 FSM reconciliation), SC-005 (border_id_start/end for FreePort disambiguation), SC-004 (Scenario 2 FreePort never deleted), R15a (new), R28 (root port propagation). |
+| 2026-04-05 | SPEC-03 adversarial review + revision | Round 1 critic (12 issues: 0 CRITICAL, 2 HIGH, 4 MEDIUM, 6 LOW). Round 2 defender: 10 ACCEPTED, 2 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: R25 (self-referencing aux port guard + link helper), R26 (FreePort boundary sentinels), interact_* preconditions, R12 counter management, O(1) amortized, T2 invariant note. |
+| 2026-04-05 | SPEC-08 adversarial review + revision | Round 1 critic (17 issues: 2 CRITICAL, 5 HIGH, 5 MEDIUM, 5 LOW). Round 2 defender: 14 ACCEPTED, 3 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: scope expanded to SPEC-01-14 (60 tests from SPEC-10-14 incorporated), global test label namespace (SEC-/OBS-/UIO-/ARCH-/ENC-), I1-I11 -> INT1-INT11, R22-R24 -> R24-R26, PB13-PB16 added (T2/T3/Profile B/C), directory structure for all 11 modules, isomorphism SHOULD target (500 agents/100ms), prop_assume! for budget exhaustion, E9 relative timing. |
+| 2026-04-05 | SPEC-06 adversarial review + revision | Round 1 critic (17 issues: 2 CRITICAL, 3 HIGH, 4 MEDIUM, 8 LOW). Round 2 defender: 12 ACCEPTED, 5 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: SC-001 (Message enum extended to 7 variants with Register/RegisterAck/RegisterNack from SPEC-10), SC-002 (FSM R26-R28 demoted to historical, superseded by SPEC-13 R19-R25), SC-003/SC-004 (ProtocolError reconciled as canonical, Io->ConnectionLost, AuthFailed added, WorkerError/WorkerCountMismatch moved to CoordinatorError), SC-005 (NodeConfig: host+port replaced with bind:SocketAddr, NodeRole removed, default 127.0.0.1:9000), SC-006 (WorkerRoundStats 6-field), R2a (tier-dependent registration), R11 (explicit bincode config), R12 (transitive reachability), R17 (default bind), R30 (collect_timeout upgraded to MUST). |

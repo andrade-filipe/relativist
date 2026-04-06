@@ -1,6 +1,6 @@
 # SPEC-01: System Invariants
 
-**Status:** Revised v2
+**Status:** Revised v3
 **Depends on:** SPEC-00 (Glossary)
 **Gray zones resolved:** Z1 (strong confluence local to distributed determinism)
 **References consumed:** REF-001, REF-002, REF-003, REF-005, REF-013, REF-014, REF-018
@@ -56,13 +56,17 @@ These invariants capture the formal properties of Interaction Combinators that R
 
 **T1. Port Linearity**
 
-Every port of every live agent in the net MUST be connected to exactly one other port. There are no dangling ports (unconnected) and no fan-out ports (multiply connected).
+Every port of every live agent in the net MUST be connected to exactly one port at a different index. There are no dangling ports (unconnected), no fan-out ports (multiply connected), and no port-to-self connections.
 
-- **Formal statement:** For every agent `a` in the net and every port index `p` in `0..=arity(a.symbol)`, there exists exactly one `PortRef q` such that `ports[agent_port(a.id, p)] == q` and `ports[port_index(q)] == agent_port(a.id, p)`.
-- **Justification:** REF-001, p.95, Condition 1: "Inside a rule, each variable occurs exactly twice." REF-002, p.71 (net structure). Linearity is the structural condition that prevents pointer sharing, which is the basis of strong confluence (DISC-001 v2, Section 3a; ARG-001, P1).
-- **How to verify:** Assertion that traverses all live agents and verifies that each port has exactly one entry in the port array and that the reverse entry is consistent (bidirectionality).
-- **Consequence of violation:** If a port is dangling, the rule consuming it will produce undefined results. If a port has multiple connections, reducing one may corrupt the other, destroying strong confluence.
-- **When to verify:** After each reduction step (in debug mode), after each merge, after each split.
+- **Formal statement:** For every agent `a` in the net and every port index `p` in `0..=arity(a.symbol)`, there exists exactly one `PortRef q` such that `ports[agent_port(a.id, p)] == q` and `ports[port_index(q)] == agent_port(a.id, p)`, with the following constraints and exceptions:
+  - **Different index:** The port ref `q` MUST be at a different port array index than `agent_port(a.id, p)`. That is, `port_index(q) != agent_port_index(a.id, p)`. A port connected to itself (`ports[p] == p`) violates T1.
+  - **Cross-port self-loops are valid:** Two different ports of the same agent MAY be connected to each other. For example, `ports[agent_port(a.id, 1)] == agent_port(a.id, 2)` and `ports[agent_port(a.id, 2)] == agent_port(a.id, 1)` satisfies T1 because the two ports are at different indices. This pattern occurs in Church(0) encoding (SPEC-14 R5: `CON_1.p1 <-> CON_1.p2` represents the identity function `lambda x. x`).
+  - **Root port exception:** If `net.root == Some(AgentPort(a.id, p_root))`, then port `p_root` of agent `a` MAY contain `DISCONNECTED` in the port array, and the bidirectional check is waived for that port. The external observation point is provided by `net.root`, not by an internal wire. All other ports of live agents MUST satisfy the bidirectional property.
+  - **DISCONNECTED is transient:** The sentinel `DISCONNECTED` (SPEC-02, Section 4.4: `PortRef::FreePort(u32::MAX)`) is used internally during reduction rule application. A slot containing `DISCONNECTED` violates T1 if it persists after a reduction rule completes, except at the root port (see exception above).
+- **Justification:** REF-001, p.95, Condition 1: "Inside a rule, each variable occurs exactly twice." REF-002, p.71 (net structure). Linearity is the structural condition that prevents pointer sharing, which is the basis of strong confluence (DISC-001 v2, Section 3a; ARG-001, P1). The root port exception is justified by SPEC-02, Section 4.9 and SPEC-14 R9: the root agent's principal port has no internal peer because it faces the external observer. The cross-port self-loop clarification is justified by SPEC-14 R5 (Church(0) encoding) and SPEC-12 R58 (port-to-self rejection).
+- **How to verify:** Assertion that traverses all live agents and verifies that each port (within `0..=arity(a.symbol)`) has exactly one entry in the port array and that the reverse entry is consistent (bidirectionality). The assertion MUST skip the root port (if `DISCONNECTED`) and MUST accept cross-port self-loops (two different ports of the same agent connected to each other). The assertion MUST reject port-to-self connections (`ports[p] == p`).
+- **Consequence of violation:** If a port is dangling, the rule consuming it will produce undefined results. If a port has multiple connections, reducing one may corrupt the other, destroying strong confluence. If a port is connected to itself, the bidirectional property is trivially satisfied but the port is effectively unusable (it cannot participate in a meaningful wire).
+- **When to verify:** After each reduction step (in debug mode), after each merge, after each split, after each net construction by encoding functions (SPEC-14), after parsing from text DSL (SPEC-12), and after workload generation (SPEC-12).
 
 ---
 
@@ -280,12 +284,13 @@ Every reference `AgentPort(id, port)` in the port array or the redex queue MUST 
 
 **I3. Monotonicity of AgentIds**
 
-The `next_id` field of Net MUST be strictly greater than any `AgentId` currently in use. IDs are never reused.
+The `next_id` field of Net MUST be strictly greater than any `AgentId` currently in use in that Net. IDs are never reused.
 
 - **Formal statement:** For every agent `a` in the net: `a.id < net.next_id`. After each operation that creates agents, `next_id` is incremented by the number of agents created.
+- **Scope:** In the context of a single Net (whether the global net or a partition), `next_id` MUST be strictly greater than any `AgentId` in that Net's agent arena. During distributed execution, each partition satisfies I3 independently with respect to its own agent set and its own ID range (SPEC-04 R16-R19: static ID space partitioning gives each worker a contiguous range `[start, end)` with a local `next_id`). After merge, I3 is restored globally by taking the maximum `next_id` across all partitions (SPEC-05 R8).
 - **Justification:** AC-001, "Design Decisions" section. Monotonically increasing IDs prevent reuse and simplify distribution (each worker receives a disjoint range -- SPEC-00 Section 6.11, ID Space Partitioning).
 - **Relationship:** I3 is a precondition for D4 (ID uniqueness).
-- **How to verify:** Assertion that `next_id > max(active agent ids)` after each operation.
+- **How to verify:** Assertion that `next_id > max(active agent ids)` after each operation. During distributed execution, the assertion applies per-partition.
 - **Consequence of violation:** ID collision, which violates D4 (ID uniqueness) in the distributed scenario and corrupts the port array in the local scenario.
 
 ---
@@ -315,6 +320,33 @@ For terminating nets, `reduce_all` MUST terminate in finite time. For non-termin
 
 ---
 
+**I6. ERA Auxiliary Slot Cleanliness**
+
+The port array allocates 3 slots per agent (`id * 3 + port_id`), but ERA agents have arity 0. The unused auxiliary slots (indices `id*3+1` and `id*3+2`) of ERA agents MUST contain `DISCONNECTED` and MUST NOT be referenced by any port.
+
+- **Formal statement:** For every ERA agent `a` in the net: `ports[agent_port(a.id, 1)] == DISCONNECTED` and `ports[agent_port(a.id, 2)] == DISCONNECTED`. Furthermore, no port entry in the port array may contain `AgentPort(a.id, 1)` or `AgentPort(a.id, 2)`.
+- **Justification:** T1 iterates only over `0..=arity(a.symbol)`, which for ERA means only port 0. This leaves slots 1 and 2 outside T1's scope. SPEC-12 R61 explicitly states that these slots "MUST NOT be validated against T1." SPEC-02, Section 4.5 initializes all new slots to `DISCONNECTED`. If a bug writes a valid `PortRef` into an ERA's auxiliary slot, T1 and I1 would not detect it, yet the port array would be semantically corrupt -- phantom connections invisible to all other invariant assertions.
+- **Relationship:** I6 complements T1 and I1 by covering the gap in unused port array slots.
+- **How to verify:** In debug mode, alongside the I1 assertion, iterate over all ERA agents and verify that `ports[agent_port(a.id, 1)] == DISCONNECTED` and `ports[agent_port(a.id, 2)] == DISCONNECTED`. Optionally, verify that no port entry references `AgentPort(era_id, 1)` or `AgentPort(era_id, 2)` (this is O(n) in port array size).
+- **Consequence of violation:** A valid `PortRef` in an ERA's auxiliary slot would create a phantom connection invisible to T1 assertions. During merge or split, these phantom connections could corrupt the net.
+
+---
+
+**I7. Root Port Consistency**
+
+If `net.root` is `Some(ref)`, the reference MUST be valid and the root port MUST NOT also be internally connected.
+
+- **Formal statement:** If `net.root == Some(ref)`, then:
+  - (a) `ref` MUST point to a valid port: if `ref == AgentPort(id, p)`, then agent `id` exists (i.e., `agents[id]` is `Some(_)`) and `p <= arity(agent.symbol)` (I2-compatible).
+  - (b) If `ref == AgentPort(id, p)`, then `ports[agent_port(id, p)] == DISCONNECTED`. The root port is NOT also internally connected. If it were, the port would be effectively connected to two things (the external observer and an internal agent), violating the spirit of T1.
+  - (c) If `ref == FreePort(bid)`, the FreePort is a valid Lafont interface port (SPEC-12 R56 permits this for text DSL inputs).
+- **Justification:** SPEC-02 R6 defines `root: Option<PortRef>`. SPEC-14 R9 mandates `net.root = Some(AgentPort(lam_f, 0))` for Church numerals, with the root agent's principal port containing `DISCONNECTED` in the port array (SPEC-14 R5 note). SPEC-12 R56 mandates parser validation of root references. Without an explicit invariant, a net with a dangling root reference (`net.root` pointing to a dead agent) or a root port that is also internally connected would produce incorrect results or panics during `decode_nat`.
+- **Relationship:** I7 complements T1's root port exception by formalizing the consistency requirements for `net.root`. T1 waives the bidirectional check for the root port; I7 ensures that this waiver is only applied to valid, DISCONNECTED root ports.
+- **How to verify:** In debug mode, after net construction or merge: if `net.root == Some(AgentPort(id, p))`, assert that `agents[id]` is `Some(_)`, `p <= arity(agents[id].symbol)`, and `ports[agent_port(id, p)] == DISCONNECTED`. If `net.root == Some(FreePort(bid))`, assert that `bid` is a valid free port identifier.
+- **Consequence of violation:** A dangling root reference would cause `decode_nat` to panic or return garbage. A root port that is also internally connected would have ambiguous semantics: the reduction engine would treat it as a normal internal connection, while `decode_nat` would also try to traverse from it.
+
+---
+
 ### 3.4. Fundamental Property (Layer G)
 
 **G1. Equivalence Between Local and Distributed Reduction**
@@ -335,7 +367,7 @@ for any Terminating Net `net` and any number of workers `n >= 1`, where `~` deno
   - D5 (exclusive ownership) guarantees no agent duplication across partitions.
   - D6 (protocol termination = P5) guarantees the cycle converges.
   - P6 (scope restriction to terminating nets) is the precondition for T6, T7, and the proof by induction (ARG-001, Section "Induction Proof").
-- **How to verify:** This is Relativist's fundamental test. For each test case: (a) construct the net, (b) reduce sequentially with `reduce_all`, (c) reduce distributedly with `run_grid` for various values of `n`, (d) compare normal forms by graph isomorphism.
+- **How to verify:** This is Relativist's fundamental test. For each test case: (a) construct the net, (b) reduce sequentially with `reduce_all`, (c) reduce distributedly with `run_grid` for various values of `n`, (d) compare normal forms by graph isomorphism. For arithmetic nets (SPEC-14), correctness can also be verified by comparing decoded results: `decode_nat(reduce_all(build_op(a, b))) == decode_nat(extract_result(run_grid(build_op(a, b), n)))` for all valid operands. This is simpler than graph isomorphism and directly validates the end-to-end encoding/reduction/decoding workflow.
 - **Consequence of violation:** The TCC hypothesis would be refuted. Distributed reduction would not preserve IC determinism.
 
 ---
@@ -366,6 +398,8 @@ I2 (Reference Validity) --------------> T5 (precondition for rules)
 I3 (Monotonic IDs) -------------------> D4 (precondition for uniqueness)
 I4 (Redex Queue Validity) ------------> T2 (precondition for redexes)
 I5 (Local Termination) ---------------> T6 (implements uniqueness)
+I6 (ERA Auxiliary Slot Cleanliness) --> T1 (complements linearity for unused slots)
+I7 (Root Port Consistency) ----------> T1 (formalizes root port exception)
 ```
 
 ### 4.2. Mapping to Formal Argument Framework (P1-P6)
@@ -388,19 +422,55 @@ This table maps each invariant to the premises P1-P6 established in DISC-003 v2 
 
 The implementation MUST include verifiable assertions for implementation invariants (Layer I) and, optionally, for theoretical invariants (Layer T) in debug mode.
 
+**Invariant verification occurs in two modes:**
+
+1. **Runtime assertions via `debug_assert!`** (or `#[cfg(debug_assertions)]`), which panic on failure. Used in the reduction engine (SPEC-03), partition (SPEC-04), merge (SPEC-05), and encoding functions (SPEC-14). This is the primary mode for catching bugs during development.
+
+2. **Validation returning `Result::Err`**, which propagates errors gracefully. Used in the text DSL parser (SPEC-12 R11: parser returns an error, not a panic, when invariants are violated) and in any function that accepts external input. SPEC-12 R52 defines a `FileIoError::InvariantViolation` variant for this mode. SPEC-13 R16 defines per-module error enums with `InvariantViolation(String)` variants.
+
+Both modes verify the same invariants; they differ only in the failure mechanism. Invariant verification functions MUST be consistent with T1's definition, including acceptance of cross-port self-loops (cf. SPEC-14 R5) and the root port exception.
+
+**Invariant error codes:** `InvariantViolation` strings SHOULD start with the invariant code (e.g., `"T1: port 42 is dangling"`, `"I3: next_id 5 <= max agent id 7"`). This enables automated log analysis and direct cross-reference to SPEC-01.
+
 ```rust
 /// Verifies invariant I1: bidirectional port array.
+/// Also checks T1 constraints: no port-to-self, DISCONNECTED only at root port.
 /// MUST be called after each reduction in debug mode.
 #[cfg(debug_assertions)]
 fn assert_ports_consistent(net: &Net) {
-    for (idx, &target) in net.ports.iter().enumerate() {
-        if target != NONE {
-            assert_eq!(
-                net.ports[port_index(target)],
-                idx_to_port_ref(idx),
-                "I1 violated: ports[{:?}] = {:?}, but ports[{:?}] != {:?}",
-                idx, target, target, idx
-            );
+    for slot in net.agents.iter() {
+        if let Some(agent) = slot {
+            let num_ports = total_ports(agent.symbol);
+            for p in 0..num_ports {
+                let port = PortRef::AgentPort(agent.id, p);
+                let port_idx = agent_port_index(agent.id, p);
+                let target = net.ports[port_idx];
+
+                // Root port exception: DISCONNECTED is allowed
+                if target == DISCONNECTED {
+                    assert!(
+                        net.root == Some(port),
+                        "T1 violated: port {:?} is DISCONNECTED but is not the root port",
+                        port
+                    );
+                    continue;
+                }
+
+                // Port-to-self check: ports[p] must not equal p
+                assert_ne!(
+                    port_index(target), port_idx,
+                    "T1 violated: port {:?} is connected to itself (port-to-self)",
+                    port
+                );
+
+                // Bidirectional check: ports[target] must point back to port
+                let reverse = net.get_target(target);
+                assert_eq!(
+                    reverse, port,
+                    "I1 violated: port {:?} -> {:?}, but {:?} -> {:?}",
+                    port, target, target, reverse
+                );
+            }
         }
     }
 }
@@ -408,20 +478,29 @@ fn assert_ports_consistent(net: &Net) {
 /// Verifies invariant I2: all references point to existing agents.
 #[cfg(debug_assertions)]
 fn assert_refs_valid(net: &Net) {
-    for (idx, &target) in net.ports.iter().enumerate() {
-        if let Some((agent_id, port_id)) = decode_agent_port(target) {
-            assert!(
-                net.agents.get(agent_id as usize)
-                    .is_some_and(|slot| slot.is_some()),
-                "I2 violated: reference to nonexistent agent {:?}",
-                target
-            );
-            let agent = net.agents[agent_id as usize].as_ref().unwrap();
-            assert!(
-                port_id <= arity(agent.symbol),
-                "I2 violated: port {} exceeds arity of {:?}",
-                port_id, agent.symbol
-            );
+    for slot in net.agents.iter() {
+        if let Some(agent) = slot {
+            let num_ports = total_ports(agent.symbol);
+            for p in 0..num_ports {
+                let target = net.get_target(PortRef::AgentPort(agent.id, p));
+                if target == DISCONNECTED {
+                    continue;
+                }
+                if let PortRef::AgentPort(tid, tp) = target {
+                    assert!(
+                        net.agents.get(tid as usize)
+                            .is_some_and(|s| s.is_some()),
+                        "I2 violated: reference to nonexistent agent {:?}",
+                        target
+                    );
+                    let target_agent = net.agents[tid as usize].as_ref().unwrap();
+                    assert!(
+                        tp <= arity(target_agent.symbol),
+                        "I2 violated: port {} exceeds arity of {:?}",
+                        tp, target_agent.symbol
+                    );
+                }
+            }
         }
     }
 }
@@ -439,6 +518,65 @@ fn assert_next_id_valid(net: &Net) {
         }
     }
 }
+
+/// Verifies invariant I6: ERA auxiliary slot cleanliness.
+#[cfg(debug_assertions)]
+fn assert_era_slots_clean(net: &Net) {
+    for slot in net.agents.iter() {
+        if let Some(agent) = slot {
+            if agent.symbol == Symbol::ERA {
+                let slot1 = agent_port_index(agent.id, 1);
+                let slot2 = agent_port_index(agent.id, 2);
+                if slot1 < net.ports.len() {
+                    assert_eq!(
+                        net.ports[slot1], DISCONNECTED,
+                        "I6 violated: ERA agent {} has non-DISCONNECTED value at auxiliary slot 1",
+                        agent.id
+                    );
+                }
+                if slot2 < net.ports.len() {
+                    assert_eq!(
+                        net.ports[slot2], DISCONNECTED,
+                        "I6 violated: ERA agent {} has non-DISCONNECTED value at auxiliary slot 2",
+                        agent.id
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Verifies invariant I7: root port consistency.
+#[cfg(debug_assertions)]
+fn assert_root_consistent(net: &Net) {
+    if let Some(root_ref) = net.root {
+        match root_ref {
+            PortRef::AgentPort(id, p) => {
+                assert!(
+                    net.agents.get(id as usize)
+                        .is_some_and(|s| s.is_some()),
+                    "I7 violated: root references nonexistent agent {}",
+                    id
+                );
+                let agent = net.agents[id as usize].as_ref().unwrap();
+                assert!(
+                    p <= arity(agent.symbol),
+                    "I7 violated: root port {} exceeds arity of {:?}",
+                    p, agent.symbol
+                );
+                let port_idx = agent_port_index(id, p);
+                assert_eq!(
+                    net.ports[port_idx], DISCONNECTED,
+                    "I7 violated: root port {:?} is not DISCONNECTED (internally connected)",
+                    root_ref
+                );
+            }
+            PortRef::FreePort(_) => {
+                // FreePort root is valid (SPEC-12 R56)
+            }
+        }
+    }
+}
 ```
 
 ### 4.4. Failure Model
@@ -449,6 +587,8 @@ Relativist operates under an ideal scenario (no network or worker failures), as 
 - **Cooperative workers:** No worker sends corrupted data or acts maliciously.
 - **Sufficient memory:** No worker exhausts memory during reduction (nets that expand via CON-DUP may require significant memory).
 - **Clock irrelevance:** Strong confluence makes temporal ordering irrelevant. There is no dependency on a global clock or temporal synchronization. As Lafont states: "time is relativistic" (REF-002, p.70).
+
+- **Worker authentication:** When token authentication is enabled (SPEC-10), workers MUST present a valid token before participating in the grid loop. Failed authentication does not affect the invariants (the worker is rejected and never receives a partition). The invariants T1-G1 apply to the grid loop proper, after successful authentication. SPEC-10's security tiers (Development, Private Network, Production) do not alter the trust model for invariant purposes: once a worker is authenticated, it is treated as cooperative.
 
 Fault tolerance is OUT OF SCOPE (Z5, per OBJETIVO_TCC.md; Premise P6 scope restriction). If any of the above assumptions is violated (e.g., TCP connection interrupted), behavior is undefined.
 
@@ -464,13 +604,13 @@ The selection of invariants follows three principles:
 
 2. **Distribution sufficiency:** Invariants D1-D6 correspond exactly to premises P2-P5 of the formal argument (DISC-003 v2, ARG-001), plus the partitioning conditions C1-C3 (ARG-002). DISC-003 v2, Section 3.1, argues that P1 + P2 + P3 + P4 are sufficient for G1; therefore T4 + D1 + D2 + D3 + D4 (+ D5 as precondition for D1, + D6 as consequence of P1-P4) are sufficient for G1.
 
-3. **Implementation grounding:** Invariants I1-I5 are the concrete implementation properties that ensure T1-T7 and D1-D6 hold at runtime. Each Layer I invariant maps to exactly one Layer T or Layer D invariant (see dependency hierarchy in Section 4.1).
+3. **Implementation grounding:** Invariants I1-I7 are the concrete implementation properties that ensure T1-T7 and D1-D6 hold at runtime. Each Layer I invariant maps to exactly one Layer T or Layer D invariant (see dependency hierarchy in Section 4.1).
 
 ### 5.2. Alternatives Considered and Rejected
 
 - **"Constant number of free ports" invariant:** Rejected. Free ports (FreePort Boundary) are temporary artifacts of partitioning, not a permanent net property. Their count varies between phases.
 
-- **"Net size only decreases" invariant:** Rejected. The CON-DUP commutation rule INCREASES the number of agents (balance +2). Net size can grow before converging to Normal Form.
+- **"Net size only decreases" invariant:** Rejected. The CON-DUP commutation rule INCREASES the number of agents (balance +2). Net size can grow before converging to Normal Form. In fact, arithmetic nets (SPEC-14) demonstrate dramatic growth before collapse: `build_mul(10, 10)` generates a net with ~21 agents that grows to hundreds during reduction before collapsing to the normal form (~21 agents). T7 guarantees that the total number of remaining interactions decreases, even as the agent count temporarily increases.
 
 - **"Fixed number of rounds" invariant (strong protocol determinism):** Rejected. The number of rounds depends on partitioning and the distribution of border redexes. Strong confluence guarantees determinism of the RESULT, not the PATH. DISC-003 v2, Perspective 6.
 
@@ -510,11 +650,16 @@ The Haskell prototype (AC-001) implicitly assumes all T1-T7 invariants but does 
 
 ### 6.3. What Relativist Changes
 
-1. **Explicit verification:** Relativist will include assertions for invariants I1-I5, absent in the prototype. In debug mode, each reduction will be verified.
+1. **Explicit verification:** Relativist will include assertions for invariants I1-I7, absent in the prototype. In debug mode, each reduction will be verified.
 2. **Optimized representation:** The prototype uses `[Wire]` (wire list). Relativist will use a flat port array (`Vec<PortRef>`), making I1 verifiable in O(n) instead of O(w^2).
 3. **Incremental redex queue:** The prototype rescans all wires to find redexes (AC-001, L1). Relativist maintains an incremental queue, which requires I4 (queue validity) and supports stale entry detection.
 4. **Pre-allocated IDs:** The prototype performs post-reduction remapping (`remapAllPartitions`). Relativist will pre-allocate ID ranges per worker (SPEC-00 Section 6.11), avoiding remapping entirely and simplifying D4.
 5. **Explicit FreePort distinction:** Relativist will distinguish FreePort (Lafont) from FreePort (Boundary) in the type system (SPEC-00 Sections 6.1, 6.2; DISC-004 v2, Section 1.4), preventing confusion between interface ports and boundary sentinels.
+6. **Token authentication (SPEC-10):** The Haskell prototype has no authentication. Relativist adds token-based worker authentication with constant-time comparison before the grid loop.
+7. **Structured observability (SPEC-11):** The Haskell prototype has no structured logging or metrics. Relativist adds tracing-based logging, Prometheus metrics, and optional OpenTelemetry integration.
+8. **Arithmetic encoding (SPEC-14):** The Haskell prototype has no encoding/decoding layer. Relativist adds Church numerals, arithmetic operations (add, mul, exp), and a `compute` CLI subcommand for end-to-end arithmetic evaluation.
+9. **Text DSL (SPEC-12):** The Haskell prototype reads/writes only binary `[Int]` format. Relativist adds a human-readable `.ic` text format for net construction and inspection.
+10. **Multi-format I/O (SPEC-12):** Binary, text DSL, and JSON input/output, with format auto-detection by file extension.
 
 ---
 
@@ -524,6 +669,6 @@ The Haskell prototype (AC-001) implicitly assumes all T1-T7 invariants but does 
 
 1. **Graph isomorphism comparison in G1.** **RESOLVED: Option (a) — ID canonicalization.** The comparison algorithm for G1 MUST use ID canonicalization (renumber agents sequentially by BFS traversal from a deterministic root) followed by direct structural comparison. This is the simplest approach and sufficient for test nets (G1 is verified in tests, not in production runtime). More complex alternatives (graph hashing, topology verification) are unnecessary given the controlled test sizes.
 
-2. **Assertion verification frequency.** **RESOLVED: Configurable and disableable.** Invariant verification (I1, I2, I3, I4) MUST be configurable at three levels: (a) every reduction (maximum safety, for debugging), (b) every N reductions (tunable frequency), (c) disabled (zero overhead, for production/benchmarks). The default in debug builds SHOULD be every reduction; the default in release builds SHOULD be disabled. This applies to all runtime verification that costs computational resources — the user expects full flexibility to trade safety for performance.
+2. **Assertion verification frequency.** **RESOLVED: Configurable and disableable.** Invariant verification (I1, I2, I3, I4, I6, I7) MUST be configurable at three levels: (a) every reduction (maximum safety, for debugging), (b) every N reductions (tunable frequency), (c) disabled (zero overhead, for production/benchmarks). The default in debug builds SHOULD be every reduction; the default in release builds SHOULD be disabled. This applies to all runtime verification that costs computational resources — the user expects full flexibility to trade safety for performance. Note: Invariant verification functions MUST be consistent with T1's definition, including acceptance of cross-port self-loops (cf. SPEC-14 R5). Writing a T1 assertion that rejects cross-port self-loops would cause encoding functions to fail in debug mode while passing in release mode.
 
 3. **Non-terminating net handling in the grid protocol.** **RESOLVED: Covered by SPEC-07 `--max-rounds`.** The `--max-rounds <N>` CLI argument (SPEC-07, R3/R5) serves as the round limit for both coordinator and local mode. Default is unlimited (for known-terminating nets). For unknown nets, the user sets a finite limit. No additional mechanism is needed beyond what SPEC-07 already specifies.

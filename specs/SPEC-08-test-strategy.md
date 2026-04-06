@@ -1,18 +1,19 @@
 # SPEC-08: Test Strategy
 
-**Status:** Revised v2
-**Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment)
+**Status:** Revised v3
+**Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture), SPEC-14 (Arithmetic Encoding)
 **Gray zones resolved:** ---
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-018 (Arrighi et al. 2024)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, P1-P5, evidence classification), DISC-006 v2 (overhead and granularity, test scenario design)
 **Arguments consumed:** ARG-001 (central argument, P1-P6 framework, fundamental property), ARG-002 (partitioning preserves structure, split/merge identity, C1-C3), ARG-003 (merge protocol guarantees border completeness, P3), ARG-004 (practical viability, workload profiles A/B/C)
 **Code analyses consumed:** AC-001 (CoreSpec.hs, 13 tests, 5 gaps), AC-002 (PartitionSpec.hs, partition tests, merge tests), AC-004 (GridSpec.hs + TreeMapReduceSpec.hs, 6 fundamental property tests), AC-005 (BenchmarkSpec.hs, 27 tests, 6 gaps)
+**Adversarial review consumed:** SPEC-08-round1-critic.md (17 issues: 2 CRITICAL, 5 HIGH, 5 MEDIUM, 5 LOW)
 
 ---
 
 ## 1. Purpose
 
-This spec defines the complete TDD test strategy for Relativist: the test taxonomy (unit, integration, property-based, end-to-end), the specific tests for each component (Net, Reduction, Partition, Merge, Grid Loop, Wire Protocol, Deployment), the property-based testing strategy using `proptest` for statistical validation of IC invariants, the verification of the Fundamental Property (SPEC-01, G1), the runtime invariant checker, the test fixtures and random net generators, the graph isomorphism checker, and the mapping of gaps identified in the Haskell prototype that Relativist MUST cover. The goal is that every MUST requirement from SPEC-01 through SPEC-07 has at least one corresponding test.
+This spec defines the complete TDD test strategy for Relativist: the test taxonomy (unit, integration, property-based, end-to-end), the specific tests for each component (Net, Reduction, Partition, Merge, Grid Loop, Wire Protocol, Deployment, Encoding, Security, Observability, User I/O, Coordinator FSM, Worker FSM), the property-based testing strategy using `proptest` for statistical validation of IC invariants, the verification of the Fundamental Property (SPEC-01, G1), the runtime invariant checker, the test fixtures and random net generators, the graph isomorphism checker, and the mapping of gaps identified in the Haskell prototype that Relativist MUST cover. The goal is that every MUST requirement from SPEC-01 through SPEC-14 has at least one corresponding test. Test requirements defined within individual specs (SPEC-10 T1-T10, SPEC-11 T1-T9/T8a, SPEC-12 T1-T14, SPEC-14 ET-1 through ET-12) are incorporated into this spec using a global namespace convention to avoid label collisions.
 
 ## 2. Definitions
 
@@ -21,7 +22,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 | Term | Definition |
 |------|-----------|
 | **Test Fixture** | An interaction net constructed programmatically for use as test input. Each fixture has a name, known agents, known wires, and an expected result after reduction. Fixtures are deterministic and shared across test files. |
-| **Round-Trip Test** | A test that verifies that an operation followed by its inverse produces the original value. Examples: `merge(split(net, n)) ~ net` (SPEC-01, D1), `deserialize(serialize(net)) == net` (SPEC-02, R22-R24). |
+| **Round-Trip Test** | A test that verifies that an operation followed by its inverse produces the original value. Examples: `merge(split(net, n)) ~ net` (SPEC-01, D1), `deserialize(serialize(net)) == net` (SPEC-02, R24-R26). |
+| **Test Label Namespace** | A globally unique prefix for test IDs within each spec's scope. Convention: tests defined within SPEC-08 use module-specific prefixes (N, RE, P, M, PS, FI, GL, WP, DP, INT, F, PB, CD, E, E2E, IV). Tests defined in other specs use spec-qualified prefixes: `SEC-` (SPEC-10), `OBS-` (SPEC-11), `UIO-` (SPEC-12), `ARCH-` (SPEC-13), `ENC-` (SPEC-14). This convention ensures no label collides across the spec suite. |
 | **Property-Based Test** | A test that generates random inputs via `proptest`, applies an operation, and verifies that an invariant holds for all generated inputs. Provides statistical confidence over thousands of cases, addressing the evidence gap identified in DISC-003 v2, Section 5.3. |
 | **Golden Test** | A test that compares the output of an operation against a previously validated and stored result. Used for regression testing of reduction of known nets. |
 | **Invariant Checker** | A function that verifies all invariants from SPEC-01 (T1-T7, D1-D6, I1-I5, G1) applicable to a Net at a given point. Activated via `debug_assertions` after each `reduce_step` and after each merge. |
@@ -71,8 +73,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 | N13 | `test_net_is_reduced_empty` | R16 | Empty net: `is_reduced() == true` |
 | N14 | `test_net_is_reduced_with_redex` | R16 | Net with redex: `is_reduced() == false` |
 | N15 | `test_net_stale_redex_discarded` | R17 | Redex whose agent was removed is discarded silently |
-| N16 | `test_net_serialize_roundtrip` | R22, R24 | `deserialize(serialize(net)) == net` |
-| N17 | `test_net_serialize_self_contained` | R23 | Deserialized bytes reconstruct a complete Net |
+| N16 | `test_net_serialize_roundtrip` | R24, R26 | `deserialize(serialize(net)) == net` |
+| N17 | `test_net_serialize_self_contained` | R25 | Deserialized bytes reconstruct a complete Net |
 | N18 | `test_net_freeport_index` | R6(e) | `free_port_index` correctly maps border IDs to AgentPorts |
 
 ### 3.3 Unit Tests -- Reduction Engine (SPEC-03)
@@ -92,7 +94,7 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 | ID | Test | What it verifies |
 |----|------|------------------|
-| RE7 | `test_dispatch_symmetric_con_dup` | `(Dup, Con)` normalized to `(Con, Dup)` produces the same result. SPEC-03 R9. |
+| RE7 | `test_dispatch_symmetric_con_dup` | Construct a net with DUP principal port connected to CON principal port. Reduce. Verify that the post-reduction topology is isomorphic to the result of RE4 (CON-DUP canonical order). SPEC-03 R9. |
 | RE8 | `test_dispatch_symmetric_con_era` | `(Era, Con)` normalized to `(Con, Era)` produces the same result. SPEC-03 R9. |
 | RE9 | `test_dispatch_symmetric_dup_era` | `(Era, Dup)` normalized to `(Dup, Era)` produces the same result. SPEC-03 R9. |
 | RE10 | `test_dispatch_all_9_pairs` | All 9 pairs `(Symbol, Symbol)` resolve to one of the 6 rules. SPEC-03 R8. |
@@ -228,17 +230,17 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 | ID | Test | Workload Profile | What it verifies |
 |----|------|------------------|------------------|
-| I1 | `test_pipeline_era_chain_2w` | A (EP) | ERA-ERA chain, 2 workers. Result == sequential reduction. Maps to AC-004 `test_gridEqualsLocalEraChain`. |
-| I2 | `test_pipeline_mixed_2w` | A/B mixed | Mixed net (CON + ERA + DUP + ERA), 2 workers. Maps to AC-004 `test_gridEqualsLocalMixed`. |
-| I3 | `test_pipeline_era_4w` | A (EP) | 4 pairs ERA-ERA, 4 workers. Maps to AC-004 `test_gridEqualsLocal4Workers`. |
-| I4 | `test_pipeline_treesum_2w` | A (EP) | TreeSum [1,2,3,4], 2 workers. `extract_result == 10`. Maps to AC-004 `test_gridSum4`. |
-| I5 | `test_pipeline_treesum_4w` | A (EP) | TreeSum [1..8], 4 workers. `extract_result == 36`. Maps to AC-004 `test_gridSum8_4w`. |
-| I6 | `test_pipeline_dual_tree_depth3_2w` | C (Sequential) | DualTree depth 3, 2 workers. 0 agents in result. Maps to AC-005 `test_dualTreeGrid3`. |
-| I7 | `test_pipeline_dual_tree_depth5_4w` | C (Sequential) | DualTree depth 5, 4 workers. 0 agents in result. Maps to AC-005 `test_dualTreeGrid5`. |
-| I8 | `test_pipeline_condup_expansion_2w` | B (Expansion) | CON-DUP Expansion, 2 workers. Result == sequential. Addresses AC-005 Gap L5. |
-| I9 | `test_pipeline_multiple_rounds` | B/C | Net requiring >1 round (border redexes after first merge). Verify convergence. |
-| I10 | `test_pipeline_empty_net` | --- | Empty net, any n. Returns immediately. |
-| I11 | `test_pipeline_single_border_redex` | --- | 1 active pair, 2 workers (1 agent per worker). The redex is a border redex. Verify resolution. |
+| INT1 | `test_pipeline_era_chain_2w` | A (EP) | ERA-ERA chain, 2 workers. Result == sequential reduction. Maps to AC-004 `test_gridEqualsLocalEraChain`. |
+| INT2 | `test_pipeline_mixed_2w` | A/B mixed | Mixed net (CON + ERA + DUP + ERA), 2 workers. Maps to AC-004 `test_gridEqualsLocalMixed`. |
+| INT3 | `test_pipeline_era_4w` | A (EP) | 4 pairs ERA-ERA, 4 workers. Maps to AC-004 `test_gridEqualsLocal4Workers`. |
+| INT4 | `test_pipeline_treesum_2w` | A (EP) | TreeSum [1,2,3,4], 2 workers. `extract_result == 10`. Maps to AC-004 `test_gridSum4`. |
+| INT5 | `test_pipeline_treesum_4w` | A (EP) | TreeSum [1..8], 4 workers. `extract_result == 36`. Maps to AC-004 `test_gridSum8_4w`. |
+| INT6 | `test_pipeline_dual_tree_depth3_2w` | C (Sequential) | DualTree depth 3, 2 workers. 0 agents in result. Maps to AC-005 `test_dualTreeGrid3`. |
+| INT7 | `test_pipeline_dual_tree_depth5_4w` | C (Sequential) | DualTree depth 5, 4 workers. 0 agents in result. Maps to AC-005 `test_dualTreeGrid5`. |
+| INT8 | `test_pipeline_condup_expansion_2w` | B (Expansion) | CON-DUP Expansion, 2 workers. Result == sequential. Addresses AC-005 Gap L5. |
+| INT9 | `test_pipeline_multiple_rounds` | B/C | Net requiring >1 round (border redexes after first merge). Verify convergence. |
+| INT10 | `test_pipeline_empty_net` | --- | Empty net, any n. Returns immediately. |
+| INT11 | `test_pipeline_single_border_redex` | --- | 1 active pair, 2 workers (1 agent per worker). The redex is a border redex. Verify resolution. |
 
 ### 3.11 Fundamental Property Tests
 
@@ -292,11 +294,15 @@ The random net generators MUST produce valid nets (satisfying T1, T2, I1, I2). T
 | PB5 | `prop_fundamental_property` | `reduce_all(net) ~ run_grid(net, n)` for random n | G1 | SPEC-01, ARG-001 |
 | PB6 | `prop_condup_expand_then_collapse` | Nets with CON-DUP redexes: after expansion + full reduction, result is isomorphic to sequential | T4, G1 | DISC-003 v2 Sec 5.2 pt 3 |
 | PB7 | `prop_all_six_rules_exercised` | For sufficiently large random nets, all 6 rules are exercised in at least some executions | T5 | DISC-003 v2 Sec 5.2 pt 2 |
-| PB8 | `prop_serialization_roundtrip` | `deserialize(serialize(net)) == net` for random nets | --- | SPEC-02 R22-R24 |
+| PB8 | `prop_serialization_roundtrip` | `deserialize(serialize(net)) == net` for random nets | --- | SPEC-02 R24-R26 |
 | PB9 | `prop_no_dangling_references_after_reduce` | After `reduce_all`, every AgentPort in the port array points to an existing agent | I2 | SPEC-01 |
 | PB10 | `prop_merge_after_local_reduce_correct` | Partition, reduce locally, merge: result net satisfies T1, I1, I2, D1 | D1-D4 | SPEC-01, ARG-002, ARG-003 |
 | PB11 | `prop_border_redex_completeness` | After merge + reduce_all, no unresolved border redexes remain | D3 | SPEC-01, ARG-003 P3 |
 | PB12 | `prop_id_uniqueness_after_merge` | After distributed reduce + merge, no duplicate AgentIds exist | D4 | SPEC-01, ARG-001 P4 |
+| PB13 | `prop_redex_detection_only_principal_ports` | After building a random net, every entry in the redex queue is a pair connected via port 0. Directly tests T2 across random topologies. | T2 | SPEC-01 |
+| PB14 | `prop_active_pairs_disjoint` | After building a random net and running reduce_all, verify that no AgentId appears in more than one active pair in the redex queue at any step. | T3 | SPEC-01 |
+| PB15 | `prop_condup_fundamental_property` | Using `arb_condup_net(max_pairs)` (predominantly CON-DUP pairs), verify `reduce_all(net) ~ run_grid(net, n)` for random n. Targets Profile B behavior. | G1 | ARG-004 |
+| PB16 | `prop_chain_fundamental_property` | Using `arb_chain_net(max_depth)` (tree/chain topologies with level-dependent reduction), verify `reduce_all(net) ~ run_grid(net, n)` for random n. Targets Profile C behavior. | G1 | ARG-004 |
 
 **R26.** The property-based tests MUST generate nets that exercise ALL 6 interaction rules, not only ERA-ERA. This directly addresses the critical weakness identified in DISC-003 v2, Section 5.2, point 3: "Only ERA-ERA pairs as distributable redexes." **(MUST)**
 
@@ -329,7 +335,7 @@ The random net generators MUST produce valid nets (satisfying T1, T2, I1, I2). T
 | E6 | `test_partition_1_worker` | n=1: net returned intact, no borders. SPEC-04 R2. |
 | E7 | `test_partition_more_workers_than_agents` | n > agents: excess partitions are empty. SPEC-04 R3. |
 | E8 | `test_net_with_preexisting_freeports` | Net already contains FreePort (Lafont) from prior context. New partitioning does not collide. SPEC-04 R15. |
-| E9 | `test_large_net_performance` | Net with 10,000+ agents: reduce_all completes in reasonable time (< 30 seconds). Verifies O(S) complexity. SPEC-03 R22. |
+| E9 | `test_large_net_performance` | Run `reduce_all` on nets with 1,000 and 10,000 agents. Verify that `time(10k) / time(1k) < 15` (50% margin over the expected 10x linear scaling). Marked `#[ignore]` since it is a performance test, not a correctness test. SPEC-03 R22. |
 
 ### 3.15 End-to-End Tests (Docker/TCP)
 
@@ -428,6 +434,121 @@ pub fn reduce_all_with_strategy(net: &mut Net, strategy: ReductionStrategy) -> u
 
 **R38.** The `ReductionStrategy` enum and `reduce_all_with_strategy` function MAY be feature-gated behind `#[cfg(test)]` to avoid inclusion in production builds. **(MAY)**
 
+> **Note:** The `ReductionStrategy` type and `reduce_all_with_strategy` function are defined here because they exist solely for testing purposes. However, they affect the reduction engine's API surface. This requirement SHOULD be reflected in SPEC-03 during its next revision, even if the implementation is `#[cfg(test)]`-gated.
+
+### 3.18 Unit Tests -- Encoding (SPEC-14)
+
+> **Namespace:** Tests defined in SPEC-14 use the `ENC-` prefix. The original SPEC-14 labels (ET-1 through ET-12) are mapped to `ENC-1` through `ENC-12` in this spec's global namespace.
+
+**R39.** The encoding module MUST have unit tests covering Church numeral construction, roundtrip, arithmetic correctness, invariant preservation, and decode rejection. These tests are defined in SPEC-14 and incorporated here for unified tracking. **(MUST)**
+
+| ID | SPEC-14 Label | Test | What it verifies |
+|----|---------------|------|------------------|
+| ENC-1 | ET-1 | `test_encode_nat_zero_structure` | `encode_nat(0)` produces exactly 2 CON + 1 ERA with correct topology |
+| ENC-2 | ET-2 | `test_encode_nat_one_structure` | `encode_nat(1)` produces exactly 3 CON + 0 DUP + 0 ERA with correct topology |
+| ENC-3 | ET-3 | `test_encode_nat_two_structure` | `encode_nat(2)` produces exactly 4 CON + 1 DUP with correct topology |
+| ENC-4 | ET-4 | `test_encode_nat_normal_form` | For n in {0, 1, 2, 5, 10, 100}, `encode_nat(n)` produces a net with zero redexes |
+| ENC-5 | ET-5 | `test_encode_decode_roundtrip` | For n in {0, 1, 2, 3, 5, 10, 50, 100}, `decode_nat(&encode_nat(n))` returns `Some(n)` |
+| ENC-6 | ET-6 | `test_add_correctness` | For (a, b) in {(0,0), (0,1), (1,0), (1,1), (2,3), (10,20), (50,50), (100,100)}: `reduce_all(add(a, b))` yields `decode_nat == Some(a+b)` |
+| ENC-7 | ET-7 | `test_mul_correctness` | For (a, b) in {(0,1), (1,0), (1,1), (2,3), (5,5), (10,10)}: `reduce_all(mul(a, b))` yields `decode_nat == Some(a*b)` |
+| ENC-8 | ET-8 | `test_exp_correctness` | For (a, b) in {(2,0), (2,1), (2,3), (2,8), (3,3)}: `reduce_all(exp(a, b))` yields `decode_nat == Some(a^b)` |
+| ENC-9 | ET-9 | `test_encoding_invariant_preservation` | All encoding and arithmetic nets satisfy T1-T7 via `assert_all_invariants()` |
+| ENC-10 | ET-10 | `prop_add_commutative` | Property test: for random a, b in [0, 100], `add(a, b) ~ add(b, a)` after reduction |
+| ENC-11 | ET-11 | `test_add_distributed_correctness` | For (a, b) = (50, 50) and k in {1, 2, 4}: `run_grid(add(50, 50), k) ~ reduce_all(add(50, 50))`. Fundamental Property for encoding. |
+| ENC-12 | ET-12 | `test_decode_rejection` | `decode_nat` returns `None` for non-Church nets: `ep_annihilation(5)`, empty net, net with non-zero redexes |
+
+### 3.19 Unit Tests -- Security (SPEC-10)
+
+> **Namespace:** Tests defined in SPEC-10 use the `SEC-` prefix. The original SPEC-10 labels (T1 through T10) are mapped to `SEC-1` through `SEC-10`.
+
+**R40.** The security module MUST have unit tests covering token generation, validation, TLS, message limits, and tier detection. Tests requiring the `tls` feature MUST be feature-gated. **(MUST)**
+
+| ID | SPEC-10 Label | Test | What it verifies |
+|----|---------------|------|------------------|
+| SEC-1 | T1 | `test_token_generation_unique` | Two consecutive `AuthToken::generate()` calls produce different tokens |
+| SEC-2 | T2 | `test_token_serialization_roundtrip` | `AuthToken::from_base64(token.to_base64()).unwrap()` verifies against original |
+| SEC-3 | T3 | `test_token_validation` | Correct token passes `verify()`, wrong token fails, empty token fails |
+| SEC-4 | T4 | `test_tls_handshake` | (Feature-gated: `--features tls`) TLS handshake succeeds with valid cert/key |
+| SEC-5 | T5 | `test_tls_reject_invalid_cert` | (Feature-gated: `--features tls`) Connection rejected with invalid certificate |
+| SEC-6 | T6 | `test_message_size_limit` | Frame with declared length exceeding `max_payload_size` rejected without reading payload |
+| SEC-7 | T7 | `test_connection_idle_timeout` | Connection with no messages for longer than `idle_timeout` is closed |
+| SEC-8 | T8 | `test_unauthorized_registration_rejected` | Worker without correct token in Tier 2/3 disconnected; coordinator continues accepting others |
+| SEC-9 | T9 | `test_localhost_default_binding` | Coordinator started without `--bind` only reachable from `127.0.0.1` |
+| SEC-10 | T10 | `test_tier_detection` | Correct `SecurityTier` detected for each combination of flags |
+| SEC-11 | T10 | `test_token_debug_redacted` | `format!("{:?}", token)` contains `"[REDACTED]"`, not raw bytes |
+
+### 3.20 Unit Tests -- Observability (SPEC-11)
+
+> **Namespace:** Tests defined in SPEC-11 use the `OBS-` prefix. The original SPEC-11 labels (T1 through T9, T8a) are mapped to `OBS-1` through `OBS-10`.
+
+**R41.** The observability module MUST have unit tests covering tracing initialization, log format, metrics endpoints, and feature-gating. Tests requiring the `metrics` feature MUST be feature-gated. **(MUST)**
+
+| ID | SPEC-11 Label | Test | What it verifies |
+|----|---------------|------|------------------|
+| OBS-1 | T1 | `test_tracing_init_no_panic` | `init_tracing()` with default configuration does not panic |
+| OBS-2 | T2 | `test_tracing_double_init_panics` | Calling `init_tracing()` a second time panics |
+| OBS-3 | T3 | `test_json_log_format` | Captured output is valid JSON with `"level"`, `"target"`, `"fields"`, `"timestamp"` keys |
+| OBS-4 | T4 | `test_rust_log_override` | `RUST_LOG=relativist::reduction=trace` causes TRACE events to appear |
+| OBS-5 | T5 | `test_span_fields` | Reduction and merge spans contain expected fields (net_id, round, worker_id) |
+| OBS-6 | T6 | `test_health_endpoint` | (Feature-gated: `--features metrics`) `GET /health` returns HTTP 200 with body `"ok"` |
+| OBS-7 | T7 | `test_ready_endpoint_states` | (Feature-gated: `--features metrics`) `GET /ready` returns 503 in `Init`, 200 in working states, 503 in `Error` |
+| OBS-8 | T8 | `test_metrics_endpoint` | (Feature-gated: `--features metrics`) `GET /metrics` returns parseable Prometheus format with `relativist_` prefix |
+| OBS-9 | T8a | `test_metrics_content_type` | (Feature-gated: `--features metrics`) `GET /metrics` response has `Content-Type` containing `application/openmetrics-text` |
+| OBS-10 | T9 | `test_metrics_feature_disabled` | Without `metrics` feature, HTTP server not started; no metrics code compiled |
+
+### 3.21 Unit Tests -- User I/O (SPEC-12)
+
+> **Namespace:** Tests defined in SPEC-12 use the `UIO-` prefix. The original SPEC-12 labels (T1 through T14) are mapped to `UIO-1` through `UIO-14`.
+
+**R42.** The user I/O module MUST have unit tests covering binary and text format roundtrips, parser error handling, CLI subcommands (`reduce`, `inspect`), file format detection, and generator consistency. **(MUST)**
+
+| ID | SPEC-12 Label | Test | What it verifies |
+|----|---------------|------|------------------|
+| UIO-1 | T1 | `test_binary_roundtrip` | For each generator, `deserialize(serialize(generate(n))) == generate(n)` for N in {1, 10, 100} |
+| UIO-2 | T2 | `test_text_dsl_roundtrip` | For each generator, `parse_ic(format_ic(generate(n)))` produces structurally equivalent net for N in {1, 5, 10} |
+| UIO-3 | T3 | `test_text_dsl_parser_errors` | Rejects: missing wire endpoint, unknown agent name, ERA with auxiliary port, duplicate port connection |
+| UIO-4 | T4 | `test_generator_validity` | Each generator produces valid net (T1-T7 from SPEC-01) for N in {1, 10, 100, 1000} |
+| UIO-5 | T5 | `test_inspect_correctness` | For `ep_annihilation(10)`: 20 agents, 10 redexes, 0 CON, 0 DUP, 20 ERA, 0 free ports, not normal form |
+| UIO-6 | T6 | `test_reduce_correctness` | For `ep_annihilation(10)`: output has 0 agents, 0 redexes (Normal Form) |
+| UIO-7 | T7 | `test_reduce_max_interactions` | `reduce` with `--max-interactions 5` on `ep_annihilation(10)`: stops early, output NOT in Normal Form |
+| UIO-8 | T8 | `test_file_format_detection` | `.bin` -> bincode, `.ic` -> text DSL, `.json` -> JSON; `.xyz` -> `UnrecognizedFormat` error |
+| UIO-9 | T9 | `test_generator_consistency` | Each `ExampleNet` variant matches corresponding `Benchmark::make_net` from SPEC-09 |
+| UIO-10 | T10 | `test_generator_size_zero` | For each generator, `generate(0)` produces empty net; `reduce` yields 0 interactions |
+| UIO-11 | T11 | `test_text_dsl_root_declaration` | (a) two `root` declarations -> error; (b) no `root` -> `root == None`; (c) `root free(0)` -> `Some(FreePort(0))` |
+| UIO-12 | T12 | `test_text_dsl_self_loop` | `wire a.left a.left` produces parse error |
+| UIO-13 | T13 | `test_text_dsl_free_to_free` | `wire free(0) free(1)` produces parse error |
+| UIO-14 | T14 | `test_empty_net_io` | `inspect` on empty net: 0 agents, 0 wires, 0 redexes, normal_form: true. `reduce` completes with 0 interactions. |
+
+### 3.22 Unit Tests -- System Architecture / FSM (SPEC-13)
+
+> **Namespace:** Tests for SPEC-13 architectural requirements use the `ARCH-` prefix.
+
+**R43.** The coordinator and worker FSM modules MUST have unit tests verifying state transitions, the stimulus-response pattern, and error handling. These tests validate the pure transition function without requiring an async runtime. **(MUST)**
+
+| ID | Test | SPEC-13 Req | What it verifies |
+|----|------|-------------|------------------|
+| ARCH-1 | `test_coordinator_fsm_init_to_waiting` | R21 | Transition from `Init` to `WaitingForWorkers` on startup event |
+| ARCH-2 | `test_coordinator_fsm_all_workers_connected` | R21 | Transition from `WaitingForWorkers` to `Partitioning` when all workers connect |
+| ARCH-3 | `test_coordinator_fsm_partitioning_to_collecting` | R21 | `SplitComplete` event triggers `Partitioning -> Collecting` with `DistributePartitions` action |
+| ARCH-4 | `test_coordinator_fsm_collecting_to_merging` | R21 | All `PartitionResult` events received triggers `Collecting -> Merging` |
+| ARCH-5 | `test_coordinator_fsm_merge_to_check_termination` | R21 | `MergeComplete` event triggers `Merging -> CheckTermination` |
+| ARCH-6 | `test_coordinator_fsm_check_termination_done` | R21 | `is_normal_form == true` triggers `CheckTermination -> Done` with `WriteOutput, ShutdownAll` actions |
+| ARCH-7 | `test_coordinator_fsm_check_termination_loop` | R21 | `is_normal_form == false` triggers `CheckTermination -> Partitioning` with `InvokeSplit` action |
+| ARCH-8 | `test_coordinator_fsm_phase_timeout` | R21 | `PhaseTimeout(id)` in `Collecting` triggers `Error` state |
+| ARCH-9 | `test_worker_fsm_init_to_idle` | R25 | Worker transitions from `Init` to `Idle` upon connection |
+| ARCH-10 | `test_worker_fsm_receive_partition` | R25 | Worker transitions from `Idle` to `Reducing` upon receiving partition |
+| ARCH-11 | `test_worker_fsm_reduce_complete` | R25 | Worker transitions from `Reducing` to `Idle` after sending `PartitionResult` |
+| ARCH-12 | `test_worker_fsm_connection_lost` | R25 | `ConnectionLost` in any state triggers `Error` with `ShutdownSelf` action (no reconnect) |
+| ARCH-13 | `test_coordinator_fsm_pure_function` | R20 | Transition function is a pure function: same (state, event) always produces same (new_state, actions) |
+
+### 3.23 Dedicated D2 Test (SPEC-01)
+
+**R44.** Relativist SHOULD have a dedicated test that verifies SPEC-01 D2 (Local Reduction Equivalence) in isolation, comparing single-step reduction in a partition against single-step reduction in the global net. **(SHOULD)**
+
+| ID | Test | What it verifies |
+|----|------|------------------|
+| D2-1 | `test_d2_local_reduction_equivalence` | Construct a net with a known redex. Reduce the redex globally and record the topological delta. Partition the net so the redex is internal. Reduce the redex in the partition. Compare the topological delta: both must be identical (same agents removed, same agents created, same connections made). Directly tests D2 without pipeline noise. |
+
 ---
 
 ## 4. Design
@@ -457,24 +578,46 @@ codigo/relativist/
       tests.rs          # Unit tests WP1-WP3
     cli/
       mod.rs
-      tests.rs          # Unit tests DP1-DP5
+      tests.rs          # Unit tests DP1-DP5, UIO-1 through UIO-14
+    encoding/
+      mod.rs
+      tests.rs          # Unit tests ENC-1 through ENC-12
+    coordinator/
+      mod.rs
+      tests.rs          # Unit tests ARCH-1 through ARCH-8, ARCH-13
+    worker/
+      mod.rs
+      tests.rs          # Unit tests ARCH-9 through ARCH-12
+    config/
+      mod.rs
+      tests.rs          # Config parsing tests (covered by DP1-DP5 and UIO-8)
+    observability/
+      mod.rs
+      tests.rs          # Unit tests OBS-1 through OBS-10
+    security/
+      mod.rs
+      tests.rs          # Unit tests SEC-1 through SEC-11
   tests/
     common/
       mod.rs            # Shared fixtures, helpers, generators
       fixtures.rs       # Pre-built test nets
-      generators.rs     # proptest random net generators
+      generators.rs     # proptest random net generators (arb_net, arb_net_weighted, arb_condup_net, arb_chain_net)
       isomorphism.rs    # nets_isomorphic function
       strategies.rs     # ReductionStrategy + reduce_all_with_strategy
     integration/
-      pipeline.rs       # Tests I1-I11
+      pipeline.rs       # Tests INT1-INT11
       fundamental.rs    # Tests F1-F5
       edge_cases.rs     # Tests E1-E9
       condup.rs         # Tests CD1-CD4
+      encoding.rs       # Tests ENC-6 through ENC-8 (arithmetic correctness)
+      encoding_distributed.rs  # Test ENC-11 (distributed correctness, Fundamental Property)
+      d2_equivalence.rs # Test D2-1 (dedicated D2 verification)
     property/
-      invariants.rs     # Tests PB1-PB3, PB9
+      invariants.rs     # Tests PB1-PB3, PB9, PB13, PB14
       partition.rs      # Tests PB4, PB10-PB12
-      distributed.rs    # Tests PB5-PB7
+      distributed.rs    # Tests PB5-PB7, PB15, PB16
       serialization.rs  # Test PB8
+      encoding.rs       # Test ENC-10 (proptest for arithmetic)
     e2e/
       tcp_pipeline.rs   # Tests E2E1-E2E4 (#[ignore])
       docker.rs         # Test E2E5 (#[ignore])
@@ -580,11 +723,28 @@ pub fn arb_net_weighted(
 9. Verify: debug_assert!(net.assert_all_invariants())
 ```
 
+**Targeted generators for workload profiles:**
+
+```rust
+/// Generates nets with predominantly CON-DUP pairs, guaranteeing Profile B behavior.
+/// The generator creates `max_pairs` CON-DUP active pairs (CON principal port
+/// connected to DUP principal port), with auxiliary ports connected to FreePorts
+/// or to other agents to create cascading interactions.
+pub fn arb_condup_net(max_pairs: usize) -> impl Strategy<Value = Net>
+
+/// Generates tree or chain topologies with level-dependent reduction,
+/// approximating Profile C (Sequential Dependency) behavior.
+/// The generator creates binary trees of CON agents up to `max_depth`,
+/// producing nets where reduction at one level enables reduction at the next.
+pub fn arb_chain_net(max_depth: usize) -> impl Strategy<Value = Net>
+```
+
 **Non-termination safety:** The generator SHOULD favor nets biased toward termination. A practical approach:
 
 - Increase the weight of ERA (which destroys agents) relative to DUP (which creates agents via CON-DUP).
-- For tests using `reduce_all`, wrap in `reduce_n(budget)` with budget = `n * n * 10` as a safety valve.
-- For property tests, use `proptest::test_runner::Config { timeout: 10_000, .. }` to prevent hangs.
+- For tests using `reduce_all`, wrap in `reduce_n(budget)` with a configurable `MAX_PROPTEST_BUDGET` constant (default: 100,000). This is a practical ceiling, not a theoretical guarantee.
+- If `reduce_n(budget)` does not reach Normal Form, the test SHOULD mark the input as inconclusive via `prop_assume!(false, "budget exceeded -- skipping non-terminating input")` rather than failing. This avoids flaky CI from false positives.
+- For property tests, use `proptest::test_runner::Config { timeout: 10_000, .. }` as a separate safety net for cases where even dequeuing stale redexes is too slow.
 
 ### 4.4 Graph Isomorphism Checker
 
@@ -609,6 +769,8 @@ pub fn arb_net_weighted(
 fn nets_isomorphic(a: &Net, b: &Net) -> bool
 ```
 
+**Performance target:** The isomorphism checker SHOULD use canonical form computation (e.g., Weisfeiler-Leman refinement followed by canonical ordering) or a polynomial-time heuristic that handles nets up to 500 agents within 100ms. The backtracking fallback MAY be used for nets where the heuristic is inconclusive. **(SHOULD)**
+
 **Note for large nets:** For integration tests with large nets (> 50 agents), full isomorphism may be expensive. In those cases, a weaker verification (agent count by symbol + total wire count + normal form check) MAY be accepted as an approximation, provided the test documents the limitation. **(MAY)**
 
 ### 4.5 Invariant Coverage Matrix
@@ -617,25 +779,25 @@ This matrix maps every MUST invariant from SPEC-01 to the tests that verify it:
 
 | SPEC-01 Invariant | Direct Tests | Property Tests | Integration Tests |
 |--------------------|-------------|----------------|-------------------|
-| T1 (Linearity) | IV1 | PB1, PB9 | All I1-I11 (via invariant checker) |
-| T2 (Principal port interaction) | N9, N10, RE1-RE6 | --- | --- |
-| T3 (Disjoint active pairs) | IV6 | --- | --- |
+| T1 (Linearity) | IV1 | PB1, PB9 | All INT1-INT11 (via invariant checker) |
+| T2 (Principal port interaction) | N9, N10, RE1-RE6 | PB13 | --- |
+| T3 (Disjoint active pairs) | IV6 | PB14 | --- |
 | T4 (Strong confluence) | --- | PB2 | F1-F5 |
 | T5 (Rule correctness) | RE1-RE6, RE10 | PB7 | --- |
 | T6 (Unique normal form) | --- | PB2 | F1-F4 |
 | T7 (Invariant interaction count) | --- | PB3 | F5 |
 | D1 (Split/merge identity) | P4, P5, M1-M7 | PB4, PB10 | --- |
-| D2 (Local reduction equivalence) | --- | PB10 | I1-I11 |
-| D3 (Border redex completeness) | M5, CD3 | PB11 | I9, I11 |
+| D2 (Local reduction equivalence) | D2-1 | PB10 | INT1-INT11 |
+| D3 (Border redex completeness) | M5, CD3 | PB11 | INT9, INT11 |
 | D4 (ID uniqueness) | P10, P11, CD1, CD2 | PB12 | --- |
 | D5 (Exclusive ownership) | P1, P2 | PB4 | --- |
-| D6 (Protocol termination) | GL1-GL3 | --- | I9 |
-| I1 (Bidirectional port array) | N8, IV2 | PB1 | All (via checker) |
-| I2 (Reference validity) | IV3 | PB9 | All (via checker) |
+| D6 (Protocol termination) | GL1-GL3 | --- | INT9 |
+| I1 (Bidirectional port array) | N8, IV2 | PB1 | All INT1-INT11 (via checker) |
+| I2 (Reference validity) | IV3 | PB9 | All INT1-INT11 (via checker) |
 | I3 (ID monotonicity) | N5, N7, IV4 | --- | --- |
 | I4 (Redex queue validity) | N15, RE12, IV5 | --- | --- |
 | I5 (Termination of reduce_all) | RE13, RE17, GL1, E9 | --- | --- |
-| G1 (Fundamental Property) | --- | PB5 | F1-F4, E2E1-E2E5 |
+| G1 (Fundamental Property) | --- | PB5, PB15, PB16 | F1-F4, E2E1-E2E5, ENC-11 |
 
 ### 4.6 Workload Profile Test Coverage
 
@@ -643,9 +805,9 @@ This matrix ensures all three workload profiles from ARG-004 are adequately test
 
 | Profile | Description | Fixture | Integration | Fundamental | Property | E2E |
 |---------|-------------|---------|-------------|-------------|----------|-----|
-| A (EP) | Independent redexes, 1 round, 0 borders | `era_pairs`, `tree_sum` | I1, I3, I4, I5 | F1, F2 | PB5 | E2E1, E2E2 |
-| B (Expansion) | CON-DUP, multiple rounds, emergent borders | `condup_pairs` | I8, I9 | F4 | PB5, PB6 | E2E3 |
-| C (Sequential) | Level-dependent, many rounds, massive borders | `dual_tree` | I6, I7 | F3 | PB5 | E2E4 |
+| A (EP) | Independent redexes, 1 round, 0 borders | `era_pairs`, `tree_sum` | INT1, INT3, INT4, INT5 | F1, F2 | PB5 | E2E1, E2E2 |
+| B (Expansion) | CON-DUP, multiple rounds, emergent borders | `condup_pairs` | INT8, INT9 | F4 | PB5, PB6, PB15 | E2E3 |
+| C (Sequential) | Level-dependent, many rounds, massive borders | `dual_tree` | INT6, INT7 | F3 | PB5, PB16 | E2E4 |
 
 ---
 
@@ -702,19 +864,19 @@ The Haskell prototype has 4 test suites with approximately 46 tests total:
 |-------|----------|-------|--------------------|
 | CoreSpec.hs | AC-001 | 13 | RE1-RE6 (6 rules), RE13-RE17 (reduce_all/reduce_n), N1-N4 |
 | PartitionSpec.hs | AC-002 | ~10 (estimated) | P1-P12, PS1-PS5 (broader coverage) |
-| GridSpec.hs | AC-004 | 3 | I1-I3 (pipeline with isomorphism) |
-| TreeMapReduceSpec.hs | AC-004 | 3 | I4-I5 (tree sum with extract_result) |
-| BenchmarkSpec.hs | AC-005 | 27 | F1-F4 (fundamental), I6-I8 (integration) |
+| GridSpec.hs | AC-004 | 3 | INT1-INT3 (pipeline with isomorphism) |
+| TreeMapReduceSpec.hs | AC-004 | 3 | INT4-INT5 (tree sum with extract_result) |
+| BenchmarkSpec.hs | AC-005 | 27 | F1-F4 (fundamental), INT6-INT8 (integration) |
 
 ### 6.2 What Relativist changes
 
 1. **Isomorphism instead of counting:** The prototype uses `countAgents result == 0` or `extractResult == N`. Relativist uses `nets_isomorphic` for semantically complete verification.
 
-2. **Property-based testing:** The prototype has none. Relativist adds `proptest` with random net generators producing 12 property tests (PB1-PB12).
+2. **Property-based testing:** The prototype has none. Relativist adds `proptest` with random net generators producing 16 property tests (PB1-PB16), including targeted generators for Profile B (`arb_condup_net`) and Profile C (`arb_chain_net`).
 
 3. **Integrated invariant checker:** The prototype does not verify invariants after each step. Relativist verifies T1, I1, I2, I3, I4, T3 after each `reduce_step` in debug mode.
 
-4. **CON-DUP distributed coverage:** The prototype only tests CON-DUP sequentially. Relativist has tests CD1-CD4 and I8 for CON-DUP in grid context.
+4. **CON-DUP distributed coverage:** The prototype only tests CON-DUP sequentially. Relativist has tests CD1-CD4 and INT8 for CON-DUP in grid context.
 
 5. **All 6 rules in property tests:** The prototype's main benchmark focuses on ERA-ERA. Relativist generates random nets with all 3 symbols, exercising all 6 rules.
 
@@ -736,18 +898,18 @@ The Haskell prototype has 4 test suites with approximately 46 tests total:
 | No `nextAgentId` after removal test | AC-001 L2 | N7 |
 | No direct `portNeighbor` test | AC-001 L3 | N12 |
 | No confluence with different order test | AC-001 L4 | PB2, PB3 |
-| No large nets (>10 agents) | AC-001 L5 | F1-F4, PB1-PB12, E9 |
-| No e2e benchmark tests | AC-005 L1 | F1-F5, I1-I11, E2E1-E2E5 |
-| No CONDUP in grid | AC-005 L5 | I8, F4, CD1-CD4, PB6, E2E3 |
-| CON-DUP Expansion poorly tested | AC-005 L7 | CD1-CD4, I8, F4, PB6 |
+| No large nets (>10 agents) | AC-001 L5 | F1-F4, PB1-PB16, E9 |
+| No e2e benchmark tests | AC-005 L1 | F1-F5, INT1-INT11, E2E1-E2E5 |
+| No CONDUP in grid | AC-005 L5 | INT8, F4, CD1-CD4, PB6, PB15, E2E3 |
+| CON-DUP Expansion poorly tested | AC-005 L7 | CD1-CD4, INT8, F4, PB6, PB15 |
 
 ---
 
 ## 7. Open Questions
 
-1. **Scalable isomorphism:** For nets with >100 agents, the backtracking isomorphism algorithm may be slow. Alternatives include canonical form (canonical ordering of agents by neighborhood) or graph hashing. The decision can be made during implementation, as long as `nets_isomorphic` is available for small nets. **(Does NOT block implementation; heuristic acceptable for large nets.)**
+1. **Scalable isomorphism:** For nets with >100 agents, the backtracking isomorphism algorithm may be slow. Alternatives include canonical form (Weisfeiler-Leman refinement + canonical ordering) or graph hashing. The SHOULD requirement for a polynomial-time heuristic handling up to 500 agents within 100ms (Section 4.4) provides a performance target, but the specific algorithm can be decided during implementation. **(Does NOT block implementation; heuristic acceptable for large nets.)**
 
-2. **Non-terminating net generation:** The `arb_net` generator can produce nets that do not terminate (REF-002, Figure 3). For tests using `reduce_all`, the generator SHOULD filter or add a maximum budget (`reduce_n`). The specific filtering mechanism (static analysis or budget fallback) can be decided during implementation. **(Does NOT block implementation; use `reduce_n` as fallback.)**
+2. ~~**Non-terminating net generation:**~~ **RESOLVED.** The `arb_net` generator uses a configurable `MAX_PROPTEST_BUDGET` constant (default: 100,000) with `prop_assume!` to skip inconclusive inputs rather than failing. See Section 4.3.
 
 3. **E2E test infrastructure:** The exact Docker Compose configuration for E2E5 will be defined by SPEC-07's Docker deployment section. The test assumes the infrastructure exists. If Docker is unavailable, E2E5 is skipped via `#[ignore]`. **(Does NOT block implementation.)**
 

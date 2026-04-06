@@ -1,7 +1,7 @@
 # SPEC-09: Benchmark Suite
 
-**Status:** Revised v2
-**Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy)
+**Status:** Revised v3
+**Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-12 (User I/O -- canonical generators), SPEC-14 (Arithmetic Encoding -- Church numeral benchmarks)
 **Gray zones resolved:** Z4 (communication overhead vs. parallelism benefit), Z6 (scalability transfer from shared to distributed memory), Z7 (work granularity)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-007 (Casanova 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015), REF-017 (Foster, Kesselman, Tuecke 2001)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, P1-P5), DISC-006 v2 (overhead anatomy, break-even analysis, workload profiles), DISC-008 v2 (shared-to-distributed transition, 6 operational dimensions)
@@ -87,7 +87,7 @@ pub trait Benchmark {
 
 ### 3.2 Mandatory Benchmarks
 
-**R8.** Relativist MUST implement at least 7 benchmarks organized by overhead profile. **(MUST)**
+**R8.** Relativist MUST implement at least 10 benchmarks organized by overhead profile. **(MUST)**
 
 #### 3.2.1 Profile A -- Embarrassingly Parallel
 
@@ -165,7 +165,9 @@ pub trait Benchmark {
 
 #### 3.2.4 Data-Bound Benchmarks
 
-**R14.** The **TreeSum** benchmark MUST generate a net equivalent to the Haskell prototype's `mkTree` (AC-004): a chain of CON agents (adders) connected to ERA-ERA pairs (work units). The result is verified by `extract_result == sum(values)`. **(MUST)**
+**R14.** The **TreeSum** benchmark MUST generate a net equivalent to the Haskell prototype's `mkTree` (AC-004): a chain of CON agents (adders) connected to ERA-ERA pairs (work units). **(MUST)**
+
+**Note:** TreeSum uses a pragmatic encoding inherited from the Haskell prototype (documented limitation in the TCC article, Section 5.3). The concepts of "adders" and "values" are semantic conventions external to pure IC theory. The `extract_result` function interprets the reduced net's structure by convention, not by a formal IC encoding. For formal arithmetic computation on IC nets, see the Church numeral benchmarks (SPEC-14, R17a below). **TreeSum's correctness verification MUST use graph isomorphism with the sequential result (`nets_isomorphic`), not semantic value extraction.** This ensures correctness is verified by the fundamental property (G1), regardless of encoding conventions.
 
 | Property | Value |
 |----------|-------|
@@ -200,6 +202,17 @@ The net MUST contain at least:
 | Profile | B (due to CON-DUP) |
 | Default sizes | [10, 50, 100, 500, 1_000] |
 
+**Expected result:** 4N ERA agents, each connected to a unique FreePort, with 0 agents of other types. Derivation:
+- ERA-ERA pairs (N): void -- 0 agents remaining.
+- CON-CON pairs (N): annihilation cross -- 0 agents remaining (FreePorts cross-reconnected).
+- DUP-DUP pairs (N): annihilation parallel -- 0 agents remaining (FreePorts parallel-reconnected).
+- CON-DUP pairs (N): commutation produces 4 agents (2 CON + 2 DUP) per pair in a cross-connected pattern, generating 2 new redexes (CON-CON and DUP-DUP annihilation). After the cascade, 0 agents remaining.
+- CON-ERA pairs (N): erasure produces 2 ERA agents per pair, each connected to a FreePort. 2N ERA agents.
+- DUP-ERA pairs (N): erasure produces 2 ERA agents per pair, each connected to a FreePort. 2N ERA agents.
+- Total final agents: 4N (all ERA), 0 redexes (normal form).
+
+All pairs are fully independent (unique FreePort IDs per SPEC-12 R41), so post-CON-DUP agents interact only within their own group.
+
 **Rationale:** Directly addresses DISC-003 v2 Section 5.2 point 2 ("insufficient coverage of the 6 rules in a distributed context"), AC-005 Gap L6, and SPEC-08 Requirement R21. No benchmark in the Haskell prototype exercises all 6 rules in a single net.
 
 **R17.** The **ErasurePropagation** benchmark MUST generate a net with N CON (or DUP) agents connected in a chain, with an ERA at one end. Reduction propagates the ERA through the chain, exercising the CON-ERA (or DUP-ERA) rule repeatedly. **(MUST)**
@@ -214,7 +227,38 @@ The net MUST contain at least:
 | Profile | C (sequential cascade) |
 | Default sizes | [10, 50, 100, 500, 1_000, 5_000] |
 
+**Expected result:** The net reaches normal form with (N+1) ERA agents, each connected to a FreePort, and 0 redexes. Derivation: the initial ERA interacts with CON_0 (CON-ERA rule), removing CON_0 and producing 2 new ERA agents -- one continues the cascade to CON_1 (via the chain port), and one terminates at CON_0's free port. This process repeats down the chain. The last CON (CON_{N-1}) has both auxiliary ports connected to FreePorts, so its erasure produces 2 ERAs connected to FreePorts. Total: N ERAs from the free-port branches along the chain (one per CON), plus 1 ERA from the last step of the cascade. The verifier MUST check: (a) all remaining agents are ERA, (b) the net is in normal form (0 redexes), (c) the result matches the sequential baseline by graph isomorphism.
+
+**Note:** The expected result is NOT 0 agents. ERA agents with arity 0 connected to FreePorts are in normal form; they cannot participate in any interaction and remain in the net as the reduction's output.
+
 **Rationale:** The erasure rules (CON-ERA and DUP-ERA) produce 2 new ERA agents per interaction, propagating erasure in a cascade. This pattern is distinct from annihilation (EP) and expansion (CON-DUP), and is common in real programs with garbage collection of unused subterms. Complements MixedNet with a specific propagation pattern.
+
+#### 3.2.6 Arithmetic Encoding Benchmark
+
+**R17a.** The **ChurchAdd** benchmark MUST generate a net encoding Church numeral addition: `build_add(N/2, N - N/2)` where N is the size parameter, using the Church numeral encoding defined in SPEC-14. The result MUST be verified by `decode_nat` (SPEC-14 R22) producing the expected sum, AND by graph isomorphism with the sequential result. **(MUST)**
+
+| Property | Value |
+|----------|-------|
+| Initial agents | O(N) (two Church numerals + add combinator) |
+| Initial redexes | O(1) (beta-reduction entry point) |
+| Rounds (grid) | Variable (multiple, due to CON-DUP expansion phase) |
+| Border redexes | Variable (emergent from CON-DUP commutation during beta-reduction) |
+| Rules exercised | CON-DUP (commutation during duplication), CON-CON, DUP-DUP (post-expansion annihilation), CON-ERA, DUP-ERA (erasure of unused branches) |
+| Profile | B (DUP-CON expansion during beta-reduction, then collapse) |
+| Default sizes | [10, 50, 100, 500] |
+
+**Rationale:** Church arithmetic is the primary demonstration that Relativist performs real computation (not just graph manipulation). SPEC-14 Section 1 identifies Church arithmetic as "essential for the TCC experimental evaluation (SPEC-09) and defense." The ChurchAdd benchmark produces Profile B nets via a semantically meaningful computation, complementing the synthetic CON-DUP Expansion benchmark with a workload that has a verifiable numeric result. The generators reside in `src/io/examples.rs` (SPEC-12 R35-R36, SPEC-14 R26-R27) and are shared with the `compute` subcommand.
+
+**R17b.** The **ChurchMul** benchmark SHOULD generate a net encoding Church numeral multiplication: `build_mul(a, b)` where a and b are derived from the size parameter. ChurchMul produces O(a*b) interactions from an O(a+b) initial net, providing a natural expansion scaling curve. The result MUST be verified by `decode_nat` AND by graph isomorphism with the sequential result. **(SHOULD)**
+
+| Property | Value |
+|----------|-------|
+| Initial agents | O(a + b) |
+| Initial redexes | O(1) |
+| Rounds (grid) | Variable (many, due to larger expansion) |
+| Rules exercised | Same as ChurchAdd (all 6 rules via beta-reduction) |
+| Profile | B (larger expansion factor than ChurchAdd) |
+| Default sizes (a=b) | [5, 10, 20, 50] |
 
 ### 3.3 Mandatory Metrics
 
@@ -348,11 +392,13 @@ pub struct WorkerBenchStats {
 **R20.** Derived metrics MUST be computed by the framework after each execution, not by the user. **(MUST)**
 
 - `mips = total_interactions as f64 / wall_clock_secs / 1_000_000.0`
-- `speedup = baseline_sequential_time / wall_clock_secs` (for workers > 0)
+- `speedup = baseline_sequential_time / wall_clock_secs` (for workers >= 1). For speedup computation, `baseline_sequential_time` is the **median** wall-clock time of all sequential repetitions for the same (benchmark, size) combination.
 - `efficiency = speedup / workers as f64`
-- `overhead_ratio = 1.0 - (sum(compute_time_per_round) / wall_clock_secs)`
+- `overhead_ratio = 1.0 - (sum(compute_time_per_round) / wall_clock_secs)` (for grid executions, workers >= 1)
 - `border_ratio_per_round[i] = border_redexes_per_round[i] as f64 / (local_redexes_in_round[i] + border_redexes_per_round[i]) as f64`
 - `WorkerBenchStats.idle_time_secs = max(all_worker_compute_times) - this_worker_compute_time`
+
+**Sequential baseline special cases (workers == 0):** For the sequential baseline, `speedup` MUST be 1.0, `efficiency` MUST be 1.0, and `overhead_ratio` MUST be 0.0 (by convention, since the baseline has no parallelism overhead to measure and is 100% compute). The formulas for `speedup`, `efficiency`, and `overhead_ratio` apply only to grid executions (workers >= 1). This avoids division-by-zero (efficiency = speedup / 0) and incorrect values (overhead_ratio formula produces 1.0 for sequential because `compute_time_per_round` is empty).
 
 ### 3.4 Experimental Variables
 
@@ -372,13 +418,16 @@ pub struct WorkerBenchStats {
 
 #### 3.4.3 Execution Mode
 
-**R26.** The suite MUST support three execution modes. **(MUST)**
+**R26.** The suite MUST support four execution modes. **(MUST)**
 
 | Mode | Description | Workers | Communication |
 |------|-------------|---------|---------------|
+| `Sequential` | Pure sequential: `reduce_all` without grid. Bypasses partitioning, merge, and all protocol infrastructure. Ignores `--workers` (always 0 workers). This mode produces the baseline for speedup calculations. | None (0) | None |
 | `Local` | Simulated grid in a single process. Workers are sequential function calls (or parallel via `rayon`). | Simulated | None |
 | `TcpLocalhost` | Grid with workers as separate processes on the same host, communicating via TCP localhost. | Real processes | TCP 127.0.0.1 |
 | `TcpNetwork` | Grid with workers on distinct physical machines, communicating via TCP over a real network. | Real processes on separate machines | TCP over LAN |
+
+**Note:** `--mode Sequential` is the canonical way to request the sequential baseline. `--workers 0` with any distributed mode (Local, TcpLocalhost, TcpNetwork) MUST be treated as equivalent to `--mode Sequential` for convenience.
 
 **R27.** The suite MUST support the `TcpNetwork` mode for execution on separate physical machines with at least 4 and 8 workers. Deployment follows the bare-metal procedure defined in SPEC-07 (R41, Section 4.12). **(MUST)**
 
@@ -404,7 +453,7 @@ For each (benchmark, size, workers, mode):
     6. Aggregate: compute statistics over the R repetitions
 ```
 
-**R31.** The minimum number of repetitions MUST be 5. For publishable results in the paper, the number SHOULD be 30. **(MUST for 5; SHOULD for 30)**
+**R31.** The minimum number of repetitions MUST be 5 (for development and debugging runs). For publishable results in the TCC paper, the number SHOULD be at least 10 (sufficient for bootstrap 95% CI computation, consistent with the article text in Section 4.6 and DATA-COLLECTION-PLAN Section 2.1). For production-grade benchmarks with CLT-based parametric confidence intervals, 30 is recommended. **(MUST for 5; SHOULD for 10 in the TCC campaign; 30 recommended for CLT-based CI)**
 
 **R32.** The framework MUST compute and report the following aggregation statistics over repetitions. **(MUST)**
 
@@ -412,9 +461,11 @@ For each (benchmark, size, workers, mode):
 |-----------|-------------|---------|
 | Mean | `mean(values)` | Central tendency |
 | Standard deviation | `std(values)` | Dispersion |
-| Median | `median(values)` | Robust central tendency (resilient to outliers) |
+| Median | `median(values)` | Robust central tendency (resilient to outliers). **Primary** measure of central tendency for all timing metrics in the TCC (robust to right-skewed timing distributions). |
 | Minimum | `min(values)` | Best case |
 | Maximum | `max(values)` | Worst case |
+
+**R32a.** The framework SHOULD compute bootstrap 95% confidence intervals for `wall_clock_secs`, `mips`, and `speedup` using 10,000 resamples on the median. Bootstrap is appropriate because (a) 10 repetitions is too few for CLT-based parametric CIs, and (b) timing distributions are typically right-skewed (long tail of slow runs), making the median more representative than the mean (DATA-COLLECTION-PLAN Section 6.3). If bootstrap CI computation is not implemented in Rust, it MAY be deferred to the Python post-processing scripts (`scripts/plot_results.py`), provided the detail.csv contains all raw per-repetition data needed for offline bootstrap computation. **(SHOULD)**
 
 **R33.** The statistics MUST be computed for `wall_clock_secs`, `mips`, `speedup`, `efficiency`, and `overhead_ratio`. **(MUST)**
 
@@ -426,35 +477,49 @@ For each (benchmark, size, workers, mode):
 
 **R36.** Correctness verification MUST be executed on EACH repetition of EACH datapoint, not just once per configuration. **(MUST)**
 
-**R37.** Verification MUST use the benchmark-specific verifier (`Benchmark::verify`). For benchmarks with an empty normal form (EP, DualTree), the verifier MUST check that the result net has 0 agents. For benchmarks with a non-trivial result (TreeSum, MixedNet), the verifier MUST compare with the sequential result by graph isomorphism (SPEC-08, `nets_isomorphic`) or by a benchmark-specific metric. **(MUST)**
+**R37.** Verification MUST use the benchmark-specific verifier (`Benchmark::verify`). For benchmarks with an empty normal form (EP, DualTree), the verifier MUST check that the result net has 0 agents. For benchmarks with a non-trivial result (TreeSum, MixedNet, ErasurePropagation, ChurchAdd), the verifier MUST compare with the sequential result by graph isomorphism (SPEC-08, `nets_isomorphic`) or by a benchmark-specific metric. **(MUST)**
+
+**R37a.** Graph isomorphism for correctness verification MAY use a lightweight check when performance is a concern: (a) same agent count per symbol, (b) same wire count, (c) same free port count, (d) same redex count (must be 0 for normal form). Full structural isomorphism (canonical graph comparison via `nets_isomorphic`) SHOULD be used when the lightweight check passes and the result is small (< 1000 agents). For empty-result benchmarks (EP, DualTree), the verifier SHOULD simply check `agent_count == 0`. **(MAY for lightweight; SHOULD for full isomorphism on small nets)**
+
+**R37b.** For the sequential baseline, correctness MUST be verified by comparing the result of each repetition against the first sequential result by graph isomorphism. This validates invariant T6 (uniqueness of normal form, SPEC-01): all sequential runs MUST produce the same normal form regardless of reduction order. A mismatch indicates a reduction engine bug. **(MUST)**
 
 **R38.** A correctness failure on any datapoint MUST halt the suite and report full details: benchmark, size, workers, mode, repetition, and the nature of the divergence (agent count, topology, etc.). **(MUST)**
 
 ### 3.7 Output
 
-**R39.** The framework MUST produce CSV output with a unified schema. **(MUST)**
+**R39.** The framework MUST produce CSV output organized into three files. **(MUST)**
 
-The CSV schema MUST contain at least the following columns:
+**R39a.** `detail.csv`: One row per (benchmark, input_size, workers, mode, repetition). This is the raw data file. Schema:
 
 ```
 benchmark,input_size,mode,workers,repetition,correct,
 wall_clock_secs,total_interactions,mips,
 rounds,speedup,efficiency,overhead_ratio,
 peak_memory_bytes,bytes_sent,bytes_received,
-con_con,dup_dup,era_era,con_dup,con_era,dup_era,
-t_partition,t_compute,t_merge,t_network
+con_con,dup_dup,era_era,con_dup,con_era,dup_era
 ```
 
+**R39b.** `rounds.csv`: One row per (benchmark, input_size, workers, mode, repetition, round). Only populated for distributed modes (Local, TcpLocalhost, TcpNetwork). Enables per-round analysis of overhead evolution and border ratio dynamics without JSON-in-CSV. Schema:
+
+```
+benchmark,input_size,workers,mode,repetition,round,
+partition_time_secs,compute_time_secs,merge_time_secs,network_time_secs,
+border_redexes,border_ratio,agents_at_start,bytes_sent,bytes_received
+```
+
+**Note:** The per-phase time columns (`t_partition`, `t_compute`, `t_merge`, `t_network`) from the previous version's single-file schema are now in `rounds.csv` per round, enabling finer-grained analysis. The `detail.csv` contains only scalar aggregates per execution.
+
 **Differences from the Haskell prototype:**
-- Unified schema (vs. two distinct schemas for local and distributed, AC-005)
+- Three-file schema (detail, rounds, summary) vs. two distinct schemas for local and distributed (AC-005)
 - Includes `repetition` (vs. single execution, AC-005 Gap L8)
 - Includes `mips` (vs. absent, AC-014 Cross-Cutting Concern 1)
 - Includes `efficiency` (vs. absent)
 - Includes `peak_memory_bytes` (vs. absent, AC-014 Cross-Cutting Concern 3)
 - Includes per-rule counters (vs. total only, AC-005)
 - Includes `overhead_ratio` and `border_ratio` (vs. computed externally)
+- Per-round data in separate file (vs. variable-length columns or external processing)
 
-**R40.** The framework MUST produce an aggregation CSV file with statistics (mean, std, median, min, max) grouped by (benchmark, size, workers, mode). **(MUST)**
+**R40.** The framework MUST produce a `summary.csv` aggregation file with statistics grouped by (benchmark, size, workers, mode). The summary MUST include: median, standard deviation, min, max for `wall_clock_secs`, `mips`, `speedup`, `efficiency`, and `overhead_ratio`. If bootstrap CI computation is implemented in Rust (R32a), the summary MUST also include `wall_clock_ci95_lo`, `wall_clock_ci95_hi`, `speedup_ci95_lo`, `speedup_ci95_hi`, `mips_ci95_lo`, `mips_ci95_hi`. If bootstrap is deferred to Python, these columns MAY be absent from the Rust-produced summary.csv and computed offline. **(MUST for descriptive statistics; SHOULD for CI columns)**
 
 **R41.** The framework SHOULD produce formatted table output to the terminal for real-time monitoring. **(SHOULD)**
 
@@ -471,7 +536,7 @@ Comparison sizes:
 | EP-Annihilation | 100, 500, 1000, 2000, 5000, 10000 |
 | DualTree | depth 8, 10, 12, 14 |
 | CON-DUP Expansion | 50, 100, 1000 |
-| TreeSum | 50, 200, 1000, 2000 |
+| TreeSum | 16, 64, 256 |
 
 **R44.** Comparison MUST be qualitative (trends, overhead profiles, break-even patterns) and NOT direct in absolute time (different languages, different hardware). Comparable metrics: speedup, efficiency, overhead ratio, border ratio, correctness. **(MUST)**
 
@@ -528,6 +593,8 @@ pub enum BenchmarkId {
     TreeSumBalanced,
     MixedNet,
     ErasurePropagation,
+    ChurchAdd,
+    ChurchMul,
 }
 
 /// Execution mode.
@@ -556,9 +623,11 @@ pub struct BenchmarkSuiteConfig {
     pub warmup: u32,
     /// Timed repetitions.
     pub repetitions: u32,
-    /// Path for detail CSV output (one row per repetition).
+    /// Path for detail CSV output (one row per repetition). R39a.
     pub csv_detail: Option<PathBuf>,
-    /// Path for aggregation CSV output (one row per configuration).
+    /// Path for rounds CSV output (one row per round per execution). R39b.
+    pub csv_rounds: Option<PathBuf>,
+    /// Path for aggregation CSV output (one row per configuration). R40.
     pub csv_summary: Option<PathBuf>,
     /// Grid loop round limit.
     pub max_rounds: Option<u32>,
@@ -580,17 +649,28 @@ pub struct AggregatedStats {
     pub time_min: f64,
     pub time_max: f64,
     pub time_cv: f64,
+    // Bootstrap 95% CI (R32a, SHOULD -- may be computed offline by Python)
+    pub time_ci95_lo: Option<f64>,
+    pub time_ci95_hi: Option<f64>,
     // MIPS
     pub mips_mean: f64,
+    pub mips_median: f64,
     pub mips_std: f64,
+    pub mips_ci95_lo: Option<f64>,
+    pub mips_ci95_hi: Option<f64>,
     // Speedup
     pub speedup_mean: f64,
+    pub speedup_median: f64,
     pub speedup_std: f64,
+    pub speedup_ci95_lo: Option<f64>,
+    pub speedup_ci95_hi: Option<f64>,
     // Efficiency
     pub efficiency_mean: f64,
+    pub efficiency_median: f64,
     pub efficiency_std: f64,
     // Overhead ratio
     pub overhead_ratio_mean: f64,
+    pub overhead_ratio_median: f64,
     pub overhead_ratio_std: f64,
     // Memory
     pub peak_memory_mean: f64,
@@ -602,9 +682,11 @@ pub struct AggregatedStats {
 }
 ```
 
-### 4.2 Net Generators
+### 4.2 Net Generators (Informative)
 
-Each benchmark implements the `Benchmark` trait. Net generators are detailed per benchmark:
+> **Cross-spec note:** The canonical generator implementations are defined in SPEC-12 (R35-R42a). The pseudocode below is **illustrative only** and is provided to convey the intent of each benchmark. Benchmarks MUST use the generators from `src/io/examples.rs` (SPEC-12 R36) via `Benchmark::make_net`, which delegates to the shared generator functions. If any discrepancy exists between the pseudocode here and SPEC-12's Rust generators, SPEC-12 is authoritative.
+
+Each benchmark implements the `Benchmark` trait. Net generators are illustrated per benchmark:
 
 #### EP-Annihilation (ERA)
 
@@ -698,6 +780,8 @@ fn make_net(n: u32) -> Net:
 
 ### 4.3 Execution Protocol
 
+> **Note:** The `run_grid(net, workers, mode)` call below is pseudocode for the benchmark framework's wrapper function, not a direct invocation of SPEC-05's `run_grid(net: Net, num_workers: u32, strategy: impl PartitionStrategy)`. The wrapper selects the appropriate transport (in-memory channel for Local mode, TCP for TcpLocalhost/TcpNetwork) and then delegates to the grid cycle (SPEC-05 R25) via the system architecture (SPEC-13).
+
 ```
 fn run_benchmark_suite(config: BenchmarkSuiteConfig):
     results_detail: Vec<BenchmarkResult> = []
@@ -740,8 +824,9 @@ fn run_benchmark_suite(config: BenchmarkSuiteConfig):
                     stats = aggregate(repetition_results)
                     results_summary.push(stats)
 
-    // Output
+    // Output (3 CSV files per R39-R40)
     write_csv_detail(config.csv_detail, &results_detail)
+    write_csv_rounds(config.csv_rounds, &results_detail)  // extract per-round data
     write_csv_summary(config.csv_summary, &results_summary)
 ```
 
@@ -754,7 +839,7 @@ fn run_benchmark_suite(config: BenchmarkSuiteConfig):
 fn get_peak_memory_bytes() -> u64
 ```
 
-Memory measurement MUST be performed after each benchmark execution. The implementation depends on the OS and MAY return 0 on non-Linux platforms. For Docker executions (SPEC-07), Linux is guaranteed.
+Memory measurement MUST be performed after each benchmark execution. The implementation depends on the OS and MAY return 0 on platforms that do not support memory introspection. For Docker executions (SPEC-07), Linux is guaranteed and `/proc/self/status` (VmHWM) is available. On Windows (development platform), the framework SHOULD attempt to use `GetProcessMemoryInfo` from the Windows API or a cross-platform crate (`sysinfo`); if unavailable, it MUST return 0 and the limitation MUST be documented. The `peak_memory_bytes` metric is MUST for the TCC campaign (Linux/Docker) and SHOULD for development-time runs on non-Linux platforms.
 
 ### 4.5 Timing
 
@@ -812,41 +897,53 @@ codigo/relativist/
     bench/
       mod.rs             # Benchmark trait, BenchmarkResult, AggregatedStats
       suite.rs           # BenchmarkSuiteConfig, run_benchmark_suite
-      csv.rs             # CSV writing (detail and summary)
-      stats.rs           # Statistical functions (mean, std, median)
+      csv.rs             # CSV writing (detail, rounds, summary)
+      stats.rs           # Statistical functions (mean, std, median, bootstrap CI)
       memory.rs          # get_peak_memory_bytes
     bench/benchmarks/
-      mod.rs             # Re-exports all benchmarks
+      mod.rs             # Re-exports all benchmarks (each implements Benchmark trait)
       ep_annihilation.rs     # EP-Annihilation (ERA, CON, DUP)
       condup_expansion.rs    # CON-DUP Expansion
       dual_tree.rs           # DualTree
       tree_sum.rs            # TreeSum and TreeSumBalanced
       mixed_net.rs           # MixedNet (6 rules)
       erasure_propagation.rs # ErasurePropagation
+      church_add.rs          # ChurchAdd (SPEC-14)
+      church_mul.rs          # ChurchMul (SPEC-14, SHOULD)
+    io/
+      examples.rs        # Canonical net generator functions (SPEC-12 R35-R42a)
   src/bin/
     bench.rs             # CLI binary for benchmarks (clap)
   benches/
     criterion_local.rs   # Criterion micro-benchmarks for local reduction
 ```
 
+**Note:** The `bench/benchmarks/*.rs` files implement the `Benchmark` trait (configuration, sizes, verification). The actual net generation logic resides in `src/io/examples.rs` (SPEC-12 R36); benchmark implementations call `generate_<name>(size)` from there. This prevents generator duplication between the CLI `generate` subcommand and the benchmark suite.
+
 ### 4.7 Complete Experimental Matrix
 
 The table below summarizes the complete experimental plan. The total number of datapoints depends on sizes and repetitions.
 
-| Benchmark | Profile | Sizes | Workers | Modes | Reps | Datapoints |
-|-----------|---------|-------|---------|-------|------|------------|
-| EP-Annihilation | A | 7 | 5 (0,1,2,4,8) | 3 | 5 | 525 |
-| EP-Annihilation-CON | A | 6 | 5 | 3 | 5 | 450 |
-| EP-Annihilation-DUP | A | 6 | 5 | 3 | 5 | 450 |
-| CON-DUP Expansion | B | 6 | 5 | 3 | 5 | 450 |
-| DualTree | C | 6 | 5 | 3 | 5 | 450 |
-| TreeSum | A/B | 7 | 5 | 3 | 5 | 525 |
-| TreeSumBalanced | A/B | 7 | 5 | 3 | 5 | 525 |
-| MixedNet | B | 5 | 5 | 3 | 5 | 375 |
-| ErasurePropagation | C | 6 | 5 | 3 | 5 | 450 |
-| **Total** | | | | | | **~4200** |
+| Benchmark | Profile | Sizes | Configs/size | Reps | Datapoints |
+|-----------|---------|-------|-------------|------|------------|
+| EP-Annihilation | A | 7 | 13 | 5 | 455 |
+| EP-Annihilation-CON | A | 6 | 13 | 5 | 390 |
+| EP-Annihilation-DUP | A | 6 | 13 | 5 | 390 |
+| CON-DUP Expansion | B | 6 | 13 | 5 | 390 |
+| DualTree | C | 6 | 13 | 5 | 390 |
+| TreeSum | A/B | 7 | 13 | 5 | 455 |
+| TreeSumBalanced | A/B | 7 | 13 | 5 | 455 |
+| MixedNet | B | 5 | 13 | 5 | 325 |
+| ErasurePropagation | C | 6 | 13 | 5 | 390 |
+| ChurchAdd | B | 4 | 13 | 5 | 260 |
+| ChurchMul (SHOULD) | B | 4 | 13 | 5 | 260 |
+| **Total** | | | | | **~4160** |
 
-Comparison: the Haskell prototype produced ~110 datapoints (AC-005). Relativist will produce ~4200 with 5 repetitions, or ~25200 with 30 repetitions. This is a ~38-230x improvement in the empirical evidence base. The three modes (Local, TcpLocalhost, TcpNetwork) allow isolating the cost of each layer: serialization (Local vs TcpLocalhost), network latency (TcpLocalhost vs TcpNetwork).
+**Note on config count:** Each benchmark has 13 configurations per size: 1 sequential baseline (mode=Sequential, workers=0) + 4 worker counts (1,2,4,8) x 3 distributed modes (Local, TcpLocalhost, TcpNetwork) = 13. The Sequential mode (R26) is the baseline; it does not combine with non-zero worker counts.
+
+**Note on TCC campaign:** The DATA-COLLECTION-PLAN defines a curated subset of this full matrix with 10 repetitions and 3 sizes per benchmark, producing ~2,700 datapoints -- a ~25x improvement over the Haskell prototype's ~110 datapoints. The full matrix above is for reference; the campaign matrix in DATA-COLLECTION-PLAN Section 3 is the operative plan for the TCC.
+
+Comparison: the Haskell prototype produced ~110 datapoints (AC-005). Relativist will produce ~2,700 (TCC campaign with 10 reps) to ~4,160 (full matrix with 5 reps). The four modes (Sequential, Local, TcpLocalhost, TcpNetwork) allow isolating the cost of each layer: partitioning/merge overhead (Sequential vs Local), serialization + TCP overhead (Local vs TcpLocalhost), real network latency (TcpLocalhost vs TcpNetwork).
 
 ### 4.8 Visualizations for the Paper
 
@@ -887,15 +984,15 @@ AC-005 reports `int_per_sec` but does not highlight it as a primary metric. AC-0
 
 AC-005, Gap L8: "Each scenario is executed a single time. No mean, standard deviation, confidence intervals." AC-014 recommends 3-10 runs with 0.5s minimum.
 
-A single datapoint can be affected by: OS context switches, CPU cache cold/hot state, network variability (in TCP mode), and background processes. Without repetitions, signal cannot be distinguished from noise. The minimum of 5 repetitions allows computing mean and standard deviation; 30 repetitions allow confidence intervals via the Central Limit Theorem.
+A single datapoint can be affected by: OS context switches, CPU cache cold/hot state, network variability (in TCP mode), and background processes. Without repetitions, signal cannot be distinguished from noise. The minimum of 5 repetitions allows computing mean and standard deviation; 10 repetitions (the TCC campaign value) are sufficient for bootstrap 95% CI computation on the median; 30 repetitions allow CLT-based parametric confidence intervals.
 
 ### 5.4 Why correctness on every repetition
 
 Correctness is not statistical -- it is boolean. If the system produces an incorrect result in 1 of 30 repetitions, there is a concurrency or determinism bug. Verifying on every repetition maximizes the probability of detecting intermittent bugs, especially in TCP mode where message ordering may vary.
 
-### 5.5 Why a unified CSV schema
+### 5.5 Why three CSV files instead of one
 
-The Haskell prototype has two distinct schemas (local with 17 columns, distributed with 17 different columns). This complicates comparative analysis. A unified schema with optional fields (zeroed when not applicable) simplifies analysis: `SELECT * FROM results WHERE benchmark = 'EP' AND workers = 4` works for all modes.
+The Haskell prototype has two distinct schemas (local with 17 columns, distributed with 17 different columns). This complicates comparative analysis. Relativist uses three files (detail, rounds, summary) that separate concerns: `detail.csv` contains scalar aggregates per execution (one row per datapoint), `rounds.csv` contains per-round phase breakdowns (enabling per-round analysis without JSON-in-CSV), and `summary.csv` contains pre-aggregated statistics per configuration (primary input for figures). This three-file approach was adopted from DATA-COLLECTION-PLAN Section 4 and resolves the problem of embedding variable-length vectors in CSV columns. All three files use a consistent identifier scheme `(benchmark, input_size, workers, mode)` enabling easy joins.
 
 ### 5.6 Why minimum granularity is not specified a priori
 
@@ -937,6 +1034,8 @@ The TCC's research question (OBJETIVO_TCC.md) asks whether IC properties "allow 
 | `mkTreeBalanced` (AC-004) | TreeSumBalanced | Same design. |
 | (does not exist) | MixedNet | New. All 6 rules. |
 | (does not exist) | ErasurePropagation | New. Erasure cascade. |
+| (does not exist) | ChurchAdd | New. SPEC-14. Arithmetic computation via Church encoding. Profile B. |
+| (does not exist) | ChurchMul (SHOULD) | New. SPEC-14. Multiplication with O(a*b) interactions. Profile B. |
 
 ### 6.2 Metrics: prototype vs. Relativist
 
@@ -956,7 +1055,7 @@ The TCC's research question (OBJETIVO_TCC.md) asks whether IC properties "allow 
 | Peak memory | **No** | **Yes** |
 | MIPS | **No** | **Yes** |
 | Worker idle time | **No** | **Yes** |
-| Repetitions/stats | **No** (1 execution) | **Yes** (min 5, ideal 30) |
+| Repetitions/stats | **No** (1 execution) | **Yes** (min 5, TCC campaign 10, ideal 30) |
 | Correctness | Yes (`brCorrect`) | Yes (every repetition) |
 | Break-even analysis | **No** | **Yes** |
 
@@ -1005,4 +1104,4 @@ Based on the analysis in DISC-006 v2, DISC-008 v2, and ARG-004, the following di
 
 5. ~~**TcpNetwork mode on physical machines.**~~ **Resolved.** TcpNetwork is now MUST (R27). The benchmark suite MUST execute on at least 4 and 8 physical machines using bare-metal deployment (SPEC-07, R41). This is the primary experimental scenario for the TCC, producing data with real network latency and bandwidth constraints.
 
-6. **Church arithmetic benchmarks (SPEC-14).** SPEC-14 introduces Church numeral encoding of arithmetic operations (addition, multiplication, exponentiation). These produce Profile B nets (expansion via CON-DUP commutation, then collapse via annihilation). Adding `ChurchAdd` and `ChurchMul` benchmarks to the scaling curve analysis would demonstrate that Relativist can distribute real computation, not just synthetic workloads. The `ChurchMul(n, n)` benchmark is particularly interesting because it produces O(n^2) interactions from an O(n) initial net, providing a natural scaling curve. **(Does NOT block implementation; recommended for the TCC experimental evaluation.)**
+6. ~~**Church arithmetic benchmarks (SPEC-14).**~~ **Resolved.** ChurchAdd is now a MUST benchmark (R17a) and ChurchMul is a SHOULD benchmark (R17b). Both use generators from SPEC-14 R26-R27, shared via `src/io/examples.rs` (SPEC-12 R35-R36). Results are verified by `decode_nat` (SPEC-14 R22) AND graph isomorphism with the sequential baseline.

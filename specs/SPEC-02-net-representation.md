@@ -1,6 +1,6 @@
 # SPEC-02: Net Representation
 
-**Status:** Revised v2
+**Status:** Revised v3
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants)
 **Gray zones resolved:** ---
 **References consumed:** REF-001, REF-002, REF-003, REF-013
@@ -45,6 +45,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R6.** The `Net` type MUST contain: (a) an agent arena `Vec<Option<Agent>>`, (b) a port array `Vec<PortRef>`, (c) a redex queue `VecDeque<(AgentId, AgentId)>`, (d) an ID generator `next_id: AgentId`, (e) an optional root port `root: Option<PortRef>`. **(MUST)**
 
+**R6a.** The `root` field MUST be constrained to the following valid values: `None` (the net has no root, e.g., partition sub-nets), or `Some(AgentPort(id, 0))` where `id` is a live agent in the arena. `FreePort` values are NOT valid for `root`. The root observation point is represented by an explicit field precisely to avoid conflation with boundary `FreePort` sentinels (Section 5.6). SPEC-12 R56's erroneous citation of SPEC-14 R9 as evidence for `FreePort` roots is incorrect; SPEC-14 R9 explicitly mandates `AgentPort` roots. SPEC-12 T11c (`root free(0)`) is a Text DSL syntax test that sets `net.root = Some(FreePort(0))`; this is a parser-level operation before validation. The SPEC-12 parser MUST reject `FreePort` roots during T1/I2 validation (R11) or document the exception as a Lafont interface net construct. **(MUST)**
+
 ### 3.2 Storage
 
 **R7.** Agents MUST be stored in a `Vec<Option<Agent>>` indexed by `AgentId`. The index in the vector MUST correspond to the `AgentId` of the agent. **(MUST)**
@@ -53,7 +55,7 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R9.** The redex queue MUST be a `VecDeque<(AgentId, AgentId)>` updated incrementally: new redexes are inserted when a `connect` operation creates a connection between two principal ports. **(MUST)**
 
-**R10.** The field `next_id` MUST be strictly greater than any `AgentId` in use in the net (cf. SPEC-01, I3). After creating `k` agents, `next_id` MUST be incremented by `k`. **(MUST)**
+**R10.** The field `next_id` MUST be strictly greater than any `AgentId` in use in the net (cf. SPEC-01, I3). After creating `k` agents, `next_id` MUST be incremented by `k`. Direct mutation of `agents` or `ports` bypasses invariant checks and may violate I1-I3. Callers MUST use `create_agent`, `connect`, `disconnect`, and `remove_agent` for all mutations. **(MUST)**
 
 ### 3.3 Operations
 
@@ -63,17 +65,29 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R13.** The `connect(a: PortRef, b: PortRef)` operation MUST establish a bidirectional connection between two ports in the port array. If both ports are principal ports of agents (`AgentPort(_, 0)`), it MUST insert the pair into the redex queue. Expected complexity: O(1). **(MUST)**
 
-**R14.** The `disconnect(port: PortRef)` operation MUST remove the bidirectional connection of the port in the port array. Expected complexity: O(1). **(MUST)**
+**R14.** The `disconnect(port: PortRef)` operation MUST remove the bidirectional connection of the port in the port array. Expected complexity: O(1). When the target of a disconnected port is a `FreePort(bid)`, the `set_port` call on the FreePort side is a no-op (FreePort has no slot in the port array). The corresponding entry in the external `free_port_index` or Border Map becomes stale. This is by design: SPEC-05 R6 handles missing border entries during merge. The `disconnect` operation does NOT update external maps. **(MUST)**
 
 **R15.** The `get_target(port: PortRef) -> PortRef` operation MUST return the PortRef to which the given port is connected, via lookup in the port array. Expected complexity: O(1). **(MUST)**
 
+**R15a.** The `get_agent(id: AgentId) -> Option<&Agent>` operation MUST return a reference to the agent with the given ID, or `None` if the ID is out of range or the slot is empty. Expected complexity: O(1). This is the canonical accessor for agent lookup; callers MUST NOT index into `agents` directly for read access. **(MUST)**
+
+**R15b.** The `get_agent_mut(id: AgentId) -> Option<&mut Agent>` operation MUST return a mutable reference to the agent with the given ID, or `None` if the ID is out of range or the slot is empty. Expected complexity: O(1). **(MUST)**
+
 **R16.** The `is_reduced(net: &Net) -> bool` function MUST return `true` if and only if the redex queue is empty (all redexes have been consumed or discarded). **(MUST)**
+
+**R16a.** The `count_live_agents(&self) -> usize` operation MUST return the number of live agents in the net (slots where `agents[i].is_some()`). Expected complexity: O(A) where A is the arena size. **(MUST)**
+
+**R16b.** The `live_agents(&self) -> impl Iterator<Item = &Agent>` operation MUST provide an iterator over all live agents in the net. The iterator MUST skip `None` slots. **(MUST)**
 
 **R17.** The reduction engine MUST tolerate stale redexes in the queue: when consuming a pair `(a, b)`, it MUST verify that both agents exist and that `get_target(AgentPort(a, 0)) == AgentPort(b, 0)`. If the verification fails, the redex MUST be silently discarded (cf. SPEC-01, I4). **(MUST)**
 
 ### 3.4 Representation Invariants
 
 **R18.** The port array MUST maintain bidirectionality: if `ports[idx(a)] == b`, then `ports[idx(b)] == a` (implements SPEC-01, T1 and I1). **(MUST)**
+
+**R18a. Root port exception to T1:** The principal port of the root agent (when `net.root == Some(AgentPort(id, 0))`) MAY contain `DISCONNECTED` in the port array. This is a permanent, structural exception to T1 linearity: the root agent's principal port connects to the external observation point (represented by the `net.root` field), not to another port in the port array. Debug assertions MUST explicitly skip the root agent's principal port when checking T1/I1, rather than skipping all DISCONNECTED ports generically. **(MUST)**
+
+**R18b. Self-loop policy:** Intra-agent connections (connecting two DIFFERENT ports of the SAME agent, e.g., `connect(AgentPort(x, 1), AgentPort(x, 2))`) are VALID. They satisfy T1 bidirectionality: `ports[x*3+1] == AgentPort(x, 2)` and `ports[x*3+2] == AgentPort(x, 1)`. These are required by Church(0) encoding (SPEC-14 R5). Same-port self-connections (connecting a port to ITSELF, e.g., `connect(AgentPort(x, 1), AgentPort(x, 1))`) are INVALID and MUST be rejected with a debug assertion. T1's "exactly one other port" means "exactly one distinct port reference" (a different `(AgentId, PortId)` pair). **(MUST)**
 
 **R19.** Every reference `AgentPort(id, p)` in the port array MUST point to an existing agent (`agents[id].is_some()`) with `p <= arity(agents[id].symbol)` (implements SPEC-01, I2). **(MUST)**
 
@@ -98,6 +112,8 @@ This distinction is essential for the partitioning protocol (SPEC-04, conditions
 **R25.** The serialized format MUST be self-contained: a receiver with no prior knowledge of the net MUST be able to reconstruct the complete Net from the received bytes. **(MUST)**
 
 **R26.** Serialization MUST preserve identity: `deserialize(serialize(net)) == net` (structural equality). **(MUST)**
+
+**R26a.** The `Net` struct MUST derive `PartialEq` and `Eq` to enable structural equality comparison for serialization round-trip tests (R26) and debug comparisons. Note: structural equality (`==`) requires identical AgentIds; for graph isomorphism (structural equivalence modulo ID renaming), use `nets_isomorphic` (SPEC-08). **(MUST)**
 
 **R27.** The format SHOULD use fixed size per element (inspired by HVM2, AC-006) to facilitate aligned access and size estimation. **(SHOULD)**
 
@@ -218,7 +234,7 @@ use std::collections::VecDeque;
 /// Agents are stored in an arena indexed by AgentId.
 /// Connections are represented implicitly by a flat port array.
 /// The redex queue maintains known active pairs for incremental reduction.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Net {
     /// Agent arena. agents[id] == Some(agent) if the agent is live.
     /// agents[id] == None if the slot is free.
@@ -382,7 +398,23 @@ impl Net {
     ///
     /// Complexity: O(1).
     /// Postcondition: get_target(a) == b && get_target(b) == a.
+    ///
+    /// Self-loop policy (R18b): intra-agent connections (different ports
+    /// of the same agent) are valid. Same-port self-connections (a == b)
+    /// are invalid and rejected with a debug assertion.
+    ///
+    /// Redex detection note: redex detection only fires when BOTH
+    /// endpoints are `AgentPort(_, 0)`. Connections involving `FreePort`
+    /// never produce redexes; border redexes are detected during merge
+    /// when `FreePort` sentinels are resolved to `AgentPort` endpoints
+    /// (SPEC-05 R5).
     pub fn connect(&mut self, a: PortRef, b: PortRef) {
+        #[cfg(debug_assertions)]
+        {
+            // R18b: same-port self-connections are invalid.
+            assert_ne!(a, b, "Same-port self-connection is invalid: {:?}", a);
+        }
+
         self.set_port(a, b);
         self.set_port(b, a);
 
@@ -477,12 +509,54 @@ impl Net {
     /// 1. Both agents exist.
     /// 2. The principal ports of a and b are connected to each other.
     pub fn is_valid_redex(&self, a: AgentId, b: AgentId) -> bool {
-        let a_exists = self.agents.get(a as usize).map_or(false, |s| s.is_some());
-        let b_exists = self.agents.get(b as usize).map_or(false, |s| s.is_some());
+        let a_exists = self.get_agent(a).is_some();
+        let b_exists = self.get_agent(b).is_some();
         if !a_exists || !b_exists {
             return false;
         }
         self.get_target(PortRef::AgentPort(a, 0)) == PortRef::AgentPort(b, 0)
+    }
+}
+```
+
+#### 4.5.9 Agent Accessors
+
+```rust
+impl Net {
+    /// Returns a reference to the agent with the given ID.
+    /// Returns None if the ID is out of range or the slot is empty.
+    ///
+    /// Complexity: O(1).
+    /// This is the canonical accessor for agent lookup (R15a).
+    pub fn get_agent(&self, id: AgentId) -> Option<&Agent> {
+        self.agents.get(id as usize).and_then(|slot| slot.as_ref())
+    }
+
+    /// Returns a mutable reference to the agent with the given ID.
+    /// Returns None if the ID is out of range or the slot is empty.
+    ///
+    /// Complexity: O(1).
+    pub fn get_agent_mut(&mut self, id: AgentId) -> Option<&mut Agent> {
+        self.agents.get_mut(id as usize).and_then(|slot| slot.as_mut())
+    }
+}
+```
+
+#### 4.5.10 Iteration and Counting
+
+```rust
+impl Net {
+    /// Returns the number of live agents in the net.
+    ///
+    /// Complexity: O(A) where A is the arena size.
+    pub fn count_live_agents(&self) -> usize {
+        self.agents.iter().filter(|s| s.is_some()).count()
+    }
+
+    /// Returns an iterator over all live agents in the net.
+    /// Skips None slots.
+    pub fn live_agents(&self) -> impl Iterator<Item = &Agent> {
+        self.agents.iter().filter_map(|s| s.as_ref())
     }
 }
 ```
@@ -496,7 +570,17 @@ The assertions below implement the checks required by R20, corresponding to inva
 impl Net {
     /// Verifies I1: bidirectionality of the port array.
     /// For each live agent, each connected port must have the correct reverse.
+    ///
+    /// The root agent's principal port is exempt from T1 (R18a): it MAY
+    /// contain DISCONNECTED because its external connection is represented
+    /// by `net.root`, not by the port array.
     pub fn assert_adjacency_consistent(&self) {
+        // Determine the root agent ID (if any) for the T1 exception.
+        let root_agent_id = match self.root {
+            Some(PortRef::AgentPort(id, 0)) => Some(id),
+            _ => None,
+        };
+
         for slot in self.agents.iter() {
             if let Some(agent) = slot {
                 let num_ports = total_ports(agent.symbol);
@@ -504,7 +588,11 @@ impl Net {
                     let port = PortRef::AgentPort(agent.id, p);
                     let target = self.get_target(port);
                     if target == DISCONNECTED {
-                        continue; // Allowed transiently
+                        // R18a: root agent's principal port is exempt.
+                        if p == 0 && root_agent_id == Some(agent.id) {
+                            continue; // Permanent DISCONNECTED for root (R18a)
+                        }
+                        continue; // Transient DISCONNECTED during reduction
                     }
                     let reverse = self.get_target(target);
                     assert_eq!(
@@ -570,11 +658,34 @@ impl Net {
             .count()
     }
 
+    /// Verifies that ERA agents' unused port slots (ports 1 and 2)
+    /// contain DISCONNECTED. If they contain any other value, it
+    /// indicates a bug in a prior operation.
+    pub fn assert_era_unused_ports_clean(&self) {
+        for slot in self.agents.iter() {
+            if let Some(agent) = slot {
+                if agent.symbol == Symbol::Era {
+                    for p in 1..=2u8 {
+                        let idx = port_index(agent.id, p);
+                        if idx < self.ports.len() {
+                            assert_eq!(
+                                self.ports[idx], DISCONNECTED,
+                                "ERA agent {} has non-DISCONNECTED value at unused port {}",
+                                agent.id, p
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Runs all invariant checks.
     pub fn assert_all_invariants(&self) {
         self.assert_adjacency_consistent();
         self.assert_refs_valid();
         self.assert_next_id_valid();
+        self.assert_era_unused_ports_clean();
     }
 }
 ```
@@ -632,7 +743,9 @@ In Relativist, the root is an `Option<PortRef>` field on the Net:
 ```rust
 /// The root field in Net stores the AgentPort connected to the
 /// external observation point.
-/// - Some(AgentPort(id, p)): the result is the agent at this port.
+/// - Some(AgentPort(id, 0)): the result is the agent at this port.
+///   The root MUST always reference port 0 (principal port) of a
+///   live agent (R6a).
 /// - None: the net has no root (e.g., partition sub-net without
 ///   a designated output).
 ///
@@ -643,6 +756,12 @@ In Relativist, the root is an `Option<PortRef>` field on the Net:
 ```
 
 Note: Unlike the port array (which only stores connections for `AgentPort` entries), the root is stored separately because it represents an external observation point, not a connection between two agents. In the Haskell prototype, this role was played by `FreePort(0)` as interface port (AC-001); in Relativist, the explicit `root` field is clearer and avoids conflation with boundary FreePorts used by the partitioner.
+
+**Root behavior during reduction:** The `root` field is set once at net construction and is NOT automatically updated by `connect`, `disconnect`, or reduction rules. For Church numeral arithmetic nets (SPEC-14), the root agent's principal port is DISCONNECTED in the port array (not connected to another principal port), so the root agent does NOT participate in any active pair and is never consumed by reduction. The result is extracted by following `net.root -> agent -> auxiliary ports` after reduction completes. If a future encoding requires the root agent to be consumed during reduction, the reduction engine or encoding module MUST update `net.root` explicitly.
+
+**Serialization:** The port array may contain the sentinel `FreePort(u32::MAX)` (DISCONNECTED) in slots for unused ERA ports (ports 1-2) and the root agent's principal port. Receivers MUST treat `FreePort(u32::MAX)` as an invalid/unconnected sentinel, not as a valid FreePort ID.
+
+**`is_reduced` semantics note:** The `is_reduced` function (R16) checks the redex queue, not the net's actual topological state. For a net constructed via the CRUD API with proper use of `connect` (which populates the redex queue incrementally), an empty queue reliably indicates Normal Form. For nets constructed by other means (e.g., deserialization, manual mutation), use `drain_stale()` or scan the net for active pairs to verify Normal Form.
 
 ### 4.10 FreePort Storage and the Border Map
 
@@ -659,14 +778,7 @@ connect(AgentPort(42, 1), FreePort(7))
   // The reverse (FreePort -> AgentPort) cannot be stored in the port array.
 ```
 
-To resolve the reverse direction, the partitioner (SPEC-04) and merger (SPEC-05) maintain a **Border Map**:
-
-```rust
-/// Maps FreePort(bid) -> AgentPort that the FreePort is connected to.
-/// Used by the partitioner and merger to resolve boundary connections.
-/// Maintained externally to the Net struct (in PartitionPlan, SPEC-04).
-pub type BorderMap = std::collections::HashMap<u32, PortRef>;
-```
+To resolve the reverse direction, the partitioner (SPEC-04) and merger (SPEC-05) maintain a **Border Map**: a `HashMap<u32, PortRef>` that maps `FreePort(bid)` identifiers to the `AgentPort` they are connected to. The `BorderMap` type alias is defined in SPEC-04 (partition module), where it is stored and used. SPEC-02 documents the concept but defers the type definition to SPEC-04 for proximity to its usage.
 
 The invariant T1 (bidirectionality) is relaxed for FreePort connections: bidirectionality is maintained by the external Border Map, not by the port array alone. Within the port array, the connection is one-directional (AgentPort -> FreePort). The reverse mapping (FreePort -> AgentPort) is available through the Border Map.
 

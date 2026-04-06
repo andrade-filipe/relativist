@@ -1,6 +1,6 @@
 # SPEC-03: Reduction Engine
 
-**Status:** Revised v2
+**Status:** Revised v3
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation)
 **Gray zones resolved:** ---
 **References consumed:** REF-001, REF-002, REF-003, REF-005
@@ -23,8 +23,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 | **Interaction Rule** | One of the 6 topological transformations that consume an Active Pair and produce a new configuration of agents and wires. Each rule is uniquely determined by the pair of symbols of the two agents in the Active Pair. |
 | **Dispatch** | The mechanism that, given an Active Pair `(a, b)`, determines which Interaction Rule to apply. In Relativist, implemented as a static 3x3 table indexed by `(a.symbol, b.symbol)`. Inspired by the 8x8 table of HVM2 (AC-007), reduced to the 3 symbols of pure Lafont ICs. |
 | **link** | The port reconnection procedure: connects two `PortRef` values via `Net::connect` and detects new redexes on-the-fly. Inspired by the `link` procedure of HVM2 (AC-007), but simplified because Relativist has no VAR (variable) type. |
-| **Stale Redex** | An entry in the redex queue whose agents have already been consumed by another reduction, or whose principal port connection has changed. Defined in SPEC-02. The reduction engine MUST discard stale redexes silently (SPEC-01, I4). |
-| **Interaction Counter** | A `u64` counter that records the number of interaction rules applied. Incremented on each successful `reduce_step`. Invariant T7 (SPEC-01) guarantees that the final value is identical for any reduction strategy on the same terminating net. |
+| **Stale Redex** | See SPEC-02, Section 2. The reduction engine MUST discard stale redexes silently (SPEC-01, I4). |
+| **Interaction Counter** | A `u64` counter that records the number of interaction rules applied. Managed by the caller (`reduce_all`, `reduce_n`) via `ReductionStats`, not as a field on `Net`. Incremented by the caller for each `StepResult::Reduced` returned by `reduce_step`. Invariant T7 (SPEC-01) guarantees that the final value is identical for any reduction strategy on the same terminating net. |
 
 ---
 
@@ -60,7 +60,9 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 ### 3.4 Reduction Loop
 
-**R12.** The function `reduce_step` MUST: (1) dequeue the next pair from the redex queue, (2) verify that the pair is valid (not stale), (3) if invalid, discard it and try the next, (4) if valid, determine the rule via dispatch and apply it, (5) increment the interaction counter. **(MUST)**
+**R12.** The function `reduce_step` MUST: (1) dequeue the next pair from the redex queue, (2) verify that the pair is valid (not stale), (3) if invalid, discard it and try the next, (4) if valid, determine the rule via dispatch and apply it, (5) return the applied rule so that callers can maintain interaction counts via `ReductionStats`. **(MUST)**
+
+- **Note:** The interaction counter is managed by the caller (`reduce_all`, `reduce_n`), not by `reduce_step` itself. `reduce_step` returns `StepResult::Reduced(Rule)` on success, and the caller increments `ReductionStats` accordingly. This avoids adding mutable counter state to `Net`.
 
 **R13.** The function `reduce_all` MUST apply `reduce_step` repeatedly until the redex queue is empty (Normal Form reached). It MUST return the total number of interactions performed. **(MUST)**
 
@@ -82,7 +84,7 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 ### 3.6 Complexity
 
-**R20.** Each interaction rule MUST execute in O(1) (constant time, independent of net size). **(MUST)**
+**R20.** Each interaction rule MUST execute in O(1) amortized (constant time, independent of net size). The amortized qualifier accounts for `create_agent` potentially triggering Vec reallocation during commutation and erasure rules (cf. SPEC-02, Section 4.5.2). **(MUST)**
 
 **R21.** `reduce_step` MUST execute in O(1) amortized (excluding stale redexes discarded; each stale discard is O(1)). **(MUST)**
 
@@ -97,6 +99,18 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 **R24.** The reduction engine MUST operate by in-place mutation of the Net rather than creating a new Net at each step. **(MUST)**
 
 - **Justification:** The Haskell prototype creates a new immutable Net at each reduction step (AC-001, Limitation L3), causing O(A + W) allocation per step. In-place mutation reduces per-step cost to O(1), which is essential for performance. This follows the approach of HVM2 (AC-007) and HVM4 (AC-009).
+
+### 3.8 Self-Referencing Auxiliary Ports
+
+**R25.** When an annihilation rule (CON-CON or DUP-DUP) has auxiliary ports that point back to the pair being consumed (i.e., `a.1` is connected to `b.2`, or more generally any `target(a.p)` equals `AgentPort(b.id, q)` or `target(b.p)` equals `AgentPort(a.id, q)`), the `link` calls that would reconnect those ports MUST be no-ops. Both agents and all their connections are fully consumed; no ghost entries may remain in the port array. **(MUST)**
+
+- **Justification:** In the "read neighbors, remove, reconnect" pattern, `remove_agent` disconnects all ports and marks the slot as `None`. The saved `PortRef` values (`a1_target`, etc.) still hold `AgentPort` references to the now-removed agents. If `connect` writes to these slots unconditionally, it creates ghost entries that violate I2 (reference validity). The guard ensures that when the entire active pair's auxiliary ports form a closed structure, both agents cleanly vanish with no residual port array entries.
+
+### 3.9 Reduction with FreePort (Boundary) Sentinels
+
+**R26.** During local reduction within a partitioned sub-net, auxiliary ports MAY be connected to `FreePort(bid)` boundary sentinels. The reduction rules treat `FreePort` targets identically to `AgentPort` targets during the `get_target` phase (reading the PortRef from the port array). During the `link` phase, `Net::connect` writes `FreePort(bid)` to the port array of the `AgentPort` side, but `set_port` cannot write back to the `FreePort` side (which has no port array slot). This one-sided write is acceptable because the `free_port_index` is reconstructed post-reduction by scanning the port array (SPEC-04, R14; SPEC-05, Section 4.3 `rebuild_free_port_index`). Invariant I1 (bidirectional consistency) is temporarily violated for `FreePort` connections during local reduction; it is restored after `rebuild_free_port_index`. **(MUST)**
+
+- **Justification:** The lazy reconstruction approach (SPEC-05, Section 5.3) was chosen specifically to avoid modifying the reduction engine to maintain the `free_port_index`. The reduction engine does NOT need to know about partitioning or boundary sentinels. It simply reads and writes `PortRef` values through the standard `get_target`/`connect` interface. The `free_port_index` is a concern of the partitioner (SPEC-04) and merger (SPEC-05), reconstructed before merge.
 
 ---
 
@@ -114,7 +128,7 @@ Each rule transforms an Active Pair (two agents connected through their principa
 
 **Convention:** In all rules, the steps are: (1) read the neighbors of auxiliary ports, (2) remove the agents involved, (3) create new agents if necessary, (4) reconnect ports via `link`.
 
-**Invariant cross-reference:** Each rule preserves the invariants listed. The invariant identifiers refer to SPEC-01.
+**Invariant cross-reference:** Each rule preserves the invariants listed. The invariant identifiers refer to SPEC-01. Additionally, all rules preserve T2 (interaction exclusively via principal ports): new redexes inserted by `connect` satisfy T2 by construction, because `connect` only inserts pairs into the redex queue when both endpoints are `AgentPort(_, 0)` (principal ports). T2 is not listed individually per rule to avoid redundancy.
 
 ---
 
@@ -214,6 +228,20 @@ Each rule transforms an Active Pair (two agents connected through their principa
 **New redex detection:** Up to 2, same mechanism as CON-CON.
 
 **Reference:** REF-002 p.82 (Fig. 2, second rule), AC-001 `ruleDUP_DUP` lines 267-286.
+
+**Edge case -- self-referencing auxiliary ports (R25):** Both annihilation rules (CON-CON and DUP-DUP) may encounter a scenario where the auxiliary ports of `a` are connected to the auxiliary ports of `b`, forming a closed structure. For example, in a CON-CON pair where `a.1 <-> b.2` and `a.2 <-> b.1`:
+
+```
+  a.1 ------- b.2
+  CON(a) ---[p0><p0]--- CON(b)
+  a.2 ------- b.1
+```
+
+After reading neighbors: `a1_target = AgentPort(b, 2)`, `a2_target = AgentPort(b, 1)`, `b1_target = AgentPort(a, 2)`, `b2_target = AgentPort(a, 1)`. After `remove_agent(a)` and `remove_agent(b)`, all saved PortRef values point to removed agents. The `link` calls MUST be guarded: if either endpoint of a `link` call is an `AgentPort` whose agent has been removed, the `link` is a no-op (the wire has been fully consumed). The correct result is: both agents vanish cleanly with no residual port array entries.
+
+The same pattern applies to DUP-DUP when `a.1 <-> b.1` and `a.2 <-> b.2`. A partial self-reference (e.g., only `a.1 <-> b.2`, with `a.2` and `b.1` connected to other agents) is also possible: the self-referencing `link` is a no-op while the other `link` proceeds normally.
+
+See Section 4.5 for the `link` helper implementation that provides this guard.
 
 ---
 
@@ -537,12 +565,41 @@ The 6 logical rules are implemented in 4 functions, following the unification of
 | `interact_void` | ERA-ERA | `(net, a_id, b_id)` |
 
 ```rust
+/// Safe link: wraps Net::connect with a guard for removed agents (R25).
+///
+/// If either endpoint is an AgentPort whose agent has been removed
+/// (agents[id] is None), the link is a no-op. This handles the
+/// self-referencing auxiliary port edge case in annihilation rules.
+///
+/// For non-annihilation rules (commutation, erasure), the guard is
+/// never triggered because auxiliary ports of the active pair always
+/// point to agents outside the pair (or to FreePort sentinels).
+fn link(net: &mut Net, a: PortRef, b: PortRef) {
+    let is_removed = |net: &Net, p: &PortRef| -> bool {
+        if let PortRef::AgentPort(id, _) = p {
+            net.agents[*id as usize].is_none()
+        } else {
+            false // FreePort is not "removed"; connect handles it
+        }
+    };
+    if is_removed(net, &a) || is_removed(net, &b) {
+        return;
+    }
+    net.connect(a, b);
+}
+```
+
+```rust
 /// Annihilation: two agents of the SAME symbol annihilate each other.
 /// CON-CON: reconnection in CROSS pattern (a.1<->b.2, a.2<->b.1)
 /// DUP-DUP: reconnection in PARALLEL pattern (a.1<->b.1, a.2<->b.2)
 ///
-/// Precondition: a and b are live agents of the same symbol (Con or Dup).
-/// Postcondition: a and b removed; auxiliary ports reconnected.
+/// Precondition: both agent IDs MUST refer to live agents
+///   (agents[id].is_some()). This precondition is guaranteed by
+///   reduce_step's validity check (R12). Calling this function
+///   with removed agents is undefined behavior.
+/// Postcondition: a and b removed; auxiliary ports reconnected
+///   (or no-op'd if self-referencing, per R25).
 pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
     let sym = net.agents[a_id as usize].unwrap().symbol;
 
@@ -557,13 +614,13 @@ pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
     match sym {
         Symbol::Con => {
             // CROSS: a.1 <-> b.2, a.2 <-> b.1
-            net.connect(a1, b2);
-            net.connect(a2, b1);
+            link(net, a1, b2);
+            link(net, a2, b1);
         }
         Symbol::Dup => {
             // PARALLEL: a.1 <-> b.1, a.2 <-> b.2
-            net.connect(a1, b1);
-            net.connect(a2, b2);
+            link(net, a1, b1);
+            link(net, a2, b2);
         }
         _ => unreachable!("interact_anni called with non-arity-2 symbol"),
     }
@@ -574,8 +631,14 @@ pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
 /// Commutation: CON and DUP commute, creating 4 new agents.
 /// This is the ONLY rule that INCREASES the number of agents (balance +2).
 ///
-/// Precondition: con_id is a Con, dup_id is a Dup (normalized by normalize_pair).
-/// Postcondition: CON and DUP removed; 2 new DUP + 2 new CON created and reconnected.
+/// Precondition: both agent IDs MUST refer to live agents
+///   (agents[id].is_some()). con_id MUST be Con, dup_id MUST be Dup
+///   (normalized by normalize_pair). This precondition is guaranteed
+///   by reduce_step's validity check (R12).
+/// Postcondition: CON and DUP removed; 2 new DUP + 2 new CON created
+///   and reconnected. PortRef values are index-based, not pointer-based:
+///   Vec reallocation during create_agent does NOT invalidate previously
+///   read PortRef values.
 pub fn interact_comm(net: &mut Net, con_id: AgentId, dup_id: AgentId) {
     let a1 = net.get_target(PortRef::AgentPort(con_id, 1));
     let a2 = net.get_target(PortRef::AgentPort(con_id, 2));
@@ -592,12 +655,17 @@ pub fn interact_comm(net: &mut Net, con_id: AgentId, dup_id: AgentId) {
     let s = net.create_agent(Symbol::Con);   // CON: inherits side of dup.2
 
     // External wires: principal ports of new agents <-> old neighbors
-    net.connect(PortRef::AgentPort(p, 0), a1);
-    net.connect(PortRef::AgentPort(q, 0), a2);
-    net.connect(PortRef::AgentPort(r, 0), b1);
-    net.connect(PortRef::AgentPort(s, 0), b2);
+    // Note: old neighbors (a1, a2, b1, b2) may be FreePort(bid) in
+    // partitioned sub-nets. The link helper handles this correctly:
+    // connect writes FreePort to the AgentPort side's port array,
+    // and the FreePort side is a no-op in set_port (R26).
+    link(net, PortRef::AgentPort(p, 0), a1);
+    link(net, PortRef::AgentPort(q, 0), a2);
+    link(net, PortRef::AgentPort(r, 0), b1);
+    link(net, PortRef::AgentPort(s, 0), b2);
 
     // Internal wires: auxiliary ports of new agents to each other (crossed)
+    // These are always AgentPort-to-AgentPort (never FreePort).
     net.connect(PortRef::AgentPort(p, 1), PortRef::AgentPort(r, 1));
     net.connect(PortRef::AgentPort(p, 2), PortRef::AgentPort(s, 1));
     net.connect(PortRef::AgentPort(q, 1), PortRef::AgentPort(r, 2));
@@ -609,7 +677,10 @@ pub fn interact_comm(net: &mut Net, con_id: AgentId, dup_id: AgentId) {
 /// Erasure: ERA encounters an arity-2 agent (CON or DUP).
 /// Propagates erasure: creates 2 new ERA agents on the auxiliary ports.
 ///
-/// Precondition: node_id is Con or Dup, era_id is Era (normalized).
+/// Precondition: both agent IDs MUST refer to live agents
+///   (agents[id].is_some()). node_id MUST be Con or Dup, era_id
+///   MUST be Era (normalized by normalize_pair). This precondition
+///   is guaranteed by reduce_step's validity check (R12).
 /// Postcondition: both removed; 2 new ERA connected to old neighbors.
 pub fn interact_eras(net: &mut Net, node_id: AgentId, era_id: AgentId) {
     let a1 = net.get_target(PortRef::AgentPort(node_id, 1));
@@ -623,15 +694,18 @@ pub fn interact_eras(net: &mut Net, node_id: AgentId, era_id: AgentId) {
     let e2 = net.create_agent(Symbol::Era);
 
     // Connect new ERA to old neighbors of auxiliary ports
-    net.connect(PortRef::AgentPort(e1, 0), a1);
-    net.connect(PortRef::AgentPort(e2, 0), a2);
+    // Note: a1/a2 may be FreePort(bid) in partitioned sub-nets (R26).
+    link(net, PortRef::AgentPort(e1, 0), a1);
+    link(net, PortRef::AgentPort(e2, 0), a2);
 }
 ```
 
 ```rust
 /// Void: two ERA agents annihilate without creating anything.
 ///
-/// Precondition: both are Era.
+/// Precondition: both agent IDs MUST refer to live agents
+///   (agents[id].is_some()) and both MUST be Era. This precondition
+///   is guaranteed by reduce_step's validity check (R12).
 /// Postcondition: both removed. No agents created, no reconnections.
 pub fn interact_void(net: &mut Net, a_id: AgentId, b_id: AgentId) {
     net.remove_agent(a_id);
@@ -794,14 +868,16 @@ pub fn reduce_n(net: &mut Net, budget: usize) -> ReductionStats {
 
 ### 4.7 Link Procedure (Port Reconnection)
 
-In Relativist, the `link` procedure is implemented directly by `Net::connect` (SPEC-02, Section 4.5.4). The `connect` function already:
+In Relativist, port reconnection during interaction rules uses a `link` helper function (defined in Section 4.5) that wraps `Net::connect` (SPEC-02, Section 4.5.4) with a guard for removed agents (R25). The `connect` function already:
 
 1. Establishes a bidirectional connection in the port array.
 2. Detects whether both ports are principal ports (`AgentPort(_, 0)`) and, if so, inserts the pair into the redex queue.
 
-No separate `link` function is necessary. On-the-fly redex detection is integral to the connection operation.
+The `link` helper adds a safety check: if either endpoint is an `AgentPort` of a removed agent, the `link` is a no-op. This handles the self-referencing auxiliary port edge case in annihilation rules (R25). For internal wires of commutation (where both endpoints are freshly created agents), `net.connect` is called directly for clarity and efficiency.
 
-**Difference from HVM2:** In HVM2 (AC-007), the `link` procedure is more complex because it includes variable resolution (VAR), path compression, and atomic ownership via CAS. In Relativist, there are NO variables (VAR): all ports are `AgentPort` or `FreePort`. Therefore, `link` reduces to bidirectional `connect` + redex detection.
+**FreePort behavior during link (R26):** When one endpoint of a `link` call is a `FreePort(bid)` (as occurs in partitioned sub-nets), `connect` writes `FreePort(bid)` to the `AgentPort` side's port array slot, but `set_port` is a no-op for the `FreePort` side (which has no port array slot). This one-sided write is acceptable: the `free_port_index` is reconstructed by scanning the port array after local reduction (SPEC-05, Section 4.3). Invariant I1 is temporarily violated for `FreePort` connections during reduction but is restored after reconstruction.
+
+**Difference from HVM2:** In HVM2 (AC-007), the `link` procedure is more complex because it includes variable resolution (VAR), path compression, and atomic ownership via CAS. In Relativist, there are NO variables (VAR): all ports are `AgentPort` or `FreePort`. Therefore, `link` reduces to a guard check + bidirectional `connect` + redex detection.
 
 **Difference from the Haskell prototype:** In the prototype (AC-001), there is no `link` procedure. Each rule constructs wires manually via `Wire a b`. Detection of new redexes is done by the global scan `findRedexes` at the beginning of each step. Relativist eliminates this scan by replacing it with incremental detection in `connect`.
 
@@ -830,6 +906,8 @@ Detection of new redexes during reduction follows the on-the-fly pattern (CC-2 f
 
 The cost of stale redexes is amortized: each stale is discarded in O(1) (lookup in the agent vector + connection verification). In the worst case (many stale), the additional cost is proportional to the number of stale discarded, which is bounded by the total number of reconnections performed.
 
+**Note on `is_reduced()` and stale entries:** The function `is_reduced()` (SPEC-02, R16) checks whether the redex queue is empty. This is a necessary but not sufficient condition for Normal Form when stale entries exist in the queue. The canonical way to verify Normal Form is to call `reduce_all` (which drains all stale entries by processing them in the loop) and then confirm that no new entries were generated. Do NOT use `is_reduced()` as a standalone termination check without first processing stale entries. After `reduce_all` returns, `is_reduced()` is guaranteed to return `true`.
+
 ### 4.9 ID Generation During Reduction
 
 The CON-DUP (4 new agents), CON-ERA (2 new agents), and DUP-ERA (2 new agents) rules create new agents via `net.create_agent(symbol)`, which:
@@ -839,6 +917,8 @@ The CON-DUP (4 new agents), CON-ERA (2 new agents), and DUP-ERA (2 new agents) r
 3. Expands the agent arena and port array if necessary.
 
 **Complexity:** O(1) amortized per `create_agent` (may trigger Vec realloc).
+
+**Vec reallocation safety:** `PortRef` values are index-based (`AgentId` + `PortId`), not pointer-based. Vec reallocation during `create_agent` changes the backing memory address of `agents` and `ports`, but does NOT invalidate previously read `PortRef` values because they store integer indices, not raw pointers. The saved values (`a1`, `a2`, `b1`, `b2`) remain valid after reallocation.
 
 **In the distributed context (SPEC-04, SPEC-05):** Each worker has a pre-allocated ID range. The `next_id` is initialized to the start of the worker's range. The same `create_agent` logic works without modification; the only difference is the initial value of `next_id`. This satisfies invariant D4 (ID uniqueness after distributed reduction, SPEC-01).
 
@@ -851,11 +931,11 @@ The CON-DUP (4 new agents), CON-ERA (2 new agents), and DUP-ERA (2 new agents) r
 | CON-CON (anni) | 4 get_target + 2 remove_agent + 2 connect | O(1) |
 | DUP-DUP (anni) | 4 get_target + 2 remove_agent + 2 connect | O(1) |
 | ERA-ERA (void) | 2 remove_agent | O(1) |
-| CON-DUP (comm) | 4 get_target + 2 remove_agent + 4 create_agent + 8 connect | O(1) |
-| CON-ERA (eras) | 2 get_target + 2 remove_agent + 2 create_agent + 2 connect | O(1) |
-| DUP-ERA (eras) | 2 get_target + 2 remove_agent + 2 create_agent + 2 connect | O(1) |
+| CON-DUP (comm) | 4 get_target + 2 remove_agent + 4 create_agent + 8 connect | O(1) amortized |
+| CON-ERA (eras) | 2 get_target + 2 remove_agent + 2 create_agent + 2 connect | O(1) amortized |
+| DUP-ERA (eras) | 2 get_target + 2 remove_agent + 2 create_agent + 2 connect | O(1) amortized |
 
-All operations (`get_target`, `remove_agent`, `create_agent`, `connect`) are O(1) as per SPEC-02. Therefore, each rule is O(1).
+All operations (`get_target`, `remove_agent`, `create_agent`, `connect`) are O(1) as per SPEC-02. `create_agent` is O(1) amortized due to potential Vec reallocation. Therefore, rules that create agents (comm, eras) are O(1) amortized; rules that do not create agents (anni, void) are O(1) worst-case.
 
 **Comparison with the Haskell prototype (AC-001):** In the prototype, each rule is O(w) where w is the total number of wires, due to the linear scan of `portNeighbor` and `removeAgent`. The improvement from O(w) to O(1) per rule is the primary complexity optimization of Relativist.
 
@@ -995,6 +1075,10 @@ None. All design decisions necessary to implement the reduction engine are cover
 - The reduction loop is defined (reduce_step, reduce_all, reduce_n).
 - Redex detection is defined (incremental via connect).
 - Pair normalization is defined.
+- Self-referencing auxiliary ports in annihilation are handled by the `link` guard (R25).
+- FreePort boundary sentinels during local reduction are documented (R26).
+- Interaction counter management is clarified (caller-managed via ReductionStats).
+- Preconditions for all interact_* functions are explicitly documented.
 - Complexity is analyzed.
 - Preserved invariants are identified for each rule.
 - The relationship between each rule and the formal invariants (T1-T7, I1-I4, D4) is established.

@@ -1,6 +1,6 @@
 # SPEC-04: Net Partitioning
 
-**Status:** Revised v2
+**Status:** Revised v3
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine)
 **Gray zones resolved:** Z2 (partitioning strategy for IC nets)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
@@ -35,11 +35,13 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 ### 3.1 The split Function
 
-**R1.** The `split` function MUST accept as input a `Net` and a `PartitionPlan` (which encodes the allocation function sigma and the number of workers n >= 1), and return the plan populated with `n` partitions and the border map. **(MUST)**
+**R1.** The `split` function MUST accept as input a `Net`, a number of workers `num_workers: u32` (n >= 1), and a `PartitionStrategy`, and return a `PartitionPlan` containing `n` partitions and the border map. **(MUST)**
 
-**R2.** If `n == 1`, the function MUST return the entire net as a single partition with no borders. This is the trivial case and MUST execute in O(1) modulo cloning the net. **(MUST)**
+> **Cross-spec note (SPEC-13):** SPEC-13's coordinator FSM uses the action `InvokeSplit { net: Net, num_workers: usize }` and event `SplitComplete(Vec<Partition>)`. These represent the *FSM interface*, not the `split()` function signature. The coordinator's action executor calls `split()` with coordinator-local state (including the strategy), stores the returned `PartitionPlan` (with border map) in coordinator-local state, and fires `SplitComplete(plan.partitions)` into the FSM. The `num_workers` type discrepancy (`u32` here vs. `usize` in SPEC-13) is resolved at the call site by casting `usize as u32`, which is safe for n <= 8 (TCC scope). SPEC-04 uses `u32` for consistency with `WorkerId` and SPEC-05 R25. The border map is retained in coordinator state and passed to `merge()` (SPEC-05 R1) when `InvokeMergeAndReduce` is executed.
 
-**R3.** If `n > |A|` (number of live agents), the effective number of non-empty partitions MUST be at most `|A|`. Excess partitions MUST be empty (no agents, no borders, no redexes). **(MUST)**
+**R2.** If `n == 1`, the function MUST return the entire net as a single partition with no borders. This is the trivial case and MUST execute in O(A + W) for the clone, with no additional partitioning overhead (no allocation function computation, no wire classification, no border generation). If the implementation accepts the net by value (`net: Net`), the trivial case MAY be O(1) by moving the net into the partition. **(MUST)**
+
+**R3.** If `n > |A|` (number of live agents), the effective number of non-empty partitions MUST be at most `|A|`. Excess partitions MUST be empty (no agents, no borders, no redexes). The coordinator SHOULD skip dispatching empty partitions to workers to avoid unnecessary network traffic (workers assigned empty partitions would perform trivial no-op reductions). **(MUST for partition semantics; SHOULD for dispatch optimization)**
 
 **R4.** The split operation MUST be deterministic: given the same net and the same allocation function sigma, the output MUST be identical across invocations. **(MUST)**
 
@@ -89,6 +91,8 @@ where `bid` is a unique border ID. The border map MUST record `bid -> (AgentPort
 
 **R15.** The distinction between FreePort (Lafont) and FreePort (Boundary) MUST be respected semantically, even though both are represented by the same `FreePort(u32)` variant at the type level (SPEC-00 Sections 6.1 and 6.2; SPEC-02, R4 note). Pre-existing Lafont FreePorts from the original net MUST NOT be treated as border wires. **(MUST)**
 
+**R15a.** Each `Partition` MUST carry metadata sufficient to distinguish boundary FreePort IDs from Lafont FreePort IDs and from `DISCONNECTED` (`u32::MAX`). Specifically, each partition MUST store `border_id_start` and `border_id_end` (the global range of border IDs assigned during this split). A `FreePort(id)` in the port array is a boundary FreePort if and only if `border_id_start <= id && id < border_id_end && id != u32::MAX`. This range check is the mechanism for lazy FreePort index reconstruction (Section 4.6, approach 2). **(MUST)**
+
 ### 3.4 Static ID Space Partitioning
 
 **R16.** The `PartitionPlan` MUST assign each worker an exclusive, contiguous range of `AgentId` values for generating new agents during local reduction. **(MUST)**
@@ -116,13 +120,17 @@ The last worker's range extends to `u32::MAX` (inclusive). Each partition's `sub
 
 **R23.** The trait SHOULD allow future alternative implementations (topology-aware, redex-aware) without modifying the rest of the partitioning pipeline. **(SHOULD)**
 
-### 3.6 Redex Queue Population
+### 3.6 Root Port Propagation
+
+**R28.** If `net.root` is `Some(AgentPort(id, p))`, the sub-net of the partition containing agent `id` MUST set `subnet.root = net.root`. All other partitions MUST set `subnet.root = None`. If `net.root` is `None`, all partitions MUST have `subnet.root = None`. If `net.root` is `Some(FreePort(f))`, the root is a Lafont FreePort (external interface); it MUST be preserved in whichever partition would inherit the interface wire (the partition containing the agent connected to `FreePort(f)`, if any), with other partitions set to `None`. **(MUST)**
+
+### 3.7 Redex Queue Population
 
 **R24.** The redex queue of each partition MUST contain only Active Pairs that are internal to that partition (both agents belong to the same partition). Active Pairs that cross boundaries (border redexes) MUST NOT appear in any partition's redex queue. **(MUST)**
 
 **R25.** Border redexes (pre-existing Active Pairs whose agents were separated by the split) MUST be detectable after merge via the `Net::connect` mechanism (SPEC-02, R13). They MUST NOT be lost. **(MUST)**
 
-### 3.7 Complexity
+### 3.8 Complexity
 
 **R26.** The split operation SHOULD have time complexity O(A + W) where A is the number of agents and W is the number of wires (ports with valid connections in the port array). **(SHOULD)**
 
@@ -168,12 +176,28 @@ pub struct Partition {
 
     /// ID range reserved for this worker to generate new agents.
     pub id_range: IdRange,
+
+    /// Range of border IDs assigned to this partition during split.
+    /// Used for lazy FreePort index reconstruction: a FreePort(id) in
+    /// the port array is a boundary FreePort if and only if
+    /// `border_id_start <= id && id < border_id_end && id != u32::MAX`.
+    /// FreePort(id) with id < border_id_start is a Lafont FreePort.
+    /// FreePort(u32::MAX) is DISCONNECTED (SPEC-02, Section 4.4).
+    /// This field enables disambiguation without requiring a HashSet
+    /// or relying solely on the free_port_index (which may be stale
+    /// after local reduction).
+    pub border_id_start: u32,
+    pub border_id_end: u32,
 }
 ```
 
 ```rust
 /// The complete partitioning plan.
-#[derive(Debug, Clone)]
+/// Note: serde derives are included for consistency with Partition,
+/// even though PartitionPlan stays on the coordinator and is not
+/// transmitted over the wire. They may be useful for checkpointing
+/// or debugging serialization.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PartitionPlan {
     /// List of partitions, one per worker. partitions[i].worker_id == i.
     pub partitions: Vec<Partition>,
@@ -251,18 +275,18 @@ Given the allocation function sigma, every wire in the net falls into exactly on
 
 A `DISCONNECTED` target (transient state during reduction, cf. SPEC-02) is ignored during classification.
 
-To avoid processing each border wire twice (once from each side), the split MUST use the convention: a border wire is processed only by the side with the smaller AgentId (`a.id < b.id`). The other side receives its FreePort entry as a derived consequence.
+To avoid processing each border wire twice (once from each side), the split MUST use the convention: a border wire is DETECTED only from the side with the smaller AgentId (`a.id < b.id`), but FreePort entries are generated for BOTH partitions in a single pass. Both `border_entries[sigma(a)]` and `border_entries[sigma(b)]` receive an entry from the same detection step.
 
 ### 4.5 The split Algorithm
 
 ```
-fn split(net: &Net, num_workers: u32, strategy: &dyn PartitionStrategy)
-    -> PartitionPlan
+fn split(net: &Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> PartitionPlan
 ```
 
 **Pre-conditions:**
 - `net` satisfies invariants T1 (linearity), I1 (bidirectionality), I2 (reference validity) from SPEC-01.
 - `num_workers >= 1`.
+- The input net MUST NOT contain any stale FreePort (Boundary) sentinels from a previous round. All boundary FreePorts MUST have been resolved by the preceding merge (SPEC-05). In debug mode, the split function SHOULD scan for FreePort values above `max_existing_lafont_freeport_id` and assert that none exist, signaling an error if any remain. This precondition is automatically satisfied when the merge correctly resolves all borders (SPEC-05, R3-R6) and the subsequent `reduce_all` does not reintroduce boundary FreePorts (which it cannot, since the reduction engine does not generate FreePort values).
 
 **Post-conditions:**
 - The returned PartitionPlan satisfies C1 (R6), C2 (R7), and C3 (R8).
@@ -293,12 +317,13 @@ The `borderId` counter starts at `max_existing_freeport_id(net) + 1` (R12).
 
 **Step 5: Build sub-nets.**
 For each worker `i`:
-- Create a `Net` containing only the agents of `A_i`.
-- For internal wires: copy the port array entries directly.
+- Create a `Net` containing only the agents of `A_i`. The sub-net's `agents` Vec MUST be sized to at least `max_agent_id_in(A_i) + 1`, and its `ports` Vec MUST be sized to at least `(max_agent_id_in(A_i) + 1) * PORTS_PER_SLOT`. Agent slots not belonging to partition `i` MUST be `None`, and their corresponding port slots MUST be set to `DISCONNECTED` (SPEC-02, Section 4.4). This maintains the uniform indexing scheme `id * PORTS_PER_SLOT + port_id` for all agents in the sub-net.
+- For internal wires: copy all `PORTS_PER_SLOT` (3) port array entries per agent directly, including `DISCONNECTED` slots (e.g., slots 1 and 2 for ERA agents, which have arity 0 and use only slot 0). This preserves the uniform port array layout regardless of agent arity.
 - For border wires: set `port_array[AgentPort(a, p)] = FreePort(bid)` for each agent `a` in `A_i` that has a border connection.
 - For interface wires: copy the `FreePort(f)` connection as-is.
 - Build the `free_port_index`: for each `(bid, AgentPort(a, p))` pair in this partition, insert `bid -> AgentPort(a, p)`.
 - Populate the redex queue with only internal Active Pairs (both agents in `A_i`).
+- Set `subnet.root` according to R28 (root port propagation).
 
 **Step 6: Compute ID ranges.**
 ```
@@ -325,7 +350,8 @@ fn split(net, num_workers, strategy) -> PartitionPlan:
     worker_agents: Vec<Vec<AgentId>> = group_by_worker(sigma, num_workers)
 
     // Classify wires and generate borders
-    border_id_counter = max_freeport_id(net) + 1
+    border_id_start = max_freeport_id(net) + 1
+    border_id_counter = border_id_start
     borders = HashMap::new()
     border_entries: Vec<Vec<(AgentId, PortId, u32)>> = vec![vec![]; num_workers]
 
@@ -358,7 +384,9 @@ fn split(net, num_workers, strategy) -> PartitionPlan:
         subnet.next_id = max(id_range.start,
                              max_id_in(worker_agents[i]).map(|m| m + 1).unwrap_or(0))
         partitions.push(Partition { subnet, worker_id: i,
-                                    free_port_index, id_range })
+                                    free_port_index, id_range,
+                                    border_id_start,
+                                    border_id_end: border_id_counter })
 
     debug_assert!(verify_c1_c2_c3(net, &partitions, &borders))
     return PartitionPlan { partitions, borders }
@@ -372,7 +400,9 @@ During local reduction by a worker, the reduction rules may alter what is connec
 
 **Scenario 1: Reconnection.** Agent `a` connected to `FreePort(bid)` participates in a local redex with agent `c`. The rule may reconnect `FreePort(bid)` to a new agent `d`. The `free_port_index` MUST be updated: `index[bid] = AgentPort(d, p)`.
 
-**Scenario 2: Erasure.** Agent `a` connected to `FreePort(bid)` is destroyed by an erasure rule (ERA interacts with it). The wire `(AgentPort(a, p), FreePort(bid))` disappears. The `free_port_index` MUST remove the entry: `index.remove(bid)`.
+**Scenario 2: Erasure (FreePort transfer).** Agent `a` has an auxiliary port connected to `FreePort(bid)`, and `a` participates in an erasure rule (ERA interacts with `a`'s principal port). The erasure rule (CON-ERA or DUP-ERA) removes agent `a` and creates 2 new ERA agents, each connected to one of `a`'s former auxiliary ports. If `FreePort(bid)` was connected to `a`'s auxiliary port `p`, the new ERA agent inherits that connection: the FreePort is NOT destroyed but transferred to the new ERA agent's principal port. The `free_port_index` MUST be UPDATED (not removed): `index[bid] = AgentPort(new_era_id, 0)`.
+
+Note: A FreePort (Boundary) connection is NEVER simply deleted during local reduction. It is always either preserved (no interaction), transferred to a replacement agent (Scenarios 2 and 3), or reconnected to a different agent (Scenario 1). The boundary FreePort acts as an impermeable wall: the agent on the boundary side can interact with partners on other ports, but the FreePort connection itself persists through the interaction (inherited by new agents). The only scenario in which a `free_port_index` entry could become stale is if both agents in a local redex are removed without creating any new connections -- but the IC reduction rules always reconnect auxiliary ports (CON-CON, DUP-DUP reconnect 4 wires; CON-ERA, DUP-ERA create 2 new ERA agents connected to the auxiliary ports). Therefore, FreePort entries are always transferred, never orphaned during local reduction.
 
 **Scenario 3: Propagation via CON-DUP.** The CON-DUP commutation rule creates 4 new agents. If one of the original agents had an auxiliary port connected to `FreePort(bid)`, the new agent inherits that connection. The `free_port_index` MUST be updated to point to the new agent.
 
@@ -380,7 +410,7 @@ Two implementation approaches are viable:
 
 1. **Active notification:** The reduction engine invokes a callback when `set_port(port, FreePort(_))` or when `get_target(port)` was a FreePort before overwrite. The callback updates the index.
 
-2. **Lazy reconstruction:** The `free_port_index` is rebuilt by scanning the port array before merge. Complexity: O(A_i * PORTS_PER_SLOT) per partition.
+2. **Lazy reconstruction:** The `free_port_index` is rebuilt by scanning the port array before merge. For each `FreePort(id)` found in the port array, the reconstruction includes it as a boundary FreePort if and only if `partition.border_id_start <= id && id < partition.border_id_end && id != u32::MAX` (R15a). Entries with `id < border_id_start` are Lafont FreePorts (ignored). Entries with `id == u32::MAX` are `DISCONNECTED` sentinels (SPEC-02, Section 4.4; ignored). Complexity: O(A_i * PORTS_PER_SLOT) per partition.
 
 Approach (2) SHOULD be used as baseline due to simplicity. Migration to (1) is warranted only if benchmarks reveal a bottleneck.
 
@@ -394,11 +424,18 @@ Chunk size:         u32::MAX / n  (integer division, truncated)
 Worker i:           [i * chunk_size, (i+1) * chunk_size)
                     except the last worker which extends to u32::MAX (inclusive).
 
-Example with n = 8:
-  Worker 0: [0,            536_870_912)     ~537M IDs
-  Worker 1: [536_870_912,  1_073_741_824)   ~537M IDs
+Example with n = 8 (chunk_size = 4_294_967_295 / 8 = 536_870_911):
+  Worker 0: [0,              536_870_911)       536_870_911 IDs
+  Worker 1: [536_870_911,    1_073_741_822)     536_870_911 IDs
   ...
-  Worker 7: [3_758_096_384, 4_294_967_295]  ~537M IDs
+  Worker 6: [3_221_225_466,  3_758_096_377)     536_870_911 IDs
+  Worker 7: [3_758_096_377,  4_294_967_295]     536_870_918 IDs (last worker gets remainder)
+
+Note: The last worker receives slightly more IDs than the others due to
+integer division truncation. With 8 workers, the difference is 7 IDs --
+negligible. The ID range computation uses u32 arithmetic; to avoid
+overflow from (u32::MAX + 1), the formula uses u32::MAX / n directly
+and extends the last worker's range to u32::MAX (inclusive).
 ```
 
 Each worker initializes `subnet.next_id` to the first available ID in its range that is greater than all IDs already present in the sub-net. This ensures that pre-existing IDs (from the original net) are not overwritten.

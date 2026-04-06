@@ -1,6 +1,6 @@
 # SPEC-00: Canonical Glossary
 
-**Status:** Revised v2
+**Status:** Revised v3
 **Depends on:** ---
 **Gray zones resolved:** --- (terminology foundation; enables resolution of Z1-Z7 in subsequent specs)
 **References consumed:** REF-001, REF-002, REF-003, REF-005, REF-007, REF-013, REF-014, REF-017, REF-018
@@ -36,7 +36,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | A labeled vertex in an interaction net. Each agent has exactly one Symbol (which determines its behavior), a unique AgentId, a principal port (port 0), and zero or more auxiliary ports (ports 1..arity). |
 | **Ref** | REF-001 p.95 ("agents"), REF-002 p.71 ("cells"), AC-001 |
 | **Haskell** | `data Agent = Agent { agentSymbol :: Symbol, agentId :: AgentId }` |
-| **Rust (proposed)** | `struct Agent { symbol: Symbol, id: AgentId }` |
+| **Rust (confirmed)** | `struct Agent { symbol: Symbol, id: AgentId }` (SPEC-02 R5) |
 | **Related to** | Symbol, Port, AgentId, Net |
 
 ### 3.2 Symbol
@@ -48,7 +48,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | The label of an Agent that determines its behavior and arity. In the Interaction Combinators system, there are exactly 3 symbols: CON (gamma), DUP (delta), ERA (epsilon). The symbol determines which interaction rules the agent participates in. |
 | **Ref** | REF-002 p.71-72, AC-001 |
 | **Haskell** | `data Symbol = CON \| DUP \| ERA` |
-| **Rust (proposed)** | `enum Symbol { Con, Dup, Era }` |
+| **Rust (confirmed)** | `enum Symbol { Con, Dup, Era }` (SPEC-02 R1) |
 | **Related to** | Agent, Interaction Rule, Arity |
 
 ### 3.3 CON (gamma / Constructor)
@@ -104,7 +104,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | A connection point of an Agent. Each agent has exactly one principal port (port 0) and zero or more auxiliary ports (ports 1, 2, ..., arity). Ports are the endpoints of Wires. |
 | **Ref** | REF-001 p.95-96, REF-002 p.71 |
 | **Haskell** | Represented implicitly in `PortRef = AgentPort AgentId PortId` |
-| **Rust (proposed)** | Identified by `(AgentId, PortId)` where `PortId` is `u8` with values 0, 1, or 2 |
+| **Rust (confirmed)** | Identified by `(AgentId, PortId)` where `PortId` is `u8` with values 0, 1, or 2 (SPEC-02 R3) |
 | **Related to** | Principal Port, Auxiliary Port, Wire, PortRef |
 
 ### 3.8 Principal Port
@@ -136,7 +136,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | An undirected edge connecting exactly two Ports. The linearity property guarantees that each port is the endpoint of at most one wire. Wires are the connectivity elements of the graph. |
 | **Ref** | REF-001 p.95, AC-001 |
 | **Haskell** | `data Wire = Wire PortRef PortRef` |
-| **Rust (proposed)** | Implicit representation via flat port array (confirmed decision: `Vec<Option<Agent>>` + flat port array). Each slot in the port array stores the PortRef of the target port. |
+| **Rust (confirmed)** | Implicit representation via flat port array (`Vec<Option<Agent>>` + flat port array, SPEC-02 R7-R8). Each slot in the port array stores the PortRef of the target port. |
 | **Related to** | Port, PortRef, Net |
 
 ### 3.11 PortRef
@@ -148,7 +148,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | A reference to a specific port in the net. Can be an agent port (`AgentPort`: identified by AgentId + PortId) or a free port (`FreePort`: identified by an integer index). PortRef is the fundamental type for describing the graph topology. |
 | **Ref** | AC-001, AC-002 |
 | **Haskell** | `data PortRef = AgentPort AgentId PortId \| FreePort Int` |
-| **Rust (proposed)** | Compact encoding: `u32` with `(val << TAG_BITS) \| tag`, where tag distinguishes CON/DUP/ERA/VAR (AC-015 CC-1) |
+| **Rust (confirmed)** | `enum PortRef { AgentPort(AgentId, PortId), FreePort(u32) }` (SPEC-02 R4). Note: AC-015 proposes a compact u32 bit-packed encoding as a future optimization; Relativist uses the enum representation for clarity and type safety. |
 | **Related to** | Port, Wire, AgentId, FreePort (Lafont), FreePort (Boundary) |
 
 ### 3.12 Net
@@ -160,7 +160,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | The complete graph of a computation: a set of Agents connected by Wires, with possibly some Free Ports at the interface. Formally, a pair (A, W) where A is the set of agents and W is the set of wires (DISC-004 v2, Section 1.1; adapted from REF-013 p.219 "configuration"). A Net is the fundamental unit of computation in Interaction Combinators. Reduction transforms a Net into another until it reaches Normal Form. |
 | **Ref** | REF-001 p.95, REF-002 p.71-73, AC-001, REF-013 p.219 |
 | **Haskell** | `data Net = Net { netAgents :: Map AgentId Agent, netWires :: [Wire] }` |
-| **Rust (proposed)** | `struct Net { agents: Vec<Option<Agent>>, ports: Vec<PortRef>, redex_queue: VecDeque<(AgentId, AgentId)> }` (confirmed decision) |
+| **Rust (confirmed)** | `struct Net { agents: Vec<Option<Agent>>, ports: Vec<PortRef>, redex_queue: VecDeque<(AgentId, AgentId)>, next_id: AgentId, root: Option<PortRef> }` (SPEC-02 R6) |
 | **Related to** | Agent, Wire, Active Pair, Normal Form, Reduced Net |
 
 ### 3.13 Active Pair (Redex)
@@ -172,7 +172,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | A pair of Agents connected through their Principal Ports (port 0 <-> port 0). It is the atomic unit of computation: each reduction step consists of applying the corresponding Interaction Rule to one Active Pair. Fundamental property: two distinct Active Pairs are always disjoint (because each agent has exactly one principal port), which enables parallel reduction without conflicts. |
 | **Ref** | REF-001 p.96 ("alive pair"), REF-002 p.73 ("cut"), AC-001 |
 | **Haskell** | `data Redex = Redex AgentId AgentId` (invariant: `aid1 < aid2`) |
-| **Rust (proposed)** | Tuple `(AgentId, AgentId)` in the redex queue (`VecDeque<(AgentId, AgentId)>`) |
+| **Rust (confirmed)** | Tuple `(AgentId, AgentId)` in the redex queue (`VecDeque<(AgentId, AgentId)>`, SPEC-02 R9) |
 | **Related to** | Principal Port, Interaction Rule, Reduction Step, Redex Queue |
 
 ### 3.14 AgentId
@@ -184,7 +184,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | Unique identifier for an Agent within a Net. In Relativist, AgentIds are `u32`, monotonically increasing, never reused within a single execution. In the distributed context, the ID space is statically partitioned among workers to avoid collisions without requiring remapping. IDs are arbitrary labels without semantic meaning; graphs that differ only in agent IDs are isomorphic (ARG-001, P4; DISC-003 v2, Section 2.2, Step 3). |
 | **Ref** | AC-001, AC-015 CC-4 |
 | **Haskell** | `type AgentId = Int` |
-| **Rust (proposed)** | `type AgentId = u32` (confirmed decision) |
+| **Rust (confirmed)** | `type AgentId = u32` (SPEC-02 R2) |
 | **Related to** | Agent, PortRef, ID Space Partitioning |
 
 ---
@@ -374,7 +374,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | **(Relativist)** A synthetic marker inserted during partitioning to represent a cut connection between partitions. When a wire between agent a (partition i) and agent b (partition j) is cut, each sub-net receives a FreePort(bid) where bid is a unique border identifier. A boundary FreePort is a reference to the *border wire* identified by bid, NOT to the specific agent that originally occupied that position (ARG-003, R3). This distinction is critical: when an agent is consumed by local reduction and replaced by new agents, the FreePort(bid) remains valid because it references the wire, not the agent. |
 | **Ref** | DISC-004 v2 Section 1.4, AC-002, ARG-003 R3 |
 | **Haskell** | Constructor `FreePort Int` of `PortRef` (same constructor used for both Lafont and Boundary free ports) |
-| **Rust (proposed)** | Dedicated FPORT tag in the compact encoding, or sentinel value in the VAR space (see AC-015 Z7) |
+| **Rust (confirmed)** | `FreePort(u32)` variant of `enum PortRef` (SPEC-02 R4). The `u32` payload is the `borderId` for boundary free ports, or an interface index for Lafont free ports. |
 | **Connection to Lafont FreePort** | A boundary FreePort *creates* a new free port in the sub-net. It is effectively a Lafont free port enriched with routing metadata (the borderId). See DISC-004 v2 Section 1.4 for the formal connection. |
 | **Related to** | FreePort (Lafont), Port, PortRef, Partition, Boundary, Border Wire |
 
@@ -427,7 +427,10 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 |-------|-------|
 | **Canonical name** | Border Redex |
 | **Alias** | Cross-Boundary Active Pair |
-| **Definition** | **(Relativist)** An Active Pair whose two Agents reside in different Partitions. Cannot be reduced by any individual Worker, because each Worker only possesses one of the two agents. Resolution of Border Redexes requires a Merge phase where the Coordinator reunites boundary information and performs the reduction. Border Redexes arise from two distinct sources (ARG-003, R2): (a) **Pre-existing:** The partitioning cuts a wire that already connected two agents by their principal ports -- an artifact of the allocation function. (b) **Emergent:** Local reduction (especially CON-DUP commutation) creates new agents whose principal ports connect to boundary FreePorts, forming new cross-boundary active pairs. Emergent border redexes are only detectable after the next merge. |
+| **Definition** | **(Relativist)** An Active Pair whose two Agents reside in different Partitions. Cannot be reduced by any individual Worker, because each Worker only possesses one of the two agents. Resolution of Border Redexes requires a Merge phase where the Coordinator reunites boundary information and performs the reduction. Border Redexes arise from two distinct sources (ARG-003, R2): |
+| **Sub-categories** | |
+| | **Pre-existing Border Redex:** A border redex that exists at the time of partitioning because the allocation function cut a wire that already connected two agents by their principal ports. Pre-existing border redexes are an artifact of the allocation function and are detectable immediately after split. A redex-aware partitioning strategy (SPEC-04 R20) minimizes these. |
+| | **Emergent Border Redex:** A border redex that arises during local reduction when newly created agents (especially from CON-DUP commutation, which creates 4 new agents) have their principal ports connect to boundary FreePorts, forming new cross-boundary active pairs. Emergent border redexes are only detectable after merge, when the boundary FreePorts are resolved back to actual agent ports. They are the primary reason multiple rounds may be necessary, and their complete resolution is guaranteed by Premise P3 (ARG-001, ARG-003). Critical for understanding why Profile B workloads (CON-DUP dominant) require more rounds than Profile A workloads. |
 | **Ref** | AC-002 (`findBorderRedexes`), DISC-003 v2 Section 2.3, DISC-005 v2 Section 1.3, ARG-003 R2 |
 | **Haskell** | Detected by `findBorderRedexes` in `IC.Partition` |
 | **Related to** | Active Pair, Boundary, Merge, Coordinator, Round |
@@ -530,7 +533,18 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Ref** | AC-003 (`runWorker`), AC-004 |
 | **Related to** | Coordinator, Partition, reduce_all, ID Space Partitioning |
 
-### 7.5 Round
+### 7.5 WorkerId
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | WorkerId |
+| **Alias** | Worker Identifier |
+| **Definition** | **(Relativist)** Unique identifier for a Worker within a Grid execution. Values in `[0, n-1]` where `n` is the number of workers. Assigned by the Coordinator during the connection phase and used throughout the protocol for routing partitions, collecting results, and structured logging. |
+| **Ref** | SPEC-04 Section 4.1 |
+| **Rust (confirmed)** | `pub type WorkerId = u32` (SPEC-04 R16) |
+| **Related to** | Worker, Coordinator, ID Space Partitioning, Partition |
+
+### 7.6 Round
 
 | Field | Value |
 |-------|-------|
@@ -541,7 +555,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Termination** | The cycle terminates in a finite number of rounds for terminating nets (Premise P5). In each round, at least one redex is reduced. The total number of reductions is finite and invariant (DISC-003 v2, Section 2.4). |
 | **Related to** | Coordinator, Worker, Partition, Merge, Normal Form |
 
-### 7.6 Redex Queue (Redex Bag)
+### 7.7 Redex Queue (Redex Bag)
 
 | Field | Value |
 |-------|-------|
@@ -552,7 +566,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Haskell (reference)** | Absent; used `findRedexes` with O(w) scan at each step (AC-001) |
 | **Related to** | Active Pair, reduce_all, Net |
 
-### 7.7 reduce_all
+### 7.8 reduce_all
 
 | Field | Value |
 |-------|-------|
@@ -563,7 +577,7 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Haskell** | `reduceAll :: Net -> Net` (linear scan for Active Pair at each step) |
 | **Related to** | Reduction Step, Redex Queue, Normal Form |
 
-### 7.8 GridMetrics
+### 7.9 GridMetrics
 
 | Field | Value |
 |-------|-------|
@@ -572,6 +586,86 @@ This spec defines the canonical vocabulary for the Relativist project: all techn
 | **Definition** | **(Relativist)** Aggregate performance measurements collected during a distributed reduction execution. Includes per-round metrics: (a) partitioning time, (b) serialization time, (c) TCP transfer time + latency, (d) local reduction time per worker, (e) merge time, (f) border redex resolution time, (g) number of border redexes per round, (h) number of agents and wires per partition, (i) total rounds. Also includes aggregate metrics: total wall-clock time, total reduction steps (MUST equal sequential count by strong confluence invariance), speedup ratio (sequential time / distributed time). |
 | **Ref** | AC-004 (grid metrics in `IC.Grid`), AC-005 (benchmark framework), ARG-004 V2 |
 | **Related to** | Round, Coordinator, Benchmarks (SPEC-09) |
+
+### 7.10 Grid Loop
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Grid Loop |
+| **Alias** | Grid Cycle, BSP Loop |
+| **Definition** | **(Relativist)** The outer loop that repeats Rounds of the BSP cycle (split, distribute, reduce, collect, merge, resolve borders) until the net reaches Normal Form. Equivalent to the `run_grid` function (SPEC-05 R24). The grid loop terminates when the merged net has an empty redex queue after `reduce_all` (SPEC-05 R27). For terminating nets, convergence is guaranteed in a finite number of rounds (SPEC-05 R30). |
+| **Ref** | SPEC-05 R24-R30, AC-004 (`gridLoop`/`go` in `IC.Grid`) |
+| **Related to** | Round, run_grid, Coordinator, Normal Form, BSP |
+
+### 7.11 BSP (Bulk Synchronous Parallel)
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | BSP |
+| **Alias** | Bulk Synchronous Parallel |
+| **Definition** | **(Relativist)** A parallel programming model where computation proceeds in supersteps: each superstep consists of a local computation phase, a communication phase, and a barrier synchronization. Relativist implements BSP where each Round (Section 7.6) is one superstep. The BSP classification was established in PESQ-012 and confirmed by SPEC-13 R1-R4. |
+| **Ref** | PESQ-012, SPEC-13 R1-R4 |
+| **Related to** | Round, Grid Loop, Coordinator, Worker |
+
+### 7.12 Core Layer
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Core Layer |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** The set of modules (`net`, `reduction`, `partition`, `merge`, `encoding`) that contain pure, synchronous logic with no async runtime dependency, no I/O, and no network access. The Core Layer MUST NOT depend on tokio (SPEC-13 R6) and MUST be fully synchronous (SPEC-13 R34). Core compiles and runs independently of any async runtime. |
+| **Ref** | SPEC-13 R5-R8, R34 |
+| **Related to** | Infrastructure Layer, Net, reduce_all |
+
+### 7.13 Infrastructure Layer
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Infrastructure Layer |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** The set of modules (`protocol`, `coordinator`, `worker`) that depend on tokio for async I/O and network communication. Infrastructure depends on Core but never the reverse (SPEC-13 R7-R8). |
+| **Ref** | SPEC-13 R5-R8 |
+| **Related to** | Core Layer, Transport, Coordinator, Worker |
+
+### 7.14 Transport
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Transport |
+| **Alias** | Transport Trait |
+| **Definition** | **(Relativist)** A trait abstracting the send/receive mechanism between coordinator and workers. Two implementations: (a) `TcpTransport` for production use over TCP with length-prefixed bincode frames, (b) `ChannelTransport` using tokio mpsc channels for in-memory testing without network overhead. TLS wraps `TcpTransport` transparently when the `tls` feature is enabled. The Transport abstraction enables testing the full BSP cycle without TCP. |
+| **Ref** | SPEC-13 R28-R31, SPEC-06 R16-R22 |
+| **Related to** | Wire Protocol, Core Layer, Infrastructure Layer, ChannelTransport, TcpTransport |
+
+### 7.15 Wire Protocol
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Wire Protocol |
+| **Alias** | Binary Protocol |
+| **Definition** | **(Relativist)** The binary communication protocol between coordinator and workers over TCP. Uses length-prefixed bincode frames: each message is serialized via serde + bincode into bytes, prefixed with a 4-byte big-endian length header, and sent over a persistent TCP connection. Defined by SPEC-06. |
+| **Ref** | SPEC-06 R1-R15 |
+| **Related to** | Transport, Frame, Message, Coordinator, Worker |
+
+### 7.16 Frame
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Frame |
+| **Alias** | Wire Frame |
+| **Definition** | **(Relativist)** A length-prefixed unit of data on the wire. Format: `[4 bytes: payload length as u32 big-endian] [payload bytes]`. The payload is a bincode-serialized `Message`. The 4-byte length prefix enables the receiver to read exactly the right number of bytes before deserializing. |
+| **Ref** | SPEC-06 R1-R3 |
+| **Related to** | Wire Protocol, Message |
+
+### 7.17 Message
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Message |
+| **Alias** | Protocol Message |
+| **Definition** | **(Relativist)** The enum of all structured messages exchanged between coordinator and workers. Variants include: `DispatchPartition`, `PartitionResult`, `Shutdown`, `Abort`, and others defined in SPEC-06 Section 4.1. Each variant is serde-serializable and carries the data needed for one step of the BSP cycle. |
+| **Ref** | SPEC-06 Section 4.1, SPEC-13 R28 |
+| **Related to** | Wire Protocol, Frame, Transport |
 
 ---
 
@@ -657,7 +751,7 @@ This domain defines the premises of the formal argument for correctness of distr
 | **Alias** | Church encoding, Church natural |
 | **Definition** | An IC net encoding of a natural number n as the lambda term lambda f. lambda x. f^n(x). Uses CON agents for lambda abstractions and applications, DUP agents for variable sharing, and ERA for erasure. Church numeral n (n >= 2) contains (n + 2) CON + (n - 1) DUP agents. The encoding is in Normal Form (zero redexes). |
 | **Ref** | REF-002 (Lafont 1997, Section 4: universality), SPEC-14 |
-| **Rust (proposed)** | `encode_nat(n: u64) -> Net` |
+| **Rust (confirmed)** | `encode_nat(n: u64) -> Net` (SPEC-14 R1-R6) |
 | **Related to** | Encoding, Decoding, Arithmetic Net |
 
 ### 8b.2 Encoding
@@ -678,7 +772,7 @@ This domain defines the premises of the formal argument for correctness of distr
 | **Alias** | Readback |
 | **Definition** | The process of interpreting a Church numeral IC net in Normal Form as a natural number. Performed by traversing the net structure from root, identifying the two lambda CON agents, and counting the application chain length. Inverse of Encoding. **(Relativist)** |
 | **Ref** | SPEC-14 |
-| **Rust (proposed)** | `decode_nat(net: &Net) -> Option<u64>` |
+| **Rust (confirmed)** | `decode_nat(net: &Net) -> Option<u64>` (SPEC-14 R8-R11) |
 | **Related to** | Church Numeral, Encoding, Normal Form |
 
 ### 8b.4 Arithmetic Net
@@ -689,7 +783,7 @@ This domain defines the premises of the formal argument for correctness of distr
 | **Alias** | -- |
 | **Definition** | An IC net constructed by composing Church numeral sub-nets with an arithmetic combinator (addition, multiplication, or exponentiation). When reduced to Normal Form via `reduce_all` (SPEC-03), the result is a Church numeral encoding the arithmetic result. Exhibits Profile B overhead behavior (expansion via CON-DUP commutation, then collapse via annihilation). **(Relativist)** |
 | **Ref** | SPEC-14, SPEC-09 (Profile B) |
-| **Rust (proposed)** | `build_add(a, b) -> Net`, `build_mul(a, b) -> Net`, `build_exp(a, b) -> Net` |
+| **Rust (confirmed)** | `build_add(a, b) -> Net`, `build_mul(a, b) -> Net`, `build_exp(a, b) -> Net` (SPEC-14 R12-R21) |
 | **Related to** | Church Numeral, Encoding, Overhead Profile |
 
 ### 8b.5 Combinator
@@ -702,9 +796,126 @@ This domain defines the premises of the formal argument for correctness of distr
 | **Ref** | SPEC-14 |
 | **Related to** | Arithmetic Net, Church Numeral |
 
+### 7.18 Local Mode
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Local Mode |
+| **Alias** | In-Memory Grid Mode |
+| **Definition** | **(Relativist)** Execution mode where the full grid cycle (BSP loop with partitioning, workers, merge) runs in a single process using `ChannelTransport` instead of TCP. Invoked via `relativist local`. Used for integration testing and benchmarks (SPEC-09 Mode::Local). MUST NOT be confused with Direct Reduction (see below). |
+| **Ref** | SPEC-07 R1, R5, R18; SPEC-13 R41a |
+| **Related to** | Distributed Mode, Direct Reduction, ChannelTransport, Grid Loop |
+
+### 7.19 Distributed Mode
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Distributed Mode |
+| **Alias** | TCP Mode |
+| **Definition** | **(Relativist)** Execution mode where the coordinator and workers run as separate processes on separate machines (or containers), communicating via TCP with the wire protocol. Invoked via `relativist coordinator` and `relativist worker`. |
+| **Ref** | SPEC-07 R1-R4; SPEC-13 R40 |
+| **Related to** | Local Mode, TcpTransport, Grid Loop, Wire Protocol |
+
+### 7.20 Direct Reduction
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Direct Reduction |
+| **Alias** | Sequential Mode |
+| **Definition** | **(Relativist)** Execution mode where the net is reduced by calling `reduce_all` directly, with no partitioning, grid loop, or communication. Invoked via `relativist reduce`. Serves as the sequential baseline for G1 verification and speedup measurement. |
+| **Ref** | SPEC-13 R41, R46 |
+| **Related to** | reduce_all, Local Mode, Speedup |
+
 ---
 
-## 9. Mapping Table: Lafont --> Haskell --> Rust
+## 9. Domain 7 -- Benchmarks and Metrics
+
+### 9.1 Overhead Profile
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Overhead Profile |
+| **Alias** | Workload Profile |
+| **Definition** | **(Relativist / Framework)** Classification of benchmark workloads by their overhead characteristics under distribution. Three profiles are defined (ARG-004 Part I Step 6, DISC-006 v2 Section 4.1): |
+| **Profile A (Embarrassingly Parallel)** | Independent redexes with no cross-partition dependencies. Characteristics: 1 round, zero border redexes, zero emergent borders. All reduction happens locally within partitions. Examples: EP-Annihilation (large set of independent CON-CON or DUP-DUP pairs), CON-CON chains, DUP-DUP chains. Expected: near-linear speedup above break-even threshold. |
+| **Profile B (Expansion with Collapse)** | CON-DUP commutation dominant workloads that expand the net before annihilation collapses it. Characteristics: multiple rounds, emergent border redexes from newly created agents, net size grows then shrinks. Examples: CON-DUP Expansion, Church multiplication. Expected: speedup depends on granularity vs. communication overhead; the primary target for Relativist evaluation. |
+| **Profile C (Sequential Dependency)** | Workloads with inherent level-dependent sequential structure. Characteristics: many rounds, massive border redexes per round, limited parallelism due to dependency chains. Examples: DualTree (depth-dependent reduction). Expected: limited or negative speedup due to serialization bottleneck. |
+| **Ref** | ARG-004 Part I Step 6, DISC-006 v2 Section 4.1, SPEC-08 (Workload Profile definition), SPEC-09 R8 |
+| **Related to** | GridMetrics, Round, Border Redex, Break-Even Point |
+
+### 9.2 MIPS (Millions of Interactions Per Second)
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | MIPS |
+| **Alias** | Throughput |
+| **Definition** | **(Relativist)** Throughput metric: `total_interactions / wall_clock_seconds / 1_000_000`. Size-independent measure that enables comparing efficiency across different net sizes and configurations. Captures communication overhead: if MIPS drops with more workers, overhead is consuming throughput. |
+| **Ref** | SPEC-09 R4, SPEC-09 Section 5.2 |
+| **Related to** | GridMetrics, Speedup, Efficiency |
+
+### 9.3 Speedup
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Speedup |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** Ratio of sequential execution time to distributed execution time: `speedup = T_sequential / T_distributed`. Values > 1.0 indicate distribution is beneficial. Values < 1.0 indicate overhead exceeds benefit. The sequential baseline uses `reduce_all` (SPEC-03) with no partitioning or communication. |
+| **Ref** | SPEC-09 R4, DISC-006 v2 |
+| **Related to** | Efficiency, MIPS, Overhead Ratio, Break-Even Point |
+
+### 9.4 Efficiency
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Efficiency |
+| **Alias** | Parallel Efficiency |
+| **Definition** | **(Relativist)** Speedup divided by the number of workers: `efficiency = speedup / K`. Perfect linear scaling yields efficiency = 1.0. Values above 1.0 indicate super-linear speedup (e.g., due to cache effects or algorithmic artifacts). |
+| **Ref** | SPEC-09 R4 |
+| **Related to** | Speedup, MIPS |
+
+### 9.5 Border Ratio
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Border Ratio |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** Fraction of border redexes over total redexes detected in a round: `border_redexes / (local_redexes + border_redexes)`. Quantifies partitioning quality. A high border ratio indicates poor partitioning or inherently entangled workloads. |
+| **Ref** | SPEC-09 R4, DISC-006 v2 Section 6.3 |
+| **Related to** | Border Redex, Overhead Profile, Overhead Ratio |
+
+### 9.6 Overhead Ratio
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Overhead Ratio |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** Fraction of time spent on overhead (partition + serialize + transfer + merge + border resolution) over total execution time: `T_overhead / T_total`. If > 0.5, distribution likely does not pay off. |
+| **Ref** | SPEC-09 R4, DISC-006 v2 Section 2.3 |
+| **Related to** | GridMetrics, Speedup, Break-Even Point |
+
+### 9.7 Break-Even Point
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Break-Even Point |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** The minimum network size (in redexes per worker) at which distributed execution yields speedup > 1.0 for a given mode and worker count. Determined empirically from scaling curves. Estimated at 5K-10K redexes per worker for optimized Rust (DISC-006 v2 Section 3.3, ARG-004 Part II). |
+| **Ref** | SPEC-09 Section 3.9, DISC-006 v2 Section 3.3, ARG-004 Part II |
+| **Related to** | Speedup, Overhead Ratio, Scaling Curve |
+
+### 9.8 Scaling Curve
+
+| Field | Value |
+|-------|-------|
+| **Canonical name** | Scaling Curve |
+| **Alias** | --- |
+| **Definition** | **(Relativist)** A plot of speedup (or MIPS, or overhead ratio) as a function of the number of workers for a fixed benchmark and size. The primary visualization for answering "when does distribution pay off?" |
+| **Ref** | SPEC-09 R4 |
+| **Related to** | Speedup, MIPS, Overhead Profile, Break-Even Point |
+
+---
+
+## 10. Mapping Table: Lafont --> Haskell --> Rust
 
 This table serves as a quick reference for translating between the three nomenclature layers.
 
@@ -715,11 +926,11 @@ This table serves as a quick reference for translating between the three nomencl
 | epsilon | `ERA` / `Symbol.ERA` | `Symbol::Era` |
 | cell | `Agent` | `Agent` |
 | -- | `AgentId` (`Int`) | `AgentId` (`u32`) |
-| port | `PortRef` | `PortRef` (encoding `u32`) |
+| port | `PortRef` | `enum PortRef { AgentPort(AgentId, PortId), FreePort(u32) }` |
 | principal port | port 0 | port 0 |
 | auxiliary port | port 1, 2 | port 1, 2 |
-| free port (interface) | `FreePort Int` | FPORT tag or VAR sentinel |
-| -- (boundary FreePort) | `FreePort Int` (border) | `FreePort` (boundary sentinel) |
+| free port (interface) | `FreePort Int` | `PortRef::FreePort(u32)` |
+| -- (boundary FreePort) | `FreePort Int` (border) | `PortRef::FreePort(u32)` (boundary sentinel) |
 | wire / connection | `Wire PortRef PortRef` | Implicit (flat port array) |
 | net / interaction net | `Net { netAgents, netWires }` | `Net { agents, ports, redex_queue }` |
 | active pair / alive pair / cut | `Redex AgentId AgentId` | `(AgentId, AgentId)` |
@@ -739,10 +950,13 @@ This table serves as a quick reference for translating between the three nomencl
 | -- | `runCoordinator` | `Coordinator` |
 | -- | `runWorker` | `Worker` |
 | -- | -- | `GridMetrics` |
+| -- | -- | `WorkerId` (`u32`) |
+
+> **Scope note:** This table covers core IC and distribution types (SPEC-00 through SPEC-05, SPEC-14). For infrastructure types introduced by SPEC-06 through SPEC-13 (e.g., `Transport`, `CoordinatorState`, `WorkerState`, `SecurityTier`, `AuthToken`, `Message`), refer to each spec's Section 2 (Definitions).
 
 ---
 
-## 10. Fundamental Property of Relativist
+## 11. Fundamental Property of Relativist
 
 The glossary as a whole serves a single property that Relativist MUST guarantee:
 
@@ -759,6 +973,6 @@ This property is enabled by **Strong Confluence** (which guarantees that reducti
 
 ---
 
-## 11. Open Questions
+## 12. Open Questions
 
-None. Domain 6 (Encoding & Readback) was added by amendment for SPEC-14. Additional terms may be introduced by future specs, provided they are registered here by amendment.
+None. Revised v3 addressed terminology gaps identified by the spec review pipeline: added WorkerId (SC-001), fixed PortRef/FreePort encodings to match SPEC-02 (SC-002, SC-010, SC-016), added Overhead Profile A/B/C (SC-003), replaced "Rust (proposed)" with "Rust (confirmed)" (SC-004), added Grid Loop (SC-005), expanded Border Redex with pre-existing/emergent sub-categories (SC-006), added BSP (SC-007), added Core Layer/Infrastructure Layer (SC-008), added Transport (SC-009), added benchmark metrics (SC-011), added Wire Protocol/Frame/Message (SC-012), and updated the mapping table scope note (SC-018). Terms from SPEC-10 (security), SPEC-11 (observability), and SPEC-15+ (future specs) are defined locally in their respective specs and may be registered here by amendment if cross-spec usage warrants it.

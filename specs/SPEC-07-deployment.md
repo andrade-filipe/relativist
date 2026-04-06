@@ -1,18 +1,21 @@
 # SPEC-07: Deployment and Execution
 
-**Status:** Revised v2
+**Status:** Revised v3
 **Depends on:** SPEC-00 (Glossary), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol)
+**Extended by:** SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture)
 **Gray zones resolved:** ---
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-017 (Foster, Kesselman, Tuecke 2001 -- Grid Anatomy)
 **Discussions consumed:** DISC-007 v2 (fault tolerance -- out of scope justification), DISC-008 v2 (shared-to-distributed transition spectrum, operational dimensions)
 **Arguments consumed:** ARG-004 (practical viability and limits, overhead decomposition, workload profiles A/B/C)
 **Code analyses consumed:** AC-003 (Haskell Protocol/Network: NodeConfig, NodeRole, runCoordinator, runWorker, connectWithRetry), AC-004 (Haskell Grid/TreeMapReduce: runGridLocal, GridMetrics, mkTree, mkTreeBalanced, benchmark modes)
 
+> **Supersession note (v3):** SPEC-07 is the foundational deployment and execution spec. Successor specs (SPEC-10, SPEC-11, SPEC-12, SPEC-13) extend and supersede specific requirements as noted inline. Where a supersession note appears, the successor spec is authoritative. SPEC-07 remains authoritative for all requirements not explicitly superseded.
+
 ---
 
 ## 1. Purpose
 
-This spec defines how Relativist is configured, built, deployed, and executed -- from a single developer machine to a multi-node grid of up to 8 physical machines. It covers: the single-binary CLI with subcommands (coordinator, worker, local, generate), configuration via CLI arguments, the lifecycle of each execution mode, input/output formats for interaction nets and metrics, workload generators for benchmarks, Docker-based deployment for reproducibility, manual deployment for physical machines, and logging. This is the most operational spec in Relativist: it transforms the abstractions of SPEC-05 (grid loop) and SPEC-06 (wire protocol) into an executable program that researchers can use to reproduce the TCC's experimental results.
+This spec defines how Relativist is configured, built, deployed, and executed -- from a single developer machine to a multi-node grid of up to 8 physical machines. It covers: the single-binary CLI with 7 subcommands (coordinator, worker, local, generate, reduce, inspect, compute), configuration via CLI arguments, the lifecycle of each execution mode, input/output formats for interaction nets and metrics, workload generators for benchmarks, Docker-based deployment for reproducibility, manual deployment for physical machines, and logging. This is the most operational spec in Relativist: it transforms the abstractions of SPEC-05 (grid loop) and SPEC-06 (wire protocol) into an executable program that researchers can use to reproduce the TCC's experimental results. Successor specs extend specific areas: SPEC-10 (security CLI flags), SPEC-11 (observability CLI flags), SPEC-12 (multi-format I/O and detailed subcommand arguments), SPEC-13 (FSM, architecture, additional subcommands).
 
 ## 2. Definitions
 
@@ -20,10 +23,10 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 | Term | Definition |
 |------|-----------|
-| **Subcommand** | A variant of the CLI that determines Relativist's execution mode: `coordinator`, `worker`, `local`, or `generate`. Implemented via `clap` with `#[derive(Subcommand)]`. (Relativist) |
+| **Subcommand** | A variant of the CLI that determines Relativist's execution mode. SPEC-07 defines the original 4: `coordinator`, `worker`, `local`, `generate`. SPEC-13 R43 adds 3 more: `reduce`, `inspect`, `compute`. Total: 7 subcommands. Implemented via `clap` with `#[derive(Subcommand)]`. (Relativist) |
 | **Local Mode** | Execution mode where the grid loop (SPEC-05, Section 4.4) runs entirely in a single process, without TCP. Workers are simulated by sequential (or parallel via `rayon`) iteration over partitions. Essential for testing, baseline benchmarks, and validation of the Fundamental Property. (Relativist) |
 | **Distributed Mode** | Execution mode where the coordinator sends partitions to remote workers via TCP (SPEC-06). The coordinator executes the distributed grid loop (SPEC-06, Section 4.6); each worker executes the worker loop (SPEC-06, Section 4.7). (Relativist) |
-| **Network Input** | An interaction net serialized in bincode format, read from a `.bin` file by the coordinator or by local mode. Serves as input for reduction. (Relativist) |
+| **Network Input** | An interaction net loaded from a file. For `coordinator`, `worker`, and `local` subcommands: bincode `.bin` only. For `reduce`, `inspect`, and `generate` subcommands: binary (`.bin`), text DSL (`.ic`), or JSON (`.json`) per SPEC-12 R1. (Relativist) |
 | **Network Output** | The interaction net in Normal Form (or partially reduced if `max_rounds` was reached), serialized together with execution metrics. (Relativist) |
 | **Workload** | A generator function that produces an IC net for testing and benchmarks. Each workload produces a `Net` parameterized by size. The pre-defined workloads in Relativist correspond to the benchmarks of SPEC-09. (Relativist) |
 | **Deploy Target** | The environment where Relativist runs: `local` (single machine, no Docker), `docker-local` (single machine, Docker Compose), `docker-lan` (multiple machines, Docker per node), `bare-metal` (multiple physical machines, binary copied manually). (Relativist) |
@@ -34,44 +37,53 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 ### 3.1 Single Binary with CLI Subcommands
 
-**R1.** Relativist MUST be compiled as a single binary (`relativist`) with four subcommands: `coordinator`, `worker`, `local`, and `generate`. **(MUST)**
+**R1.** Relativist MUST be compiled as a single binary (`relativist`) with seven subcommands: `coordinator`, `worker`, `local`, `generate`, `reduce`, `inspect`, and `compute`. The original 4 subcommands are defined in this spec; `reduce`, `inspect`, and `compute` are defined in SPEC-13 R43 and detailed in SPEC-12 and SPEC-14. **(MUST)**
 
 **R2.** CLI argument parsing MUST use the `clap` crate with derive macros (`#[derive(Parser)]`, `#[derive(Subcommand)]`), as per the confirmed technical decision. **(MUST)**
 
 **R3.** The `coordinator` subcommand MUST accept the following arguments:
 - `--workers <N>` (required): number of workers to wait for.
-- `--port <PORT>` (required): TCP port for binding.
-- `--host <HOST>` (optional, default: `0.0.0.0`): bind address.
-- `--net <PATH>` (required): path to the input network file (`.bin`).
+- `--bind <ADDR:PORT>` (optional, default: `127.0.0.1:9000`): socket address to bind to.
+- `--input <PATH>` (required): path to the input network file (`.bin`).
 - `--max-rounds <N>` (optional, default: unlimited): maximum grid rounds.
 - `--output <PATH>` (optional): path to write the reduced network.
 - `--metrics <PATH>` (optional): path to write execution metrics (`.json` or `.csv`).
 - `--strategy <NAME>` (optional, default: `round-robin`): partitioning strategy (SPEC-04).
+- `--log-format <FORMAT>` (optional, default: TTY-dependent): `text` or `json` (SPEC-11 R3).
+- `--metrics-port <PORT>` (optional, default: `9090`, feature-gated on `metrics`): Prometheus HTTP port (SPEC-11 R20).
+
+> **Supersession note (v3):** The `--bind` flag (combining host and port as a `SocketAddr`) supersedes the v2 `--host` and `--port` flags. Default changed from `0.0.0.0` to `127.0.0.1:9000` per SPEC-10 R5 and SPEC-13 R44. The `--input` flag supersedes the v2 `--net` flag for consistency with SPEC-13 R44 and SPEC-12 R24. Security flags (`--token`, `--token-file`, `--insecure`, `--tls-cert`, `--tls-key`) are defined in SPEC-10 Section 4.5 and are part of the coordinator's full flag set.
 **(MUST)**
 
 **R4.** The `worker` subcommand MUST accept the following arguments:
 - `--coordinator <HOST:PORT>` (required): address of the coordinator.
+- `--log-format <FORMAT>` (optional, default: TTY-dependent): `text` or `json` (SPEC-11 R3).
+
+> **Supersession note (v3):** Security flags (`--token`, `--tls-ca`) are defined in SPEC-10 Section 4.5 and are part of the worker's full flag set.
 **(MUST)**
 
 **R5.** The `local` subcommand MUST accept the following arguments:
 - `--workers <N>` (required): number of simulated workers.
-- `--net <PATH>` (required): path to the input network file (`.bin`).
+- `--input <PATH>` (required): path to the input network file (`.bin`).
 - `--max-rounds <N>` (optional, default: unlimited): maximum rounds.
 - `--output <PATH>` (optional): path to write the reduced network.
 - `--metrics <PATH>` (optional): path to write execution metrics.
 - `--strategy <NAME>` (optional, default: `round-robin`): partitioning strategy.
+- `--log-format <FORMAT>` (optional, default: TTY-dependent): `text` or `json` (SPEC-11 R3).
+
+> **Supersession note (v3):** The `--input` flag supersedes the v2 `--net` flag for consistency with `coordinator` and `reduce` subcommands. SPEC-13 R45a references `--net`; this is updated to `--input` for cross-subcommand consistency.
 **(MUST)**
 
-**R6.** If no subcommand is provided, Relativist MUST display the help message (`--help`) and exit with code 1. **(MUST)**
+**R6.** If no subcommand is provided, Relativist MUST display the help message (`--help`) listing all 7 subcommands and exit with code 1. **(MUST)**
 
 **R7.** All CLI arguments SHOULD be documented with textual descriptions in `--help` via `#[arg(help = "...")]` annotations from clap. **(SHOULD)**
 
 ### 3.2 Workload Generator Subcommand
 
-**R8.** Relativist SHOULD provide a `generate` subcommand for creating network files (`.bin`) from pre-defined workloads:
-- `relativist generate --workload <NAME> --size <N> --output <PATH>`
-- Workloads: `tree-sum`, `tree-sum-balanced`, `era-chain`, `con-dup-expansion`, `dual-tree` (SPEC-09).
-**(SHOULD)**
+**R8.** Relativist MUST provide a `generate` subcommand for creating network files from pre-defined examples.
+
+> **Supersession note (v3):** The `generate` subcommand arguments are authoritatively defined in SPEC-12 R33. The v2 `--workload <NAME>` flag is superseded by a positional `example` argument with `value_enum` (SPEC-12 `ExampleNet` enum). The v2 short flag `-s` for `--size` is superseded by `-n`. See SPEC-12 R33 for the canonical `GenerateArgs` struct and the full list of 12 example generators.
+**(MUST)**
 
 **R9.** The `generate` subcommand MUST serialize the generated `Net` in the same bincode format used by the coordinator and by local mode (Section 4.6). **(MUST, conditional: if R8 is implemented)**
 
@@ -81,31 +93,37 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R11.** CLI arguments MUST be mapped to the following internal configuration structures:
 - `GridConfig` (SPEC-05, Section 4.1): `num_workers`, `max_rounds`.
-- `NodeConfig` (SPEC-06, Section 4.5): `role`, `host`, `port`, `num_workers`, `max_payload_size`, timeouts.
+- `NodeConfig` (SPEC-06, Section 4.5): `role`, `bind` (as `SocketAddr`, parsed from `--bind`), `num_workers`, `max_payload_size`, timeouts.
+
+> **Supersession note (v3):** The v2 separate `host` and `port` fields in `NodeConfig` are superseded by a single `bind: SocketAddr` field, consistent with the `--bind` CLI flag (SPEC-13 R44).
 **(MUST)**
 
 **R12.** Sensible defaults MUST be provided for all optional parameters:
-- `host`: `0.0.0.0` (coordinator) / not applicable (worker).
+- `bind`: `127.0.0.1:9000` (coordinator) / not applicable (worker). See SPEC-10 R5.
 - `max_rounds`: `None` (unlimited).
 - `max_payload_size`: 256 MiB (SPEC-06, R9).
 - `worker_connect_timeout`: 120 seconds (SPEC-06, R24).
 - `distribute_timeout`: 60 seconds (SPEC-06, R30).
 - `collect_timeout`: 600 seconds (SPEC-06, R30).
 - `strategy`: `round-robin` (SPEC-04).
+- `log_format`: TTY-dependent (SPEC-11 R3).
+- `metrics_port`: `9090` (SPEC-11 R20, feature-gated on `metrics`).
+
+> **Supersession note (v3):** Default bind address changed from `0.0.0.0` (v2) to `127.0.0.1:9000` (v3) per SPEC-10 R5 (security: prevent accidental network exposure).
 **(MUST)**
 
 ### 3.4 Coordinator Lifecycle
 
 **R13.** The coordinator MUST follow this lifecycle:
 1. **Parse config:** Read CLI arguments, construct `GridConfig` and `NodeConfig`.
-2. **Load network:** Read and deserialize the input network from the file specified by `--net`.
+2. **Load network:** Read and deserialize the input network from the file specified by `--input`.
 3. **Wait for workers:** Open TCP listener, accept connections until `num_workers` workers are connected (SPEC-06, R24).
 4. **Distributed grid loop:** Execute the loop partition -> distribute -> collect -> merge -> resolve_borders (SPEC-06, Section 4.6) until Normal Form or `max_rounds`.
 5. **Shutdown:** Send `Message::Shutdown` to all workers (SPEC-06, Section 4.12).
 6. **Output:** Write reduced network (if `--output`), write metrics (if `--metrics`), print summary to `stdout`.
 **(MUST)**
 
-**R14.** If the `--net` file does not exist or cannot be deserialized, the coordinator MUST print a diagnostic error to `stderr` and exit with code 1. **(MUST)**
+**R14.** If the `--input` file does not exist or cannot be deserialized, the coordinator MUST print a diagnostic error to `stderr` and exit with code 1. **(MUST)**
 
 **R15.** The coordinator SHOULD print to `stdout` at the end of execution a human-readable summary containing at least: number of rounds, total interactions, total time, whether it converged, and the extracted result (number of agents per symbol). **(SHOULD)**
 
@@ -124,7 +142,7 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R18.** The `local` subcommand MUST execute the grid loop entirely in-process, using the `run_grid` function from SPEC-05 (Section 4.4). It MUST NOT open TCP sockets. **(MUST)**
 
-**R19.** Local mode MUST produce results identical to distributed mode for the same network and number of workers. Formally: `run_grid(net, n) == extract_result(run_coordinator(net, n))` for every terminating net `net` and `n >= 1`. This is the Fundamental Property (SPEC-01). **(MUST)**
+**R19.** Local mode MUST produce results identical to distributed mode for the same network and number of workers. Formally, the Fundamental Property (SPEC-01 G1) establishes the three-way equivalence: `reduce_all(net) ~ run_grid_local(net, n) ~ run_coordinator(net, n)` for every terminating net `net` and `n >= 1`, where `~` denotes isomorphism of graphs (structural equality modulo ID renaming). The `reduce` subcommand (SPEC-13 R41) provides the sequential baseline `reduce_all(net)` against which both `local` and `coordinator` results are verified. **(MUST)**
 
 **R20.** Local mode SHOULD use `rayon::par_iter` or equivalent to execute partition reduction in parallel (across threads), enabling shared-memory parallelism benchmarks as a baseline for comparison with distributed mode (DISC-008 v2, Sections 2.1-2.2, shared vs. distributed comparison). **(SHOULD)**
 
@@ -132,11 +150,13 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 ### 3.7 Input Format: IC Network
 
-**R22.** The input format for IC networks MUST be a binary file containing the `Net` serialized with serde + bincode (default configuration: little-endian, fixed-int encoding). The conventional extension is `.bin`. **(MUST)**
+**R22.** The input format for IC networks in the `coordinator`, `worker`, and `local` subcommands MUST be a binary file containing the `Net` serialized with serde + bincode (default configuration: little-endian, fixed-int encoding). The conventional extension is `.bin`. **(MUST)**
+
+> **Supersession note (v3):** SPEC-12 R1-R50 supersede R22-R25 for the `reduce`, `inspect`, and `generate` subcommands. Those subcommands accept three input formats: binary (`.bin`), text DSL (`.ic`), and JSON (`.json`), with auto-detection by file extension and a `--input-format` override flag (SPEC-12 R24). The bincode-only restriction in R22 applies exclusively to `coordinator`, `worker`, and `local`.
 
 **R23.** The format MUST be self-contained: the file contains all information necessary to reconstruct the `Net` (agents, ports, redex_queue, next_id) without external data. **(MUST)**
 
-**R24.** The input format MUST be the same format produced by the `generate` subcommand (R8-R9) and by `--output` of coordinator/local. This allows chaining executions: the output of one run can be the input of the next. **(MUST)**
+**R24.** For the `coordinator` and `local` subcommands, the `.bin` input format MUST be the same format produced by `--output` of coordinator/local and by the `generate` subcommand (when outputting `.bin`). This allows chaining executions: the output of one run can be the input of the next. **(MUST)**
 
 ### 3.8 Output Format: Reduced Network
 
@@ -163,12 +183,9 @@ Plus a summary total at the end or a separate `*_summary.csv` file with totals.
 
 ### 3.10 Pre-defined Workload Generators
 
-**R32.** Relativist MUST include generator functions for at least the following workloads (corresponding to SPEC-09 benchmarks):
-1. **TreeSum:** Chain of CON + ERA-ERA pairs. `mk_tree(ns: &[u32]) -> Net`. (AC-004, `mkTree`)
-2. **TreeSumBalanced:** Variant with interleaved IDs for balancing. `mk_tree_balanced(ns: &[u32]) -> Net`. (AC-004, `mkTreeBalanced`)
-3. **EraChain:** N independent ERA-ERA pairs. Pure redex, maximum parallelizability.
-4. **ConDupExpansion:** Network with CON-DUP pairs that expand before stabilizing. Stresses the commutation rule.
-5. **DualTree:** Two CON trees connected by principal ports. Generates cascading annihilations and commutations.
+**R32.** Relativist MUST include generator functions for the workloads corresponding to SPEC-09 benchmarks. The minimum set includes: TreeSum, TreeSumBalanced, EpAnnihilation (ERA-ERA pairs), ConDupExpansion, and DualTree.
+
+> **Supersession note (v3):** SPEC-12 R33 defines the authoritative list of 12 example generators via the `ExampleNet` enum, including the 5 listed above plus EpAnnihilationCon, EpAnnihilationDup, MixedRules, ErasurePropagation, ChurchNat, ChurchAdd, and ChurchMul. SPEC-12 R36 specifies that generators reside in `io/examples.rs`. The v2 name "EraChain" is renamed to "EpAnnihilation" for consistency with SPEC-09 and SPEC-12.
 **(MUST)**
 
 **R33.** Each workload generator function MUST accept a size parameter (`size: u32`) and produce a deterministic network: for the same `size`, the same network is always generated. **(MUST)**
@@ -178,6 +195,8 @@ Plus a summary total at the end or a separate `*_summary.csv` file with totals.
 ### 3.11 Logging
 
 **R35.** Relativist MUST use the `tracing` crate for structured logging, with subscriber configured via the `RUST_LOG` environment variable (via `tracing-subscriber` with `EnvFilter`). **(MUST)**
+
+> **Supersession note (v3):** SPEC-11 supersedes and extends R35-R36 with detailed instrumentation requirements including: `--log-format` CLI flag for text/JSON output (R3), `#[instrument]` on key functions with structured fields (R6), FSM state transition logging at INFO (R7), per-component default log levels (R5), and ERROR-level events for invariant violations (R9a). SPEC-11 is authoritative for all observability concerns. R35-R36 here provide the baseline; SPEC-11 adds MUST-level requirements on top.
 
 **R36.** Log levels SHOULD follow:
 - `error`: irrecoverable failures (I/O, deserialization, timeout, worker crash).
@@ -212,7 +231,7 @@ docker compose build
 docker compose up --scale worker=4
 
 # Or generate and run a custom workload
-docker compose run coordinator relativist generate --workload tree-sum --size 10000 --output /data/net.bin
+docker compose run coordinator relativist generate ep-annihilation -n 10000 --output /data/net.bin
 docker compose up --scale worker=4
 ```
 **(SHOULD)**
@@ -226,9 +245,9 @@ docker compose up --scale worker=4
 ### 3.14 Exit Codes
 
 **R43.** The binary SHOULD return the following exit codes:
-- `0`: execution completed successfully (Normal Form reached, or max_rounds reached without error).
-- `1`: configuration error (invalid arguments, file not found, deserialization failed).
-- `2`: communication error (timeout, lost connection, checksum mismatch).
+- `0`: execution completed successfully (Normal Form reached, or max_rounds/max_interactions reached without error).
+- `1`: configuration error (invalid arguments, file not found, deserialization failed, encoding error).
+- `2`: communication error (timeout, lost connection, checksum mismatch). Not applicable to `reduce`, `inspect`, `generate`, or `compute` subcommands.
 - `3`: internal error (panic, reduction engine bug detected by assert).
 **(SHOULD)**
 
@@ -236,11 +255,12 @@ docker compose up --scale worker=4
 
 **R44.** Relativist v1 does NOT implement the following features, which are explicitly out of scope:
 - Automatic discovery of workers. Workers specify the coordinator address manually.
-- Authentication or encryption. The environment is considered trusted (OBJETIVO_TCC.md).
 - Fault tolerance beyond timeout (DISC-007 v2: Z5 out of scope).
 - Configuration file (TOML/YAML). CLI is sufficient for v1.
 - Hot-reload of configuration.
 - Web dashboard or graphical interface.
+
+> **Supersession note (v3):** The v2 exclusion "Authentication or encryption. The environment is considered trusted." has been removed. SPEC-10 defines a three-tier security model: Tier 1 (development, no auth) requires zero configuration; Tier 2 (private network, token auth) and Tier 3 (production, token + TLS) are optional. The TCC evaluation uses Tier 1 (trusted environment), but the security infrastructure is implemented per SPEC-10.
 **(informative)**
 
 ---
@@ -272,9 +292,21 @@ pub enum Command {
     /// Run grid simulation locally (no TCP). For testing and baseline benchmarks.
     Local(LocalArgs),
 
-    /// Generate a workload network and save to a .bin file.
+    /// Generate an example network and save to a file.
     Generate(GenerateArgs),
+
+    /// Reduce a network locally (sequential reduce_all, no partitioning). SPEC-13 R41, R46.
+    Reduce(ReduceArgs),
+
+    /// Inspect a network file and print statistics. SPEC-13 R47.
+    Inspect(InspectArgs),
+
+    /// Encode, reduce, and decode an arithmetic expression. SPEC-13 R48a, SPEC-14.
+    Compute(ComputeArgs),
 }
+
+// Note: ReduceArgs, InspectArgs, and ComputeArgs are defined in SPEC-12 R24, R28, and SPEC-14 R22.
+// They are listed here for completeness; their authoritative definitions are in the successor specs.
 
 #[derive(clap::Args, Debug)]
 pub struct CoordinatorArgs {
@@ -282,17 +314,13 @@ pub struct CoordinatorArgs {
     #[arg(short = 'w', long)]
     pub workers: u32,
 
-    /// TCP port to listen on.
-    #[arg(short = 'p', long)]
-    pub port: u16,
-
-    /// Host address to bind to.
-    #[arg(long, default_value = "0.0.0.0")]
-    pub host: String,
+    /// Socket address to bind to (HOST:PORT).
+    #[arg(long, default_value = "127.0.0.1:9000")]
+    pub bind: SocketAddr,
 
     /// Path to the input network file (.bin, bincode-serialized Net).
-    #[arg(short = 'n', long)]
-    pub net: PathBuf,
+    #[arg(short = 'i', long)]
+    pub input: PathBuf,
 
     /// Maximum number of grid rounds. Unlimited if not specified.
     #[arg(long)]
@@ -309,6 +337,16 @@ pub struct CoordinatorArgs {
     /// Partitioning strategy.
     #[arg(long, default_value = "round-robin")]
     pub strategy: String,
+
+    /// Log output format: text or json. Default: text if TTY, json otherwise.
+    #[arg(long)]
+    pub log_format: Option<LogFormat>,
+
+    // Security flags (--token, --token-file, --insecure, --tls-cert, --tls-key)
+    // are defined in SPEC-10 Section 4.5 and added to this struct by the implementer.
+
+    // Metrics port (--metrics-port, default 9090, feature-gated on `metrics`)
+    // is defined in SPEC-11 R20 and added to this struct by the implementer.
 }
 
 #[derive(clap::Args, Debug)]
@@ -316,6 +354,13 @@ pub struct WorkerArgs {
     /// Address of the coordinator (HOST:PORT).
     #[arg(short = 'c', long)]
     pub coordinator: String,
+
+    /// Log output format: text or json. Default: text if TTY, json otherwise.
+    #[arg(long)]
+    pub log_format: Option<LogFormat>,
+
+    // Security flags (--token, --tls-ca)
+    // are defined in SPEC-10 Section 4.5 and added to this struct by the implementer.
 }
 
 #[derive(clap::Args, Debug)]
@@ -325,8 +370,8 @@ pub struct LocalArgs {
     pub workers: u32,
 
     /// Path to the input network file (.bin).
-    #[arg(short = 'n', long)]
-    pub net: PathBuf,
+    #[arg(short = 'i', long)]
+    pub input: PathBuf,
 
     /// Maximum number of grid rounds.
     #[arg(long)]
@@ -343,22 +388,16 @@ pub struct LocalArgs {
     /// Partitioning strategy.
     #[arg(long, default_value = "round-robin")]
     pub strategy: String,
+
+    /// Log output format: text or json. Default: text if TTY, json otherwise.
+    #[arg(long)]
+    pub log_format: Option<LogFormat>,
 }
 
-#[derive(clap::Args, Debug)]
-pub struct GenerateArgs {
-    /// Workload name: tree-sum, tree-sum-balanced, era-chain, con-dup-expansion, dual-tree.
-    #[arg(short = 'W', long)]
-    pub workload: String,
-
-    /// Size parameter for the workload generator.
-    #[arg(short = 's', long)]
-    pub size: u32,
-
-    /// Path to write the generated network (.bin).
-    #[arg(short = 'o', long)]
-    pub output: PathBuf,
-}
+// GenerateArgs is authoritatively defined in SPEC-12 R33.
+// The v2 definition (--workload, -s, -o) is superseded by SPEC-12's
+// positional `example: ExampleNet` (value_enum), `--size -n`, `--output -o`.
+// See SPEC-12 R33 for the canonical struct definition and ExampleNet enum.
 ```
 
 ### 4.2 CLI-to-Config Mapping
@@ -377,8 +416,7 @@ fn build_grid_config(args: &CoordinatorArgs | &LocalArgs) -> GridConfig:
 fn build_node_config_coordinator(args: &CoordinatorArgs) -> NodeConfig:
     NodeConfig {
         role: NodeRole::Coordinator,
-        host: args.host.clone(),
-        port: args.port,
+        bind: args.bind,                                // SocketAddr from --bind
         num_workers: args.workers,
         max_payload_size: DEFAULT_MAX_PAYLOAD_SIZE,     // 256 MiB
         worker_connect_timeout: Duration::from_secs(120),
@@ -388,11 +426,10 @@ fn build_node_config_coordinator(args: &CoordinatorArgs) -> NodeConfig:
 
 fn build_node_config_worker(args: &WorkerArgs) -> NodeConfig:
     // Parse "HOST:PORT" from args.coordinator
-    let (host, port) = parse_host_port(&args.coordinator)?
+    let coordinator_addr: SocketAddr = args.coordinator.parse()?
     NodeConfig {
         role: NodeRole::Worker,
-        host,
-        port,
+        bind: coordinator_addr,   // for worker, this is the coordinator address to connect to
         num_workers: 0,  // irrelevant for worker
         max_payload_size: DEFAULT_MAX_PAYLOAD_SIZE,
         worker_connect_timeout: Duration::ZERO,  // irrelevant for worker
@@ -411,10 +448,10 @@ async fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), AppError>:
     let strategy = parse_strategy(&args.strategy)?
 
     // 2. Load network
-    tracing::info!("Loading network from {:?}", args.net)
-    let net_bytes = tokio::fs::read(&args.net).await?
+    tracing::info!("Loading network from {:?}", args.input)
+    let net_bytes = tokio::fs::read(&args.input).await?
     let net: Net = bincode::deserialize(&net_bytes)
-        .map_err(|e| AppError::Deserialize(args.net.clone(), e))?
+        .map_err(|e| AppError::Deserialize(args.input.clone(), e))?
     tracing::info!("Loaded network: {} agents, {} redexes",
         count_live_agents(&net), net.redex_queue.len())
 
@@ -446,7 +483,7 @@ async fn run_worker_command(args: WorkerArgs) -> Result<(), AppError>:
     let node_config = build_node_config_worker(&args)?
 
     // 2-3. Connect and execute worker loop (SPEC-06, Section 4.7)
-    tracing::info!("Connecting to coordinator at {}:{}", node_config.host, node_config.port)
+    tracing::info!("Connecting to coordinator at {}", node_config.bind)
     run_worker(&node_config).await?
 
     tracing::info!("Worker shutdown complete.")
@@ -462,9 +499,9 @@ fn run_local_command(args: LocalArgs) -> Result<(), AppError>:
     let strategy = parse_strategy(&args.strategy)?
 
     // 2. Load network
-    let net_bytes = std::fs::read(&args.net)?
+    let net_bytes = std::fs::read(&args.input)?
     let net: Net = bincode::deserialize(&net_bytes)
-        .map_err(|e| AppError::Deserialize(args.net.clone(), e))?
+        .map_err(|e| AppError::Deserialize(args.input.clone(), e))?
     tracing::info!("Loaded network: {} agents, {} redexes",
         count_live_agents(&net), net.redex_queue.len())
 
@@ -579,8 +616,10 @@ Network fields (`bytes_sent`, `bytes_received`, `network_send_time_ms`, `network
 
 ### 4.9 Workload Generator
 
+> **Supersession note (v3):** The workload generator interface below is superseded by SPEC-12 R33-R42a, which defines the `ExampleNet` enum with 12 generators and pure function signatures `fn generate_<name>(size: u32) -> Net`. The code below is retained for historical context; the implementer MUST follow SPEC-12 for the authoritative generator definitions and module location (`io/examples.rs`).
+
 ```rust
-/// Registers all available workloads.
+/// Registers all available workloads (v2 interface, superseded by SPEC-12 ExampleNet).
 /// Returns (generator function, verification function).
 pub fn get_workload(name: &str) -> Option<(
     Box<dyn Fn(u32) -> Net>,        // generator
@@ -595,8 +634,8 @@ pub fn get_workload(name: &str) -> Option<(
             Box::new(|size| mk_tree_balanced(&vec![1; size as usize])),
             Box::new(|net, size| extract_result(net) == size),
         )),
-        "era-chain" => Some((
-            Box::new(|size| mk_era_chain(size)),
+        "ep-annihilation" => Some((
+            Box::new(|size| mk_ep_annihilation(size)),
             Box::new(|net, _size| count_live_agents(net) == 0),
         )),
         "con-dup-expansion" => Some((
@@ -612,7 +651,7 @@ pub fn get_workload(name: &str) -> Option<(
 }
 ```
 
-**Note:** The functions `mk_era_chain`, `mk_con_dup_expansion`, and `mk_dual_tree` are defined in Relativist's workloads module. Their detailed specifications are in SPEC-09 (benchmarks). This spec defines only the generation and verification interface.
+**Note:** The functions `mk_ep_annihilation`, `mk_con_dup_expansion`, and `mk_dual_tree` are defined in Relativist's workloads module (see SPEC-12 R36: `io/examples.rs`). Their detailed specifications are in SPEC-09 (benchmarks). This spec defines only the generation and verification interface.
 
 ### 4.10 Entrypoint (`main`)
 
@@ -636,6 +675,9 @@ async fn main() {
                 .unwrap()
         }
         Command::Generate(args) => run_generate_command(args),
+        Command::Reduce(args) => run_reduce_command(args),    // SPEC-12 R23-R26
+        Command::Inspect(args) => run_inspect_command(args),  // SPEC-12 R27-R31
+        Command::Compute(args) => run_compute_command(args),  // SPEC-14 R22-R25
     };
 
     match result {
@@ -689,9 +731,9 @@ services:
       - coordinator
       - --workers
       - "${NUM_WORKERS:-3}"
-      - --port
-      - "9000"
-      - --net
+      - --bind
+      - "0.0.0.0:9000"
+      - --input
       - /data/input.bin
       - --output
       - /data/output.bin
@@ -726,7 +768,7 @@ networks:
 
 ```bash
 # 1. Generate a workload (outside Docker or via docker run)
-cargo run --release -- generate --workload tree-sum --size 10000 --output data/input.bin
+cargo run --release -- generate tree-sum -n 10000 --output data/input.bin
 
 # 2. Run the grid with 4 workers
 NUM_WORKERS=4 docker compose up --build
@@ -753,7 +795,7 @@ For the TCC, deployment on 8 physical machines follows this manual procedure:
 
 ```bash
 # On the coordinator machine (e.g., 192.168.1.100):
-$ relativist coordinator --workers 7 --port 9000 --net workload.bin \
+$ relativist coordinator --workers 7 --bind 0.0.0.0:9000 --input workload.bin \
     --output result.bin --metrics metrics.json
 
 # On each worker machine (e.g., 192.168.1.101 through 192.168.1.107):
@@ -801,8 +843,8 @@ done
 
 echo "Starting coordinator on $COORDINATOR_HOST with $NUM_WORKERS workers..."
 ssh "$COORDINATOR_HOST" "$REMOTE_DIR/relativist coordinator \
-    --workers $NUM_WORKERS --port $PORT \
-    --net $REMOTE_DIR/input.bin \
+    --workers $NUM_WORKERS --bind 0.0.0.0:$PORT \
+    --input $REMOTE_DIR/input.bin \
     --output $REMOTE_DIR/result.bin \
     --metrics $REMOTE_DIR/metrics.json" &
 
@@ -829,8 +871,8 @@ scp "$COORDINATOR_HOST:$REMOTE_DIR/metrics.json" data/metrics.json
     |-- relativist          |                              |                     |
     |   coordinator ...     |                              |                     |
     |                       |                              |                     |
-    |                  [load net.bin]                       |                     |
-    |                  [bind TCP :9000]                     |                     |
+    |                  [load input.bin]                      |                     |
+    |                  [bind TCP (--bind)]                  |                     |
     |                       |                              |                     |
     |                       |<--- connect ------------------|                     |
     |                       |<--- connect ----------------------------------------|
@@ -873,7 +915,7 @@ scp "$COORDINATOR_HOST:$REMOTE_DIR/metrics.json" data/metrics.json
     |-- relativist          |
     |   local ...           |
     |                       |
-    |                  [load net.bin]
+    |                  [load input.bin]
     |                       |
     |                  [=== ROUND 0 ===]
     |                  [partition net into N parts]
@@ -984,7 +1026,7 @@ impl AppError {
 
 **Decision:** The input/output format for networks is binary bincode (`.bin`), not a textual format (JSON, DOT, or custom format).
 
-**Rationale:** Bincode is Relativist's native serialization format (confirmed technical decision, SPEC-02 R22). Using the same format for persistence and communication eliminates additional conversions. For human inspection, the `generate` subcommand with a `--format text` option or a separate `relativist inspect` tool can be added in the future. The TCC does not require manual editing of networks -- all test networks are generated programmatically.
+**Rationale:** Bincode is Relativist's native serialization format (confirmed technical decision, SPEC-02 R22). Using the same format for persistence and communication eliminates additional conversions. **Update (v3):** SPEC-12 extends the format story: the `reduce`, `inspect`, and `generate` subcommands now support three formats (binary `.bin`, text DSL `.ic`, JSON `.json`), while `coordinator`, `worker`, and `local` retain bincode-only for performance. The text DSL enables human inspection and debugging; JSON enables programmatic integration. The original bincode-for-performance rationale still applies to the grid protocol path.
 
 ### 5.5 Docker for Reproducibility, Not Required
 
@@ -1060,9 +1102,9 @@ The prototype defines two CSV formats (local and distributed, AC-004). Relativis
 
 | Aspect | Haskell Prototype | Relativist |
 |--------|-------------------|------------|
-| Binary | Single `benchmark` executable | Single `relativist` binary with subcommands |
+| Binary | Single `benchmark` executable | Single `relativist` binary with 7 subcommands |
 | Config | Hard-coded in `main` + minimal CLI flags | Full CLI via `clap` with defaults |
-| Input | Generated in-memory (`mkTree`) | `.bin` files (bincode serialized Net) |
+| Input | Generated in-memory (`mkTree`) | `.bin` files (grid path); `.bin`/`.ic`/`.json` (utility path, SPEC-12) |
 | Output | Terminal print + CSV | `.bin` network + `.json`/`.csv` metrics |
 | Logging | `LogLevel` enum, manual `putStrLn` | `tracing` with `RUST_LOG` env var |
 | Docker | None | Dockerfile + docker-compose.yml (SHOULD) |
@@ -1079,7 +1121,7 @@ The prototype defines two CSV formats (local and distributed, AC-004). Relativis
 
 2. **Metrics format: summary row or separate file?** **RESOLVED: Separate file (Option B).** Total metrics (total_interactions, total_time, converged) MUST be written to a separate `*_summary.csv` file alongside the per-round `*.csv`. This keeps the per-round CSV clean (one row per round) and the summary self-contained.
 
-3. **`inspect` subcommand for visualization.** **RESOLVED: Implement as SHOULD, not priority for v1.** Relativist SHOULD implement a subcommand `relativist inspect --net file.bin` that prints the network in human-readable format (agent counts by symbol, redex count, graph in DOT format). This is not a v1 blocker but SHOULD be implemented as soon as practical after core functionality is complete.
+3. **`inspect` subcommand for visualization.** **RESOLVED: Elevated to MUST by SPEC-13 R47 and SPEC-12 R27-R31.** The `inspect` subcommand is now a first-class MUST requirement with detailed argument definitions and statistics reporting. See SPEC-12 R27-R31 for the authoritative specification.
 
 4. **`serde_json` dependency.** **RESOLVED: Direct dependency.** The `serde_json` crate is included as a direct dependency (no feature flag). JSON metrics output (R28, R30) is available by default.
 
