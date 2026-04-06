@@ -262,6 +262,19 @@ impl Net {
     pub fn live_agents(&self) -> impl Iterator<Item = &Agent> {
         self.agents.iter().filter_map(|slot| slot.as_ref())
     }
+
+    /// Serializes the net to a bincode byte vector.
+    ///
+    /// The format is self-contained: the receiver can reconstruct
+    /// the complete Net from the bytes alone (SPEC-02 R25).
+    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::RelError> {
+        bincode::serialize(self).map_err(|e| crate::error::RelError::Serialize(e.to_string()))
+    }
+
+    /// Deserializes a net from a bincode byte slice.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Net, crate::error::RelError> {
+        bincode::deserialize(bytes).map_err(|e| crate::error::RelError::Deserialize(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -860,5 +873,51 @@ mod tests {
     fn test_live_agents_empty() {
         let net = Net::new();
         assert_eq!(net.live_agents().count(), 0);
+    }
+
+    // --- to_bytes / from_bytes tests (TASK-0017) ---
+
+    // T1: Round-trip empty net
+    #[test]
+    fn test_net_serde_empty_roundtrip() {
+        let net = Net::new();
+        let bytes = net.to_bytes().unwrap();
+        let des = Net::from_bytes(&bytes).unwrap();
+        assert_eq!(net, des);
+    }
+
+    // T2: Round-trip net with agents and connections
+    #[test]
+    fn test_net_serde_with_agents() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        let bytes = net.to_bytes().unwrap();
+        let des = Net::from_bytes(&bytes).unwrap();
+        assert_eq!(net, des);
+        // Verify all fields preserved
+        assert_eq!(des.next_id, 2);
+        assert_eq!(des.redex_queue.len(), 1);
+        assert_eq!(des.agents.len(), 2);
+    }
+
+    // T3: Corrupt bytes cause Err
+    #[test]
+    fn test_net_deserialize_corrupt() {
+        let result = Net::from_bytes(&[0xFF, 0xFF, 0xFF]);
+        assert!(result.is_err());
+    }
+
+    // T4: Round-trip preserves root
+    #[test]
+    fn test_net_serde_preserves_root() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.root = Some(PortRef::AgentPort(a, 0));
+        let bytes = net.to_bytes().unwrap();
+        let des = Net::from_bytes(&bytes).unwrap();
+        assert_eq!(des.root, Some(PortRef::AgentPort(a, 0)));
     }
 }
