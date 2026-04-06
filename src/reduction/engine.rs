@@ -74,6 +74,70 @@ pub fn reduce_step(net: &mut Net) -> StepResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ReductionStats
+// ---------------------------------------------------------------------------
+
+/// Statistics of a completed (or partial) reduction (SPEC-03 Section 4.6.2).
+///
+/// Tracks the total number of interactions and per-rule breakdowns.
+/// Managed by callers (`reduce_all`, `reduce_n`), not by `reduce_step`.
+#[derive(Debug, Clone)]
+pub struct ReductionStats {
+    /// Total number of interactions performed.
+    pub total_interactions: u64,
+    /// Number of Annihilation interactions (CON-CON + DUP-DUP).
+    pub anni_count: u64,
+    /// Number of Commutation interactions (CON-DUP).
+    pub comm_count: u64,
+    /// Number of Erasure interactions (CON-ERA + DUP-ERA).
+    pub eras_count: u64,
+    /// Number of Void interactions (ERA-ERA).
+    pub void_count: u64,
+    /// Per-rule interaction counts (6 Lafont rules).
+    /// Index order: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA].
+    /// Corresponds to `SpecificRule` enum discriminants.
+    pub interactions_by_rule: [u64; 6],
+}
+
+// ---------------------------------------------------------------------------
+// reduce_all
+// ---------------------------------------------------------------------------
+
+/// Reduces the net to Normal Form (empty redex queue).
+///
+/// WARNING: does not terminate if the net is non-terminating.
+/// For potentially non-terminating nets, use `reduce_n`.
+///
+/// Complexity: O(S) where S is the total number of interactions to Normal Form
+/// (invariant T7 from SPEC-01 guarantees S is unique for the given net).
+pub fn reduce_all(net: &mut Net) -> ReductionStats {
+    let mut stats = ReductionStats {
+        total_interactions: 0,
+        anni_count: 0,
+        comm_count: 0,
+        eras_count: 0,
+        void_count: 0,
+        interactions_by_rule: [0; 6],
+    };
+
+    loop {
+        match reduce_step(net) {
+            StepResult::NormalForm => return stats,
+            StepResult::Reduced(rule, specific) => {
+                stats.total_interactions += 1;
+                match rule {
+                    Rule::Anni => stats.anni_count += 1,
+                    Rule::Comm => stats.comm_count += 1,
+                    Rule::Eras => stats.eras_count += 1,
+                    Rule::Void => stats.void_count += 1,
+                }
+                stats.interactions_by_rule[specific as usize] += 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +414,227 @@ mod tests {
             result,
             StepResult::Reduced(Rule::Comm, SpecificRule::ConDup)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ReductionStats tests
+    // -----------------------------------------------------------------------
+
+    // T1: ReductionStats has all 7 fields
+    #[test]
+    fn test_reduction_stats_fields() {
+        let stats = ReductionStats {
+            total_interactions: 1,
+            anni_count: 2,
+            comm_count: 3,
+            eras_count: 4,
+            void_count: 5,
+            interactions_by_rule: [10, 20, 30, 40, 50, 60],
+        };
+        assert_eq!(stats.total_interactions, 1);
+        assert_eq!(stats.anni_count, 2);
+        assert_eq!(stats.comm_count, 3);
+        assert_eq!(stats.eras_count, 4);
+        assert_eq!(stats.void_count, 5);
+        assert_eq!(stats.interactions_by_rule, [10, 20, 30, 40, 50, 60]);
+    }
+
+    // T2: ReductionStats derives Debug, Clone
+    #[test]
+    fn test_reduction_stats_derives() {
+        let stats = ReductionStats {
+            total_interactions: 0,
+            anni_count: 0,
+            comm_count: 0,
+            eras_count: 0,
+            void_count: 0,
+            interactions_by_rule: [0; 6],
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.total_interactions, 0);
+        // Debug
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("ReductionStats"));
+    }
+
+    // T3: Default initialization (all zeros)
+    #[test]
+    fn test_reduction_stats_zero_init() {
+        let stats = ReductionStats {
+            total_interactions: 0,
+            anni_count: 0,
+            comm_count: 0,
+            eras_count: 0,
+            void_count: 0,
+            interactions_by_rule: [0; 6],
+        };
+        assert_eq!(stats.total_interactions, 0);
+        assert_eq!(stats.anni_count, 0);
+        assert_eq!(stats.comm_count, 0);
+        assert_eq!(stats.eras_count, 0);
+        assert_eq!(stats.void_count, 0);
+        assert_eq!(stats.interactions_by_rule, [0; 6]);
+    }
+
+    // -----------------------------------------------------------------------
+    // reduce_all tests
+    // -----------------------------------------------------------------------
+
+    // T4: Empty net returns stats with total_interactions = 0
+    #[test]
+    fn test_reduce_all_empty_net() {
+        let mut net = Net::new();
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 0);
+    }
+
+    // T5: Single ERA-ERA pair
+    #[test]
+    fn test_reduce_all_era_era() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 1);
+        assert_eq!(stats.void_count, 1);
+        assert_eq!(stats.interactions_by_rule[SpecificRule::EraEra as usize], 1);
+    }
+
+    // T6: Single CON-CON pair
+    #[test]
+    fn test_reduce_all_con_con() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 1);
+        assert_eq!(stats.anni_count, 1);
+        assert_eq!(stats.interactions_by_rule[SpecificRule::ConCon as usize], 1);
+    }
+
+    // T7: Single CON-DUP pair (commutation creates 4 new agents)
+    #[test]
+    fn test_reduce_all_con_dup() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 1);
+        assert_eq!(stats.comm_count, 1);
+        assert_eq!(stats.interactions_by_rule[SpecificRule::ConDup as usize], 1);
+    }
+
+    // T8: Multi-step: CON-ERA creates 2 ERA which auto-connect to FreePort
+    //     (no cascading ERA-ERA in this setup since created ERAs connect to FreePort)
+    #[test]
+    fn test_reduce_all_con_era_stats() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 1);
+        assert_eq!(stats.eras_count, 1);
+        assert_eq!(stats.interactions_by_rule[SpecificRule::ConEra as usize], 1);
+    }
+
+    // T9: Stats consistency: total == anni + comm + eras + void
+    #[test]
+    fn test_reduce_all_stats_consistency_category() {
+        let mut net = Net::new();
+        // Create multiple redexes of different types
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let c = net.create_agent(Symbol::Era);
+        let d = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(
+            stats.total_interactions,
+            stats.anni_count + stats.comm_count + stats.eras_count + stats.void_count
+        );
+    }
+
+    // T10: Stats consistency: total == sum(interactions_by_rule)
+    #[test]
+    fn test_reduce_all_stats_consistency_specific() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+
+        let stats = reduce_all(&mut net);
+        let sum: u64 = stats.interactions_by_rule.iter().sum();
+        assert_eq!(stats.total_interactions, sum);
+    }
+
+    // T11: Net is in normal form after reduce_all
+    #[test]
+    fn test_reduce_all_leaves_normal_form() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        reduce_all(&mut net);
+        assert_eq!(reduce_step(&mut net), StepResult::NormalForm);
+    }
+
+    // E1: Net with agents but no redexes
+    #[test]
+    fn test_reduce_all_no_redexes() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        // Connect aux ports only -- no principal-to-principal = no redex
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 0), PortRef::FreePort(3));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(4));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(5));
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 0);
+    }
+
+    // E2: Multiple same-type redexes (3x ERA-ERA)
+    #[test]
+    fn test_reduce_all_multiple_era_era() {
+        let mut net = Net::new();
+        for _ in 0..3 {
+            let a = net.create_agent(Symbol::Era);
+            let b = net.create_agent(Symbol::Era);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        }
+
+        let stats = reduce_all(&mut net);
+        assert_eq!(stats.total_interactions, 3);
+        assert_eq!(stats.void_count, 3);
+        assert_eq!(stats.interactions_by_rule[SpecificRule::EraEra as usize], 3);
     }
 }
