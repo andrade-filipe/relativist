@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (20 done, 0 in progress, 185 todo, 1 obsoleted)
+**Total tasks:** 206 (32 done, 0 in progress, 173 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -36,18 +36,18 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0020 | Scaffold reduction module structure | P0 | TODO | Phase 1 | S |
-| TASK-0021 | Define Rule enum and dispatch table | P0 | TODO | 0020 | S |
-| TASK-0022 | Implement normalize_pair function | P0 | TODO | 0020, 0021 | S |
-| TASK-0218 | Implement link helper (safe port reconnection) | P0 | TODO | 0020, Phase 1 | S |
-| TASK-0023 | Implement interact_void (ERA-ERA) | P0 | TODO | 0020, Phase 1 | S |
-| TASK-0024 | Implement interact_anni (CON-CON, DUP-DUP) | P0 | TODO | 0020, 0218, Phase 1 | M |
-| TASK-0025 | Implement interact_eras (CON-ERA, DUP-ERA) | P0 | TODO | 0020, 0218, Phase 1 | S |
-| TASK-0026 | Implement interact_comm (CON-DUP) | P0 | TODO | 0020, 0218, Phase 1 | M |
-| TASK-0027 | Define StepResult and implement reduce_step | P0 | TODO | 0020-0026, 0218 | M |
-| TASK-0028 | Define ReductionStats and implement reduce_all | P0 | TODO | 0027 | M |
-| TASK-0029 | Implement reduce_n (budget-limited reduction) | P0 | TODO | 0027, 0028 | S |
-| TASK-0030 | Wire up reduction module re-exports | P1 | TODO | 0020-0029, 0218 | S |
+| TASK-0020 | Scaffold reduction module structure | P0 | **DONE** | Phase 1 | S |
+| TASK-0021 | Define Rule enum and dispatch table | P0 | **DONE** | 0020 | S |
+| TASK-0022 | Implement normalize_pair function | P0 | **DONE** | 0020, 0021 | S |
+| TASK-0218 | Implement link helper (safe port reconnection) | P0 | **DONE** | 0020, Phase 1 | S |
+| TASK-0023 | Implement interact_void (ERA-ERA) | P0 | **DONE** | 0020, Phase 1 | S |
+| TASK-0024 | Implement interact_anni (CON-CON, DUP-DUP) | P0 | **DONE** | 0020, 0218, Phase 1 | M |
+| TASK-0025 | Implement interact_eras (CON-ERA, DUP-ERA) | P0 | **DONE** | 0020, 0218, Phase 1 | S |
+| TASK-0026 | Implement interact_comm (CON-DUP) | P0 | **DONE** | 0020, 0218, Phase 1 | M |
+| TASK-0027 | Define StepResult and implement reduce_step | P0 | **DONE** | 0020-0026, 0218 | M |
+| TASK-0028 | Define ReductionStats and implement reduce_all | P0 | **DONE** | 0027 | M |
+| TASK-0029 | Implement reduce_n (budget-limited reduction) | P0 | **DONE** | 0027, 0028 | S |
+| TASK-0030 | Wire up reduction module re-exports | P1 | **DONE** | 0020-0029, 0218 | S |
 
 ## Phase 3: Partitioning (SPEC-04)
 
