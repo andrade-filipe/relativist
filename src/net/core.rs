@@ -102,6 +102,45 @@ impl Net {
 
         id
     }
+
+    /// Returns the `PortRef` to which the given port is connected.
+    ///
+    /// For `AgentPort(id, p)`: looks up `ports[port_index(id, p)]`.
+    /// Returns `DISCONNECTED` if the index is out of bounds.
+    /// For `FreePort(_)`: returns `DISCONNECTED` (FreePort targets are
+    /// resolved during merge, SPEC-05).
+    ///
+    /// Complexity: O(1).
+    pub fn get_target(&self, port: PortRef) -> PortRef {
+        match port {
+            PortRef::AgentPort(id, p) => {
+                let idx = super::types::port_index(id, p);
+                if idx < self.ports.len() {
+                    self.ports[idx]
+                } else {
+                    DISCONNECTED
+                }
+            }
+            PortRef::FreePort(_) => DISCONNECTED,
+        }
+    }
+
+    /// Writes the target of a port in the port array.
+    ///
+    /// Only operates on `AgentPort`; `FreePort` is a no-op (FreePort has
+    /// no slot in the port array). Silently ignores out-of-bounds indices.
+    ///
+    /// This is intentionally private — external code should use `connect`
+    /// and `disconnect` to maintain bidirectionality (SPEC-01 T1/I1).
+    #[allow(dead_code)] // Used by connect/disconnect (TASK-0011/0012)
+    fn set_port(&mut self, port: PortRef, target: PortRef) {
+        if let PortRef::AgentPort(id, p) = port {
+            let idx = super::types::port_index(id, p);
+            if idx < self.ports.len() {
+                self.ports[idx] = target;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -267,5 +306,64 @@ mod tests {
         assert_eq!(net.agents[0].unwrap().symbol, Symbol::Con);
         assert_eq!(net.agents[1].unwrap().symbol, Symbol::Dup);
         assert_eq!(net.agents[2].unwrap().symbol, Symbol::Era);
+    }
+
+    // --- get_target / set_port tests (TASK-0010) ---
+
+    // T1: set_port then get_target reads back the value
+    #[test]
+    fn test_set_port_get_target_roundtrip() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        let target = PortRef::AgentPort(99, 1);
+        net.set_port(PortRef::AgentPort(id, 0), target);
+        assert_eq!(net.get_target(PortRef::AgentPort(id, 0)), target);
+    }
+
+    // T2: get_target out of bounds returns DISCONNECTED
+    #[test]
+    fn test_get_target_out_of_bounds() {
+        let net = Net::new();
+        assert_eq!(net.get_target(PortRef::AgentPort(999, 0)), DISCONNECTED);
+    }
+
+    // T3: get_target(FreePort) returns DISCONNECTED
+    #[test]
+    fn test_get_target_freeport() {
+        let net = Net::new();
+        assert_eq!(net.get_target(PortRef::FreePort(42)), DISCONNECTED);
+    }
+
+    // T4: set_port(FreePort) is a no-op
+    #[test]
+    fn test_set_port_freeport_noop() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        let before = net.clone();
+        // This should not panic or change anything meaningful
+        net.set_port(PortRef::FreePort(42), PortRef::AgentPort(id, 0));
+        // The only thing that could differ is the FreePort slot (which doesn't exist),
+        // so the net should still equal before
+        assert_eq!(net, before);
+    }
+
+    // E6: set_port on out-of-bounds is silent no-op
+    #[test]
+    fn test_set_port_out_of_bounds_noop() {
+        let mut net = Net::new();
+        // No agents, so port array is empty
+        net.set_port(PortRef::AgentPort(999, 0), PortRef::FreePort(1));
+        // Should not panic, net unchanged
+        assert!(net.ports.is_empty());
+    }
+
+    // E7: get_target on freshly created agent returns DISCONNECTED
+    #[test]
+    fn test_get_target_fresh_agent() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Dup);
+        for p in 0..3u8 {
+            assert_eq!(net.get_target(PortRef::AgentPort(id, p)), DISCONNECTED);
+        }
     }
 }
