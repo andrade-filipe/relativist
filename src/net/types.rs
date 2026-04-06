@@ -84,6 +84,30 @@ pub struct Agent {
     pub id: AgentId,
 }
 
+/// Number of port slots per agent in the port array.
+///
+/// Every agent occupies exactly 3 slots: 1 principal + 2 auxiliary.
+/// ERA agents waste 2 slots (they have only 1 port), but uniform
+/// indexing simplifies the port array layout to O(1) lookups.
+pub const PORTS_PER_SLOT: usize = 3;
+
+/// Computes the flat index in the port array for `(agent_id, port_id)`.
+///
+/// The port array is a `Vec<PortRef>` where slot `agent_id * 3 + port_id`
+/// stores the `PortRef` to which port `(agent_id, port_id)` is connected.
+#[inline]
+pub fn port_index(agent_id: AgentId, port_id: PortId) -> usize {
+    (agent_id as usize) * PORTS_PER_SLOT + (port_id as usize)
+}
+
+/// Sentinel for disconnected or invalid port slots.
+///
+/// Used internally during reduction operations as a temporary marker.
+/// A slot containing `DISCONNECTED` **violates invariant T1** (linearity)
+/// if it persists after a reduction rule completes. Debug assertions
+/// check for this (see `debug.rs`).
+pub const DISCONNECTED: PortRef = PortRef::FreePort(u32::MAX);
+
 /// Returns the arity (number of auxiliary ports) of a symbol.
 ///
 /// - CON (γ): 2 auxiliary ports (left, right) — REF-002 p.71
@@ -465,5 +489,38 @@ mod tests {
         for sym in [Symbol::Con, Symbol::Dup, Symbol::Era] {
             assert_eq!(total_ports(sym), arity(sym) + 1);
         }
+    }
+
+    // --- PORTS_PER_SLOT / port_index / DISCONNECTED tests (TASK-0007) ---
+
+    // T1: PORTS_PER_SLOT value
+    #[test]
+    fn test_ports_per_slot() {
+        assert_eq!(PORTS_PER_SLOT, 3);
+    }
+
+    // T2: port_index correctness
+    #[test]
+    fn test_port_index() {
+        assert_eq!(port_index(0, 0), 0);
+        assert_eq!(port_index(0, 1), 1);
+        assert_eq!(port_index(0, 2), 2);
+        assert_eq!(port_index(1, 0), 3);
+        assert_eq!(port_index(1, 1), 4);
+        assert_eq!(port_index(5, 1), 16);
+        assert_eq!(port_index(1000, 0), 3000);
+    }
+
+    // T3: DISCONNECTED is FreePort(u32::MAX)
+    #[test]
+    fn test_disconnected_value() {
+        assert_eq!(DISCONNECTED, PortRef::FreePort(u32::MAX));
+    }
+
+    // T4: DISCONNECTED distinguishable from valid AgentPort
+    #[test]
+    fn test_disconnected_not_agent_port() {
+        assert_ne!(DISCONNECTED, PortRef::AgentPort(0, 0));
+        assert_ne!(DISCONNECTED, PortRef::AgentPort(u32::MAX, 0));
     }
 }
