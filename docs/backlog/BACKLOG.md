@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-05
-**Total tasks:** 201 (0 done, 0 in progress, 201 todo)
+**Total tasks:** 206 (0 done, 0 in progress, 205 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -24,11 +24,13 @@
 | TASK-0011 | Implement connect | P0 | TODO | 0010 | S |
 | TASK-0012 | Implement disconnect | P0 | TODO | 0010 | S |
 | TASK-0013 | Implement remove_agent | P0 | TODO | 0009, 0012, 0006 | S |
-| TASK-0014 | Implement is_reduced and is_valid_redex | P0 | TODO | 0010, 0008 | S |
+| TASK-0014 | Implement is_reduced and is_valid_redex | P0 | TODO | 0010, 0008, 0019 | S |
 | TASK-0015 | Implement debug assertions (I1, I2, I3, I6, I7) | P0 | TODO | 0010, 0009, 0006 | M |
 | TASK-0016 | Define BorderMap type alias | P1 | TODO | 0004 | S |
 | TASK-0017 | Add serde + bincode serialization | P1 | TODO | 0008 | S |
-| TASK-0018 | Implement PartialEq for Net | P1 | TODO | 0008 | S |
+| TASK-0018 | Verify PartialEq and Eq for Net | P1 | TODO | 0008 | S |
+| TASK-0019 | Implement get_agent and get_agent_mut accessors | P0 | TODO | 0008 | S |
+| TASK-0231 | Implement count_live_agents and live_agents on Net | P0 | TODO | 0008 | S |
 
 ## Phase 2: Reduction Engine (SPEC-03)
 
@@ -60,7 +62,7 @@
 | TASK-0046 | Wire classification logic | P0 | TODO | 0045 | M |
 | TASK-0047 | Compute static ID space ranges | P0 | TODO | 0040 | S |
 | TASK-0048 | split() trivial case (n=1) | P0 | TODO | 0042 | S |
-| TASK-0049 | split() general case orchestrator | P0 | TODO | 0048, 0044, 0046, 0047, 0050-0054, 0220 | M |
+| TASK-0049 | split() general case orchestrator | P0 | TODO | 0048, 0044, 0046, 0047, 0050-0054, 0219, 0220 | M |
 | TASK-0050 | Build sub-net for one partition | P0 | TODO | 0046 | M |
 | TASK-0051 | Redex queue population for partitions | P0 | TODO | 0050 | S |
 | TASK-0052 | FreePort index construction per partition | P0 | TODO | 0046 | S |
@@ -76,7 +78,7 @@
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
 | TASK-0060 | Define GridMetrics struct | P0 | TODO | none | S |
-| TASK-0061 | Define WorkerRoundStats struct | P1 | TODO | none | S |
+| TASK-0061 | Define WorkerRoundStats struct (6-field, serde, MUST) | P0 | TODO | none | S |
 | TASK-0062 | Define GridConfig struct | P0 | TODO | none | S |
 | TASK-0063 | Implement rebuild_free_port_index | P0 | TODO | Phase 1 | M |
 | TASK-0064 | Implement is_principal_pair helper | P0 | TODO | Phase 1 | S |
@@ -88,10 +90,11 @@
 | TASK-0070 | run_grid Phase 1 (split) + Phase 2 (local reduce) | P0 | TODO | 0069, 0063, 0061 | M |
 | TASK-0071 | run_grid Phase 3 (merge + resolve borders + metrics) | P0 | TODO | 0070, 0066 | M |
 | TASK-0072 | n==1 optimization in run_grid | P1 | TODO | 0069 | S |
-| TASK-0073 | Implement count_live_agents helper | P0 | TODO | none | S |
+| TASK-0073 | Implement count_live_agents helper | P0 | TODO | 0231 | S |
 | TASK-0074 | Integration test: split/merge identity (D1) | P0 | TODO | 0066 | M |
 | TASK-0075 | Integration test: Fundamental Property G1 | P0 | TODO | 0071 | M |
 | TASK-0076 | Merge module exports and wiring | P0 | TODO | 0060-0065 | S |
+| TASK-0230 | Implement verify_no_redexes_full_scan (R41) | P1 | TODO | 0014, 0064, Phase 1 | S |
 
 ## Phase 5: Wire Protocol (SPEC-06)
 
@@ -101,7 +104,7 @@
 | TASK-0081 | Define ProtocolError enum | P0 | TODO | 0080 | S |
 | TASK-0082 | Define Message enum | P0 | TODO | 0080 | S |
 | TASK-0083 | Define FrameHeader struct and framing constants | P0 | TODO | 0080 | S |
-| TASK-0084 | Define NodeConfig and NodeRole types | P0 | TODO | 0080, 0083 | S |
+| TASK-0084 | Define NodeConfig type | P0 | TODO | 0080, 0083 | S |
 | TASK-0085 | Implement send_frame function | P0 | TODO | 0081, 0082, 0083 | M |
 | TASK-0086 | Implement recv_frame function | P0 | TODO | 0081, 0082, 0083 | M |
 | TASK-0087 | Implement connect_with_retry (exponential backoff) | P1 | TODO | 0081, 0084 | S |
@@ -182,8 +185,8 @@
 | TASK-0149 | Add FSM state transition logging | P1 | TODO | 0144, Phase 5 | M |
 | TASK-0150 | Define CoordinatorMetrics struct and registration | P0 | TODO | 0140 | M |
 | TASK-0151 | Define protocol metrics | P1 | TODO | 0150 | M |
-| TASK-0152 | Extend WorkerRoundStats with observability fields | P0 | TODO | 0061 | S |
-| TASK-0153 | Implement coordinator metric aggregation from worker reports | P1 | TODO | 0150, 0152 | M |
+| TASK-0152 | ~~Extend WorkerRoundStats with observability fields~~ | -- | OBSOLETED | 0061 | -- |
+| TASK-0153 | Implement coordinator metric aggregation from worker reports | P1 | TODO | 0150, 0061 | M |
 | TASK-0154 | Add axum dependency and scaffold metrics_router | P0 | TODO | 0140, 0150 | S |
 | TASK-0155 | Implement /health and /ready endpoints | P0 | TODO | 0154 | S |
 | TASK-0156 | Implement /metrics endpoint with Prometheus encoding | P0 | TODO | 0154, 0150 | S |
@@ -242,6 +245,8 @@
 | TASK-0197 | Implement derived metrics computation and aggregation | P0 | TODO | 0183, 0184, 0186 | M |
 | TASK-0198 | Implement benchmark suite runner (run_benchmark_suite) | P0 | TODO | 0182-0197, Phase 2, Phase 4 | M |
 | TASK-0199 | Implement CLI binary and Criterion micro-benchmarks | P1 | TODO | 0198, 0184 | M |
+| TASK-0221 | Implement ChurchAdd benchmark (R17a MUST) | P0 | TODO | 0182, 0185, 0204, 0203, Phase 1, Phase 2 | S |
+| TASK-0222 | Implement ChurchMul benchmark (R17b SHOULD) | P1 | TODO | 0182, 0185, 0205, 0203, Phase 1, Phase 2 | S |
 
 ## Phase 11: Encoding (SPEC-14)
 
