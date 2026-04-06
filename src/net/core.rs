@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use super::types::{Agent, AgentId, PortRef, PORTS_PER_SLOT};
+use super::types::{Agent, AgentId, PortRef, Symbol, DISCONNECTED, PORTS_PER_SLOT};
 
 /// The complete interaction net.
 ///
@@ -72,6 +72,35 @@ impl Net {
             next_id: 0,
             root: None,
         }
+    }
+
+    /// Creates a new agent with the given symbol and returns its assigned ID.
+    ///
+    /// The agent gets `next_id` as its ID, and `next_id` is incremented.
+    /// The agent arena and port array are expanded as needed. All new port
+    /// slots are initialized to `DISCONNECTED`.
+    ///
+    /// Complexity: O(1) amortized (may trigger Vec reallocation).
+    /// Postcondition: `agents[id] == Some(Agent { symbol, id })`, `next_id == id + 1`.
+    pub fn create_agent(&mut self, symbol: Symbol) -> AgentId {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let agent = Agent { symbol, id };
+
+        // Expand arena to contain index `id`
+        if self.agents.len() <= id as usize {
+            self.agents.resize((id as usize) + 1, None);
+        }
+        self.agents[id as usize] = Some(agent);
+
+        // Expand port array for the new agent's 3 slots
+        let required_len = (id as usize + 1) * PORTS_PER_SLOT;
+        if self.ports.len() < required_len {
+            self.ports.resize(required_len, DISCONNECTED);
+        }
+
+        id
     }
 }
 
@@ -161,5 +190,82 @@ mod tests {
         let clone = net.clone();
         net.next_id = 42;
         assert_ne!(net, clone);
+    }
+
+    // --- create_agent tests (TASK-0009) ---
+
+    // T1: Create one agent, verify id and state
+    #[test]
+    fn test_create_agent_first() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        assert_eq!(id, 0);
+        assert_eq!(net.next_id, 1);
+        assert_eq!(
+            net.agents[0],
+            Some(Agent {
+                symbol: Symbol::Con,
+                id: 0
+            })
+        );
+    }
+
+    // T2: Create 3 agents sequentially
+    #[test]
+    fn test_create_agent_sequential() {
+        let mut net = Net::new();
+        let id0 = net.create_agent(Symbol::Con);
+        let id1 = net.create_agent(Symbol::Dup);
+        let id2 = net.create_agent(Symbol::Era);
+        assert_eq!(id0, 0);
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(net.next_id, 3);
+    }
+
+    // T3: Port array expands correctly
+    #[test]
+    fn test_create_agent_port_array_size() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con);
+        net.create_agent(Symbol::Dup);
+        net.create_agent(Symbol::Era);
+        // 3 agents * 3 slots = 9
+        assert!(net.ports.len() >= 9);
+    }
+
+    // T4: New port slots are DISCONNECTED
+    #[test]
+    fn test_create_agent_ports_disconnected() {
+        use crate::net::types::{port_index, DISCONNECTED};
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        for p in 0..3u8 {
+            assert_eq!(net.ports[port_index(id, p)], DISCONNECTED);
+        }
+    }
+
+    // E4: ERA also gets 3 port slots (uniform layout)
+    #[test]
+    fn test_create_agent_era_uniform_slots() {
+        use crate::net::types::{port_index, DISCONNECTED};
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Era);
+        // ERA has arity 0 but still gets 3 slots
+        for p in 0..3u8 {
+            assert_eq!(net.ports[port_index(id, p)], DISCONNECTED);
+        }
+    }
+
+    // E5: Agent symbols are stored correctly
+    #[test]
+    fn test_create_agent_symbols() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con);
+        net.create_agent(Symbol::Dup);
+        net.create_agent(Symbol::Era);
+        assert_eq!(net.agents[0].unwrap().symbol, Symbol::Con);
+        assert_eq!(net.agents[1].unwrap().symbol, Symbol::Dup);
+        assert_eq!(net.agents[2].unwrap().symbol, Symbol::Era);
     }
 }
