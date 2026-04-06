@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use super::types::{Agent, AgentId, PortRef, Symbol, DISCONNECTED, PORTS_PER_SLOT};
+use super::types::{total_ports, Agent, AgentId, PortRef, Symbol, DISCONNECTED, PORTS_PER_SLOT};
 
 /// The complete interaction net.
 ///
@@ -180,6 +180,30 @@ impl Net {
             self.set_port(target, DISCONNECTED);
         }
         self.set_port(port, DISCONNECTED);
+    }
+
+    /// Removes an agent from the net.
+    ///
+    /// Disconnects all of the agent's ports (based on its symbol's
+    /// `total_ports`), then marks the slot as `None`. The `AgentId` is
+    /// NOT reused — the slot stays `None` for the rest of the execution.
+    /// No-op if the slot is already `None` or out of bounds.
+    ///
+    /// Does NOT clean up the redex queue — stale entries are detected
+    /// at dequeue time (SPEC-02 R17).
+    ///
+    /// Complexity: O(1) (at most 3 ports to disconnect).
+    pub fn remove_agent(&mut self, id: AgentId) {
+        let idx = id as usize;
+        if idx < self.agents.len() {
+            if let Some(agent) = self.agents[idx] {
+                let num_ports = total_ports(agent.symbol);
+                for p in 0..num_ports {
+                    self.disconnect(PortRef::AgentPort(id, p));
+                }
+                self.agents[idx] = None;
+            }
+        }
     }
 }
 
@@ -541,5 +565,65 @@ mod tests {
         net.disconnect(PortRef::AgentPort(b, 0));
         assert_eq!(net.get_target(PortRef::AgentPort(a, 0)), DISCONNECTED);
         assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
+    }
+
+    // --- remove_agent tests (TASK-0013) ---
+
+    // T1: Remove CON agent disconnects all 3 ports
+    #[test]
+    fn test_remove_agent_con() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        let c = net.create_agent(Symbol::Con);
+        // Wire a's ports to b and c
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(c, 2));
+        net.remove_agent(a);
+        assert_eq!(net.agents[a as usize], None);
+        // All targets disconnected
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(c, 1)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(c, 2)), DISCONNECTED);
+    }
+
+    // T2: Remove ERA agent (only 1 port)
+    #[test]
+    fn test_remove_agent_era() {
+        let mut net = Net::new();
+        let e = net.create_agent(Symbol::Era);
+        let a = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(e, 0), PortRef::AgentPort(a, 0));
+        net.remove_agent(e);
+        assert_eq!(net.agents[e as usize], None);
+        assert_eq!(net.get_target(PortRef::AgentPort(a, 0)), DISCONNECTED);
+    }
+
+    // T3: Remove already-removed agent is no-op
+    #[test]
+    fn test_remove_agent_already_removed() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.remove_agent(a);
+        net.remove_agent(a); // no panic
+        assert_eq!(net.agents[a as usize], None);
+    }
+
+    // T4: next_id unchanged after removal
+    #[test]
+    fn test_remove_agent_next_id_unchanged() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con);
+        let next_before = net.next_id;
+        net.remove_agent(0);
+        assert_eq!(net.next_id, next_before);
+    }
+
+    // E9: Remove out-of-bounds id is no-op
+    #[test]
+    fn test_remove_agent_out_of_bounds() {
+        let mut net = Net::new();
+        net.remove_agent(999); // no panic
     }
 }
