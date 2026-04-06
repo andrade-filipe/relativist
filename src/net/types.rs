@@ -67,6 +67,23 @@ pub enum PortRef {
     FreePort(u32),
 }
 
+/// An agent (node) in the interaction net.
+///
+/// Each agent has a symbol (which determines its arity and applicable
+/// interaction rules) and a unique ID. Agents do NOT store their port
+/// connections directly — connections live in the Net's flat port array,
+/// indexed by `(agent_id * PORTS_PER_SLOT + port_id)`.
+///
+/// This separation simplifies removal: marking a slot as `None` in the
+/// agent arena is O(1), without updating a complex adjacency structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Agent {
+    /// The symbol determines arity and interaction rules.
+    pub symbol: Symbol,
+    /// Unique identifier, monotonically increasing, never reused (SPEC-01, I3).
+    pub id: AgentId,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +300,110 @@ mod tests {
     fn test_portref_freeport_max() {
         let p = PortRef::FreePort(u32::MAX);
         assert_eq!(p, PortRef::FreePort(u32::MAX));
+    }
+
+    // --- Agent tests (TASK-0005) ---
+
+    // T1: Agent construction and field access
+    #[test]
+    fn test_agent_construction() {
+        let a = Agent {
+            symbol: Symbol::Con,
+            id: 42,
+        };
+        assert_eq!(a.symbol, Symbol::Con);
+        assert_eq!(a.id, 42);
+    }
+
+    // T2: Agent equality (same symbol + id)
+    #[test]
+    fn test_agent_equality() {
+        let a1 = Agent {
+            symbol: Symbol::Dup,
+            id: 7,
+        };
+        let a2 = Agent {
+            symbol: Symbol::Dup,
+            id: 7,
+        };
+        assert_eq!(a1, a2);
+    }
+
+    // T3: Agent inequality (different id)
+    #[test]
+    fn test_agent_inequality_id() {
+        let a1 = Agent {
+            symbol: Symbol::Con,
+            id: 1,
+        };
+        let a2 = Agent {
+            symbol: Symbol::Con,
+            id: 2,
+        };
+        assert_ne!(a1, a2);
+    }
+
+    // T4: Agent inequality (different symbol)
+    #[test]
+    fn test_agent_inequality_symbol() {
+        let a1 = Agent {
+            symbol: Symbol::Con,
+            id: 1,
+        };
+        let a2 = Agent {
+            symbol: Symbol::Dup,
+            id: 1,
+        };
+        assert_ne!(a1, a2);
+    }
+
+    // T5: Agent is Copy
+    #[test]
+    fn test_agent_copy() {
+        let a = Agent {
+            symbol: Symbol::Era,
+            id: 0,
+        };
+        let b = a; // Copy
+        assert_eq!(a, b); // original still usable
+    }
+
+    // T6: Agent serde round-trip
+    #[test]
+    fn test_agent_serde_roundtrip() {
+        let a = Agent {
+            symbol: Symbol::Con,
+            id: 100,
+        };
+        let bytes = bincode::serialize(&a).unwrap();
+        let des: Agent = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(a, des);
+    }
+
+    // T7: Agent size is compact (u8 symbol + padding + u32 id)
+    #[test]
+    fn test_agent_size() {
+        // Symbol is 1 byte, AgentId is 4 bytes. With alignment, Agent is 8 bytes.
+        assert!(std::mem::size_of::<Agent>() <= 8);
+    }
+
+    // E1: Agent with id 0
+    #[test]
+    fn test_agent_id_zero() {
+        let a = Agent {
+            symbol: Symbol::Era,
+            id: 0,
+        };
+        assert_eq!(a.id, 0);
+    }
+
+    // E2: Agent with max id
+    #[test]
+    fn test_agent_max_id() {
+        let a = Agent {
+            symbol: Symbol::Con,
+            id: u32::MAX,
+        };
+        assert_eq!(a.id, u32::MAX);
     }
 }
