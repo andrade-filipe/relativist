@@ -2,6 +2,8 @@
 
 use crate::net::{Net, PortRef, DISCONNECTED};
 
+use super::types::IdRange;
+
 /// Returns the maximum FreePort ID in the net's port array, or `None` if
 /// there are no FreePort entries (excluding DISCONNECTED sentinels).
 ///
@@ -23,6 +25,29 @@ pub fn max_freeport_id(net: &Net) -> Option<u32> {
         }
     }
     max_id
+}
+
+/// Computes the static ID space ranges for `num_workers` workers (SPEC-04 Section 4.7).
+///
+/// Divides the `u32` space (~4.29 billion IDs) into `num_workers` contiguous
+/// ranges. The last worker receives any remainder from integer division.
+///
+/// Panics if `num_workers == 0`.
+pub fn compute_id_ranges(num_workers: u32) -> Vec<IdRange> {
+    assert!(num_workers > 0, "num_workers must be >= 1");
+
+    let chunk_size = u32::MAX / num_workers;
+    (0..num_workers)
+        .map(|i| {
+            let start = i * chunk_size;
+            let end = if i == num_workers - 1 {
+                u32::MAX
+            } else {
+                (i + 1) * chunk_size
+            };
+            IdRange { start, end }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -94,5 +119,73 @@ mod tests {
         let a = net.create_agent(Symbol::Era);
         net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
         assert_eq!(max_freeport_id(&net), Some(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_id_ranges tests
+    // -----------------------------------------------------------------------
+
+    // R1: Single worker gets entire range
+    #[test]
+    fn test_id_ranges_single_worker() {
+        let ranges = compute_id_ranges(1);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].end, u32::MAX);
+    }
+
+    // R2: Two workers split the range
+    #[test]
+    fn test_id_ranges_two_workers() {
+        let ranges = compute_id_ranges(2);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[1].end, u32::MAX);
+        // Contiguous: first ends where second starts
+        assert_eq!(ranges[0].end, ranges[1].start);
+    }
+
+    // R3: 8 workers (TCC scope)
+    #[test]
+    fn test_id_ranges_eight_workers() {
+        let ranges = compute_id_ranges(8);
+        assert_eq!(ranges.len(), 8);
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[7].end, u32::MAX);
+        // All contiguous
+        for i in 0..7 {
+            assert_eq!(ranges[i].end, ranges[i + 1].start);
+        }
+    }
+
+    // R4: Ranges are disjoint and cover full u32 space
+    #[test]
+    fn test_id_ranges_cover_full_space() {
+        let ranges = compute_id_ranges(4);
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[3].end, u32::MAX);
+        for i in 0..3 {
+            assert_eq!(ranges[i].end, ranges[i + 1].start);
+        }
+    }
+
+    // R5: Last worker gets remainder
+    #[test]
+    fn test_id_ranges_last_worker_remainder() {
+        let ranges = compute_id_ranges(3);
+        let chunk = u32::MAX / 3;
+        // First two workers get exactly chunk_size IDs
+        assert_eq!(ranges[0].end - ranges[0].start, chunk);
+        assert_eq!(ranges[1].end - ranges[1].start, chunk);
+        // Last worker extends to u32::MAX
+        assert_eq!(ranges[2].end, u32::MAX);
+        assert!(ranges[2].end - ranges[2].start >= chunk);
+    }
+
+    // E2: Panics on 0 workers
+    #[test]
+    #[should_panic(expected = "num_workers must be >= 1")]
+    fn test_id_ranges_zero_workers_panics() {
+        compute_id_ranges(0);
     }
 }
