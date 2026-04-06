@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-05
-**Total tasks:** 195 (0 done, 0 in progress, 195 todo)
+**Total tasks:** 201 (0 done, 0 in progress, 201 todo)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -25,7 +25,7 @@
 | TASK-0012 | Implement disconnect | P0 | TODO | 0010 | S |
 | TASK-0013 | Implement remove_agent | P0 | TODO | 0009, 0012, 0006 | S |
 | TASK-0014 | Implement is_reduced and is_valid_redex | P0 | TODO | 0010, 0008 | S |
-| TASK-0015 | Implement debug assertions (I1, I2, I3) | P0 | TODO | 0010, 0009, 0006 | M |
+| TASK-0015 | Implement debug assertions (I1, I2, I3, I6, I7) | P0 | TODO | 0010, 0009, 0006 | M |
 | TASK-0016 | Define BorderMap type alias | P1 | TODO | 0004 | S |
 | TASK-0017 | Add serde + bincode serialization | P1 | TODO | 0008 | S |
 | TASK-0018 | Implement PartialEq for Net | P1 | TODO | 0008 | S |
@@ -37,14 +37,15 @@
 | TASK-0020 | Scaffold reduction module structure | P0 | TODO | Phase 1 | S |
 | TASK-0021 | Define Rule enum and dispatch table | P0 | TODO | 0020 | S |
 | TASK-0022 | Implement normalize_pair function | P0 | TODO | 0020, 0021 | S |
+| TASK-0218 | Implement link helper (safe port reconnection) | P0 | TODO | 0020, Phase 1 | S |
 | TASK-0023 | Implement interact_void (ERA-ERA) | P0 | TODO | 0020, Phase 1 | S |
-| TASK-0024 | Implement interact_anni (CON-CON, DUP-DUP) | P0 | TODO | 0020, Phase 1 | M |
-| TASK-0025 | Implement interact_eras (CON-ERA, DUP-ERA) | P0 | TODO | 0020, Phase 1 | S |
-| TASK-0026 | Implement interact_comm (CON-DUP) | P0 | TODO | 0020, Phase 1 | M |
-| TASK-0027 | Define StepResult and implement reduce_step | P0 | TODO | 0020-0026 | M |
+| TASK-0024 | Implement interact_anni (CON-CON, DUP-DUP) | P0 | TODO | 0020, 0218, Phase 1 | M |
+| TASK-0025 | Implement interact_eras (CON-ERA, DUP-ERA) | P0 | TODO | 0020, 0218, Phase 1 | S |
+| TASK-0026 | Implement interact_comm (CON-DUP) | P0 | TODO | 0020, 0218, Phase 1 | M |
+| TASK-0027 | Define StepResult and implement reduce_step | P0 | TODO | 0020-0026, 0218 | M |
 | TASK-0028 | Define ReductionStats and implement reduce_all | P0 | TODO | 0027 | M |
 | TASK-0029 | Implement reduce_n (budget-limited reduction) | P0 | TODO | 0027, 0028 | S |
-| TASK-0030 | Wire up reduction module re-exports | P1 | TODO | 0020-0029 | S |
+| TASK-0030 | Wire up reduction module re-exports | P1 | TODO | 0020-0029, 0218 | S |
 
 ## Phase 3: Partitioning (SPEC-04)
 
@@ -59,7 +60,7 @@
 | TASK-0046 | Wire classification logic | P0 | TODO | 0045 | M |
 | TASK-0047 | Compute static ID space ranges | P0 | TODO | 0040 | S |
 | TASK-0048 | split() trivial case (n=1) | P0 | TODO | 0042 | S |
-| TASK-0049 | split() general case orchestrator | P0 | TODO | 0048, 0044, 0046, 0047, 0050-0054 | M |
+| TASK-0049 | split() general case orchestrator | P0 | TODO | 0048, 0044, 0046, 0047, 0050-0054, 0220 | M |
 | TASK-0050 | Build sub-net for one partition | P0 | TODO | 0046 | M |
 | TASK-0051 | Redex queue population for partitions | P0 | TODO | 0050 | S |
 | TASK-0052 | FreePort index construction per partition | P0 | TODO | 0046 | S |
@@ -67,6 +68,8 @@
 | TASK-0054 | Debug assertions for C2 and C3 | P1 | TODO | 0041, 0042 | M |
 | TASK-0055 | FreePort index lazy reconstruction | P1 | TODO | 0041 | S |
 | TASK-0056 | ID range exhaustion error handling | P2 | TODO | 0040 | S |
+| TASK-0219 | Stale boundary FreePort precondition assertion | P1 | TODO | 0045 | S |
+| TASK-0220 | Root port propagation during split (R28) | P0 | TODO | 0050 | S |
 
 ## Phase 4: Merge & Grid Cycle (SPEC-05)
 
@@ -113,11 +116,11 @@
 | TASK-0096 | Add protocol crate dependencies to Cargo.toml | P0 | TODO | none | S |
 | TASK-0212 | Implement SerializingChannelTransport | P1 | TODO | 0095, 0085, 0086 | S |
 
-## Phase 6: CLI & Config (SPEC-07 + SPEC-13)
+## Phase 6: CLI & Config (SPEC-07 Revised v3 + SPEC-13)
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0100 | Refactor CLI to use Args structs (SPEC-07 Section 4.1) | P0 | TODO | Phase 5 | M |
+| TASK-0100 | Refactor CLI to use Args structs (SPEC-07 Section 4.1, Revised v3) | P0 | TODO | Phase 5 | M |
 | TASK-0101 | Initialize tracing subscriber in main | P0 | TODO | 0100 | S |
 | TASK-0102 | Implement CLI-to-config mapping functions | P0 | TODO | 0100, 0062, 0084 | M |
 | TASK-0103 | Define RelativistError top-level error type | P0 | TODO | Phase 5, 0081 | M |
@@ -256,3 +259,11 @@
 | TASK-0209 | Implement distributed correctness test (ET-11) | P1 | TODO | 0204, 0203, Phase 4 | M |
 | TASK-0210 | Implement compute CLI subcommand | P0 | TODO | 0200, 0204-0206, 0203, Phase 2, 0100 | M |
 | TASK-0211 | Implement arithmetic benchmark scenarios (ARITH-*) | P1 | TODO | 0204-0206, 0203, 0182, Phase 2, Phase 4 | L |
+
+## Cross-Cutting: Test Strategy (SPEC-08 v3)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0215 | Implement property tests PB13-PB14 (T2/T3 invariant coverage) | P1 | TODO | Phase 1, Phase 2 | S |
+| TASK-0216 | Implement property tests PB15-PB16 (Profile B/C targeted generators) | P1 | TODO | Phase 1, Phase 2, Phase 4, 0185 | M |
+| TASK-0217 | Implement dedicated D2 local reduction equivalence test | P2 | TODO | Phase 1, Phase 2, Phase 3 | M |
