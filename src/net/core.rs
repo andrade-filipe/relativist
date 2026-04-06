@@ -205,6 +205,28 @@ impl Net {
             }
         }
     }
+
+    /// Returns a reference to the agent with the given ID.
+    ///
+    /// Returns `None` if the ID is out of range or the slot is empty.
+    /// This is the canonical accessor for agent lookup (SPEC-02 R15a).
+    /// Callers MUST NOT index into `agents` directly for read access.
+    ///
+    /// Complexity: O(1).
+    pub fn get_agent(&self, id: AgentId) -> Option<&Agent> {
+        self.agents.get(id as usize).and_then(|slot| slot.as_ref())
+    }
+
+    /// Returns a mutable reference to the agent with the given ID.
+    ///
+    /// Returns `None` if the ID is out of range or the slot is empty.
+    ///
+    /// Complexity: O(1).
+    pub fn get_agent_mut(&mut self, id: AgentId) -> Option<&mut Agent> {
+        self.agents
+            .get_mut(id as usize)
+            .and_then(|slot| slot.as_mut())
+    }
 }
 
 #[cfg(test)]
@@ -625,5 +647,57 @@ mod tests {
     fn test_remove_agent_out_of_bounds() {
         let mut net = Net::new();
         net.remove_agent(999); // no panic
+    }
+
+    // --- get_agent / get_agent_mut tests (TASK-0019) ---
+
+    // T1: get_agent on live agent returns Some
+    #[test]
+    fn test_get_agent_live() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        let agent = net.get_agent(id).unwrap();
+        assert_eq!(agent.symbol, Symbol::Con);
+        assert_eq!(agent.id, id);
+    }
+
+    // T2: get_agent out-of-range returns None
+    #[test]
+    fn test_get_agent_out_of_range() {
+        let net = Net::new();
+        assert!(net.get_agent(999).is_none());
+    }
+
+    // T3: get_agent on removed agent returns None
+    #[test]
+    fn test_get_agent_removed() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Era);
+        net.remove_agent(id);
+        assert!(net.get_agent(id).is_none());
+    }
+
+    // T4: get_agent on empty net returns None
+    #[test]
+    fn test_get_agent_empty_net() {
+        let net = Net::new();
+        assert!(net.get_agent(0).is_none());
+    }
+
+    // T5: get_agent_mut allows mutation
+    #[test]
+    fn test_get_agent_mut_mutation() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        // Mutate the symbol (unusual but tests the API)
+        net.get_agent_mut(id).unwrap().symbol = Symbol::Dup;
+        assert_eq!(net.get_agent(id).unwrap().symbol, Symbol::Dup);
+    }
+
+    // T6: get_agent_mut out-of-range returns None
+    #[test]
+    fn test_get_agent_mut_out_of_range() {
+        let mut net = Net::new();
+        assert!(net.get_agent_mut(999).is_none());
     }
 }
