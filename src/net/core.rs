@@ -227,6 +227,26 @@ impl Net {
             .get_mut(id as usize)
             .and_then(|slot| slot.as_mut())
     }
+
+    /// Returns `true` if the redex queue is empty.
+    ///
+    /// Note: the queue may contain stale entries. For rigorous Normal Form
+    /// verification, use `reduce_all` (SPEC-03) which drains stale entries.
+    pub fn is_reduced(&self) -> bool {
+        self.redex_queue.is_empty()
+    }
+
+    /// Checks whether a redex pair `(a, b)` is still valid (non-stale).
+    ///
+    /// A redex is valid if both agents exist (R15a) and their principal
+    /// ports are connected to each other. The reduction engine MUST call
+    /// this before applying a rule and silently discard stale entries (R17, I4).
+    pub fn is_valid_redex(&self, a: AgentId, b: AgentId) -> bool {
+        if self.get_agent(a).is_none() || self.get_agent(b).is_none() {
+            return false;
+        }
+        self.get_target(PortRef::AgentPort(a, 0)) == PortRef::AgentPort(b, 0)
+    }
 }
 
 #[cfg(test)]
@@ -699,5 +719,69 @@ mod tests {
     fn test_get_agent_mut_out_of_range() {
         let mut net = Net::new();
         assert!(net.get_agent_mut(999).is_none());
+    }
+
+    // --- is_reduced / is_valid_redex tests (TASK-0014) ---
+
+    // T1: Empty net is reduced
+    #[test]
+    fn test_is_reduced_empty() {
+        let net = Net::new();
+        assert!(net.is_reduced());
+    }
+
+    // T2: Net with redex in queue is not reduced
+    #[test]
+    fn test_is_reduced_with_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        assert!(!net.is_reduced());
+    }
+
+    // T3: Valid redex returns true
+    #[test]
+    fn test_is_valid_redex_valid() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        assert!(net.is_valid_redex(a, b));
+    }
+
+    // T4: Stale redex (agent removed) returns false
+    #[test]
+    fn test_is_valid_redex_agent_removed() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.remove_agent(a);
+        assert!(!net.is_valid_redex(a, b));
+    }
+
+    // T5: Stale redex (connection changed) returns false
+    #[test]
+    fn test_is_valid_redex_connection_changed() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        let c = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // Now rewire a's principal to c instead
+        net.disconnect(PortRef::AgentPort(a, 0));
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(c, 0));
+        // (a, b) is now stale
+        assert!(!net.is_valid_redex(a, b));
+        // (a, c) is valid
+        assert!(net.is_valid_redex(a, c));
+    }
+
+    // T6: Out-of-bounds agent ID returns false
+    #[test]
+    fn test_is_valid_redex_out_of_bounds() {
+        let net = Net::new();
+        assert!(!net.is_valid_redex(999, 888));
     }
 }
