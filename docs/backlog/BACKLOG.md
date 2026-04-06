@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (32 done, 0 in progress, 173 todo, 1 obsoleted)
+**Total tasks:** 206 (39 done, 0 in progress, 166 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -53,14 +53,14 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0040 | Define WorkerId type and IdRange struct | P0 | TODO | none | S |
-| TASK-0041 | Define Partition struct | P0 | TODO | 0040 | S |
-| TASK-0042 | Define PartitionPlan struct | P0 | TODO | 0041 | S |
-| TASK-0043 | Define PartitionStrategy trait | P0 | TODO | 0040 | S |
-| TASK-0044 | Implement ContiguousIdStrategy | P0 | TODO | 0043 | M |
-| TASK-0045 | Helper function max_freeport_id | P0 | TODO | none | S |
+| TASK-0040 | Define WorkerId type and IdRange struct | P0 | **DONE** | none | S |
+| TASK-0041 | Define Partition struct | P0 | **DONE** | 0040 | S |
+| TASK-0042 | Define PartitionPlan struct | P0 | **DONE** | 0041 | S |
+| TASK-0043 | Define PartitionStrategy trait | P0 | **DONE** | 0040 | S |
+| TASK-0044 | Implement ContiguousIdStrategy | P0 | **DONE** | 0043 | M |
+| TASK-0045 | Helper function max_freeport_id | P0 | **DONE** | none | S |
 | TASK-0046 | Wire classification logic | P0 | TODO | 0045 | M |
-| TASK-0047 | Compute static ID space ranges | P0 | TODO | 0040 | S |
+| TASK-0047 | Compute static ID space ranges | P0 | **DONE** | 0040 | S |
 | TASK-0048 | split() trivial case (n=1) | P0 | TODO | 0042 | S |
 | TASK-0049 | split() general case orchestrator | P0 | TODO | 0048, 0044, 0046, 0047, 0050-0054, 0219, 0220 | M |
 | TASK-0050 | Build sub-net for one partition | P0 | TODO | 0046 | M |
