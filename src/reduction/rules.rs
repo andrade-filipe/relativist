@@ -95,6 +95,37 @@ pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
     }
 }
 
+/// Erasure: ERA encounters an arity-2 agent (CON or DUP), propagating
+/// erasure through auxiliary ports (SPEC-03 Sections 4.1.5, 4.1.6).
+///
+/// Creates 2 new ERA agents connected to the auxiliary neighbors of the
+/// arity-2 agent. This initiates an erasure cascade: each new ERA may form
+/// a redex with its neighbor (detected by `link`), propagating erasure
+/// until meeting other ERA agents (terminating with ERA-ERA void) or free ports.
+///
+/// Precondition: `node_id` MUST be Con or Dup, `era_id` MUST be Era.
+///   Guaranteed by `normalize_pair` (R9) and `reduce_step` (R12).
+/// Postcondition: both removed; 2 new ERA connected to old aux neighbors.
+///
+/// Agent balance: 0 (removes 2, creates 2). Link calls: 2.
+/// Complexity: O(1).
+pub fn interact_eras(net: &mut Net, node_id: AgentId, era_id: AgentId) {
+    // Read auxiliary port targets of the arity-2 agent
+    let a1 = net.get_target(PortRef::AgentPort(node_id, 1));
+    let a2 = net.get_target(PortRef::AgentPort(node_id, 2));
+
+    net.remove_agent(node_id);
+    net.remove_agent(era_id);
+
+    // Create 2 new ERA, one for each auxiliary port
+    let e1 = net.create_agent(Symbol::Era);
+    let e2 = net.create_agent(Symbol::Era);
+
+    // Connect new ERA principal ports to old neighbors
+    link(net, PortRef::AgentPort(e1, 0), a1);
+    link(net, PortRef::AgentPort(e2, 0), a2);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,5 +703,221 @@ mod tests {
         for id in [x, y, z, w] {
             assert!(net.get_agent(id).is_some());
         }
+    }
+
+    // ===================================================================
+    // interact_eras tests (TASK-0025)
+    // ===================================================================
+
+    // T1: CON-ERA removes both agents and creates 2 new ERA
+    #[test]
+    fn test_interact_eras_con_era() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con); // node (arity 2)
+        let b = net.create_agent(Symbol::Era); // era
+        let x = net.create_agent(Symbol::Dup); // context for a.1
+        let y = net.create_agent(Symbol::Dup); // context for a.2
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 1));
+
+        net.redex_queue.clear();
+        interact_eras(&mut net, a, b);
+
+        // Original agents removed
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+
+        // x.1 now points to a new ERA's principal port
+        let x1_target = net.get_target(PortRef::AgentPort(x, 1));
+        if let PortRef::AgentPort(e1, 0) = x1_target {
+            assert_eq!(net.get_agent(e1).unwrap().symbol, Symbol::Era);
+        } else {
+            panic!(
+                "Expected x.1 to point to new ERA's port 0, got {:?}",
+                x1_target
+            );
+        }
+
+        // y.1 now points to a different new ERA's principal port
+        let y1_target = net.get_target(PortRef::AgentPort(y, 1));
+        if let PortRef::AgentPort(e2, 0) = y1_target {
+            assert_eq!(net.get_agent(e2).unwrap().symbol, Symbol::Era);
+            // e1 and e2 are different agents
+            if let PortRef::AgentPort(e1, _) = x1_target {
+                assert_ne!(e1, e2);
+            }
+        } else {
+            panic!(
+                "Expected y.1 to point to new ERA's port 0, got {:?}",
+                y1_target
+            );
+        }
+    }
+
+    // T2: DUP-ERA removes both and creates 2 new ERA (identical topology)
+    #[test]
+    fn test_interact_eras_dup_era() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Dup); // node (arity 2)
+        let b = net.create_agent(Symbol::Era); // era
+        let x = net.create_agent(Symbol::Con);
+        let y = net.create_agent(Symbol::Con);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 1));
+
+        interact_eras(&mut net, a, b);
+
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+
+        // x.1 -> new ERA.p0
+        let x1_target = net.get_target(PortRef::AgentPort(x, 1));
+        if let PortRef::AgentPort(e1, 0) = x1_target {
+            assert_eq!(net.get_agent(e1).unwrap().symbol, Symbol::Era);
+        } else {
+            panic!("Expected ERA, got {:?}", x1_target);
+        }
+
+        // y.1 -> different new ERA.p0
+        let y1_target = net.get_target(PortRef::AgentPort(y, 1));
+        if let PortRef::AgentPort(e2, 0) = y1_target {
+            assert_eq!(net.get_agent(e2).unwrap().symbol, Symbol::Era);
+        } else {
+            panic!("Expected ERA, got {:?}", y1_target);
+        }
+    }
+
+    // T3: Agent balance is 0 (removes 2, creates 2)
+    #[test]
+    fn test_interact_eras_agent_balance() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+        let x = net.create_agent(Symbol::Dup);
+        let y = net.create_agent(Symbol::Dup);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 1));
+
+        let before = net.count_live_agents(); // 4
+        interact_eras(&mut net, a, b);
+        let after = net.count_live_agents(); // 4 (removed 2, created 2)
+
+        assert_eq!(before, after);
+    }
+
+    // T4: New ERA agents have Symbol::Era
+    #[test]
+    fn test_interact_eras_new_agents_are_era() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+
+        interact_eras(&mut net, a, b);
+
+        // 2 new ERA agents should exist (IDs after a and b)
+        let live: Vec<_> = net.live_agents().collect();
+        assert_eq!(live.len(), 2);
+        assert!(live.iter().all(|agent| agent.symbol == Symbol::Era));
+    }
+
+    // T5: Erasure cascade -- new redex when a1_target is a principal port
+    #[test]
+    fn test_interact_eras_cascade_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+        let c = net.create_agent(Symbol::Dup); // cascade target
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // a.1 -> c.p0 (principal port! will form new redex with new ERA)
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(0));
+
+        net.redex_queue.clear();
+        interact_eras(&mut net, a, b);
+
+        // New ERA(e1).p0 <-> c.p0 should form a redex
+        assert!(!net.redex_queue.is_empty());
+        // The redex should involve c
+        assert!(net.redex_queue.iter().any(|&(x, y)| x == c || y == c));
+    }
+
+    // T6: FreePort aux target (boundary sentinel, R26)
+    #[test]
+    fn test_interact_eras_with_freeport() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+
+        interact_eras(&mut net, a, b);
+
+        // New ERA agents should have FreePort in their port 0
+        let live: Vec<_> = net.live_agents().collect();
+        assert_eq!(live.len(), 2);
+        // One ERA.p0 -> FreePort(0), other ERA.p0 -> FreePort(1)
+        let e1_id = live[0].id;
+        let e2_id = live[1].id;
+        let targets: Vec<_> = [e1_id, e2_id]
+            .iter()
+            .map(|&id| net.get_target(PortRef::AgentPort(id, 0)))
+            .collect();
+        assert!(targets.contains(&PortRef::FreePort(0)));
+        assert!(targets.contains(&PortRef::FreePort(1)));
+    }
+
+    // E1: Other agents in the net are unaffected
+    #[test]
+    fn test_interact_eras_does_not_affect_other_agents() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+        let x = net.create_agent(Symbol::Dup);
+        let extra = net.create_agent(Symbol::Con);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(extra, 0), PortRef::FreePort(99));
+
+        interact_eras(&mut net, a, b);
+
+        assert!(net.get_agent(extra).is_some());
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(extra, 0)),
+            PortRef::FreePort(99)
+        );
+    }
+
+    // E2: ERA's unused auxiliary slots remain clean after removal
+    #[test]
+    fn test_interact_eras_era_slots_clean() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+
+        interact_eras(&mut net, a, b);
+
+        // ERA(b) was removed, its slots should all be DISCONNECTED
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 1)), DISCONNECTED);
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
     }
 }
