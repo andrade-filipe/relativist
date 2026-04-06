@@ -1,6 +1,8 @@
 //! Core types for net partitioning (SPEC-04 Section 4.1).
 
-use crate::net::AgentId;
+use std::collections::HashMap;
+
+use crate::net::{AgentId, Net, PortRef};
 
 /// Identifier of a worker in the grid.
 /// Values from 0 to n-1, where n is the number of workers.
@@ -14,6 +16,33 @@ pub struct IdRange {
     pub start: AgentId,
     /// Last AgentId in the range (exclusive).
     pub end: AgentId,
+}
+
+/// A partition: sub-net assigned to a worker (SPEC-04 Section 4.1).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Partition {
+    /// The sub-net containing the agents of this partition.
+    /// Border wires appear as connections to FreePort(borderId).
+    pub subnet: Net,
+
+    /// Identifier of the worker responsible for this partition.
+    pub worker_id: WorkerId,
+
+    /// Reverse index of boundary FreePorts: borderId -> AgentPort local.
+    /// Enables O(1) lookup during merge, instead of linear scan.
+    pub free_port_index: HashMap<u32, PortRef>,
+
+    /// ID range reserved for this worker to generate new agents.
+    pub id_range: IdRange,
+
+    /// Start of border ID range assigned during split (inclusive).
+    /// Used for lazy FreePort index reconstruction: a FreePort(id) in
+    /// the port array is a boundary FreePort iff
+    /// `border_id_start <= id && id < border_id_end && id != u32::MAX`.
+    pub border_id_start: u32,
+
+    /// End of border ID range assigned during split (exclusive).
+    pub border_id_end: u32,
 }
 
 #[cfg(test)]
@@ -91,5 +120,90 @@ mod tests {
     fn test_id_range_single_element() {
         let r = IdRange { start: 5, end: 6 };
         assert_eq!(r.end - r.start, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Partition tests
+    // -----------------------------------------------------------------------
+
+    fn make_empty_partition() -> Partition {
+        Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange {
+                start: 0,
+                end: u32::MAX,
+            },
+            border_id_start: 0,
+            border_id_end: 0,
+        }
+    }
+
+    // T1: Partition has all 6 fields
+    #[test]
+    fn test_partition_fields() {
+        let p = make_empty_partition();
+        let _ = &p.subnet;
+        let _ = p.worker_id;
+        let _ = &p.free_port_index;
+        let _ = p.id_range;
+        let _ = p.border_id_start;
+        let _ = p.border_id_end;
+    }
+
+    // T2: Partition derives Debug, Clone, Serialize, Deserialize
+    #[test]
+    fn test_partition_derives() {
+        let p = make_empty_partition();
+        let cloned = p.clone();
+        assert_eq!(cloned.worker_id, 0);
+        assert!(format!("{:?}", p).contains("Partition"));
+    }
+
+    // T3: free_port_index is HashMap<u32, PortRef>
+    #[test]
+    fn test_partition_free_port_index() {
+        let mut p = make_empty_partition();
+        p.free_port_index.insert(42, PortRef::AgentPort(0, 1));
+        assert_eq!(p.free_port_index.get(&42), Some(&PortRef::AgentPort(0, 1)));
+    }
+
+    // T4: border_id_start and border_id_end are u32
+    #[test]
+    fn test_partition_border_id_fields() {
+        let mut p = make_empty_partition();
+        p.border_id_start = 100;
+        p.border_id_end = 200;
+        assert_eq!(p.border_id_start, 100);
+        assert_eq!(p.border_id_end, 200);
+    }
+
+    // T5: Partition round-trips through bincode
+    #[test]
+    fn test_partition_serde() {
+        let p = make_empty_partition();
+        let bytes = bincode::serialize(&p).unwrap();
+        let restored: Partition = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(restored.worker_id, p.worker_id);
+        assert_eq!(restored.id_range, p.id_range);
+        assert_eq!(restored.border_id_start, p.border_id_start);
+        assert_eq!(restored.border_id_end, p.border_id_end);
+    }
+
+    // E1: Empty partition
+    #[test]
+    fn test_partition_empty() {
+        let p = make_empty_partition();
+        assert_eq!(p.subnet.count_live_agents(), 0);
+        assert!(p.free_port_index.is_empty());
+    }
+
+    // E2: Partition with empty free_port_index
+    #[test]
+    fn test_partition_no_borders() {
+        let p = make_empty_partition();
+        assert!(p.free_port_index.is_empty());
+        assert_eq!(p.border_id_start, p.border_id_end);
     }
 }
