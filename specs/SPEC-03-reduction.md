@@ -72,7 +72,9 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R16.** In release mode, assertions MAY be disabled for performance. **(MAY)**
 
-**R17.** The reduction engine SHOULD discriminate the interaction counter by rule type (annihilation, commutation, erasure, void) to enable workload profiling. **(SHOULD)**
+**R17.** The reduction engine MUST discriminate the interaction counter by rule type at two granularities: (a) 4 categories (annihilation, commutation, erasure, void) for high-level profiling, and (b) 6 per-rule counters (CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA) for detailed workload analysis. The 6 per-rule counters are stored in `ReductionStats.interactions_by_rule: [u64; 6]` (see Section 4.6.2). Both `reduce_step` and the dispatch mechanism provide enough information to populate both levels. **(MUST)**
+
+> **Note (v3 change):** Upgraded from SHOULD to MUST and extended from 4 categories to 6 per-rule counters. Required by SPEC-05 R37 (`WorkerRoundStats.interactions_by_rule`), SPEC-11 R12 (Prometheus `interactions_by_rule_total` metric), and SPEC-09 benchmarks. Resolves SPEC-05 OQ-4 and SPEC-11 OQ-1.
 
 ### 3.5 Incremental Redex Detection
 
@@ -523,6 +525,49 @@ pub fn get_rule(a: Symbol, b: Symbol) -> Rule {
 }
 ```
 
+#### 4.3.1 SpecificRule (6 Per-Rule Discriminant)
+
+The `SpecificRule` enum identifies each of the 6 Lafont IC rules individually, enabling per-rule interaction tracking (R17). The array index assignment is canonical and used by `ReductionStats.interactions_by_rule`, `WorkerRoundStats.interactions_by_rule` (SPEC-05 R37), and the Prometheus `interactions_by_rule_total` metric (SPEC-11 R12).
+
+```rust
+/// Identifies each of the 6 Lafont IC interaction rules individually.
+/// Used for per-rule interaction counting in ReductionStats.
+/// The array index is canonical: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SpecificRule {
+    ConCon = 0,
+    ConDup = 1,
+    ConEra = 2,
+    DupDup = 3,
+    DupEra = 4,
+    EraEra = 5,
+}
+```
+
+```rust
+/// 3x3 table mapping (Symbol, Symbol) to SpecificRule.
+/// Symmetric: TABLE[a][b] == TABLE[b][a].
+///
+///          Con        Dup        Era
+/// Con  [ CON_CON    CON_DUP    CON_ERA ]
+/// Dup  [ CON_DUP    DUP_DUP    DUP_ERA ]
+/// Era  [ CON_ERA    DUP_ERA    ERA_ERA ]
+///
+pub const SPECIFIC_RULE_TABLE: [[SpecificRule; 3]; 3] = [
+    [SpecificRule::ConCon, SpecificRule::ConDup, SpecificRule::ConEra],
+    [SpecificRule::ConDup, SpecificRule::DupDup, SpecificRule::DupEra],
+    [SpecificRule::ConEra, SpecificRule::DupEra, SpecificRule::EraEra],
+];
+
+/// Determines the specific (6-variant) rule for a pair of symbols.
+/// Complexity: O(1) (index lookup).
+#[inline]
+pub fn get_specific_rule(a: Symbol, b: Symbol) -> SpecificRule {
+    SPECIFIC_RULE_TABLE[a as usize][b as usize]
+}
+```
+
 ### 4.4 Pair Normalization
 
 Before calling an interaction function, the pair MUST be normalized so that the implementation can assume a fixed argument order.
@@ -721,8 +766,9 @@ pub fn interact_void(net: &mut Net, a_id: AgentId, b_id: AgentId) {
 /// Result of a single reduction step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepResult {
-    /// A redex was successfully reduced. Contains the applied rule.
-    Reduced(Rule),
+    /// A redex was successfully reduced. Contains the applied rule (4-category)
+    /// and the specific rule (6-variant) for per-rule counting.
+    Reduced(Rule, SpecificRule),
     /// The queue is empty: net is in Normal Form.
     NormalForm,
 }
@@ -752,10 +798,11 @@ pub fn reduce_step(net: &mut Net) -> StepResult {
         // 3. Normalize pair for dispatch
         let (a, b) = normalize_pair(a_id, b_id, net);
 
-        // 4. Determine rule
+        // 4. Determine rule (4-category + 6-specific)
         let sym_a = net.agents[a as usize].unwrap().symbol;
         let sym_b = net.agents[b as usize].unwrap().symbol;
         let rule = get_rule(sym_a, sym_b);
+        let specific = get_specific_rule(sym_a, sym_b);
 
         // 5. Apply rule
         match rule {
@@ -769,7 +816,7 @@ pub fn reduce_step(net: &mut Net) -> StepResult {
         #[cfg(debug_assertions)]
         net.assert_all_invariants();
 
-        return StepResult::Reduced(rule);
+        return StepResult::Reduced(rule, specific);
     }
 }
 ```
@@ -782,11 +829,16 @@ pub fn reduce_step(net: &mut Net) -> StepResult {
 pub struct ReductionStats {
     /// Total number of interactions performed.
     pub total_interactions: u64,
-    /// Number of interactions by rule type.
+    /// Number of interactions by 4-category rule type.
     pub anni_count: u64,
     pub comm_count: u64,
     pub eras_count: u64,
     pub void_count: u64,
+    /// Per-rule interaction counts (6 Lafont rules).
+    /// Index order: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA].
+    /// Corresponds to SpecificRule enum discriminants.
+    /// Required by SPEC-05 R37 (WorkerRoundStats) and SPEC-11 R12 (Prometheus).
+    pub interactions_by_rule: [u64; 6],
 }
 ```
 
@@ -807,12 +859,13 @@ pub fn reduce_all(net: &mut Net) -> ReductionStats {
         comm_count: 0,
         eras_count: 0,
         void_count: 0,
+        interactions_by_rule: [0; 6],
     };
 
     loop {
         match reduce_step(net) {
             StepResult::NormalForm => return stats,
-            StepResult::Reduced(rule) => {
+            StepResult::Reduced(rule, specific) => {
                 stats.total_interactions += 1;
                 match rule {
                     Rule::Anni => stats.anni_count += 1,
@@ -820,6 +873,7 @@ pub fn reduce_all(net: &mut Net) -> ReductionStats {
                     Rule::Eras => stats.eras_count += 1,
                     Rule::Void => stats.void_count += 1,
                 }
+                stats.interactions_by_rule[specific as usize] += 1;
             }
         }
     }
@@ -845,12 +899,13 @@ pub fn reduce_n(net: &mut Net, budget: usize) -> ReductionStats {
         comm_count: 0,
         eras_count: 0,
         void_count: 0,
+        interactions_by_rule: [0; 6],
     };
 
     for _ in 0..budget {
         match reduce_step(net) {
             StepResult::NormalForm => return stats,
-            StepResult::Reduced(rule) => {
+            StepResult::Reduced(rule, specific) => {
                 stats.total_interactions += 1;
                 match rule {
                     Rule::Anni => stats.anni_count += 1,
@@ -858,6 +913,7 @@ pub fn reduce_n(net: &mut Net, budget: usize) -> ReductionStats {
                     Rule::Eras => stats.eras_count += 1,
                     Rule::Void => stats.void_count += 1,
                 }
+                stats.interactions_by_rule[specific as usize] += 1;
             }
         }
     }
@@ -1062,7 +1118,7 @@ The implementer MAY replace the table with a direct `match` if preferred; correc
 
 5. **From `nextAgentId = findMax + 1` O(log n) to bump counter O(1):** (AC-001, L6). SPEC-02 decision.
 
-6. **Added: interaction count by rule type.** The prototype does not count interactions. Relativist returns `ReductionStats` with a breakdown by type, following the recommendation of AC-007 and AC-015 (CC-8).
+6. **Added: interaction count by rule type.** The prototype does not count interactions. Relativist returns `ReductionStats` with a breakdown by 4-category type AND 6 per-rule counters (`interactions_by_rule: [u64; 6]`), following the recommendation of AC-007 and AC-015 (CC-8). The 6 per-rule counters are required by SPEC-05 R37 and SPEC-11 R12.
 
 ---
 
@@ -1071,13 +1127,14 @@ The implementer MAY replace the table with a direct `match` if preferred; correc
 None. All design decisions necessary to implement the reduction engine are covered:
 
 - The 6 rules are specified with exact topology and pseudocode.
-- The dispatch mechanism is defined (3x3 table).
+- The dispatch mechanism is defined (3x3 table + 3x3 `SpecificRule` table).
 - The reduction loop is defined (reduce_step, reduce_all, reduce_n).
 - Redex detection is defined (incremental via connect).
 - Pair normalization is defined.
 - Self-referencing auxiliary ports in annihilation are handled by the `link` guard (R25).
 - FreePort boundary sentinels during local reduction are documented (R26).
-- Interaction counter management is clarified (caller-managed via ReductionStats).
+- Interaction counter management is clarified (caller-managed via ReductionStats, both 4-category and 6-per-rule).
+- Per-rule interaction tracking (6 Lafont rules) is defined via `SpecificRule` enum and `interactions_by_rule: [u64; 6]` (Section 4.3.1, 4.6.2). Resolves SPEC-05 OQ-4 and SPEC-11 OQ-1.
 - Preconditions for all interact_* functions are explicitly documented.
 - Complexity is analyzed.
 - Preserved invariants are identified for each rule.

@@ -538,6 +538,6 @@ The Haskell prototype (`grid_computing_interaction_combinators_prototype_v1/`) h
 
 ## 8. Open Questions
 
-**OQ-1 (cross-spec).** SPEC-11 extends `WorkerRoundStats` with `reduce_duration_secs` and `interactions_by_rule` fields. This extension SHOULD be reflected in SPEC-05 R37 and SPEC-06 R12 during their next revision cycle. Until then, the extended definition in this spec (Section 4.4) is normative for observability purposes.
+~~**OQ-1 (cross-spec).**~~ **RESOLVED (2026-04-06).** SPEC-05 R37 now includes `reduce_duration_secs` and `interactions_by_rule` fields in its canonical `WorkerRoundStats` definition. SPEC-03 R17 now provides `ReductionStats.interactions_by_rule: [u64; 6]` directly via the `SpecificRule` enum (SPEC-03, Section 4.3.1). No mapping helper is needed.
 
-**OQ-2 (cross-spec).** SPEC-11 introduces `--metrics-port` (R20) and `--log-format` (R3) CLI arguments. These SHOULD be added to SPEC-13 R44/R45 (and SPEC-07 R3) during their next revision cycle. Until then, the requirements in this spec are normative.
+~~**OQ-2 (cross-spec).**~~ **RESOLVED (2026-04-06).** SPEC-13 R44 now includes `--log-format` and `--metrics-port`; SPEC-13 R45 now includes `--log-format`. SPEC-07 R3 already had these flags. All specs are now consistent.

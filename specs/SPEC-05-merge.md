@@ -163,9 +163,9 @@ Terms defined in SPEC-00 (Glossary, when written) and in SPEC-01/SPEC-02/SPEC-04
 - `agents_after: usize` -- agents in the partition after local reduction.
 - `local_redexes: usize` -- local redexes reduced.
 - `reduce_duration_secs: f64` -- wall-clock duration of `reduce_all` for this worker (seconds).
-- `interactions_by_rule: [u64; 6]` -- per-rule interaction counts: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA]. Derived from SPEC-03's `ReductionStats` by expanding its 4 categories (anni, comm, eras, void) into 6 per-rule slots using the dispatch table (SPEC-03, Section 4.3). The mapping is: CON-CON = anni when both agents are CON, CON-DUP = comm, CON-ERA = eras when one agent is CON, DUP-DUP = anni when both agents are DUP, DUP-ERA = eras when one agent is DUP, ERA-ERA = void.
+- `interactions_by_rule: [u64; 6]` -- per-rule interaction counts: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA]. Copied directly from SPEC-03's `ReductionStats.interactions_by_rule` (SPEC-03 R17, Section 4.3.1). The index order matches the `SpecificRule` enum discriminants defined in SPEC-03.
 
-> **Note on per-rule tracking:** SPEC-03's `ReductionStats` currently tracks interactions by 4 rule categories (anni, comm, eras, void), not 6 individual symbol pairs. To populate `interactions_by_rule`, the reduction engine SHOULD be extended to track 6 per-rule counters directly, since the `dispatch` function (SPEC-03 Section 4.3) already identifies the specific rule from the `(Symbol, Symbol)` pair. The ENGINEER MAY either (a) extend `ReductionStats` to include 6 fields, or (b) add a separate `by_rule: [u64; 6]` field alongside the existing 4 fields. This is a cross-spec concern with SPEC-03 (see OQ-4).
+> **Note on per-rule tracking (OQ-4 RESOLVED):** SPEC-03 now tracks 6 per-rule counters directly via `ReductionStats.interactions_by_rule: [u64; 6]` and the `SpecificRule` enum (Section 4.3.1). No mapping or disambiguation is needed; the values can be copied directly from the `ReductionStats` returned by `reduce_all`.
 
 This struct MUST derive `serde::Serialize` and `serde::Deserialize` for wire transmission (SPEC-06 R12). This definition supersedes the SPEC-11 OQ-1 extension; SPEC-11 OQ-1 is resolved.
 **(MUST)**
@@ -502,8 +502,8 @@ fn run_grid(net, config, strategy) -> (Net, GridMetrics):
             let reduce_duration = t_reduce.elapsed()
             local_interactions += reduction_stats.total_interactions
 
-            // Map ReductionStats to per-rule counts (see R37 note)
-            let by_rule = reduction_stats_to_by_rule(&reduction_stats)
+            // Per-rule counts are available directly from ReductionStats (SPEC-03 R17)
+            let by_rule = reduction_stats.interactions_by_rule
             for i in 0..6: local_by_rule[i] += by_rule[i]
 
             // Rebuild free_port_index (lazy reconstruction, cf. Section 4.3)
@@ -537,7 +537,7 @@ fn run_grid(net, config, strategy) -> (Net, GridMetrics):
         let border_stats: ReductionStats = reduce_all(&mut merged_net)
         metrics.border_reduce_time_per_round.push(t_border.elapsed())
 
-        let border_by_rule = reduction_stats_to_by_rule(&border_stats)
+        let border_by_rule = border_stats.interactions_by_rule
         metrics.border_interactions_per_round
             .push(border_stats.total_interactions)
 
@@ -571,7 +571,7 @@ fn run_grid(net, config, strategy) -> (Net, GridMetrics):
 
 **Note on Phase 2 (local simulation):** In local simulation mode (no network), workers are processed sequentially in the same process. In distributed mode (SPEC-06), Phase 2 involves: serializing and sending each partition to the worker via TCP, waiting for each worker to return its reduced partition, and deserializing the results. The interface remains the same; the difference is the implementation of "local reduction" (in-process vs. over the network).
 
-**Note on `reduction_stats_to_by_rule` (informative):** This helper maps SPEC-03's `ReductionStats` (4 categories: anni, comm, eras, void) to the 6-element `[u64; 6]` array required by R37. The exact mapping depends on how SPEC-03 evolves to support per-rule tracking (see OQ-4). If SPEC-03 is extended with 6 direct counters, this helper becomes trivial identity. If it retains 4 categories, the mapping requires additional context from the dispatch table to disambiguate anni (CON-CON vs DUP-DUP) and eras (CON-ERA vs DUP-ERA).
+**Note on `reduction_stats_to_by_rule` (informative, OQ-4 RESOLVED):** SPEC-03 now provides `ReductionStats.interactions_by_rule: [u64; 6]` directly (see SPEC-03, Section 4.3.1 and 4.6.2). The `reduction_stats_to_by_rule` helper is no longer needed; callers can use `reduction_stats.interactions_by_rule` directly as the `[u64; 6]` array required by R37.
 
 ### 4.6 Informal Proof of Completeness (P3)
 
@@ -808,4 +808,4 @@ The prototype collects: rounds, total interactions, timing per phase (partition,
 
 3. ~~**Choice between drain_stale_redexes and full scan for Normal Form detection.**~~ **RESOLVED (v3).** Promoted to R41 as a SHOULD requirement: full scan in debug mode by default, configurable in release mode. See Section 4.4.
 
-4. **(cross-spec) Per-rule interaction tracking in SPEC-03.** SPEC-03's `ReductionStats` currently uses 4 categories (anni, comm, eras, void). SPEC-05 R37 and SPEC-11 R12 need 6 per-rule counts (CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA). The reduction engine SHOULD be extended to track 6 per-rule counters directly, since the `dispatch` function already identifies the specific rule. This requires a minor update to SPEC-03 R17 and `ReductionStats`. Until resolved, the `reduction_stats_to_by_rule` helper in Section 4.5 bridges the gap.
+4. ~~**(cross-spec) Per-rule interaction tracking in SPEC-03.**~~ **RESOLVED (2026-04-06).** SPEC-03 now defines `SpecificRule` enum (6 variants: ConCon, ConDup, ConEra, DupDup, DupEra, EraEra) in Section 4.3.1, adds `interactions_by_rule: [u64; 6]` to `ReductionStats`, and returns `StepResult::Reduced(Rule, SpecificRule)` from `reduce_step`. The `reduction_stats_to_by_rule` helper is no longer needed; `ReductionStats.interactions_by_rule` can be used directly.

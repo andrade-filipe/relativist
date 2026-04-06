@@ -85,16 +85,21 @@ All design decisions are documented in formal specifications:
 
 | Spec | Title | Reqs |
 |------|-------|------|
-| [SPEC-00](specs/SPEC-00-glossario.md) | Glossary | 35 terms |
-| [SPEC-01](specs/SPEC-01-invariantes.md) | Invariants | 16 invariants |
-| [SPEC-02](specs/SPEC-02-net-representation.md) | Net Representation | 25 reqs |
-| [SPEC-03](specs/SPEC-03-reduction.md) | Reduction Engine | 19 reqs |
-| [SPEC-04](specs/SPEC-04-partition.md) | Partitioning | 24 reqs |
-| [SPEC-05](specs/SPEC-05-merge.md) | Merge & Grid Cycle | 33 reqs |
+| [SPEC-00](specs/SPEC-00-glossary.md) | Glossary | 35 terms |
+| [SPEC-01](specs/SPEC-01-invariantes.md) | Invariants | 24 invariants |
+| [SPEC-02](specs/SPEC-02-net-representation.md) | Net Representation | 27 reqs |
+| [SPEC-03](specs/SPEC-03-reduction.md) | Reduction Engine | 26 reqs |
+| [SPEC-04](specs/SPEC-04-partition.md) | Partitioning | 28 reqs |
+| [SPEC-05](specs/SPEC-05-merge.md) | Merge & Grid Cycle | 40 reqs |
 | [SPEC-06](specs/SPEC-06-wire-protocol.md) | Wire Protocol | 40 reqs |
-| [SPEC-07](specs/SPEC-07-deployment.md) | Deployment | 39 reqs |
-| [SPEC-08](specs/SPEC-08-test-strategy.md) | Test Strategy | 103 tests |
-| [SPEC-09](specs/SPEC-09-benchmarks.md) | Benchmarks | 44 reqs |
+| [SPEC-07](specs/SPEC-07-deployment.md) | Deployment | 44 reqs |
+| [SPEC-08](specs/SPEC-08-test-strategy.md) | Test Strategy | 44 reqs |
+| [SPEC-09](specs/SPEC-09-benchmarks.md) | Benchmarks | 49 reqs |
+| [SPEC-10](specs/SPEC-10-security.md) | Security | 37 reqs |
+| [SPEC-11](specs/SPEC-11-observability.md) | Observability | 37 reqs |
+| [SPEC-12](specs/SPEC-12-user-io.md) | User I/O & Examples | 61 reqs |
+| [SPEC-13](specs/SPEC-13-system-architecture.md) | System Architecture | 52 reqs |
+| [SPEC-14](specs/SPEC-14-encoding.md) | Arithmetic Encoding | 27 reqs |
 
 ## Research Context
 

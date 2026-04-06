@@ -939,9 +939,9 @@ Per benchmark point (same as SPEC-09, Section 3.4):
 
 ## 10. Cross-References (Specs Affected)
 
-This section documents minimal updates needed in other specs. These updates are NOT part of SPEC-14 itself but are tracked here for the implementer.
+This section documents updates needed in other specs. All items have been verified and are resolved as of 2026-04-06.
 
-1. **SPEC-00 (Glossary):** Add entries for Church Numeral, Encoding, Decoding (Readback), Arithmetic Net, Combinator.
-2. **SPEC-12 (User I/O):** Add `ChurchNat`, `ChurchAdd`, `ChurchMul` to `ExampleNet` enum (R33). Add `Compute` to CLI subcommand list.
-3. **SPEC-13 (System Architecture):** Add `encoding/` to module structure (R5). Add `Compute(ComputeArgs)` to `Cli` enum (R43). Note: `encoding/` is Core Layer -- it MUST NOT depend on tokio or I/O.
-4. **SPEC-09 (Benchmarks):** Church arithmetic nets provide new Profile B benchmark scenarios. Addition of `ChurchAdd` and `ChurchMul` benchmarks SHOULD be considered for the scaling curve analysis.
+1. ~~**SPEC-00 (Glossary):** Add entries for Church Numeral, Encoding, Decoding (Readback), Arithmetic Net, Combinator.~~ **RESOLVED.** SPEC-00 Section 8b already contains entries for Church Numeral (8b.1), Encoding (8b.2), Decoding/Readback (8b.3), Arithmetic Net (8b.4), and Combinator (8b.5).
+2. ~~**SPEC-12 (User I/O):** Add `ChurchNat`, `ChurchAdd`, `ChurchMul` to `ExampleNet` enum (R33). Add `Compute` to CLI subcommand list.~~ **RESOLVED.** SPEC-12 R33 already includes `ChurchNat`, `ChurchAdd`, `ChurchMul` in the `ExampleNet` enum. `Compute(ComputeArgs)` is in the SPEC-13 `Cli` enum (R43).
+3. ~~**SPEC-13 (System Architecture):** Add `encoding/` to module structure (R5). Add `Compute(ComputeArgs)` to `Cli` enum (R43).~~ **RESOLVED.** SPEC-13 R5 already lists `encoding/` in the module structure (Core Layer). SPEC-13 R43 already includes `Compute(ComputeArgs)` in the `Cli` enum.
+4. ~~**SPEC-09 (Benchmarks):** Church arithmetic nets provide new Profile B benchmark scenarios.~~ **RESOLVED.** SPEC-09 includes `ChurchAdd` as a MUST benchmark (R17a) and `ChurchMul` as a SHOULD benchmark (R17b), both classified as Profile B.

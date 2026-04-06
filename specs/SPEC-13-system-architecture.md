@@ -545,9 +545,13 @@ pub enum Cli {
 
 > **Note on `local` vs `reduce`:** These are semantically different operations. `local` runs the full grid cycle (split, reduce, merge, check) in-process with simulated workers (SPEC-07 R18), exercising the partitioning and merge code paths. `reduce` calls `reduce_all` directly without any partitioning or merge, serving as the sequential baseline. Both are needed: `local` for in-memory grid benchmarks (SPEC-09), `reduce` for the reference sequential result (G1 verification).
 
-**R44.** The `coordinator` subcommand MUST accept at minimum: `--bind` (socket address, default `127.0.0.1:9000`), `--workers` (minimum worker count before starting), `--input` (path to net file), `--output` (path for result, optional), and optional TLS arguments (`--tls-cert`, `--tls-key`) when the `tls` feature is enabled. **(MUST)**
+**R44.** The `coordinator` subcommand MUST accept at minimum: `--bind` (socket address, default `127.0.0.1:9000`), `--workers` (minimum worker count before starting), `--input` (path to net file), `--output` (path for result, optional), `--log-format` (text|json, optional, default TTY-dependent per SPEC-11 R3), `--metrics-port` (optional, default 9090, feature-gated on `metrics` per SPEC-11 R20), and optional TLS arguments (`--tls-cert`, `--tls-key`) when the `tls` feature is enabled. **(MUST)**
 
-**R45.** The `worker` subcommand MUST accept at minimum: `--coordinator` (address of coordinator), `--token` (authentication token, optional), and optional `--tls-ca` when the `tls` feature is enabled. **(MUST)**
+> **Note (2026-04-06):** `--log-format` and `--metrics-port` added to resolve SPEC-11 OQ-2. Consistent with SPEC-07 R3 and SPEC-11 R3/R20.
+
+**R45.** The `worker` subcommand MUST accept at minimum: `--coordinator` (address of coordinator), `--token` (authentication token, optional), `--log-format` (text|json, optional, default TTY-dependent per SPEC-11 R3), and optional `--tls-ca` when the `tls` feature is enabled. **(MUST)**
+
+> **Note (2026-04-06):** `--log-format` added to resolve SPEC-11 OQ-2. Workers do not expose a metrics endpoint (metrics are reported to the coordinator), so `--metrics-port` is coordinator-only.
 
 **R45a.** The `local` subcommand MUST accept the arguments defined in SPEC-07 R5: `--workers`, `--net`, `--max-rounds`, `--output`, `--metrics`, `--strategy`. It MUST execute the full grid cycle in-process (SPEC-07 R18). **(MUST)**
 
