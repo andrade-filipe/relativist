@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
 **Last updated:** 2026-04-07
-**Updated by:** Development — Phase 6 (CLI & Config) COMPLETE (17/20 tasks)
+**Updated by:** Development — Phase 9 (User I/O) COMPLETE (15/20 tasks, all P0 done)
 
 ---
 
@@ -27,7 +27,10 @@
 | Phase 4: Merge & Grid | COMPLETE | SPEC-05: 18/18 tasks done, v0.4.0 tagged (341 tests) |
 | Phase 5: Wire Protocol | COMPLETE | SPEC-06: 17/18 tasks done, v0.5.0 tagged (396 tests). TASK-0212 deferred (needs Transport trait from SPEC-13) |
 | Phase 6: CLI & Config | COMPLETE | SPEC-07+SPEC-13: 17/20 tasks done (456 tests). 7 subcommands, FSMs, local mode end-to-end. TASK-0117/0118 deferred (P1/P2) |
-| Phase 7-11 | NOT STARTED | Security, Observability, I/O, Benchmarks, Encoding |
+| Phase 7: Security | COMPLETE | SPEC-10: 14/20 tasks done (490 tests). AuthToken, 3-tier security, Register handshake with token validation, TLS configs, SecurityConfig builder. TASK-0132/0133 (TLS handshake integration), 0134/0135 (conn limits/timeout), 0139 (integration tests) deferred (P1/P2) |
+| Phase 8: Observability | COMPLETE | SPEC-11: 10/21 tasks done (497 default / 507 w/ metrics). LogFormat, ProcessRole, ObservabilityConfig, init_tracing (text+JSON+EnvFilter), CoordinatorMetrics, /health /ready /metrics endpoints, spawn_metrics_server. TASK-0145-0149 (#[instrument]/FSM logging), 0151/0153 (protocol+aggregation metrics), 0158/0159 (OTel), 0213/0214 deferred (P1/P2) |
+| Phase 9: User I/O | COMPLETE | SPEC-12: 15/20 tasks done (534 tests). Binary/IC format load/save, text DSL parser+serializer, format dispatch, NetSummary, 6 generators (EP-annihilation, CON-CON, DUP-DUP, CON-DUP expansion, dual-tree, mixed-rules). TASK-0167 (JSON), 0176/0177 (tree_sum, Church generators), 0179 (integration tests) deferred (P1/P2) |
+| Phase 10-11 | NOT STARTED | Benchmarks, Encoding |
 
 ---
 

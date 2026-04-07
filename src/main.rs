@@ -7,10 +7,10 @@
 use clap::Parser;
 use relativist::commands;
 use relativist::config::{Cli, Command};
-use relativist::observability::init_tracing;
+use relativist::observability::{init_tracing, ObservabilityConfig};
 
 fn main() {
-    init_tracing();
+    init_tracing(&ObservabilityConfig::default());
     let cli = Cli::parse();
 
     let result = match cli.command {

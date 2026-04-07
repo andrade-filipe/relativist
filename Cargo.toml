@@ -24,7 +24,7 @@ thiserror = "2"
 
 # Observability (PESQ-023 D5, SPEC-13 R11)
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
 
 # Async runtime (SPEC-06, SPEC-13 R11)
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
@@ -38,8 +38,14 @@ futures = "0.3"
 # Local parallelism (SPEC-07 R20 — rayon for fair comparison)
 rayon = "1"
 
-# Random number generation (SPEC-13 R11 — token generation, test data)
+# Random number generation (SPEC-13 R11, SPEC-10 R9)
 rand = "0.8"
+
+# Security: token base64 encoding (SPEC-10 R10)
+base64 = "0.22"
+
+# Security: constant-time comparison (SPEC-10 R15)
+subtle = "2"
 
 # TLS (SPEC-10 — optional, SPEC-13 R12/R37)
 rustls = { version = "0.23", optional = true }
@@ -63,6 +69,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Async test utilities (SPEC-13 R13)
 tokio-test = "0.4"
+
+# HTTP testing (SPEC-11 R21 — metrics endpoint tests)
+tower = "0.5"
 
 [features]
 default = []

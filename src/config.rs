@@ -109,8 +109,23 @@ pub struct CoordinatorArgs {
     #[arg(long)]
     pub log_format: Option<LogFormat>,
 
-    // Security flags (--token, --token-file, --insecure, --tls-cert, --tls-key)
-    // will be added in Phase 7 (SPEC-10 Section 4.5).
+    /// Authentication token: "auto" to generate, or base64-encoded value (SPEC-10 R9).
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// Path to write the generated token (SPEC-10 R12).
+    #[arg(long, default_value = "./relativist-token")]
+    pub token_file: std::path::PathBuf,
+
+    /// TLS certificate file (PEM), requires --tls-key (SPEC-10 R25).
+    #[cfg(feature = "tls")]
+    #[arg(long)]
+    pub tls_cert: Option<std::path::PathBuf>,
+
+    /// TLS private key file (PEM), requires --tls-cert (SPEC-10 R25).
+    #[cfg(feature = "tls")]
+    #[arg(long)]
+    pub tls_key: Option<std::path::PathBuf>,
 
     // --metrics-port (default 9090, feature-gated on `metrics`)
     // will be added in Phase 8 (SPEC-11 R20).
@@ -127,7 +142,14 @@ pub struct WorkerArgs {
     #[arg(long)]
     pub log_format: Option<LogFormat>,
 
-    // Security flags (--token, --tls-ca) will be added in Phase 7 (SPEC-10).
+    /// Authentication token (base64-encoded) for coordinator auth (SPEC-10 R13).
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// TLS CA certificate file (PEM) for verifying coordinator (SPEC-10 R26).
+    #[cfg(feature = "tls")]
+    #[arg(long)]
+    pub tls_ca: Option<std::path::PathBuf>,
 }
 
 /// Arguments for the `local` subcommand (SPEC-07 R5, SPEC-13 R45a).
@@ -447,20 +469,42 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // === TASK-0102: config mapping tests ===
+    // === Test helpers ===
 
-    #[test]
-    fn test_build_grid_config() {
-        let args = CoordinatorArgs {
-            workers: 4,
+    fn make_coordinator_args(workers: u32, max_rounds: Option<u32>) -> CoordinatorArgs {
+        CoordinatorArgs {
+            workers,
             bind: "127.0.0.1:9000".parse().unwrap(),
             input: PathBuf::from("test.bin"),
-            max_rounds: Some(10),
+            max_rounds,
             output: None,
             metrics: None,
             strategy: "round-robin".to_string(),
             log_format: None,
-        };
+            token: None,
+            token_file: std::path::PathBuf::from("./relativist-token"),
+            #[cfg(feature = "tls")]
+            tls_cert: None,
+            #[cfg(feature = "tls")]
+            tls_key: None,
+        }
+    }
+
+    fn make_worker_args(coordinator: &str) -> WorkerArgs {
+        WorkerArgs {
+            coordinator: coordinator.to_string(),
+            log_format: None,
+            token: None,
+            #[cfg(feature = "tls")]
+            tls_ca: None,
+        }
+    }
+
+    // === TASK-0102: config mapping tests ===
+
+    #[test]
+    fn test_build_grid_config() {
+        let args = make_coordinator_args(4, Some(10));
         let config = build_grid_config(&args);
         assert_eq!(config.num_workers, 4);
         assert_eq!(config.max_rounds, Some(10));
@@ -468,16 +512,7 @@ mod tests {
 
     #[test]
     fn test_build_node_config_coordinator() {
-        let args = CoordinatorArgs {
-            workers: 8,
-            bind: "127.0.0.1:9000".parse().unwrap(),
-            input: PathBuf::from("test.bin"),
-            max_rounds: None,
-            output: None,
-            metrics: None,
-            strategy: "round-robin".to_string(),
-            log_format: None,
-        };
+        let args = make_coordinator_args(8, None);
         let config = build_node_config_coordinator(&args);
         assert_eq!(config.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
         assert_eq!(config.num_workers, 8);
@@ -487,20 +522,14 @@ mod tests {
 
     #[test]
     fn test_build_node_config_worker_valid() {
-        let args = WorkerArgs {
-            coordinator: "127.0.0.1:9000".to_string(),
-            log_format: None,
-        };
+        let args = make_worker_args("127.0.0.1:9000");
         let config = build_node_config_worker(&args).unwrap();
         assert_eq!(config.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
     }
 
     #[test]
     fn test_build_node_config_worker_invalid() {
-        let args = WorkerArgs {
-            coordinator: "not-an-address".to_string(),
-            log_format: None,
-        };
+        let args = make_worker_args("not-an-address");
         let result = build_node_config_worker(&args);
         assert!(result.is_err());
     }

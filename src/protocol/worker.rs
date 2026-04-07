@@ -9,11 +9,13 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 
 use super::config::NodeConfig;
+use super::coordinator::PROTOCOL_VERSION;
 use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
-use super::types::Message;
+use super::types::{Message, RegisterPayload};
 use crate::merge::{rebuild_free_port_index, WorkerRoundStats};
 use crate::reduction::reduce_all;
+use crate::security::AuthToken;
 
 /// Maximum number of connection attempts before giving up.
 const MAX_ATTEMPTS: u32 = 10;
@@ -60,12 +62,44 @@ pub async fn connect_with_retry(addr: std::net::SocketAddr) -> Result<TcpStream,
     unreachable!()
 }
 
-/// Runs the worker loop: connect, receive partitions, reduce, send results.
+/// Runs the worker loop: connect, register, receive partitions, reduce, send results.
 ///
 /// Implements the worker FSM (SPEC-13 R24):
 /// Init -> Idle -> Reducing -> Returning -> Idle -> ... -> Done.
-pub async fn run_worker(config: &NodeConfig) -> Result<(), ProtocolError> {
+///
+/// After connecting, sends a Register message (SPEC-10 R14). If auth
+/// is required, includes the token bytes. Waits for RegisterAck before
+/// entering the main loop.
+pub async fn run_worker(
+    config: &NodeConfig,
+    token: Option<&AuthToken>,
+) -> Result<(), ProtocolError> {
     let mut stream = connect_with_retry(config.bind).await?;
+
+    // Send Register (SPEC-10 R14)
+    let register = Message::Register(RegisterPayload {
+        protocol_version: PROTOCOL_VERSION,
+        auth_token: token.map(|t| *t.as_bytes()),
+    });
+    send_frame(&mut stream, &register).await?;
+
+    // Wait for RegisterAck/RegisterNack
+    let (response, _) = recv_frame(&mut stream, config.max_payload_size).await?;
+    match response {
+        Message::RegisterAck(ack) => {
+            tracing::info!("Registered with coordinator as worker_id={}", ack.worker_id);
+        }
+        Message::RegisterNack(nack) => {
+            tracing::error!("Registration rejected: {}", nack.reason);
+            return Err(ProtocolError::AuthFailed);
+        }
+        other => {
+            return Err(ProtocolError::UnexpectedMessage {
+                expected: "RegisterAck or RegisterNack",
+                received: format!("{:?}", other),
+            });
+        }
+    }
 
     loop {
         let (msg, _nbytes) = recv_frame(&mut stream, config.max_payload_size).await?;
@@ -142,6 +176,7 @@ pub async fn run_worker(config: &NodeConfig) -> Result<(), ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::types::{RegisterAckPayload, RegisterNackPayload};
 
     // T1: Backoff sequence is correct
     #[test]
@@ -169,6 +204,15 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Simulate coordinator handshake: receive Register, send RegisterAck.
+    async fn coordinator_handshake(stream: &mut TcpStream, worker_id: u32) {
+        let max = NodeConfig::default().max_payload_size;
+        let (msg, _) = recv_frame(stream, max).await.unwrap();
+        assert!(matches!(msg, Message::Register(_)));
+        let ack = Message::RegisterAck(RegisterAckPayload { worker_id });
+        send_frame(stream, &ack).await.unwrap();
+    }
+
     // T3: run_worker processes AssignPartition + Shutdown
     #[tokio::test]
     async fn test_run_worker_single_round() {
@@ -185,11 +229,14 @@ mod tests {
             ..NodeConfig::default()
         };
 
-        // Spawn the worker
-        let worker_handle = tokio::spawn(async move { run_worker(&config).await });
+        // Spawn the worker (Tier 1, no token)
+        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
 
         // Accept connection as "coordinator"
         let (mut stream, _) = listener.accept().await.unwrap();
+
+        // Complete registration handshake
+        coordinator_handshake(&mut stream, 0).await;
 
         // Build a simple net with one redex: Con(0) <-> Dup(1) principal-principal
         let mut net = Net::new();
@@ -259,8 +306,11 @@ mod tests {
             ..NodeConfig::default()
         };
 
-        let worker_handle = tokio::spawn(async move { run_worker(&config).await });
+        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
         let (mut stream, _) = listener.accept().await.unwrap();
+
+        // Complete registration handshake
+        coordinator_handshake(&mut stream, 0).await;
 
         // Send 3 empty rounds + shutdown
         for round in 0..3 {
@@ -292,7 +342,7 @@ mod tests {
         assert!(worker_handle.await.unwrap().is_ok());
     }
 
-    // T5: run_worker returns UnexpectedMessage for wrong message type
+    // T5: run_worker returns UnexpectedMessage for wrong message type after handshake
     #[tokio::test]
     async fn test_run_worker_unexpected_message() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -303,8 +353,11 @@ mod tests {
             ..NodeConfig::default()
         };
 
-        let worker_handle = tokio::spawn(async move { run_worker(&config).await });
+        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
         let (mut stream, _) = listener.accept().await.unwrap();
+
+        // Complete registration handshake
+        coordinator_handshake(&mut stream, 0).await;
 
         // Send a PartitionResult (wrong direction — coordinator->worker should
         // only send AssignPartition or Shutdown)
@@ -341,5 +394,33 @@ mod tests {
             result,
             Err(ProtocolError::UnexpectedMessage { .. })
         ));
+    }
+
+    // T6: run_worker receives RegisterNack and returns AuthFailed
+    #[tokio::test]
+    async fn test_run_worker_auth_rejected() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let config = NodeConfig {
+            bind: addr,
+            ..NodeConfig::default()
+        };
+
+        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
+        let (mut stream, _) = listener.accept().await.unwrap();
+
+        // Read Register, then send RegisterNack
+        let max = NodeConfig::default().max_payload_size;
+        let (msg, _) = recv_frame(&mut stream, max).await.unwrap();
+        assert!(matches!(msg, Message::Register(_)));
+
+        let nack = Message::RegisterNack(RegisterNackPayload {
+            reason: "authentication failed".into(),
+        });
+        send_frame(&mut stream, &nack).await.unwrap();
+
+        let result = worker_handle.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::AuthFailed)));
     }
 }

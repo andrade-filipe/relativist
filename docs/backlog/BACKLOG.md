@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-07
-**Total tasks:** 206 (101 done, 0 in progress, 104 todo, 1 obsoleted)
+**Total tasks:** 206 (140 done, 0 in progress, 65 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -148,49 +148,49 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0120 | Convert security module to directory structure | P0 | TODO | none | S |
-| TASK-0121 | Define TokenError and SecurityError enums | P0 | TODO | 0120 | S |
-| TASK-0122 | Define SecurityTier enum and tier detection logic | P0 | TODO | 0120, 0121 | S |
-| TASK-0123 | Define AuthToken struct with generation and serialization | P0 | TODO | 0120, 0121 | M |
-| TASK-0124 | Implement AuthToken constant-time verification | P0 | TODO | 0123 | S |
-| TASK-0125 | Define SecurityConfig struct | P0 | TODO | 0122, 0123 | S |
-| TASK-0126 | Implement token file write | P1 | TODO | 0123 | S |
-| TASK-0127 | Extend Message enum with Register, RegisterAck, RegisterNack | P0 | TODO | 0082, 0123 | S |
-| TASK-0128 | Implement token validation in coordinator accept flow | P0 | TODO | 0124, 0125, 0127, 0088 | M |
-| TASK-0129 | Implement network binding security | P1 | TODO | 0122, 0125 | S |
-| TASK-0130 | Define TlsServerConfig (feature-gated) | P1 | TODO | 0120, 0121 | M |
-| TASK-0131 | Define TlsClientConfig (feature-gated) | P1 | TODO | 0120, 0121 | M |
+| TASK-0120 | Convert security module to directory structure | P0 | **DONE** | none | S |
+| TASK-0121 | Define TokenError and SecurityError enums | P0 | **DONE** | 0120 | S |
+| TASK-0122 | Define SecurityTier enum and tier detection logic | P0 | **DONE** | 0120, 0121 | S |
+| TASK-0123 | Define AuthToken struct with generation and serialization | P0 | **DONE** | 0120, 0121 | M |
+| TASK-0124 | Implement AuthToken constant-time verification | P0 | **DONE** | 0123 | S |
+| TASK-0125 | Define SecurityConfig struct | P0 | **DONE** | 0122, 0123 | S |
+| TASK-0126 | Implement token file write | P1 | **DONE** | 0123 | S |
+| TASK-0127 | Extend Message enum with Register, RegisterAck, RegisterNack | P0 | **DONE** | 0082, 0123 | S |
+| TASK-0128 | Implement token validation in coordinator accept flow | P0 | **DONE** | 0124, 0125, 0127, 0088 | M |
+| TASK-0129 | Implement network binding security | P1 | **DONE** | 0122, 0125 | S |
+| TASK-0130 | Define TlsServerConfig (feature-gated) | P1 | **DONE** | 0120, 0121 | M |
+| TASK-0131 | Define TlsClientConfig (feature-gated) | P1 | **DONE** | 0120, 0121 | M |
 | TASK-0132 | Implement TLS handshake integration for coordinator | P1 | TODO | 0130, 0088 | M |
 | TASK-0133 | Implement TLS handshake integration for worker | P1 | TODO | 0131, 0093 | M |
 | TASK-0134 | Implement connection limits | P2 | TODO | 0125, 0088 | S |
 | TASK-0135 | Implement idle connection timeout | P2 | TODO | 0125, 0088 | S |
-| TASK-0136 | Verify message size pre-validation in recv_frame | P0 | TODO | 0086 | S |
-| TASK-0137 | Add security crate dependencies to Cargo.toml | P0 | TODO | none | S |
-| TASK-0138 | Implement SecurityConfig builder from CLI flags | P0 | TODO | 0122, 0123, 0125, 0126, 0130, 0131 | M |
+| TASK-0136 | Verify message size pre-validation in recv_frame | P0 | **DONE** | 0086 | S |
+| TASK-0137 | Add security crate dependencies to Cargo.toml | P0 | **DONE** | none | S |
+| TASK-0138 | Implement SecurityConfig builder from CLI flags | P0 | **DONE** | 0122, 0123, 0125, 0126, 0130, 0131 | M |
 | TASK-0139 | Security integration tests | P1 | TODO | 0128, 0129, 0132, 0133, 0136, 0138 | L |
 
 ## Phase 8: Observability (SPEC-11)
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0140 | Convert observability module to directory structure and add dependencies | P0 | TODO | none | S |
-| TASK-0141 | Define LogFormat and ProcessRole enums | P0 | TODO | 0140 | S |
-| TASK-0142 | Define ObservabilityConfig struct | P0 | TODO | 0141 | S |
-| TASK-0143 | Implement default log filter string | P0 | TODO | 0140 | S |
-| TASK-0144 | Implement init_tracing with fmt::Layer and EnvFilter | P0 | TODO | 0142, 0143 | M |
+| TASK-0140 | Convert observability module to directory structure and add dependencies | P0 | **DONE** | none | S |
+| TASK-0141 | Define LogFormat and ProcessRole enums | P0 | **DONE** | 0140 | S |
+| TASK-0142 | Define ObservabilityConfig struct | P0 | **DONE** | 0141 | S |
+| TASK-0143 | Implement default log filter string | P0 | **DONE** | 0140 | S |
+| TASK-0144 | Implement init_tracing with fmt::Layer and EnvFilter | P0 | **DONE** | 0142, 0143 | M |
 | TASK-0145 | Add #[instrument] to partition split() | P1 | TODO | 0144, Phase 3 | S |
 | TASK-0146 | Add #[instrument] to reduction reduce_all() | P1 | TODO | 0144, Phase 2 | S |
 | TASK-0147 | Add #[instrument] to merge merge() | P1 | TODO | 0144, Phase 4 | S |
 | TASK-0148 | Add #[instrument] to coordinator dispatch() and protocol handle_message() | P1 | TODO | 0144, Phase 5 | S |
 | TASK-0149 | Add FSM state transition logging | P1 | TODO | 0144, Phase 5 | M |
-| TASK-0150 | Define CoordinatorMetrics struct and registration | P0 | TODO | 0140 | M |
+| TASK-0150 | Define CoordinatorMetrics struct and registration | P0 | **DONE** | 0140 | M |
 | TASK-0151 | Define protocol metrics | P1 | TODO | 0150 | M |
 | TASK-0152 | ~~Extend WorkerRoundStats with observability fields~~ | -- | OBSOLETED | 0061 | -- |
 | TASK-0153 | Implement coordinator metric aggregation from worker reports | P1 | TODO | 0150, 0061 | M |
-| TASK-0154 | Add axum dependency and scaffold metrics_router | P0 | TODO | 0140, 0150 | S |
-| TASK-0155 | Implement /health and /ready endpoints | P0 | TODO | 0154 | S |
-| TASK-0156 | Implement /metrics endpoint with Prometheus encoding | P0 | TODO | 0154, 0150 | S |
-| TASK-0157 | Implement axum HTTP server spawn as background tokio task | P0 | TODO | 0154, 0155, 0156 | M |
+| TASK-0154 | Add axum dependency and scaffold metrics_router | P0 | **DONE** | 0140, 0150 | S |
+| TASK-0155 | Implement /health and /ready endpoints | P0 | **DONE** | 0154 | S |
+| TASK-0156 | Implement /metrics endpoint with Prometheus encoding | P0 | **DONE** | 0154, 0150 | S |
+| TASK-0157 | Implement axum HTTP server spawn as background tokio task | P0 | **DONE** | 0154, 0155, 0156 | M |
 | TASK-0158 | Add OTel dependencies and init_tracing OTel layer | P2 | TODO | 0144 | M |
 | TASK-0159 | Optional trace context in wire protocol messages | P2 | TODO | 0158, Phase 5 | M |
 | TASK-0213 | Implement ERROR-level logging requirements (R9a) | P1 | TODO | 0144, Phase 1-6 | M |
@@ -200,25 +200,25 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0160 | Convert io module to directory structure | P0 | TODO | none | S |
-| TASK-0161 | Define FileIoError, NetFormat, and InspectOutputFormat types | P0 | TODO | 0160 | S |
-| TASK-0162 | Define NetSummary and ReductionSummary structs | P0 | TODO | 0160 | S |
-| TASK-0163 | Implement binary format load/save | P0 | TODO | 0160, 0161 | S |
-| TASK-0164 | Text DSL parser - lexing and declaration collection (Pass 1) | P0 | TODO | 0160, 0161 | M |
-| TASK-0165 | Text DSL parser - net construction and validation (Pass 2) | P0 | TODO | 0164, Phase 1 | M |
-| TASK-0166 | Text DSL serializer (format_ic) | P0 | TODO | 0160, 0164, Phase 1 | M |
+| TASK-0160 | Convert io module to directory structure | P0 | **DONE** | none | S |
+| TASK-0161 | Define FileIoError, NetFormat, and InspectOutputFormat types | P0 | **DONE** | 0160 | S |
+| TASK-0162 | Define NetSummary and ReductionSummary structs | P0 | **DONE** | 0160 | S |
+| TASK-0163 | Implement binary format load/save | P0 | **DONE** | 0160, 0161 | S |
+| TASK-0164 | Text DSL parser - lexing and declaration collection (Pass 1) | P0 | **DONE** | 0160, 0161 | M |
+| TASK-0165 | Text DSL parser - net construction and validation (Pass 2) | P0 | **DONE** | 0164, Phase 1 | M |
+| TASK-0166 | Text DSL serializer (format_ic) | P0 | **DONE** | 0160, 0164, Phase 1 | M |
 | TASK-0167 | JSON format load/save | P2 | TODO | 0160, 0161 | S |
-| TASK-0168 | Implement load_net/save_net dispatch with format detection | P0 | TODO | 0161, 0163, 0165, 0166, 0167 | S |
-| TASK-0169 | Implement net_summary computation | P0 | TODO | 0162, Phase 1 | S |
-| TASK-0170 | Implement reduction summary formatting | P0 | TODO | 0162, 0169 | S |
-| TASK-0171 | Implement generator - ep_annihilation (ERA-ERA pairs) | P0 | TODO | 0160, Phase 1 | S |
-| TASK-0172 | Implement generators - ep_annihilation_con and ep_annihilation_dup | P0 | TODO | 0171, Phase 1 | S |
-| TASK-0173 | Implement generator - con_dup_expansion | P0 | TODO | 0171, Phase 1 | S |
-| TASK-0174 | Implement generator - dual_tree | P0 | TODO | 0171, Phase 1 | M |
-| TASK-0175 | Implement generator - mixed_rules | P0 | TODO | 0171, Phase 1 | M |
+| TASK-0168 | Implement load_net/save_net dispatch with format detection | P0 | **DONE** | 0161, 0163, 0165, 0166, 0167 | S |
+| TASK-0169 | Implement net_summary computation | P0 | **DONE** | 0162, Phase 1 | S |
+| TASK-0170 | Implement reduction summary formatting | P0 | **DONE** | 0162, 0169 | S |
+| TASK-0171 | Implement generator - ep_annihilation (ERA-ERA pairs) | P0 | **DONE** | 0160, Phase 1 | S |
+| TASK-0172 | Implement generators - ep_annihilation_con and ep_annihilation_dup | P0 | **DONE** | 0171, Phase 1 | S |
+| TASK-0173 | Implement generator - con_dup_expansion | P0 | **DONE** | 0171, Phase 1 | S |
+| TASK-0174 | Implement generator - dual_tree | P0 | **DONE** | 0171, Phase 1 | M |
+| TASK-0175 | Implement generator - mixed_rules | P0 | **DONE** | 0171, Phase 1 | M |
 | TASK-0176 | Implement generators - tree_sum and tree_sum_balanced | P1 | TODO | 0171, 0174, Phase 1 | M |
 | TASK-0177 | Implement generators - erasure_propagation and Church encodings | P1 | TODO | 0171, 0202, 0204, 0205, Phase 1 | M |
-| TASK-0178 | Define CLI argument structs for I/O subcommands | P0 | TODO | 0161, 0162, 0171 | M |
+| TASK-0178 | Define CLI argument structs for I/O subcommands | P0 | **DONE** | 0161, 0162, 0171 | M |
 | TASK-0179 | Integration tests for I/O roundtrips and generators | P1 | TODO | 0163-0177, Phase 2 | L |
 
 ## Phase 10: Benchmarks (SPEC-09)

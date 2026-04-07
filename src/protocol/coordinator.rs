@@ -11,22 +11,31 @@ use tokio::net::{TcpListener, TcpStream};
 use super::config::NodeConfig;
 use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
-use super::types::Message;
+use super::types::{Message, RegisterAckPayload, RegisterNackPayload, RegisterPayload};
 use crate::merge::{drain_stale_redexes, merge, GridConfig, GridMetrics, WorkerRoundStats};
 use crate::partition::{split, Partition, PartitionStrategy};
 use crate::reduction::reduce_all;
+use crate::security::AuthToken;
 
 // ---------------------------------------------------------------------------
 // Phase 0: Accept workers (TASK-0088)
 // ---------------------------------------------------------------------------
 
-/// Accepts connections from all expected workers (SPEC-06 R17, R24).
+/// Current wire protocol version for Register handshake (SPEC-10 R36).
+pub const PROTOCOL_VERSION: u8 = 1;
+
+/// Accepts and authenticates workers (SPEC-06 R17, R24; SPEC-10 R14-R17).
 ///
-/// Opens a TCP listener, waits for `config.num_workers` connections
-/// (with timeout), and returns the listener + connected streams.
-/// In Tier 1 (no auth), registration is implicit.
+/// Opens a TCP listener, waits for `config.num_workers` connections,
+/// performs the Register/RegisterAck handshake with optional token
+/// validation, and returns the listener + authenticated streams.
+///
+/// - Tier 1 (token=None): accepts Register without checking auth_token.
+/// - Tier 2/3 (token=Some): validates auth_token with constant-time
+///   comparison; rejects with RegisterNack on failure (SPEC-10 R16).
 pub async fn accept_workers(
     config: &NodeConfig,
+    token: Option<&AuthToken>,
 ) -> Result<(TcpListener, Vec<TcpStream>), ProtocolError> {
     let listener = TcpListener::bind(config.bind)
         .await
@@ -38,17 +47,78 @@ pub async fn accept_workers(
 
     let accept_future = async {
         while streams.len() < config.num_workers as usize {
-            let (stream, addr) = listener
+            let (mut stream, addr) = listener
                 .accept()
                 .await
                 .map_err(ProtocolError::ConnectionLost)?;
-            tracing::info!(
-                "Worker {}/{} connected from {}",
-                streams.len() + 1,
-                config.num_workers,
-                addr
-            );
-            streams.push(stream);
+
+            // Read Register message from worker (SPEC-10 R14)
+            let (msg, _) = recv_frame(&mut stream, config.max_payload_size).await?;
+
+            match msg {
+                Message::Register(payload) => {
+                    // Validate protocol version (SPEC-10 R36)
+                    if payload.protocol_version != PROTOCOL_VERSION {
+                        tracing::warn!(
+                            addr = %addr,
+                            version = payload.protocol_version,
+                            "Rejected: unsupported protocol version"
+                        );
+                        let nack = Message::RegisterNack(RegisterNackPayload {
+                            reason: "unsupported protocol version".into(),
+                        });
+                        let _ = send_frame(&mut stream, &nack).await;
+                        continue;
+                    }
+
+                    // Validate token if configured (SPEC-10 R15-R17)
+                    if let Some(expected_token) = token {
+                        match payload.auth_token {
+                            Some(provided_bytes) => {
+                                let provided = AuthToken::from_bytes(provided_bytes);
+                                if !expected_token.verify(&provided) {
+                                    tracing::warn!(addr = %addr, "Rejected: authentication failed");
+                                    let nack = Message::RegisterNack(RegisterNackPayload {
+                                        reason: "authentication failed".into(),
+                                    });
+                                    let _ = send_frame(&mut stream, &nack).await;
+                                    continue;
+                                }
+                            }
+                            None => {
+                                tracing::warn!(addr = %addr, "Rejected: token required but not provided");
+                                let nack = Message::RegisterNack(RegisterNackPayload {
+                                    reason: "authentication failed".into(),
+                                });
+                                let _ = send_frame(&mut stream, &nack).await;
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Authentication passed — assign worker ID and send Ack
+                    let worker_id = streams.len() as u32;
+                    let ack = Message::RegisterAck(RegisterAckPayload { worker_id });
+                    send_frame(&mut stream, &ack).await?;
+
+                    tracing::info!(
+                        "Worker {}/{} registered from {} (id={})",
+                        streams.len() + 1,
+                        config.num_workers,
+                        addr,
+                        worker_id
+                    );
+                    streams.push(stream);
+                }
+                other => {
+                    tracing::warn!(addr = %addr, "Rejected: expected Register, got {:?}", other);
+                    let nack = Message::RegisterNack(RegisterNackPayload {
+                        reason: "protocol error".into(),
+                    });
+                    let _ = send_frame(&mut stream, &nack).await;
+                    continue;
+                }
+            }
         }
         Ok::<_, ProtocolError>(())
     };
@@ -206,9 +276,10 @@ pub async fn run_coordinator(
     config: &NodeConfig,
     grid_config: &GridConfig,
     strategy: &dyn PartitionStrategy,
+    token: Option<&AuthToken>,
 ) -> Result<(crate::net::Net, GridMetrics), ProtocolError> {
-    // Phase 0: Accept worker connections
-    let (_listener, mut worker_streams) = accept_workers(config).await?;
+    // Phase 0: Accept and authenticate worker connections
+    let (_listener, mut worker_streams) = accept_workers(config, token).await?;
 
     let mut current_net = net;
     let mut metrics = GridMetrics::default();
@@ -332,7 +403,27 @@ mod tests {
     use crate::partition::{ContiguousIdStrategy, IdRange, Partition, WorkerId};
     use std::collections::HashMap;
 
-    // T1: accept_workers with N workers connecting
+    /// Send a Tier 1 (no-auth) Register message from a simulated worker.
+    async fn send_register(stream: &mut TcpStream) {
+        let register = Message::Register(RegisterPayload {
+            protocol_version: PROTOCOL_VERSION,
+            auth_token: None,
+        });
+        send_frame(stream, &register).await.unwrap();
+    }
+
+    /// Read and assert RegisterAck from coordinator.
+    async fn expect_register_ack(stream: &mut TcpStream) -> u32 {
+        let (msg, _) = recv_frame(stream, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        match msg {
+            Message::RegisterAck(ack) => ack.worker_id,
+            other => panic!("expected RegisterAck, got {:?}", other),
+        }
+    }
+
+    // T1: accept_workers with N workers registering (Tier 1, no auth)
     #[tokio::test]
     async fn test_accept_workers_success() {
         let config = NodeConfig {
@@ -342,10 +433,9 @@ mod tests {
             ..NodeConfig::default()
         };
 
-        // We need a real listener to get the actual port
         let listener = TcpListener::bind(config.bind).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener); // Drop so accept_workers can bind
+        drop(listener);
 
         let config = NodeConfig {
             bind: addr,
@@ -354,12 +444,20 @@ mod tests {
 
         let accept_handle = tokio::spawn({
             let config = config.clone();
-            async move { accept_workers(&config).await }
+            async move { accept_workers(&config, None).await }
         });
 
-        // Connect 2 workers
-        let _w1 = TcpStream::connect(addr).await.unwrap();
-        let _w2 = TcpStream::connect(addr).await.unwrap();
+        // Connect 2 workers and send Register
+        let mut w1 = TcpStream::connect(addr).await.unwrap();
+        send_register(&mut w1).await;
+        let id1 = expect_register_ack(&mut w1).await;
+
+        let mut w2 = TcpStream::connect(addr).await.unwrap();
+        send_register(&mut w2).await;
+        let id2 = expect_register_ack(&mut w2).await;
+
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
 
         let result = accept_handle.await.unwrap();
         assert!(result.is_ok());
@@ -373,7 +471,7 @@ mod tests {
         let config = NodeConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
             num_workers: 3,
-            worker_connect_timeout: Duration::from_millis(100),
+            worker_connect_timeout: Duration::from_millis(200),
             ..NodeConfig::default()
         };
 
@@ -386,7 +484,136 @@ mod tests {
             ..config
         };
 
-        let result = accept_workers(&config).await;
+        let result = accept_workers(&config, None).await;
+        assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
+    }
+
+    // T2b: accept_workers with token auth — valid token accepted
+    #[tokio::test]
+    async fn test_accept_workers_token_auth_success() {
+        let token = AuthToken::generate();
+        let config = NodeConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_secs(5),
+            ..NodeConfig::default()
+        };
+
+        let listener = TcpListener::bind(config.bind).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let config = NodeConfig {
+            bind: addr,
+            ..config
+        };
+
+        let token_clone = token.clone();
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, Some(&token_clone)).await }
+        });
+
+        let mut w = TcpStream::connect(addr).await.unwrap();
+        let register = Message::Register(RegisterPayload {
+            protocol_version: PROTOCOL_VERSION,
+            auth_token: Some(*token.as_bytes()),
+        });
+        send_frame(&mut w, &register).await.unwrap();
+        let id = expect_register_ack(&mut w).await;
+        assert_eq!(id, 0);
+
+        let result = accept_handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    // T2c: accept_workers with token auth — wrong token rejected
+    #[tokio::test]
+    async fn test_accept_workers_token_auth_rejected() {
+        let token = AuthToken::generate();
+        let wrong_token = AuthToken::generate();
+        let config = NodeConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_millis(500),
+            ..NodeConfig::default()
+        };
+
+        let listener = TcpListener::bind(config.bind).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let config = NodeConfig {
+            bind: addr,
+            ..config
+        };
+
+        let token_clone = token.clone();
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, Some(&token_clone)).await }
+        });
+
+        // Yield to let accept_workers bind
+        tokio::task::yield_now().await;
+
+        // Send wrong token — should get RegisterNack
+        let mut w = TcpStream::connect(addr).await.unwrap();
+        let register = Message::Register(RegisterPayload {
+            protocol_version: PROTOCOL_VERSION,
+            auth_token: Some(*wrong_token.as_bytes()),
+        });
+        send_frame(&mut w, &register).await.unwrap();
+
+        let (msg, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        assert!(matches!(msg, Message::RegisterNack(_)));
+
+        // Coordinator should timeout waiting for a valid worker
+        let result = accept_handle.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
+    }
+
+    // T2d: accept_workers rejects missing token when auth required
+    #[tokio::test]
+    async fn test_accept_workers_token_missing_rejected() {
+        let token = AuthToken::generate();
+        let config = NodeConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_millis(500),
+            ..NodeConfig::default()
+        };
+
+        let listener = TcpListener::bind(config.bind).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let config = NodeConfig {
+            bind: addr,
+            ..config
+        };
+
+        let token_clone = token.clone();
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, Some(&token_clone)).await }
+        });
+
+        // Yield to let accept_workers bind
+        tokio::task::yield_now().await;
+
+        // Send Register without token — should get RegisterNack
+        let mut w = TcpStream::connect(addr).await.unwrap();
+        send_register(&mut w).await; // sends auth_token: None
+
+        let (msg, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        assert!(matches!(msg, Message::RegisterNack(_)));
+
+        let result = accept_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
     }
 
@@ -623,18 +850,20 @@ mod tests {
         };
         let strategy = ContiguousIdStrategy;
 
-        // Spawn worker
+        // Spawn worker (Tier 1: no token)
         let worker_config = config.clone();
-        let worker_handle =
-            tokio::spawn(async move { crate::protocol::worker::run_worker(&worker_config).await });
+        let worker_handle = tokio::spawn(async move {
+            crate::protocol::worker::run_worker(&worker_config, None).await
+        });
 
         // Run coordinator (accepts + grid loop + shutdown)
         // We need to drop the original listener first
         drop(listener);
 
-        let (result_net, metrics) = run_coordinator(net, &config, &grid_config, &strategy)
-            .await
-            .unwrap();
+        let (result_net, metrics) =
+            run_coordinator(net, &config, &grid_config, &strategy, None)
+                .await
+                .unwrap();
 
         // Worker should have exited cleanly
         worker_handle.await.unwrap().unwrap();
@@ -680,15 +909,20 @@ mod tests {
 
         drop(listener);
 
-        // Spawn 2 workers
+        // Spawn 2 workers (Tier 1: no token)
         let w1_config = config.clone();
         let w2_config = config.clone();
-        let w1 = tokio::spawn(async move { crate::protocol::worker::run_worker(&w1_config).await });
-        let w2 = tokio::spawn(async move { crate::protocol::worker::run_worker(&w2_config).await });
+        let w1 = tokio::spawn(async move {
+            crate::protocol::worker::run_worker(&w1_config, None).await
+        });
+        let w2 = tokio::spawn(async move {
+            crate::protocol::worker::run_worker(&w2_config, None).await
+        });
 
-        let (result_net, metrics) = run_coordinator(net, &config, &grid_config, &strategy)
-            .await
-            .unwrap();
+        let (result_net, metrics) =
+            run_coordinator(net, &config, &grid_config, &strategy, None)
+                .await
+                .unwrap();
 
         w1.await.unwrap().unwrap();
         w2.await.unwrap().unwrap();
@@ -722,17 +956,63 @@ mod tests {
         drop(listener);
 
         let worker_config = config.clone();
-        let worker =
-            tokio::spawn(async move { crate::protocol::worker::run_worker(&worker_config).await });
+        let worker = tokio::spawn(async move {
+            crate::protocol::worker::run_worker(&worker_config, None).await
+        });
 
-        let (result_net, metrics) = run_coordinator(net, &config, &grid_config, &strategy)
-            .await
-            .unwrap();
+        let (result_net, metrics) =
+            run_coordinator(net, &config, &grid_config, &strategy, None)
+                .await
+                .unwrap();
 
         worker.await.unwrap().unwrap();
 
         assert_eq!(result_net.count_live_agents(), 0);
         assert!(metrics.converged);
         assert_eq!(metrics.rounds, 0);
+    }
+
+    // T10: Full distributed with token auth (Tier 2)
+    #[tokio::test]
+    async fn test_g1_distributed_with_token_auth() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let token = AuthToken::generate();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let config = NodeConfig {
+            bind: addr,
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_secs(5),
+            ..NodeConfig::default()
+        };
+        let grid_config = GridConfig {
+            num_workers: 1,
+            max_rounds: None,
+        };
+        let strategy = ContiguousIdStrategy;
+
+        drop(listener);
+
+        let worker_config = config.clone();
+        let worker_token = token.clone();
+        let worker_handle = tokio::spawn(async move {
+            crate::protocol::worker::run_worker(&worker_config, Some(&worker_token)).await
+        });
+
+        let (result_net, metrics) =
+            run_coordinator(net, &config, &grid_config, &strategy, Some(&token))
+                .await
+                .unwrap();
+
+        worker_handle.await.unwrap().unwrap();
+
+        assert_eq!(result_net.count_live_agents(), 0);
+        assert!(metrics.converged);
     }
 }

@@ -1,0 +1,296 @@
+//! Pre-built example net generators (SPEC-12 R32-R50, SPEC-09).
+//!
+//! Each generator creates a parametric IC net for benchmarking or
+//! testing. Size parameter `n` controls the number of agents/pairs.
+
+use crate::net::{Net, PortRef, Symbol};
+
+/// Available example nets, matching benchmark profiles from SPEC-09.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ExampleNet {
+    /// N ERA-ERA annihilation pairs (Profile A). SPEC-09 R9.
+    EpAnnihilation,
+    /// N CON-CON annihilation pairs (Profile A). SPEC-09 R10.
+    EpAnnihilationCon,
+    /// N DUP-DUP annihilation pairs (Profile A). SPEC-09 R10.
+    EpAnnihilationDup,
+    /// N CON-DUP commutation pairs (Profile B). SPEC-09 R11.
+    ConDupExpansion,
+    /// Dual tree of depth D (Profile B/C). SPEC-09 R12.
+    DualTree,
+    /// Mixed net: ERA-ERA + CON-CON + CON-DUP in thirds (Profile C). SPEC-09 R14.
+    MixedRules,
+}
+
+/// Generate the specified example net with the given size parameter.
+pub fn generate(example: ExampleNet, size: u32) -> Net {
+    match example {
+        ExampleNet::EpAnnihilation => ep_annihilation(size),
+        ExampleNet::EpAnnihilationCon => ep_annihilation_con(size),
+        ExampleNet::EpAnnihilationDup => ep_annihilation_dup(size),
+        ExampleNet::ConDupExpansion => con_dup_expansion(size),
+        ExampleNet::DualTree => dual_tree(size),
+        ExampleNet::MixedRules => mixed_rules(size),
+    }
+}
+
+/// N ERA-ERA annihilation pairs (TASK-0171).
+///
+/// Creates N pairs of ERA agents connected at principal ports.
+/// Each pair annihilates in one step (void rule), yielding an empty net.
+/// Total agents: 2N, total interactions: N.
+pub fn ep_annihilation(n: u32) -> Net {
+    let mut net = Net::new();
+    for _ in 0..n {
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+    }
+    net
+}
+
+/// N CON-CON annihilation pairs (TASK-0172).
+///
+/// Creates N pairs of CON agents connected principal-to-principal,
+/// with auxiliary ports cross-connected (left-left, right-right).
+/// Each pair annihilates (annihilation rule), yielding an empty net.
+pub fn ep_annihilation_con(n: u32) -> Net {
+    let mut net = Net::new();
+    for _ in 0..n {
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+    }
+    net
+}
+
+/// N DUP-DUP annihilation pairs (TASK-0172).
+///
+/// Same as CON-CON but with DUP symbols.
+pub fn ep_annihilation_dup(n: u32) -> Net {
+    let mut net = Net::new();
+    for _ in 0..n {
+        let a = net.create_agent(Symbol::Dup);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+    }
+    net
+}
+
+/// N CON-DUP commutation pairs (TASK-0173).
+///
+/// Creates N independent CON-DUP pairs connected at principal ports,
+/// with auxiliary ports connected to free ports.
+/// Each pair triggers commutation (expansion), creating 4 new agents.
+pub fn con_dup_expansion(n: u32) -> Net {
+    let mut net = Net::new();
+    let mut free_id = 0u32;
+    for _ in 0..n {
+        let c = net.create_agent(Symbol::Con);
+        let d = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+        net.connect(PortRef::AgentPort(c, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(c, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(d, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(d, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+    }
+    net
+}
+
+/// Dual tree of depth D (TASK-0174).
+///
+/// Two mirrored binary trees of CON agents, connected principal-to-principal
+/// at the roots. Leaves connect to free ports. Reduction triggers cascading
+/// annihilation from root to leaves.
+/// Agents: 2*(2^D - 1), depth D.
+pub fn dual_tree(depth: u32) -> Net {
+    let mut net = Net::new();
+    let mut free_id = 0u32;
+
+    fn build_tree(
+        net: &mut Net,
+        depth: u32,
+        free_id: &mut u32,
+    ) -> PortRef {
+        if depth == 0 {
+            let fp = PortRef::FreePort(*free_id);
+            *free_id += 1;
+            return fp;
+        }
+        let node = net.create_agent(Symbol::Con);
+        let left = build_tree(net, depth - 1, free_id);
+        let right = build_tree(net, depth - 1, free_id);
+        net.connect(PortRef::AgentPort(node, 1), left);
+        net.connect(PortRef::AgentPort(node, 2), right);
+        PortRef::AgentPort(node, 0)
+    }
+
+    let root_a = build_tree(&mut net, depth, &mut free_id);
+    let root_b = build_tree(&mut net, depth, &mut free_id);
+    net.connect(root_a, root_b);
+
+    net
+}
+
+/// Mixed-rule net: N/3 ERA-ERA + N/3 CON-CON + N/3 CON-DUP pairs (TASK-0175).
+///
+/// Exercises all three rule families in roughly equal proportion.
+pub fn mixed_rules(n: u32) -> Net {
+    let third = n / 3;
+    let remainder = n - third * 2;
+
+    let mut net = Net::new();
+    let mut free_id = 0u32;
+
+    // ERA-ERA pairs
+    for _ in 0..third {
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+    }
+
+    // CON-CON pairs
+    for _ in 0..third {
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+    }
+
+    // CON-DUP pairs
+    for _ in 0..remainder {
+        let c = net.create_agent(Symbol::Con);
+        let d = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+        net.connect(PortRef::AgentPort(c, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(c, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(d, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(d, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+    }
+
+    net
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reduction::reduce_all;
+
+    #[test]
+    fn test_ep_annihilation_basic() {
+        let net = ep_annihilation(10);
+        assert_eq!(net.count_live_agents(), 20);
+        assert_eq!(net.redex_queue.len(), 10);
+    }
+
+    #[test]
+    fn test_ep_annihilation_reduces_to_empty() {
+        let mut net = ep_annihilation(10);
+        let stats = reduce_all(&mut net);
+        assert_eq!(net.count_live_agents(), 0);
+        assert_eq!(stats.total_interactions, 10);
+    }
+
+    #[test]
+    fn test_ep_annihilation_con_reduces_to_empty() {
+        let mut net = ep_annihilation_con(5);
+        assert_eq!(net.count_live_agents(), 10);
+        reduce_all(&mut net);
+        assert_eq!(net.count_live_agents(), 0);
+    }
+
+    #[test]
+    fn test_ep_annihilation_dup_reduces_to_empty() {
+        let mut net = ep_annihilation_dup(5);
+        reduce_all(&mut net);
+        assert_eq!(net.count_live_agents(), 0);
+    }
+
+    #[test]
+    fn test_con_dup_expansion() {
+        let net = con_dup_expansion(5);
+        assert_eq!(net.count_live_agents(), 10); // 5 pairs of 2
+        assert_eq!(net.redex_queue.len(), 5);
+    }
+
+    #[test]
+    fn test_con_dup_expansion_reduces() {
+        let mut net = con_dup_expansion(3);
+        let stats = reduce_all(&mut net);
+        assert!(stats.total_interactions > 0);
+        // Each CON-DUP commutation produces 4 agents, which may annihilate
+        assert!(net.count_live_agents() > 0);
+    }
+
+    #[test]
+    fn test_dual_tree_depth_0() {
+        let net = dual_tree(0);
+        // Depth 0: no agents, just two free ports connected
+        assert_eq!(net.count_live_agents(), 0);
+    }
+
+    #[test]
+    fn test_dual_tree_depth_1() {
+        let net = dual_tree(1);
+        // 2 CON agents at roots, connected principal-principal
+        assert_eq!(net.count_live_agents(), 2);
+        assert_eq!(net.redex_queue.len(), 1);
+    }
+
+    #[test]
+    fn test_dual_tree_depth_3() {
+        let net = dual_tree(3);
+        // 2*(2^3 - 1) = 14 agents
+        assert_eq!(net.count_live_agents(), 14);
+    }
+
+    #[test]
+    fn test_dual_tree_reduces_to_empty() {
+        let mut net = dual_tree(3);
+        reduce_all(&mut net);
+        assert_eq!(net.count_live_agents(), 0);
+    }
+
+    #[test]
+    fn test_mixed_rules() {
+        let net = mixed_rules(9);
+        // 3 ERA-ERA (6 agents) + 3 CON-CON (6 agents) + 3 CON-DUP (6 agents) = 18
+        assert_eq!(net.count_live_agents(), 18);
+        assert_eq!(net.redex_queue.len(), 9);
+    }
+
+    #[test]
+    fn test_mixed_rules_reduces() {
+        let mut net = mixed_rules(9);
+        let stats = reduce_all(&mut net);
+        assert!(stats.total_interactions >= 6); // At least ERA+CON pairs fully annihilate
+    }
+
+    #[test]
+    fn test_generate_dispatch() {
+        let net = generate(ExampleNet::EpAnnihilation, 5);
+        assert_eq!(net.count_live_agents(), 10);
+
+        let net = generate(ExampleNet::DualTree, 2);
+        assert_eq!(net.count_live_agents(), 6);
+    }
+
+    #[test]
+    fn test_ep_annihilation_zero() {
+        let net = ep_annihilation(0);
+        assert_eq!(net.count_live_agents(), 0);
+    }
+}

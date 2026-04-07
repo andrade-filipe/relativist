@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::net::AgentId;
 use crate::partition::WorkerId;
 use crate::protocol::ProtocolError;
+use crate::security::SecurityError;
 
 // ---------------------------------------------------------------------------
 // Per-module error enums (SPEC-13 R16)
@@ -113,6 +114,9 @@ pub enum RelativistError {
 
     #[error(transparent)]
     Worker(#[from] WorkerError),
+
+    #[error(transparent)]
+    Security(#[from] SecurityError),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

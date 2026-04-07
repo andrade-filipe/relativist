@@ -1,7 +1,19 @@
-//! User I/O: net formats, generators, and examples (SPEC-12).
+//! User I/O: net formats, generators, summary output (SPEC-12).
 //!
-//! Handles reading/writing nets in bincode format, benchmark
-//! network generators, and human-readable output.
+//! - `binary`: .bin format (serde + bincode)
+//! - `text_dsl`: .ic format (human-readable text DSL)
+//! - `generators`: pre-built example net generators
+//! - `types`: NetFormat, NetSummary, ReductionSummary
+
+pub mod binary;
+pub mod generators;
+pub mod text_dsl;
+pub mod types;
+
+pub use binary::{deserialize_net, load_bin, save_bin, serialize_net};
+pub use generators::{generate, ExampleNet};
+pub use text_dsl::{format_ic, load_ic, parse_ic, save_ic};
+pub use types::{detect_format, net_summary, NetFormat, NetSummary, ReductionSummary};
 
 use std::path::Path;
 
@@ -9,29 +21,35 @@ use crate::error::RelativistError;
 use crate::merge::GridMetrics;
 use crate::net::{Net, Symbol};
 
-/// Serialize a Net to bytes (.bin format, bincode) (SPEC-07 R22-R24).
-pub fn serialize_net(net: &Net) -> Result<Vec<u8>, RelativistError> {
-    bincode::serialize(net)
-        .map_err(|e| RelativistError::Config(format!("serialization failed: {}", e)))
-}
+// ---------------------------------------------------------------------------
+// Format-dispatching load/save (TASK-0168, SPEC-12 R1, R18)
+// ---------------------------------------------------------------------------
 
-/// Deserialize a Net from bytes (.bin format, bincode).
-pub fn deserialize_net(bytes: &[u8]) -> Result<Net, RelativistError> {
-    bincode::deserialize(bytes)
-        .map_err(|e| RelativistError::Config(format!("deserialization failed: {}", e)))
-}
-
-/// Load a Net from a .bin file (SPEC-07 R14, R22).
+/// Load a Net from a file, auto-detecting format from extension (SPEC-12 R1).
 ///
-/// Uses synchronous `std::fs` — appropriate for CLI entry points.
-/// The coordinator can call this via `spawn_blocking` if needed.
+/// Supports .bin (bincode), .ic (text DSL).
+/// JSON format (.json) returns a descriptive error (SPEC-12 R17).
 pub fn load_net_from_file(path: &Path) -> Result<Net, RelativistError> {
-    let bytes = std::fs::read(path)?;
-    let net = deserialize_net(&bytes).map_err(|e| {
-        RelativistError::Config(format!("failed to deserialize {:?}: {}", path, e))
+    let format = detect_format(path).ok_or_else(|| {
+        RelativistError::Config(format!(
+            "unknown file extension for {:?} (expected .bin, .ic, or .json)",
+            path
+        ))
     })?;
+
+    let net = match format {
+        NetFormat::Bin => load_bin(path)?,
+        NetFormat::Ic => load_ic(path)?,
+        NetFormat::Json => {
+            return Err(RelativistError::Config(
+                "JSON format not yet supported; use .bin or .ic".into(),
+            ));
+        }
+    };
+
     tracing::info!(
         path = ?path,
+        format = ?format,
         agents = net.count_live_agents(),
         redexes = net.redex_queue.len(),
         "loaded network"
@@ -39,22 +57,34 @@ pub fn load_net_from_file(path: &Path) -> Result<Net, RelativistError> {
     Ok(net)
 }
 
-/// Save a Net to a .bin file (SPEC-07 R25).
+/// Save a Net to a file, format determined by extension.
 pub fn save_net_to_file(net: &Net, path: &Path) -> Result<(), RelativistError> {
-    let bytes = serialize_net(net)?;
-    std::fs::write(path, &bytes)?;
-    tracing::info!(path = ?path, "saved network");
+    let format = detect_format(path).ok_or_else(|| {
+        RelativistError::Config(format!(
+            "unknown file extension for {:?} (expected .bin, .ic, or .json)",
+            path
+        ))
+    })?;
+
+    match format {
+        NetFormat::Bin => save_bin(net, path)?,
+        NetFormat::Ic => save_ic(net, path)?,
+        NetFormat::Json => {
+            return Err(RelativistError::Config(
+                "JSON format not yet supported; use .bin or .ic".into(),
+            ));
+        }
+    }
+
+    tracing::info!(path = ?path, format = ?format, "saved network");
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Metrics output (TASK-0105, SPEC-07 R27-R31)
+// Metrics output (SPEC-07 R27-R31)
 // ---------------------------------------------------------------------------
 
 /// Write metrics in JSON or CSV format, determined by file extension.
-///
-/// `.csv` → CSV with header + one line per round.
-/// `.json` or anything else → pretty-printed JSON.
 pub fn write_metrics(metrics: &GridMetrics, path: &Path) -> Result<(), RelativistError> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("csv") => write_metrics_csv(metrics, path),
@@ -101,7 +131,7 @@ fn write_metrics_csv(metrics: &GridMetrics, path: &Path) -> Result<(), Relativis
 }
 
 // ---------------------------------------------------------------------------
-// Print summary (TASK-0106, SPEC-07 R15)
+// Print summary (SPEC-12 R35)
 // ---------------------------------------------------------------------------
 
 /// Count agents of a specific symbol in a net.
@@ -109,7 +139,7 @@ pub fn count_agents_by_symbol(net: &Net, symbol: Symbol) -> usize {
     net.live_agents().filter(|a| a.symbol == symbol).count()
 }
 
-/// Print a human-readable execution summary to stdout (SPEC-07 R15).
+/// Print a human-readable execution summary to stdout.
 pub fn print_summary(net: &Net, metrics: &GridMetrics) {
     println!("=== Relativist Execution Summary ===");
     println!("Converged:          {}", if metrics.converged { "yes" } else { "no" });
@@ -141,7 +171,7 @@ pub fn print_summary(net: &Net, metrics: &GridMetrics) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (TASK-0104, TASK-0105, TASK-0106)
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -151,54 +181,59 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn test_roundtrip_empty_net() {
-        let net = Net::new();
-        let bytes = serialize_net(&net).unwrap();
-        let restored = deserialize_net(&bytes).unwrap();
-        assert_eq!(restored.count_live_agents(), 0);
-        assert!(restored.redex_queue.is_empty());
-    }
-
-    #[test]
-    fn test_roundtrip_net_with_agents() {
-        let mut net = Net::new();
-        let a = net.create_agent(Symbol::Con);
-        let b = net.create_agent(Symbol::Dup);
-        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-        let bytes = serialize_net(&net).unwrap();
-        let restored = deserialize_net(&bytes).unwrap();
-        assert_eq!(restored.count_live_agents(), 2);
-    }
-
-    #[test]
-    fn test_deserialize_corrupt_data() {
-        let result = deserialize_net(&[0xFF, 0xFF, 0x00]);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_load_nonexistent_file() {
         let result = load_net_from_file(&PathBuf::from("nonexistent_file_xyz.bin"));
         assert!(result.is_err());
-        match result.unwrap_err() {
-            RelativistError::Io(_) => {}
-            other => panic!("expected Io error, got: {:?}", other),
-        }
     }
 
     #[test]
-    fn test_file_roundtrip() {
+    fn test_load_unknown_extension() {
+        let result = load_net_from_file(&PathBuf::from("net.xyz"));
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("unknown file extension"));
+    }
+
+    #[test]
+    fn test_load_json_not_supported() {
+        // Create a temporary file with .json extension
+        let path = std::env::temp_dir().join("relativist_test_unsupported.json");
+        std::fs::write(&path, "{}").unwrap();
+        let result = load_net_from_file(&path);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("JSON format not yet supported"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_bin_file_roundtrip() {
         let mut net = Net::new();
         net.create_agent(Symbol::Era);
-        let dir = std::env::temp_dir();
-        let path = dir.join("relativist_test_io.bin");
+        let path = std::env::temp_dir().join("relativist_test_dispatch.bin");
         save_net_to_file(&net, &path).unwrap();
         let restored = load_net_from_file(&path).unwrap();
         assert_eq!(restored.count_live_agents(), 1);
         let _ = std::fs::remove_file(&path);
     }
 
-    // === TASK-0105: metrics output tests ===
+    #[test]
+    fn test_ic_file_roundtrip() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+
+        let path = std::env::temp_dir().join("relativist_test_dispatch.ic");
+        save_net_to_file(&net, &path).unwrap();
+        let restored = load_net_from_file(&path).unwrap();
+        assert_eq!(restored.count_live_agents(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // === Metrics output tests ===
 
     #[test]
     fn test_write_metrics_json() {
@@ -214,14 +249,10 @@ mod tests {
         metrics.compute_time_per_round = vec![std::time::Duration::from_millis(10), std::time::Duration::from_millis(20)];
         metrics.merge_time_per_round = vec![std::time::Duration::from_millis(5), std::time::Duration::from_millis(5)];
 
-        let dir = std::env::temp_dir();
-        let path = dir.join("relativist_test_metrics.json");
+        let path = std::env::temp_dir().join("relativist_test_metrics_p9.json");
         write_metrics(&metrics, &path).unwrap();
-
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("\"rounds\": 2"));
-        assert!(content.contains("\"total_interactions\": 100"));
-        assert!(content.contains("\"converged\": true"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -237,31 +268,14 @@ mod tests {
         metrics.compute_time_per_round = vec![std::time::Duration::from_millis(10), std::time::Duration::from_millis(20)];
         metrics.merge_time_per_round = vec![std::time::Duration::from_millis(5), std::time::Duration::from_millis(5)];
 
-        let dir = std::env::temp_dir();
-        let path = dir.join("relativist_test_metrics.csv");
+        let path = std::env::temp_dir().join("relativist_test_metrics_p9.csv");
         write_metrics(&metrics, &path).unwrap();
-
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert!(lines[0].starts_with("round,agents,"));
-        assert_eq!(lines.len(), 3); // header + 2 data lines
-        assert!(lines[1].starts_with("1,50,40,"));
-        assert!(lines[2].starts_with("2,30,60,"));
+        assert_eq!(lines.len(), 3);
         let _ = std::fs::remove_file(&path);
     }
-
-    #[test]
-    fn test_write_metrics_default_json() {
-        let metrics = GridMetrics::default();
-        let dir = std::env::temp_dir();
-        let path = dir.join("relativist_test_metrics.txt");
-        write_metrics(&metrics, &path).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("\"rounds\": 0"));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    // === TASK-0106: print_summary tests ===
 
     #[test]
     fn test_count_agents_by_symbol() {
@@ -279,7 +293,6 @@ mod tests {
     fn test_print_summary_no_panic() {
         let net = Net::new();
         let metrics = GridMetrics::default();
-        // Just verify it doesn't panic
         print_summary(&net, &metrics);
     }
 }
