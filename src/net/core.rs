@@ -267,13 +267,13 @@ impl Net {
     ///
     /// The format is self-contained: the receiver can reconstruct
     /// the complete Net from the bytes alone (SPEC-02 R25).
-    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::RelError> {
-        bincode::serialize(self).map_err(|e| crate::error::RelError::Serialize(e.to_string()))
+    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::NetError> {
+        bincode::serialize(self).map_err(|e| crate::error::NetError::Serialize(e.to_string()))
     }
 
     /// Deserializes a net from a bincode byte slice.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Net, crate::error::RelError> {
-        bincode::deserialize(bytes).map_err(|e| crate::error::RelError::Deserialize(e.to_string()))
+    pub fn from_bytes(bytes: &[u8]) -> Result<Net, crate::error::NetError> {
+        bincode::deserialize(bytes).map_err(|e| crate::error::NetError::Deserialize(e.to_string()))
     }
 }
 

@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
-**Last updated:** 2026-04-06
-**Updated by:** Development — Phase 5 (SPEC-06 Wire Protocol) COMPLETE
+**Last updated:** 2026-04-07
+**Updated by:** Development — Phase 6 (CLI & Config) COMPLETE (17/20 tasks)
 
 ---
 
@@ -26,7 +26,8 @@
 | Phase 3: Partition | COMPLETE | SPEC-04: 13/17 P0 tasks done, v0.3.0 tagged (291 tests) |
 | Phase 4: Merge & Grid | COMPLETE | SPEC-05: 18/18 tasks done, v0.4.0 tagged (341 tests) |
 | Phase 5: Wire Protocol | COMPLETE | SPEC-06: 17/18 tasks done, v0.5.0 tagged (396 tests). TASK-0212 deferred (needs Transport trait from SPEC-13) |
-| Phase 6-11 | NOT STARTED | CLI, Security, Observability, I/O, Benchmarks, Encoding |
+| Phase 6: CLI & Config | COMPLETE | SPEC-07+SPEC-13: 17/20 tasks done (456 tests). 7 subcommands, FSMs, local mode end-to-end. TASK-0117/0118 deferred (P1/P2) |
+| Phase 7-11 | NOT STARTED | Security, Observability, I/O, Benchmarks, Encoding |
 
 ---
 

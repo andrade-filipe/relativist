@@ -22,8 +22,17 @@ pub mod merge;
 // Wire protocol: TCP messaging, framing, Transport trait (SPEC-06)
 pub mod protocol;
 
+// Coordinator FSM (SPEC-13 R19-R23)
+pub mod coordinator;
+
+// Worker FSM (SPEC-13 R24-R27)
+pub mod worker;
+
 // Configuration and CLI support (SPEC-07, SPEC-13)
 pub mod config;
+
+// Command entry points for each CLI subcommand
+pub mod commands;
 
 // Security: token auth, optional TLS (SPEC-10)
 pub mod security;

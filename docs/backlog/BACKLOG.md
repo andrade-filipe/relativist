@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-06
-**Total tasks:** 206 (84 done, 0 in progress, 121 todo, 1 obsoleted)
+**Last updated:** 2026-04-07
+**Total tasks:** 206 (101 done, 0 in progress, 104 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -123,26 +123,26 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0100 | Refactor CLI to use Args structs (SPEC-07 Section 4.1, Revised v3) | P0 | TODO | Phase 5 | M |
-| TASK-0101 | Initialize tracing subscriber in main | P0 | TODO | 0100 | S |
-| TASK-0102 | Implement CLI-to-config mapping functions | P0 | TODO | 0100, 0062, 0084 | M |
-| TASK-0103 | Define RelativistError top-level error type | P0 | TODO | Phase 5, 0081 | M |
-| TASK-0104 | Implement net serialization/deserialization helpers | P0 | TODO | 0017, 0103 | S |
-| TASK-0105 | Implement metrics output (JSON and CSV) | P1 | TODO | 0060, 0103 | M |
-| TASK-0106 | Implement print_summary function | P1 | TODO | 0060, 0073 | S |
-| TASK-0107 | Define CoordinatorState enum and FSM types | P0 | TODO | Phase 5, 0103 | M |
-| TASK-0108 | Implement coordinator FSM transition function | P0 | TODO | 0107 | M |
-| TASK-0109 | Define WorkerState enum and FSM types | P0 | TODO | Phase 5, 0103 | S |
-| TASK-0110 | Implement worker FSM transition function | P0 | TODO | 0109 | S |
-| TASK-0111 | Implement run_local_command (local mode entry point) | P0 | TODO | 0100, 0102, 0104, 0105, 0106, 0069 | M |
-| TASK-0112 | Implement run_coordinator_command (coordinator entry point) | P0 | TODO | 0100, 0102, 0104-0106, 0107, 0108, 0092 | M |
-| TASK-0113 | Implement run_worker_command (worker entry point) | P0 | TODO | 0100, 0102, 0109, 0110, 0093 | S |
-| TASK-0114 | Implement run_generate_command (workload generator entry point) | P1 | TODO | 0100, 0104, 0103 | S |
-| TASK-0115 | Align Cargo.toml with SPEC-13 dependency map | P1 | TODO | Phase 5 | S |
-| TASK-0116 | Wire main.rs entrypoint with tokio and exit codes | P0 | TODO | 0100, 0101, 0103, 0111-0114 | S |
+| TASK-0100 | Refactor CLI to use Args structs (SPEC-07 Section 4.1, Revised v3) | P0 | **DONE** | Phase 5 | M |
+| TASK-0101 | Initialize tracing subscriber in main | P0 | **DONE** | 0100 | S |
+| TASK-0102 | Implement CLI-to-config mapping functions | P0 | **DONE** | 0100, 0062, 0084 | M |
+| TASK-0103 | Define RelativistError top-level error type | P0 | **DONE** | Phase 5, 0081 | M |
+| TASK-0104 | Implement net serialization/deserialization helpers | P0 | **DONE** | 0017, 0103 | S |
+| TASK-0105 | Implement metrics output (JSON and CSV) | P1 | **DONE** | 0060, 0103 | M |
+| TASK-0106 | Implement print_summary function | P1 | **DONE** | 0060, 0073 | S |
+| TASK-0107 | Define CoordinatorState enum and FSM types | P0 | **DONE** | Phase 5, 0103 | M |
+| TASK-0108 | Implement coordinator FSM transition function | P0 | **DONE** | 0107 | M |
+| TASK-0109 | Define WorkerState enum and FSM types | P0 | **DONE** | Phase 5, 0103 | S |
+| TASK-0110 | Implement worker FSM transition function | P0 | **DONE** | 0109 | S |
+| TASK-0111 | Implement run_local_command (local mode entry point) | P0 | **DONE** | 0100, 0102, 0104, 0105, 0106, 0069 | M |
+| TASK-0112 | Implement run_coordinator_command (coordinator entry point) | P0 | **DONE** | 0100, 0102, 0104-0106, 0107, 0108, 0092 | M |
+| TASK-0113 | Implement run_worker_command (worker entry point) | P0 | **DONE** | 0100, 0102, 0109, 0110, 0093 | S |
+| TASK-0114 | Implement run_generate_command (workload generator entry point) | P1 | **DONE** | 0100, 0104, 0103 | S |
+| TASK-0115 | Align Cargo.toml with SPEC-13 dependency map | P1 | **DONE** | Phase 5 | S |
+| TASK-0116 | Wire main.rs entrypoint with tokio and exit codes | P0 | **DONE** | 0100, 0101, 0103, 0111-0114 | S |
 | TASK-0117 | Enforce Core/Infrastructure layer boundary | P1 | TODO | 0107, 0109, Phase 5 | S |
 | TASK-0118 | Feature-gated module stubs for tls, metrics, otel | P2 | TODO | 0115 | S |
-| TASK-0119 | Integration test: CLI end-to-end (local mode round-trip) | P1 | TODO | 0111, 0114, 0116 | M |
+| TASK-0119 | Integration test: CLI end-to-end (local mode round-trip) | P1 | **DONE** | 0111, 0114, 0116 | M |
 
 ## Phase 7: Security (SPEC-10)
 

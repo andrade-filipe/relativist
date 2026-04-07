@@ -11,7 +11,7 @@ use crate::partition::WorkerId;
 ///
 /// Accumulates per-round data for experimental analysis (SPEC-09).
 /// Inspired by GridMetrics from the Haskell prototype (AC-004).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct GridMetrics {
     /// Total number of rounds executed.
     pub rounds: u32,

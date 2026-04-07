@@ -11,22 +11,22 @@ keywords = ["interaction-combinators", "grid-computing", "distributed", "reducti
 categories = ["science", "concurrency"]
 
 [dependencies]
-# Serialization (SPEC-02 R24, SPEC-06 R11, SPEC-07 RQ4)
+# Serialization (SPEC-02 R24, SPEC-06 R11, SPEC-13 R11)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
 
-# CLI (SPEC-07 R2)
+# CLI (SPEC-07 R2, SPEC-13 R11)
 clap = { version = "4", features = ["derive"] }
 
-# Error handling (PESQ-023 D2)
+# Error handling (PESQ-023 D2, SPEC-13 R11)
 thiserror = "2"
 
-# Observability (PESQ-023 D5)
+# Observability (PESQ-023 D5, SPEC-13 R11)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Async runtime (SPEC-06 — TCP)
+# Async runtime (SPEC-06, SPEC-13 R11)
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time"] }
 
 # Checksum (SPEC-06 R10)
@@ -35,32 +35,41 @@ crc32fast = "1"
 # Async utilities (SPEC-06 R21 — concurrent partition sends)
 futures = "0.3"
 
-# Local parallelism (SPEC-07 RQ1 — rayon for fair comparison)
+# Local parallelism (SPEC-07 R20 — rayon for fair comparison)
 rayon = "1"
 
-# TLS (SPEC-10 — optional)
+# Random number generation (SPEC-13 R11 — token generation, test data)
+rand = "0.8"
+
+# TLS (SPEC-10 — optional, SPEC-13 R12/R37)
 rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
-# Metrics (SPEC-11 — optional)
+# Metrics (SPEC-11 — optional, SPEC-13 R12/R37)
 prometheus-client = { version = "0.23", optional = true }
+axum = { version = "0.8", optional = true }
 
-# OpenTelemetry (SPEC-11 — optional)
+# OpenTelemetry (SPEC-11 — optional, SPEC-13 R12/R37)
 opentelemetry = { version = "0.28", optional = true }
 opentelemetry_sdk = { version = "0.28", optional = true }
 
 [dev-dependencies]
-# Property-based testing (PESQ-023 D6)
+# Property-based testing (PESQ-023 D6, SPEC-13 R13)
 proptest = "1"
 
-# Benchmarking
+# Benchmarking (SPEC-13 R13)
 criterion = { version = "0.5", features = ["html_reports"] }
+
+# Async test utilities (SPEC-13 R13)
+tokio-test = "0.4"
 
 [features]
 default = []
-tls = ["rustls", "tokio-rustls"]
-metrics = ["prometheus-client"]
-otel = ["opentelemetry", "opentelemetry_sdk"]
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
+metrics = ["dep:prometheus-client", "dep:axum"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
+full = ["tls", "metrics", "otel"]
 
 [[bench]]
 name = "benchmarks"
