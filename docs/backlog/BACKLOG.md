@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-06
-**Total tasks:** 206 (67 done, 0 in progress, 138 todo, 1 obsoleted)
+**Total tasks:** 206 (84 done, 0 in progress, 121 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -100,23 +100,23 @@
 
 | ID | Title | Priority | Status | Depends | Complexity |
 |----|-------|----------|--------|---------|------------|
-| TASK-0080 | Convert protocol module to directory structure | P0 | TODO | none | S |
-| TASK-0081 | Define ProtocolError enum | P0 | TODO | 0080 | S |
-| TASK-0082 | Define Message enum | P0 | TODO | 0080 | S |
-| TASK-0083 | Define FrameHeader struct and framing constants | P0 | TODO | 0080 | S |
-| TASK-0084 | Define NodeConfig type | P0 | TODO | 0080, 0083 | S |
-| TASK-0085 | Implement send_frame function | P0 | TODO | 0081, 0082, 0083 | M |
-| TASK-0086 | Implement recv_frame function | P0 | TODO | 0081, 0082, 0083 | M |
-| TASK-0087 | Implement connect_with_retry (exponential backoff) | P1 | TODO | 0081, 0084 | S |
-| TASK-0088 | Implement coordinator worker-accept phase | P0 | TODO | 0081, 0084 | M |
-| TASK-0089 | Implement coordinator distribute phase | P0 | TODO | 0085, 0082, 0084 | M |
-| TASK-0090 | Implement coordinator collect phase | P0 | TODO | 0086, 0082, 0084 | M |
-| TASK-0091 | Implement coordinator shutdown protocol | P1 | TODO | 0085, 0082 | S |
-| TASK-0092 | Implement run_coordinator (distributed grid loop) | P0 | TODO | 0088-0091, 0094 | M |
-| TASK-0093 | Implement run_worker (worker loop) | P0 | TODO | 0085-0087, 0082 | M |
-| TASK-0094 | Implement GridMetrics network extensions | P1 | TODO | 0080 | S |
-| TASK-0095 | Implement in-memory transport for testing | P1 | TODO | 0085, 0086 | S |
-| TASK-0096 | Add protocol crate dependencies to Cargo.toml | P0 | TODO | none | S |
+| TASK-0080 | Convert protocol module to directory structure | P0 | **DONE** | none | S |
+| TASK-0081 | Define ProtocolError enum | P0 | **DONE** | 0080 | S |
+| TASK-0082 | Define Message enum | P0 | **DONE** | 0080 | S |
+| TASK-0083 | Define FrameHeader struct and framing constants | P0 | **DONE** | 0080 | S |
+| TASK-0084 | Define NodeConfig type | P0 | **DONE** | 0080, 0083 | S |
+| TASK-0085 | Implement send_frame function | P0 | **DONE** | 0081, 0082, 0083 | M |
+| TASK-0086 | Implement recv_frame function | P0 | **DONE** | 0081, 0082, 0083 | M |
+| TASK-0087 | Implement connect_with_retry (exponential backoff) | P1 | **DONE** | 0081, 0084 | S |
+| TASK-0088 | Implement coordinator worker-accept phase | P0 | **DONE** | 0081, 0084 | M |
+| TASK-0089 | Implement coordinator distribute phase | P0 | **DONE** | 0085, 0082, 0084 | M |
+| TASK-0090 | Implement coordinator collect phase | P0 | **DONE** | 0086, 0082, 0084 | M |
+| TASK-0091 | Implement coordinator shutdown protocol | P1 | **DONE** | 0085, 0082 | S |
+| TASK-0092 | Implement run_coordinator (distributed grid loop) | P0 | **DONE** | 0088-0091, 0094 | M |
+| TASK-0093 | Implement run_worker (worker loop) | P0 | **DONE** | 0085-0087, 0082 | M |
+| TASK-0094 | Implement GridMetrics network extensions | P1 | **DONE** | 0080 | S |
+| TASK-0095 | Implement in-memory transport for testing | P1 | **DONE** | 0085, 0086 | S |
+| TASK-0096 | Add protocol crate dependencies to Cargo.toml | P0 | **DONE** | none | S |
 | TASK-0212 | Implement SerializingChannelTransport | P1 | TODO | 0095, 0085, 0086 | S |
 
 ## Phase 6: CLI & Config (SPEC-07 Revised v3 + SPEC-13)

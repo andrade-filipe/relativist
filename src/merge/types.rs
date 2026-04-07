@@ -55,6 +55,19 @@ pub struct GridMetrics {
     /// Enables accurate overhead decomposition for SPEC-09 benchmarks.
     pub index_rebuild_time_per_round: Vec<Duration>,
 
+    // --- Network metrics (SPEC-06 R33-R34, populated in distributed mode) ---
+    /// Total bytes sent by the coordinator per round (headers + payloads).
+    pub bytes_sent_per_round: Vec<usize>,
+
+    /// Total bytes received by the coordinator per round (headers + payloads).
+    pub bytes_received_per_round: Vec<usize>,
+
+    /// Wall-clock time to send all partitions per round.
+    pub network_send_time_per_round: Vec<Duration>,
+
+    /// Wall-clock time to collect all results per round.
+    pub network_recv_time_per_round: Vec<Duration>,
+
     /// Wall-clock total execution time.
     pub total_time: Duration,
 
@@ -64,6 +77,29 @@ pub struct GridMetrics {
 
     /// Per-worker statistics, per round (populated in distributed context).
     pub worker_stats_per_round: Vec<Vec<WorkerRoundStats>>,
+}
+
+impl GridMetrics {
+    /// Returns the total bytes transferred across all rounds (sent + received).
+    /// SPEC-06, Section 4.10.
+    pub fn total_network_bytes(&self) -> usize {
+        self.bytes_sent_per_round.iter().sum::<usize>()
+            + self.bytes_received_per_round.iter().sum::<usize>()
+    }
+
+    /// Returns the communication overhead as a fraction of total time.
+    /// Formula: (sum(send_time) + sum(recv_time)) / total_time
+    /// Cf. DISC-006 v2, Section 1.1; SPEC-06 R35.
+    pub fn network_overhead_fraction(&self) -> f64 {
+        let send_total: Duration = self.network_send_time_per_round.iter().sum();
+        let recv_total: Duration = self.network_recv_time_per_round.iter().sum();
+        let network_total = send_total + recv_total;
+        if self.total_time.is_zero() {
+            0.0
+        } else {
+            network_total.as_secs_f64() / self.total_time.as_secs_f64()
+        }
+    }
 }
 
 /// Statistics of a single worker in a specific round.
@@ -123,6 +159,10 @@ mod tests {
         assert!(m.merge_time_per_round.is_empty());
         assert!(m.border_reduce_time_per_round.is_empty());
         assert!(m.index_rebuild_time_per_round.is_empty());
+        assert!(m.bytes_sent_per_round.is_empty());
+        assert!(m.bytes_received_per_round.is_empty());
+        assert!(m.network_send_time_per_round.is_empty());
+        assert!(m.network_recv_time_per_round.is_empty());
         assert_eq!(m.total_time, Duration::ZERO);
         assert!(!m.converged);
         assert!(m.worker_stats_per_round.is_empty());
@@ -232,5 +272,50 @@ mod tests {
         };
         assert_eq!(config.num_workers, 8);
         assert_eq!(config.max_rounds, None);
+    }
+
+    // === GridMetrics network extensions (TASK-0094) ===
+
+    // T1: total_network_bytes with known values
+    #[test]
+    fn test_total_network_bytes() {
+        let mut m = GridMetrics::default();
+        m.bytes_sent_per_round = vec![100, 200, 300];
+        m.bytes_received_per_round = vec![50, 150, 250];
+        assert_eq!(m.total_network_bytes(), 1050);
+    }
+
+    // T2: total_network_bytes with no rounds
+    #[test]
+    fn test_total_network_bytes_empty() {
+        let m = GridMetrics::default();
+        assert_eq!(m.total_network_bytes(), 0);
+    }
+
+    // T3: network_overhead_fraction with known durations
+    #[test]
+    fn test_network_overhead_fraction() {
+        let mut m = GridMetrics::default();
+        m.network_send_time_per_round = vec![Duration::from_secs(1), Duration::from_secs(2)];
+        m.network_recv_time_per_round = vec![Duration::from_secs(3), Duration::from_secs(4)];
+        m.total_time = Duration::from_secs(20);
+        // (1+2+3+4) / 20 = 10/20 = 0.5
+        let fraction = m.network_overhead_fraction();
+        assert!((fraction - 0.5).abs() < f64::EPSILON);
+    }
+
+    // T4: network_overhead_fraction returns 0.0 when total_time is zero
+    #[test]
+    fn test_network_overhead_fraction_zero_time() {
+        let m = GridMetrics::default();
+        assert_eq!(m.network_overhead_fraction(), 0.0);
+    }
+
+    // T5: network_overhead_fraction with empty Vecs
+    #[test]
+    fn test_network_overhead_fraction_empty() {
+        let mut m = GridMetrics::default();
+        m.total_time = Duration::from_secs(10);
+        assert_eq!(m.network_overhead_fraction(), 0.0);
     }
 }

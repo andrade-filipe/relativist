@@ -32,6 +32,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-uti
 # Checksum (SPEC-06 R10)
 crc32fast = "1"
 
+# Async utilities (SPEC-06 R21 — concurrent partition sends)
+futures = "0.3"
+
 # Local parallelism (SPEC-07 RQ1 — rayon for fair comparison)
 rayon = "1"
 
