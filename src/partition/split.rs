@@ -4,6 +4,9 @@ use std::collections::HashMap;
 
 use crate::net::{AgentId, Net, PortRef};
 
+#[cfg(debug_assertions)]
+use std::collections::HashSet;
+
 use super::helpers::{build_subnet, classify_wires, compute_id_ranges};
 use super::strategy::PartitionStrategy;
 use super::types::{IdRange, Partition, PartitionPlan, WorkerId};
@@ -72,10 +75,19 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
         });
     }
 
-    PartitionPlan {
+    let plan = PartitionPlan {
         partitions,
         borders: wire_class.borders,
+    };
+
+    // Step 7: Debug assertions for C1, C2, C3 (SPEC-04 R10)
+    #[cfg(debug_assertions)]
+    {
+        assert_c1_coverage(&net, &plan.partitions);
+        assert_c3_border_consistency(&plan.partitions, &plan.borders);
     }
+
+    plan
 }
 
 /// Trivial case: single partition with the entire net (SPEC-04 R2).
@@ -118,6 +130,63 @@ fn propagate_root(
             }
         }
         _ => None,
+    }
+}
+
+/// Verifies C1 (Complete agent coverage, SPEC-04 R6): every agent of the
+/// original net is in exactly one partition, and no agent appears in more
+/// than one partition (SPEC-04 Section 4.8).
+#[cfg(debug_assertions)]
+fn assert_c1_coverage(original: &Net, partitions: &[Partition]) {
+    let mut seen: HashSet<AgentId> = HashSet::new();
+    let mut total = 0usize;
+    for partition in partitions {
+        for (i, slot) in partition.subnet.agents.iter().enumerate() {
+            if slot.is_some() {
+                let id = i as AgentId;
+                assert!(
+                    seen.insert(id),
+                    "C1 violated: agent {} appears in more than one partition",
+                    id
+                );
+                total += 1;
+            }
+        }
+    }
+    let original_count = original.agents.iter().filter(|s| s.is_some()).count();
+    assert_eq!(
+        total, original_count,
+        "C1 violated: {} agents in partitions, {} in original net",
+        total, original_count
+    );
+}
+
+/// Verifies C3 (FreePort bijectivity, SPEC-04 R8): each borderId appears
+/// in exactly two distinct partitions (SPEC-04 Section 4.8).
+#[cfg(debug_assertions)]
+fn assert_c3_border_consistency(
+    partitions: &[Partition],
+    borders: &HashMap<u32, (PortRef, PortRef)>,
+) {
+    for &border_id in borders.keys() {
+        let mut found_in: Vec<WorkerId> = Vec::new();
+        for partition in partitions {
+            if partition.free_port_index.contains_key(&border_id) {
+                found_in.push(partition.worker_id);
+            }
+        }
+        assert_eq!(
+            found_in.len(),
+            2,
+            "C3 violated: borderId {} found in {} partitions (expected: 2)",
+            border_id,
+            found_in.len()
+        );
+        assert_ne!(
+            found_in[0], found_in[1],
+            "C3 violated: borderId {} found twice in the same partition {}",
+            border_id, found_in[0]
+        );
     }
 }
 
