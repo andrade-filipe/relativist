@@ -117,13 +117,99 @@ pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
     ))
 }
 
-/// Execute compute mode: encode, reduce, decode (SPEC-14).
-///
-/// Will be implemented in Phase 11 (Encoding).
-pub fn run_compute_command(
-    _args: crate::config::ComputeArgs,
-) -> Result<(), RelativistError> {
-    Err(RelativistError::Config(
-        "compute: not yet implemented (Phase 11)".into(),
-    ))
+/// Execute compute mode: encode arithmetic, reduce, decode result (SPEC-14 R22-R25).
+pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), RelativistError> {
+    use crate::config::ArithmeticOp;
+    use crate::encoding::{build_add, build_exp, build_mul, decode_nat, discover_root};
+
+    let op_name = match args.operation {
+        ArithmeticOp::Add => "add",
+        ArithmeticOp::Mul => "mul",
+        ArithmeticOp::Exp => "exp",
+    };
+
+    // Build the arithmetic net
+    let mut net = match args.operation {
+        ArithmeticOp::Add => build_add(args.a, args.b),
+        ArithmeticOp::Mul => build_mul(args.a, args.b),
+        ArithmeticOp::Exp => build_exp(args.a, args.b),
+    };
+
+    let initial_agents = net.count_live_agents();
+    let initial_redexes = net.redex_queue.len();
+
+    println!("=== Relativist Compute ===");
+    println!("Expression:  {}({}, {})", op_name, args.a, args.b);
+    println!(
+        "Encoding:    {} agents, {} redexes",
+        initial_agents, initial_redexes
+    );
+
+    // Reduce (local or distributed)
+    if let Some(workers) = args.workers {
+        // Distributed mode via run_grid
+        let grid_config = crate::merge::GridConfig {
+            num_workers: workers,
+            max_rounds: None,
+        };
+        let strategy = crate::partition::ContiguousIdStrategy;
+        let (reduced_net, metrics) = run_grid(net, &grid_config, &strategy);
+        net = reduced_net;
+
+        let mips = if metrics.total_time.as_secs_f64() > 0.0 {
+            metrics.total_interactions as f64 / metrics.total_time.as_secs_f64() / 1_000_000.0
+        } else {
+            0.0
+        };
+        println!(
+            "Reduction:   {} interactions in {:.2}s ({:.2} MIPS)",
+            metrics.total_interactions,
+            metrics.total_time.as_secs_f64(),
+            mips
+        );
+        println!("Workers:     {}", workers);
+        println!("Rounds:      {}", metrics.rounds);
+
+        if let Some(ref path) = args.metrics {
+            write_metrics(&metrics, path)?;
+        }
+    } else {
+        // Local reduction
+        let start = std::time::Instant::now();
+        let stats = reduce_all(&mut net);
+        let elapsed = start.elapsed();
+
+        let mips = if elapsed.as_secs_f64() > 0.0 {
+            stats.total_interactions as f64 / elapsed.as_secs_f64() / 1_000_000.0
+        } else {
+            0.0
+        };
+        println!(
+            "Reduction:   {} interactions in {:.2}s ({:.2} MIPS)",
+            stats.total_interactions,
+            elapsed.as_secs_f64(),
+            mips
+        );
+    }
+
+    // Discover root of the resulting Church numeral
+    discover_root(&mut net);
+
+    // Decode result
+    let result = decode_nat(&net);
+    match result {
+        Some(n) => println!("Result:      {}", n),
+        None => {
+            println!("Warning: result is not a recognizable Church numeral. The net may not have reached Normal Form or the encoding may be incorrect.");
+            println!("Final agents: {}", net.count_live_agents());
+            println!("Redexes:     {}", net.redex_queue.len());
+        }
+    }
+
+    // Save output if requested
+    if let Some(ref path) = args.output {
+        save_net_to_file(&net, path)?;
+    }
+
+    Ok(())
 }

@@ -62,7 +62,8 @@ pub fn parse_ic(input: &str) -> Result<Net, String> {
         }
     }
 
-    // Pass 2: process wire declarations
+    // Pass 2: process wire and root declarations
+    let mut root_set = false;
     for (line_num, line) in input.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -83,16 +84,56 @@ pub fn parse_ic(input: &str) -> Result<Net, String> {
                 }
                 let port_a = parse_port_ref(tokens[1], &name_to_id, &net, line_num + 1)?;
                 let port_b = parse_port_ref(tokens[2], &name_to_id, &net, line_num + 1)?;
+
+                // R58: Reject self-loop wires (port connected to itself)
+                if port_a == port_b {
+                    return Err(format!(
+                        "port cannot be connected to itself at line {}",
+                        line_num + 1
+                    ));
+                }
+
+                // R59: Reject free-to-free wires
+                if matches!(port_a, PortRef::FreePort(_))
+                    && matches!(port_b, PortRef::FreePort(_))
+                {
+                    return Err(format!(
+                        "free-to-free wires are not supported; at least one endpoint must be an agent port, at line {}",
+                        line_num + 1
+                    ));
+                }
+
                 net.connect(port_a, port_b);
+            }
+            "root" => {
+                // R54: At most one root declaration
+                if root_set {
+                    return Err(format!(
+                        "duplicate root declaration at line {}",
+                        line_num + 1
+                    ));
+                }
+                if tokens.len() != 2 {
+                    return Err(format!(
+                        "line {}: 'root' requires exactly one port reference",
+                        line_num + 1
+                    ));
+                }
+                let port_ref = parse_port_ref(tokens[1], &name_to_id, &net, line_num + 1)?;
+                // R56: root port must refer to a valid port (already validated by parse_port_ref)
+                net.root = Some(port_ref);
+                root_set = true;
             }
             other => {
                 return Err(format!(
-                    "line {}: unknown keyword '{}' (expected 'agent' or 'wire')",
+                    "line {}: unknown keyword '{}' (expected 'agent', 'wire', or 'root')",
                     line_num + 1, other
                 ));
             }
         }
     }
+
+    // R55: If no root declaration is present, net.root remains None (default)
 
     Ok(net)
 }
@@ -189,7 +230,7 @@ pub fn format_ic(net: &Net) -> String {
     for agent in net.live_agents() {
         let arity = crate::net::arity(agent.symbol);
         for port in 0..=arity {
-            let src = PortRef::AgentPort(agent.id, port as u8);
+            let src = PortRef::AgentPort(agent.id, port);
             let src_idx = agent.id as usize * 3 + port as usize;
             if src_idx >= net.ports.len() {
                 continue;
@@ -214,6 +255,11 @@ pub fn format_ic(net: &Net) -> String {
             let tgt_str = format_port_ref(target);
             out.push_str(&format!("wire {} {}\n", src_str, tgt_str));
         }
+    }
+
+    // Root declaration (R54-R57)
+    if let Some(ref root_ref) = net.root {
+        out.push_str(&format!("root {}\n", format_port_ref(root_ref)));
     }
 
     out
@@ -346,11 +392,82 @@ wire a.p2 b.p2
         assert_eq!(net.count_live_agents(), 2);
     }
 
+    // R58: Self-loop wire rejected
+    #[test]
+    fn test_parse_self_loop_rejected() {
+        let input = "agent a CON\nwire a.left a.left\n";
+        let result = parse_ic(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("port cannot be connected to itself"));
+    }
+
+    // R59: Free-to-free wire rejected
+    #[test]
+    fn test_parse_free_to_free_rejected() {
+        let input = "agent a CON\nwire free(0) free(1)\n";
+        let result = parse_ic(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("free-to-free wires are not supported"));
+    }
+
+    // R54: Root declaration support
+    #[test]
+    fn test_parse_root_declaration() {
+        let input = "\
+agent a CON
+wire a.left free(0)
+wire a.right free(1)
+root a.principal
+";
+        let net = parse_ic(input).unwrap();
+        assert_eq!(net.root, Some(PortRef::AgentPort(0, 0)));
+    }
+
+    // R54: Duplicate root rejected
+    #[test]
+    fn test_parse_duplicate_root_rejected() {
+        let input = "\
+agent a CON
+root a.principal
+root a.left
+";
+        let result = parse_ic(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("duplicate root declaration"));
+    }
+
+    // R55: No root declaration -> net.root is None
+    #[test]
+    fn test_parse_no_root_is_none() {
+        let input = "agent a CON\n";
+        let net = parse_ic(input).unwrap();
+        assert_eq!(net.root, None);
+    }
+
+    // R56: Root with free port reference
+    #[test]
+    fn test_parse_root_free_port() {
+        let input = "root free(0)\n";
+        let net = parse_ic(input).unwrap();
+        assert_eq!(net.root, Some(PortRef::FreePort(0)));
+    }
+
     #[test]
     fn test_format_empty_net() {
         let net = Net::new();
         let text = format_ic(&net);
         assert!(text.is_empty());
+    }
+
+    #[test]
+    fn test_format_emits_root() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.root = Some(PortRef::AgentPort(a, 0));
+        let text = format_ic(&net);
+        assert!(text.contains("root a0.principal"));
     }
 
     #[test]

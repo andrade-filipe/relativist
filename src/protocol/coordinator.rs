@@ -11,7 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use super::config::NodeConfig;
 use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
-use super::types::{Message, RegisterAckPayload, RegisterNackPayload, RegisterPayload};
+use super::types::{Message, RegisterAckPayload, RegisterNackPayload};
 use crate::merge::{drain_stale_redexes, merge, GridConfig, GridMetrics, WorkerRoundStats};
 use crate::partition::{split, Partition, PartitionStrategy};
 use crate::reduction::reduce_all;
@@ -401,6 +401,7 @@ mod tests {
     use crate::merge::WorkerRoundStats;
     use crate::net::{Net, PortRef, Symbol};
     use crate::partition::{ContiguousIdStrategy, IdRange, Partition, WorkerId};
+    use crate::protocol::types::RegisterPayload;
     use std::collections::HashMap;
 
     /// Send a Tier 1 (no-auth) Register message from a simulated worker.

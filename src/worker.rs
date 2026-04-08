@@ -51,7 +51,9 @@ pub enum WorkerEvent {
 #[derive(Debug)]
 pub enum WorkerAction {
     /// Send a message to the coordinator.
-    SendMessage(Message),
+    ///
+    /// Boxed to avoid large size difference between enum variants (clippy::large_enum_variant).
+    SendMessage(Box<Message>),
     /// Close the TCP connection gracefully.
     CloseConnection,
     /// Shut down the worker process. Used on ConnectionLost since
@@ -75,12 +77,18 @@ pub struct WorkerContext {
     pub round: u32,
 }
 
-impl WorkerContext {
-    pub fn new() -> Self {
+impl Default for WorkerContext {
+    fn default() -> Self {
         Self {
             state: WorkerState::Init,
             round: 0,
         }
+    }
+}
+
+impl WorkerContext {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -114,7 +122,7 @@ pub fn transition(ctx: &mut WorkerContext, event: WorkerEvent) -> Vec<WorkerActi
         // Reducing + ReductionComplete → Returning
         (WorkerState::Reducing, WorkerEvent::ReductionComplete(partition)) => {
             ctx.state = WorkerState::Returning;
-            actions.push(WorkerAction::SendMessage(Message::PartitionResult {
+            actions.push(WorkerAction::SendMessage(Box::new(Message::PartitionResult {
                 round: ctx.round,
                 partition: partition.clone(),
                 stats: crate::merge::WorkerRoundStats {
@@ -125,7 +133,7 @@ pub fn transition(ctx: &mut WorkerContext, event: WorkerEvent) -> Vec<WorkerActi
                     reduce_duration_secs: 0.0, // filled by the runtime
                     interactions_by_rule: [0; 6], // filled by the runtime
                 },
-            }));
+            })));
             actions.push(WorkerAction::LogTransition {
                 from,
                 to: ctx.state.clone(),
@@ -154,11 +162,11 @@ pub fn transition(ctx: &mut WorkerContext, event: WorkerEvent) -> Vec<WorkerActi
         // Reducing + ReductionError → Error
         (WorkerState::Reducing, WorkerEvent::ReductionError(msg)) => {
             ctx.state = WorkerState::Error;
-            actions.push(WorkerAction::SendMessage(Message::Error {
+            actions.push(WorkerAction::SendMessage(Box::new(Message::Error {
                 round: ctx.round,
                 worker_id: 0, // filled by runtime
                 description: msg,
-            }));
+            })));
             actions.push(WorkerAction::LogTransition {
                 from,
                 to: ctx.state.clone(),
@@ -293,7 +301,7 @@ mod tests {
         ctx.state = WorkerState::Reducing;
         let actions = transition(&mut ctx, WorkerEvent::ReductionError("bad".into()));
         assert_eq!(ctx.state, WorkerState::Error);
-        assert!(actions.iter().any(|a| matches!(a, WorkerAction::SendMessage(Message::Error { .. }))));
+        assert!(actions.iter().any(|a| matches!(a, WorkerAction::SendMessage(m) if matches!(**m, Message::Error { .. }))));
     }
 
     #[test]

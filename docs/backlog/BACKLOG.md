@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-07
-**Total tasks:** 206 (140 done, 0 in progress, 65 todo, 1 obsoleted)
+**Total tasks:** 207 (140 done, 0 in progress, 66 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -48,6 +48,7 @@
 | TASK-0028 | Define ReductionStats and implement reduce_all | P0 | **DONE** | 0027 | M |
 | TASK-0029 | Implement reduce_n (budget-limited reduction) | P0 | **DONE** | 0027, 0028 | S |
 | TASK-0030 | Wire up reduction module re-exports | P1 | **DONE** | 0020-0029, 0218 | S |
+| TASK-0232 | Fix self-loop annihilation in interact_anni | P0 | **DONE** | 0024 | S |
 
 ## Phase 3: Partitioning (SPEC-04)
 

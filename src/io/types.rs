@@ -49,7 +49,10 @@ pub struct ReductionSummary {
     pub mips: f64,
 }
 
-/// Compute a NetSummary from a Net (SPEC-12 R29).
+/// Compute a NetSummary from a Net (SPEC-12 R29, R61).
+///
+/// Iterates only over ports `0..=arity(agent.symbol)` for each live agent,
+/// skipping unused port slots beyond the agent's arity (R61).
 pub fn net_summary(net: &crate::net::Net) -> NetSummary {
     let agents = net.count_live_agents();
     let con = net.live_agents().filter(|a| a.symbol == Symbol::Con).count();
@@ -58,19 +61,27 @@ pub fn net_summary(net: &crate::net::Net) -> NetSummary {
     let redexes = net.redex_queue.len();
 
     // Count distinct wires (AgentPort-AgentPort pairs) and free ports
+    // R61: iterate only over ports 0..=arity(symbol) per live agent
     let mut wires = 0usize;
     let mut free_ports = 0usize;
-    for (idx, port_ref) in net.ports.iter().enumerate() {
-        match port_ref {
-            crate::net::PortRef::AgentPort(target_id, _target_port) => {
-                // Count only once per pair: when our index < target index
-                let target_idx = *target_id as usize * 3 + *_target_port as usize;
-                if idx < target_idx {
-                    wires += 1;
-                }
+    for agent in net.live_agents() {
+        let arity = crate::net::arity(agent.symbol);
+        for p in 0..=arity {
+            let idx = agent.id as usize * 3 + p as usize;
+            if idx >= net.ports.len() {
+                continue;
             }
-            crate::net::PortRef::FreePort(_) => {
-                free_ports += 1;
+            match &net.ports[idx] {
+                crate::net::PortRef::AgentPort(target_id, target_port) => {
+                    // Count only once per pair: when our index < target index
+                    let target_idx = *target_id as usize * 3 + *target_port as usize;
+                    if idx < target_idx {
+                        wires += 1;
+                    }
+                }
+                crate::net::PortRef::FreePort(_) => {
+                    free_ports += 1;
+                }
             }
         }
     }

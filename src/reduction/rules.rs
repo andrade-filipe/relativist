@@ -77,8 +77,31 @@ pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
     let b1 = net.get_target(PortRef::AgentPort(b_id, 1));
     let b2 = net.get_target(PortRef::AgentPort(b_id, 2));
 
+    // Detect self-loops BEFORE removing agents.
+    // A self-loop means p1 <-> p2 on the same agent (e.g., Church(0)'s
+    // `lambda x. x` where lam_x.p1 connects to lam_x.p2).
+    // When one agent has a self-loop, it acts as identity: the other
+    // agent's external ports should be connected directly to each other.
+    let a_self_loop =
+        a1 == PortRef::AgentPort(a_id, 2) && a2 == PortRef::AgentPort(a_id, 1);
+    let b_self_loop =
+        b1 == PortRef::AgentPort(b_id, 2) && b2 == PortRef::AgentPort(b_id, 1);
+
     net.remove_agent(a_id);
     net.remove_agent(b_id);
+
+    if a_self_loop && b_self_loop {
+        // Both agents have self-loops — nothing external to connect
+        return;
+    } else if b_self_loop {
+        // b is identity — connect a's external ports together
+        link(net, a1, a2);
+        return;
+    } else if a_self_loop {
+        // a is identity — connect b's external ports together
+        link(net, b1, b2);
+        return;
+    }
 
     match sym {
         Symbol::Con => {
@@ -1310,5 +1333,167 @@ mod tests {
         } else {
             panic!("Expected AgentPort, got {:?}", c2_target);
         }
+    }
+
+    // ================================================================
+    // TASK-0232: Self-loop annihilation tests (intra-agent self-loops)
+    // ================================================================
+
+    /// Helper: creates a CON agent with p1 <-> p2 self-loop (like Church(0) lambda_x).
+    fn con_with_self_loop(net: &mut Net) -> AgentId {
+        let a = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(a, 2));
+        a
+    }
+
+    /// Helper: creates a DUP agent with p1 <-> p2 self-loop.
+    fn dup_with_self_loop(net: &mut Net) -> AgentId {
+        let a = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(a, 2));
+        a
+    }
+
+    // T1: CON-CON with b self-loop, a has external ports → externals linked
+    #[test]
+    fn test_self_loop_con_con_b_has_self_loop() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = con_with_self_loop(&mut net);
+        let x = net.create_agent(Symbol::Era); // external for a.p1
+        let y = net.create_agent(Symbol::Era); // external for a.p2
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 0));
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        interact_anni(&mut net, a, b);
+
+        // a and b removed
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+        // x and y connected to each other (a's externals linked)
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(x, 0)),
+            PortRef::AgentPort(y, 0)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(y, 0)),
+            PortRef::AgentPort(x, 0)
+        );
+    }
+
+    // T2: CON-CON with a self-loop, b has external ports → externals linked
+    #[test]
+    fn test_self_loop_con_con_a_has_self_loop() {
+        let mut net = Net::new();
+        let a = con_with_self_loop(&mut net);
+        let b = net.create_agent(Symbol::Con);
+        let x = net.create_agent(Symbol::Era); // external for b.p1
+        let y = net.create_agent(Symbol::Era); // external for b.p2
+        net.connect(PortRef::AgentPort(b, 1), PortRef::AgentPort(x, 0));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::AgentPort(y, 0));
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        interact_anni(&mut net, a, b);
+
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+        // b's externals linked together
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(x, 0)),
+            PortRef::AgentPort(y, 0)
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(y, 0)),
+            PortRef::AgentPort(x, 0)
+        );
+    }
+
+    // T3: DUP-DUP with b self-loop → externals linked
+    #[test]
+    fn test_self_loop_dup_dup_b_has_self_loop() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Dup);
+        let b = dup_with_self_loop(&mut net);
+        let x = net.create_agent(Symbol::Era);
+        let y = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(x, 0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 0));
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        interact_anni(&mut net, a, b);
+
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(x, 0)),
+            PortRef::AgentPort(y, 0)
+        );
+    }
+
+    // T5: CON-CON both self-loops → both removed, nothing to connect
+    #[test]
+    fn test_self_loop_con_con_both_self_loops() {
+        let mut net = Net::new();
+        let a = con_with_self_loop(&mut net);
+        let b = con_with_self_loop(&mut net);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        interact_anni(&mut net, a, b);
+
+        assert!(net.get_agent(a).is_none());
+        assert!(net.get_agent(b).is_none());
+        // No other live agents affected
+        assert_eq!(net.count_live_agents(), 0);
+    }
+
+    // T11: New redex after self-loop annihilation
+    #[test]
+    fn test_self_loop_creates_new_redex() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = con_with_self_loop(&mut net);
+        // a's externals are principal ports of other agents
+        let c = net.create_agent(Symbol::Con);
+        let d = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(d, 0));
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        // Drain the existing redexes from queue (a<->b)
+        let initial_redexes = net.redex_queue.len();
+
+        interact_anni(&mut net, a, b);
+
+        // c.p0 <-> d.p0 should form a new redex
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(c, 0)),
+            PortRef::AgentPort(d, 0)
+        );
+        // New redex should be in the queue
+        assert!(
+            net.redex_queue.len() > 0,
+            "Expected new redex from self-loop annihilation linking two principal ports"
+        );
+    }
+
+    // E1: Self-loop agent with FreePort external
+    #[test]
+    fn test_self_loop_with_freeport_external() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = con_with_self_loop(&mut net);
+        let y = net.create_agent(Symbol::Era);
+        // a.p1 connects to FreePort, a.p2 connects to y
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(y, 0));
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        interact_anni(&mut net, a, b);
+
+        // FreePort(0) linked to y.p0
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(y, 0)),
+            PortRef::FreePort(0)
+        );
     }
 }

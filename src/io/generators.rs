@@ -49,34 +49,50 @@ pub fn ep_annihilation(n: u32) -> Net {
     net
 }
 
-/// N CON-CON annihilation pairs (TASK-0172).
+/// N CON-CON annihilation pairs (SPEC-12 R38).
 ///
 /// Creates N pairs of CON agents connected principal-to-principal,
-/// with auxiliary ports cross-connected (left-left, right-right).
-/// Each pair annihilates (annihilation rule), yielding an empty net.
+/// with auxiliary ports connected to free ports.
+/// After reduction: 0 CON agents, free ports cross-reconnected.
 pub fn ep_annihilation_con(n: u32) -> Net {
     let mut net = Net::new();
+    let mut free_id = 0u32;
     for _ in 0..n {
         let a = net.create_agent(Symbol::Con);
         let b = net.create_agent(Symbol::Con);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
-        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(free_id));
+        free_id += 1;
     }
     net
 }
 
-/// N DUP-DUP annihilation pairs (TASK-0172).
+/// N DUP-DUP annihilation pairs (SPEC-12 R38a).
 ///
-/// Same as CON-CON but with DUP symbols.
+/// Creates N pairs of DUP agents connected principal-to-principal,
+/// with auxiliary ports connected to free ports.
+/// After reduction: 0 DUP agents, free ports reconnected in parallel pattern.
 pub fn ep_annihilation_dup(n: u32) -> Net {
     let mut net = Net::new();
+    let mut free_id = 0u32;
     for _ in 0..n {
         let a = net.create_agent(Symbol::Dup);
         let b = net.create_agent(Symbol::Dup);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
-        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(free_id));
+        free_id += 1;
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(free_id));
+        free_id += 1;
     }
     net
 }
@@ -140,45 +156,78 @@ pub fn dual_tree(depth: u32) -> Net {
     net
 }
 
-/// Mixed-rule net: N/3 ERA-ERA + N/3 CON-CON + N/3 CON-DUP pairs (TASK-0175).
+/// Mixed-rule net: N pairs of each of the 6 interaction rule types (SPEC-12 R41).
 ///
-/// Exercises all three rule families in roughly equal proportion.
+/// For each iteration (0..N), creates one pair of each type:
+///   1. ERA-ERA (void/annihilation)
+///   2. CON-CON (annihilation)
+///   3. DUP-DUP (annihilation)
+///   4. CON-DUP (commutation)
+///   5. CON-ERA (erasure)
+///   6. DUP-ERA (erasure)
+///
+/// Total: 6N initial redex pairs. All auxiliary ports connect to fresh free ports,
+/// ensuring no cross-pair interactions before the initial redexes are resolved.
 pub fn mixed_rules(n: u32) -> Net {
-    let third = n / 3;
-    let remainder = n - third * 2;
-
     let mut net = Net::new();
     let mut free_id = 0u32;
 
-    // ERA-ERA pairs
-    for _ in 0..third {
+    for _ in 0..n {
+        // 1. ERA-ERA
         let a = net.create_agent(Symbol::Era);
         let b = net.create_agent(Symbol::Era);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-    }
 
-    // CON-CON pairs
-    for _ in 0..third {
+        // 2. CON-CON
         let a = net.create_agent(Symbol::Con);
         let b = net.create_agent(Symbol::Con);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
-        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
-    }
+        for agent in [a, b] {
+            for port in [1u8, 2] {
+                net.connect(PortRef::AgentPort(agent, port), PortRef::FreePort(free_id));
+                free_id += 1;
+            }
+        }
 
-    // CON-DUP pairs
-    for _ in 0..remainder {
+        // 3. DUP-DUP
+        let a = net.create_agent(Symbol::Dup);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        for agent in [a, b] {
+            for port in [1u8, 2] {
+                net.connect(PortRef::AgentPort(agent, port), PortRef::FreePort(free_id));
+                free_id += 1;
+            }
+        }
+
+        // 4. CON-DUP
         let c = net.create_agent(Symbol::Con);
         let d = net.create_agent(Symbol::Dup);
         net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
-        net.connect(PortRef::AgentPort(c, 1), PortRef::FreePort(free_id));
-        free_id += 1;
-        net.connect(PortRef::AgentPort(c, 2), PortRef::FreePort(free_id));
-        free_id += 1;
-        net.connect(PortRef::AgentPort(d, 1), PortRef::FreePort(free_id));
-        free_id += 1;
-        net.connect(PortRef::AgentPort(d, 2), PortRef::FreePort(free_id));
-        free_id += 1;
+        for agent in [c, d] {
+            for port in [1u8, 2] {
+                net.connect(PortRef::AgentPort(agent, port), PortRef::FreePort(free_id));
+                free_id += 1;
+            }
+        }
+
+        // 5. CON-ERA
+        let c = net.create_agent(Symbol::Con);
+        let e = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(e, 0));
+        for port in [1u8, 2] {
+            net.connect(PortRef::AgentPort(c, port), PortRef::FreePort(free_id));
+            free_id += 1;
+        }
+
+        // 6. DUP-ERA
+        let d = net.create_agent(Symbol::Dup);
+        let e = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(d, 0), PortRef::AgentPort(e, 0));
+        for port in [1u8, 2] {
+            net.connect(PortRef::AgentPort(d, port), PortRef::FreePort(free_id));
+            free_id += 1;
+        }
     }
 
     net
@@ -266,17 +315,19 @@ mod tests {
 
     #[test]
     fn test_mixed_rules() {
-        let net = mixed_rules(9);
-        // 3 ERA-ERA (6 agents) + 3 CON-CON (6 agents) + 3 CON-DUP (6 agents) = 18
-        assert_eq!(net.count_live_agents(), 18);
-        assert_eq!(net.redex_queue.len(), 9);
+        let net = mixed_rules(3);
+        // Per iteration: ERA-ERA(2) + CON-CON(2) + DUP-DUP(2) + CON-DUP(2) + CON-ERA(2) + DUP-ERA(2) = 12 agents
+        // 3 iterations = 36 agents, 18 redex pairs (6 per iteration)
+        assert_eq!(net.count_live_agents(), 36);
+        assert_eq!(net.redex_queue.len(), 18);
     }
 
     #[test]
     fn test_mixed_rules_reduces() {
-        let mut net = mixed_rules(9);
+        let mut net = mixed_rules(3);
         let stats = reduce_all(&mut net);
-        assert!(stats.total_interactions >= 6); // At least ERA+CON pairs fully annihilate
+        // At least ERA-ERA + CON-CON + DUP-DUP annihilate (3*3=9), plus erasure rules
+        assert!(stats.total_interactions >= 9);
     }
 
     #[test]

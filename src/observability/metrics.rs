@@ -3,11 +3,49 @@
 //! Feature-gated under `metrics`. When not enabled, this module
 //! is not compiled at all.
 
+use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue};
 use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 use std::sync::atomic::AtomicI64;
+
+/// Label value for the `rule` dimension on `interactions_by_rule_total` (SPEC-11 R12, R16).
+///
+/// Six variants matching the IC interaction rules. Max cardinality = 6.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct RuleLabel {
+    /// The IC interaction rule name.
+    pub rule: RuleValue,
+}
+
+/// Possible values for the `rule` label (SPEC-11 R16).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum RuleValue {
+    /// CON-CON annihilation.
+    ConCon,
+    /// CON-DUP commutation.
+    ConDup,
+    /// CON-ERA erasure.
+    ConEra,
+    /// DUP-DUP annihilation.
+    DupDup,
+    /// DUP-ERA erasure.
+    DupEra,
+    /// ERA-ERA annihilation.
+    EraEra,
+}
+
+/// All six rule labels, indexed by `SpecificRule` ordinal (0..6).
+pub const RULE_LABELS: [RuleValue; 6] = [
+    RuleValue::ConCon,
+    RuleValue::ConDup,
+    RuleValue::ConEra,
+    RuleValue::DupDup,
+    RuleValue::DupEra,
+    RuleValue::EraEra,
+];
 
 /// Custom histogram buckets tuned to IC reduction latencies (SPEC-11 R15).
 ///
@@ -40,6 +78,10 @@ pub struct CoordinatorMetrics {
     pub dispatch_bytes_total: Counter,
     /// Total bytes received back from workers.
     pub return_bytes_total: Counter,
+    /// Total interactions by rule type, across all workers and rounds (SPEC-11 R12).
+    ///
+    /// Labeled by `RuleLabel` with 6 variants (R16: max cardinality = 6).
+    pub interactions_by_rule_total: Family<RuleLabel, Counter>,
 }
 
 impl CoordinatorMetrics {
@@ -52,7 +94,7 @@ impl CoordinatorMetrics {
             rounds_total.clone(),
         );
 
-        let round_duration_seconds = Histogram::new(HISTOGRAM_BUCKETS.into_iter());
+        let round_duration_seconds = Histogram::new(HISTOGRAM_BUCKETS);
         registry.register(
             "relativist_round_duration_seconds",
             "Wall-clock duration of each round",
@@ -80,14 +122,14 @@ impl CoordinatorMetrics {
             border_redexes.clone(),
         );
 
-        let merge_duration_seconds = Histogram::new(HISTOGRAM_BUCKETS.into_iter());
+        let merge_duration_seconds = Histogram::new(HISTOGRAM_BUCKETS);
         registry.register(
             "relativist_merge_duration_seconds",
             "Duration of the merge phase",
             merge_duration_seconds.clone(),
         );
 
-        let split_duration_seconds = Histogram::new(HISTOGRAM_BUCKETS.into_iter());
+        let split_duration_seconds = Histogram::new(HISTOGRAM_BUCKETS);
         registry.register(
             "relativist_split_duration_seconds",
             "Duration of the split phase",
@@ -108,6 +150,13 @@ impl CoordinatorMetrics {
             return_bytes_total.clone(),
         );
 
+        let interactions_by_rule_total = Family::<RuleLabel, Counter>::default();
+        registry.register(
+            "relativist_interactions_by_rule_total",
+            "Total interactions by rule type across all workers and rounds",
+            interactions_by_rule_total.clone(),
+        );
+
         Self {
             rounds_total,
             round_duration_seconds,
@@ -118,6 +167,7 @@ impl CoordinatorMetrics {
             split_duration_seconds,
             dispatch_bytes_total,
             return_bytes_total,
+            interactions_by_rule_total,
         }
     }
 }
@@ -176,12 +226,36 @@ mod tests {
     }
 
     #[test]
+    fn test_interactions_by_rule_total() {
+        let mut registry = Registry::default();
+        let metrics = CoordinatorMetrics::register(&mut registry);
+
+        // Increment ConCon rule counter via get_or_create
+        let label = RuleLabel { rule: RuleValue::ConCon };
+        metrics.interactions_by_rule_total.get_or_create(&label).inc();
+        metrics.interactions_by_rule_total.get_or_create(&label).inc();
+
+        // Increment EraEra rule counter
+        let era_label = RuleLabel { rule: RuleValue::EraEra };
+        metrics.interactions_by_rule_total.get_or_create(&era_label).inc();
+
+        // Verify via encoding (Family counters are not directly readable)
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &registry).unwrap();
+        assert!(buf.contains("relativist_interactions_by_rule_total"));
+    }
+
+    #[test]
     fn test_prometheus_encoding() {
         let mut registry = Registry::default();
         let metrics = CoordinatorMetrics::register(&mut registry);
 
         metrics.rounds_total.inc();
         metrics.active_workers.set(3);
+
+        // Exercise interactions_by_rule_total so it appears in encoding
+        let label = RuleLabel { rule: RuleValue::DupDup };
+        metrics.interactions_by_rule_total.get_or_create(&label).inc();
 
         // Encode to OpenMetrics text format
         let mut buf = String::new();
@@ -190,5 +264,6 @@ mod tests {
         assert!(buf.contains("relativist_rounds_total"));
         assert!(buf.contains("relativist_active_workers"));
         assert!(buf.contains("relativist_round_duration_seconds"));
+        assert!(buf.contains("relativist_interactions_by_rule_total"));
     }
 }

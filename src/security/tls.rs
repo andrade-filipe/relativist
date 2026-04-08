@@ -39,10 +39,13 @@ impl TlsServerConfig {
             .map_err(|e| SecurityError::Certificate(format!("invalid key PEM: {}", e)))?
             .ok_or_else(|| SecurityError::Certificate("no private key found in PEM file".into()))?;
 
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .map_err(|e| SecurityError::TlsConfig(format!("rustls config error: {}", e)))?;
+        // SPEC-10 R22: TLS 1.3 exclusively, no TLS 1.2 fallback.
+        let config = rustls::ServerConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ])
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| SecurityError::TlsConfig(format!("rustls config error: {}", e)))?;
 
         Ok(Self {
             config: Arc::new(config),
@@ -81,9 +84,12 @@ impl TlsClientConfig {
                 .map_err(|e| SecurityError::Certificate(format!("invalid CA cert: {}", e)))?;
         }
 
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        // SPEC-10 R22: TLS 1.3 exclusively, no TLS 1.2 fallback.
+        let config = rustls::ClientConfig::builder_with_protocol_versions(&[
+            &rustls::version::TLS13,
+        ])
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
 
         Ok(Self {
             config: Arc::new(config),

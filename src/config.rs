@@ -76,8 +76,8 @@ pub enum LogFormat {
 /// Arguments for the `coordinator` subcommand (SPEC-07 R3, SPEC-13 R44).
 #[derive(clap::Args, Debug)]
 pub struct CoordinatorArgs {
-    /// Number of workers to wait for before starting.
-    #[arg(short = 'w', long)]
+    /// Number of workers to wait for before starting (must be >= 1).
+    #[arg(short = 'w', long, value_parser = clap::value_parser!(u32).range(1..))]
     pub workers: u32,
 
     /// Socket address to bind to.
@@ -155,8 +155,8 @@ pub struct WorkerArgs {
 /// Arguments for the `local` subcommand (SPEC-07 R5, SPEC-13 R45a).
 #[derive(clap::Args, Debug)]
 pub struct LocalArgs {
-    /// Number of simulated workers.
-    #[arg(short = 'w', long)]
+    /// Number of simulated workers (must be >= 1).
+    #[arg(short = 'w', long, value_parser = clap::value_parser!(u32).range(1..))]
     pub workers: u32,
 
     /// Path to the input network file (.bin).
@@ -224,24 +224,42 @@ pub struct GenerateArgs {
     pub output: PathBuf,
 }
 
+/// Supported arithmetic operations for the compute subcommand (SPEC-14 R22).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ArithmeticOp {
+    /// Addition: a + b
+    Add,
+    /// Multiplication: a * b
+    Mul,
+    /// Exponentiation: a ^ b
+    Exp,
+}
+
 /// Arguments for the `compute` subcommand (SPEC-14 R22-R25).
-///
-/// Full definition will be refined in Phase 11 (Encoding).
-/// Placeholder accepting operation and operands.
 #[derive(clap::Args, Debug)]
 pub struct ComputeArgs {
-    /// Arithmetic operation (add, mul, exp).
-    pub operation: String,
+    /// Arithmetic operation to perform.
+    #[arg(value_enum)]
+    pub operation: ArithmeticOp,
 
     /// First operand (natural number).
-    pub a: u32,
+    pub a: u64,
 
     /// Second operand (natural number).
-    pub b: u32,
+    pub b: u64,
 
-    /// Path to write the reduced network (optional).
+    /// Number of workers for distributed reduction (must be >= 1 if specified).
+    /// If omitted, reduces locally via reduce_all.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub workers: Option<u32>,
+
+    /// Path to write the reduced net file.
     #[arg(short = 'o', long)]
     pub output: Option<PathBuf>,
+
+    /// Path to write metrics JSON.
+    #[arg(short = 'm', long)]
+    pub metrics: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +473,7 @@ mod tests {
             Cli::try_parse_from(["relativist", "compute", "add", "3", "5"]).unwrap();
         match cli.command {
             Command::Compute(args) => {
-                assert_eq!(args.operation, "add");
+                assert!(matches!(args.operation, ArithmeticOp::Add));
                 assert_eq!(args.a, 3);
                 assert_eq!(args.b, 5);
             }

@@ -42,3 +42,6 @@ pub mod observability;
 
 // User I/O: net formats, generators, examples (SPEC-12)
 pub mod io;
+
+// Arithmetic encoding: Church numerals, arithmetic combinators (SPEC-14)
+pub mod encoding;

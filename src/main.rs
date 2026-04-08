@@ -6,12 +6,54 @@
 
 use clap::Parser;
 use relativist::commands;
-use relativist::config::{Cli, Command};
-use relativist::observability::{init_tracing, ObservabilityConfig};
+use relativist::config::{Cli, Command, LogFormat};
+use relativist::observability::{
+    init_tracing,
+    LogFormat as ObsLogFormat,
+    ObservabilityConfig,
+    ProcessRole,
+};
+
+/// Extract the `--log-format` option from whichever subcommand was parsed.
+/// Returns `None` if the subcommand does not carry a `log_format` field
+/// (e.g., `reduce`, `inspect`, `generate`).
+fn extract_log_format(cmd: &Command) -> Option<&LogFormat> {
+    match cmd {
+        Command::Coordinator(a) => a.log_format.as_ref(),
+        Command::Worker(a) => a.log_format.as_ref(),
+        Command::Local(a) => a.log_format.as_ref(),
+        _ => None,
+    }
+}
+
+/// Convert CLI `LogFormat` to observability `LogFormat`.
+fn to_obs_log_format(fmt: &LogFormat) -> ObsLogFormat {
+    match fmt {
+        LogFormat::Text => ObsLogFormat::Text,
+        LogFormat::Json => ObsLogFormat::Json,
+    }
+}
+
+/// Determine the `ProcessRole` from the parsed subcommand.
+fn extract_role(cmd: &Command) -> ProcessRole {
+    match cmd {
+        Command::Coordinator(_) => ProcessRole::Coordinator,
+        Command::Worker(_) => ProcessRole::Worker,
+        _ => ProcessRole::Local,
+    }
+}
 
 fn main() {
-    init_tracing(&ObservabilityConfig::default());
     let cli = Cli::parse();
+
+    // Build observability config from CLI flags (SPEC-07 R35, SPEC-11 R3).
+    let obs_config = ObservabilityConfig {
+        log_format: extract_log_format(&cli.command)
+            .map(to_obs_log_format)
+            .unwrap_or(ObsLogFormat::Text),
+        role: extract_role(&cli.command),
+    };
+    init_tracing(&obs_config);
 
     let result = match cli.command {
         Command::Coordinator(args) => commands::run_coordinator_command(args),
