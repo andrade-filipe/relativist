@@ -4,12 +4,32 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  packages: write
+
 jobs:
-  build:
-    name: Build Docker Image
+  build-and-push:
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image
-        run: docker build -t relativist:${{ github.ref_name }} .
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version tag
+        id: meta
+        run: echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/andrade-filipe/relativist:${{ steps.meta.outputs.version }}
+            ghcr.io/andrade-filipe/relativist:latest

@@ -23,31 +23,68 @@ Motor de reducao distribuida de Interaction Combinators para Grid Computing.
 
 ## 1. Instalacao
 
-### Compilar do codigo fonte
+### Opcao 1: Install script (Linux/macOS) — Recomendada
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/andrade-filipe/relativist/main/scripts/install.sh | sh
+```
+
+O script detecta seu OS/arquitetura, baixa o binario pre-compilado do GitHub Releases,
+verifica o checksum SHA256, e instala em `/usr/local/bin` (ou `~/.local/bin`).
+
+Para instalar uma versao especifica:
+
+```bash
+VERSION=0.6.0 curl -sSfL https://raw.githubusercontent.com/andrade-filipe/relativist/main/scripts/install.sh | sh
+```
+
+### Opcao 2: Docker
+
+```bash
+docker pull ghcr.io/andrade-filipe/relativist
+docker run --rm ghcr.io/andrade-filipe/relativist --version
+```
+
+### Opcao 3: Download manual
+
+Baixe o binario para seu sistema em:
+https://github.com/andrade-filipe/relativist/releases
+
+- Linux: `relativist-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+- Windows: `relativist-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+
+Extraia e coloque o binario numa pasta do seu PATH.
+
+### Opcao 4: Compilar do codigo fonte
 
 Requer Rust 1.75+ (toolchain stable):
 
 ```bash
-cd codigo/relativist
-cargo build --release
+cargo install --git https://github.com/andrade-filipe/relativist
 ```
 
-O binario fica em `target/release/relativist` (Linux/Mac) ou `target\release\relativist.exe` (Windows).
+Ou para desenvolvimento local:
+
+```bash
+cd codigo/relativist
+cargo build --release
+# Binario em target/release/relativist (Linux/Mac)
+# Binario em target\release\relativist.exe (Windows)
+```
 
 ### Verificar instalacao
 
 ```bash
-cargo run --release -- --version
-# relativist 0.0.1
+relativist --version
+# relativist 0.6.0
 
-cargo run --release -- --help
+relativist --help
 ```
 
-### Rodar os testes
+### Rodar os testes (desenvolvimento)
 
 ```bash
 cargo test
-# 643 testes devem passar
 ```
 
 ---
