@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
-**Last updated:** 2026-04-07
-**Updated by:** Development — Phase 9 (User I/O) COMPLETE (15/20 tasks, all P0 done)
+**Last updated:** 2026-04-09
+**Updated by:** Documentation sync — Phases 10-11 COMPLETE, v0.9.0 released (643 tests, 11 benchmarks)
 
 ---
 
@@ -10,7 +10,7 @@
 | Phase | Status | Detail |
 |-------|--------|--------|
 | Specs (core) | 10/10 COMPLETE | SPEC-00 to SPEC-09 revised in English (v2+; SPEC-02/03/04/06/08/09 at v3, SPEC-13 at Revised v2 via adversarial review) |
-| Specs (end-to-end) | 4/4 DRAFT v1 | SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture) — SPEC-13 revised to v2, others Draft v1 |
+| Specs (end-to-end) | 5/5 REVISED | SPEC-10 (Security v2), SPEC-11 (Observability v2), SPEC-12 (User I/O v2), SPEC-13 (System Architecture v2), SPEC-14 (Encoding v2). SPEC-15 (Distribution) at Draft v2 |
 | Research library | 24/24 COMPLETE | PESQ-001 to PESQ-024 in `docs/pesquisa/` |
 | Open decisions | 8/8 RESOLVED | See PESQ-023 (Decision Matrix) |
 | Open-source setup | COMPLETE | LICENCE, README, CONTRIBUTING, GitHub templates (.github/) |
@@ -30,7 +30,9 @@
 | Phase 7: Security | COMPLETE | SPEC-10: 14/20 tasks done (490 tests). AuthToken, 3-tier security, Register handshake with token validation, TLS configs, SecurityConfig builder. TASK-0132/0133 (TLS handshake integration), 0134/0135 (conn limits/timeout), 0139 (integration tests) deferred (P1/P2) |
 | Phase 8: Observability | COMPLETE | SPEC-11: 10/21 tasks done (497 default / 507 w/ metrics). LogFormat, ProcessRole, ObservabilityConfig, init_tracing (text+JSON+EnvFilter), CoordinatorMetrics, /health /ready /metrics endpoints, spawn_metrics_server. TASK-0145-0149 (#[instrument]/FSM logging), 0151/0153 (protocol+aggregation metrics), 0158/0159 (OTel), 0213/0214 deferred (P1/P2) |
 | Phase 9: User I/O | COMPLETE | SPEC-12: 15/20 tasks done (534 tests). Binary/IC format load/save, text DSL parser+serializer, format dispatch, NetSummary, 6 generators (EP-annihilation, CON-CON, DUP-DUP, CON-DUP expansion, dual-tree, mixed-rules). TASK-0167 (JSON), 0176/0177 (tree_sum, Church generators), 0179 (integration tests) deferred (P1/P2) |
-| Phase 10-11 | NOT STARTED | Benchmarks, Encoding |
+| Phase 10: Benchmarks | COMPLETE | SPEC-09: 11 benchmarks (EP-ERA/CON/DUP, CON-DUP, DualTree, TreeSum, TreeSumBalanced, MixedNet, ErasureProp, ChurchAdd, ChurchMul), suite runner, CSV output, correctness verification (639 unit tests + 4 integration) |
+| Phase 11: Encoding | COMPLETE | SPEC-14: Church numeral encode/decode, add, mul, exp (with known exp limitation). 643 total tests |
+| Distribution | COMPLETE | SPEC-15: GitHub Releases (Windows .exe, Linux .tar.gz/.deb), Docker GHCR, install script, self-update command, shell completions. v0.9.0 |
 
 ---
 

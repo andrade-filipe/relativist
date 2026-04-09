@@ -7,7 +7,7 @@
 
 ## Overview
 
-Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec (SPEC-02 through SPEC-12) goes through the same 7-stage pipeline. No stage can be skipped. The pipeline ensures clean context, precise tasks, comprehensive tests, and multi-perspective code review.
+Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec (SPEC-02 through SPEC-15) goes through the same 7-stage pipeline. No stage can be skipped. The pipeline ensures clean context, precise tasks, comprehensive tests, and multi-perspective code review.
 
 ---
 

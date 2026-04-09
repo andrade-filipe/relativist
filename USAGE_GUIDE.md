@@ -38,7 +38,7 @@ verifica o checksum SHA256, e instala em `/usr/local/bin` (ou `~/.local/bin`).
 Para instalar uma versao especifica:
 
 ```bash
-VERSION=0.6.0 curl -sSfL https://raw.githubusercontent.com/andrade-filipe/relativist/main/scripts/install.sh | sh
+VERSION=0.9.0 curl -sSfL https://raw.githubusercontent.com/andrade-filipe/relativist/main/scripts/install.sh | sh
 ```
 
 ### Opcao 2: Docker
@@ -93,7 +93,7 @@ cargo build --release
 
 ```bash
 relativist --version
-# relativist 0.6.0
+# relativist 0.9.0
 
 relativist --help
 ```
@@ -613,7 +613,7 @@ docker build -t relativist .
 
 ```bash
 docker run --rm relativist --version
-# relativist 0.0.1
+# relativist 0.9.0
 ```
 
 ### Usar com volume montado
@@ -788,10 +788,10 @@ relativist update --check
 
 Saida:
 ```
-Current version: 0.7.0
-Latest version:  0.7.1
+Current version: 0.9.0
+Latest version:  0.9.1
 
-Update available: 0.7.0 -> 0.7.1
+Update available: 0.9.0 -> 0.9.1
 ```
 
 ### Atualizar automaticamente
@@ -884,7 +884,7 @@ Garante que o binario final compila sem erros.
 cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && cargo build --release
 
 # 2. Atualizar versao no Cargo.toml (se necessario)
-# version = "0.7.0"
+# version = "0.9.0"
 
 # 3. Commit e tag
 git add -A && git commit -m "release: vX.Y.Z"

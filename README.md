@@ -100,6 +100,7 @@ All design decisions are documented in formal specifications:
 | [SPEC-12](specs/SPEC-12-user-io.md) | User I/O & Examples | 61 reqs |
 | [SPEC-13](specs/SPEC-13-system-architecture.md) | System Architecture | 52 reqs |
 | [SPEC-14](specs/SPEC-14-encoding.md) | Arithmetic Encoding | 27 reqs |
+| [SPEC-15](specs/SPEC-15-distribution.md) | Distribution & Packaging | 20 reqs |
 
 ## Research Context
 
