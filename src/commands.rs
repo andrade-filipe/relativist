@@ -496,29 +496,40 @@ pub fn run_update_command(args: UpdateArgs) -> Result<(), RelativistError> {
         eprintln!("Warning: could not download SHA256SUMS, skipping verification.");
     }
 
-    // Extract/install
-    let current_exe = std::env::current_exe().map_err(|e| {
-        RelativistError::Config(format!("Cannot determine current executable path: {}", e))
+    // Determine canonical install directory and install there
+    let install_dir = canonical_install_dir()?;
+    std::fs::create_dir_all(&install_dir).map_err(|e| {
+        RelativistError::Config(format!(
+            "Cannot create install dir {:?}: {}",
+            install_dir, e
+        ))
     })?;
 
-    if cfg!(target_os = "windows") {
-        // Windows: rename current .exe to .old, copy new
-        let old_path = current_exe.with_extension("exe.old");
-        let _ = std::fs::remove_file(&old_path);
-        std::fs::rename(&current_exe, &old_path).map_err(|e| {
-            RelativistError::Config(format!(
-                "Cannot rename current executable: {}. Try running as administrator.",
-                e
-            ))
-        })?;
-        std::fs::copy(&artifact_path, &current_exe).map_err(|e| {
-            // Try to restore old binary
-            let _ = std::fs::rename(&old_path, &current_exe);
-            RelativistError::Config(format!("Cannot install new binary: {}", e))
-        })?;
-        let _ = std::fs::remove_file(&old_path);
+    let bin_name = if cfg!(target_os = "windows") {
+        "relativist.exe"
     } else {
-        // Unix: extract from tar.gz, then replace
+        "relativist"
+    };
+    let install_path = install_dir.join(bin_name);
+
+    if cfg!(target_os = "windows") {
+        // Windows: copy new binary to canonical location
+        if install_path.exists() {
+            let old_path = install_dir.join("relativist.exe.old");
+            let _ = std::fs::remove_file(&old_path);
+            std::fs::rename(&install_path, &old_path)
+                .map_err(|e| RelativistError::Config(format!("Cannot rename old binary: {}", e)))?;
+            std::fs::copy(&artifact_path, &install_path).map_err(|e| {
+                let _ = std::fs::rename(&old_path, &install_path);
+                RelativistError::Config(format!("Cannot install new binary: {}", e))
+            })?;
+            let _ = std::fs::remove_file(&old_path);
+        } else {
+            std::fs::copy(&artifact_path, &install_path)
+                .map_err(|e| RelativistError::Config(format!("Cannot install binary: {}", e)))?;
+        }
+    } else {
+        // Unix: extract from tar.gz, copy to canonical location
         let status = std::process::Command::new("tar")
             .args([
                 "xzf",
@@ -534,28 +545,143 @@ pub fn run_update_command(args: UpdateArgs) -> Result<(), RelativistError> {
         }
 
         let new_binary = tmp_dir.join("relativist");
-        std::fs::copy(&new_binary, &current_exe).map_err(|e| {
-            RelativistError::Config(format!(
-                "Cannot replace binary at {}: {}. Try: sudo relativist update",
-                current_exe.display(),
-                e
-            ))
-        })?;
+        std::fs::copy(&new_binary, &install_path)
+            .map_err(|e| RelativistError::Config(format!("Cannot install binary: {}", e)))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::set_permissions(&install_path, std::fs::Permissions::from_mode(0o755));
         }
     }
+
+    // Ensure canonical install dir is in PATH
+    let path_added = ensure_in_path(&install_dir)?;
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     println!("\nrelativist updated: {} -> {}", current, latest);
+    println!("Installed to: {}", install_path.display());
+    if path_added {
+        println!("\nAdded {} to your PATH.", install_dir.display());
+        println!("Please restart your terminal for the change to take effect.");
+    }
     println!("Verify: relativist --version");
 
     Ok(())
+}
+
+/// Return the canonical install directory for the relativist binary.
+///
+/// - Windows: `%LOCALAPPDATA%\relativist\bin\`
+/// - Linux/macOS: `~/.relativist/bin/`
+fn canonical_install_dir() -> Result<std::path::PathBuf, RelativistError> {
+    if cfg!(target_os = "windows") {
+        // %LOCALAPPDATA%\relativist\bin
+        let local_app = std::env::var("LOCALAPPDATA").map_err(|_| {
+            RelativistError::Config("LOCALAPPDATA environment variable not set".into())
+        })?;
+        Ok(std::path::PathBuf::from(local_app)
+            .join("relativist")
+            .join("bin"))
+    } else {
+        // ~/.relativist/bin
+        let home = std::env::var("HOME")
+            .map_err(|_| RelativistError::Config("HOME environment variable not set".into()))?;
+        Ok(std::path::PathBuf::from(home)
+            .join(".relativist")
+            .join("bin"))
+    }
+}
+
+/// Ensure the given directory is in the user's PATH. Returns true if it was added.
+fn ensure_in_path(dir: &std::path::Path) -> Result<bool, RelativistError> {
+    let dir_str = dir.to_string_lossy();
+
+    // Check if already in PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        let sep = if cfg!(target_os = "windows") {
+            ';'
+        } else {
+            ':'
+        };
+        for entry in path_var.split(sep) {
+            if std::path::Path::new(entry) == dir {
+                return Ok(false); // already present
+            }
+        }
+    }
+
+    if cfg!(target_os = "windows") {
+        // Windows: use setx to permanently add to user PATH
+        // Read current user PATH from registry via powershell
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[Environment]::GetEnvironmentVariable('Path', 'User')",
+            ])
+            .output()
+            .map_err(|e| RelativistError::Config(format!("Cannot read user PATH: {}", e)))?;
+
+        let current_user_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Check if already in user PATH (may differ from session PATH)
+        let already = current_user_path
+            .split(';')
+            .any(|e| std::path::Path::new(e.trim()) == dir);
+        if already {
+            return Ok(false);
+        }
+
+        let new_path = if current_user_path.is_empty() {
+            dir_str.to_string()
+        } else {
+            format!("{};{}", current_user_path, dir_str)
+        };
+
+        let ps_cmd = format!(
+            "[Environment]::SetEnvironmentVariable('Path', '{}', 'User')",
+            new_path.replace('\'', "''")
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_cmd])
+            .status()
+            .map_err(|e| RelativistError::Config(format!("Cannot set user PATH: {}", e)))?;
+
+        if !status.success() {
+            eprintln!("Warning: could not add {} to PATH automatically.", dir_str);
+            eprintln!("Add it manually: setx PATH \"%PATH%;{}\"", dir_str);
+            return Ok(false);
+        }
+    } else {
+        // Unix: append to ~/.bashrc (most common shell)
+        let home = std::env::var("HOME").unwrap_or_default();
+        let bashrc = std::path::PathBuf::from(&home).join(".bashrc");
+        let export_line = format!("\nexport PATH=\"{}:$PATH\"\n", dir_str);
+
+        // Check if already in .bashrc
+        if let Ok(contents) = std::fs::read_to_string(&bashrc) {
+            if contents.contains(&format!("{}:", dir_str))
+                || contents.contains(&format!("\"{}\"", dir_str))
+            {
+                return Ok(false);
+            }
+        }
+
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&bashrc)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(export_line.as_bytes())
+            })
+            .map_err(|e| RelativistError::Config(format!("Cannot update ~/.bashrc: {}", e)))?;
+    }
+
+    Ok(true)
 }
 
 /// Fetch latest release JSON from GitHub API.
