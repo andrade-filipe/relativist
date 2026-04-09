@@ -404,6 +404,19 @@ mod tests {
     use crate::protocol::types::RegisterPayload;
     use std::collections::HashMap;
 
+    /// Connect to addr with retry (handles race between spawn and bind).
+    async fn connect_retry(addr: std::net::SocketAddr) -> TcpStream {
+        for _ in 0..50 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => return s,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        TcpStream::connect(addr)
+            .await
+            .expect("failed to connect after retries")
+    }
+
     /// Send a Tier 1 (no-auth) Register message from a simulated worker.
     async fn send_register(stream: &mut TcpStream) {
         let register = Message::Register(RegisterPayload {
@@ -449,11 +462,11 @@ mod tests {
         });
 
         // Connect 2 workers and send Register
-        let mut w1 = TcpStream::connect(addr).await.unwrap();
+        let mut w1 = connect_retry(addr).await;
         send_register(&mut w1).await;
         let id1 = expect_register_ack(&mut w1).await;
 
-        let mut w2 = TcpStream::connect(addr).await.unwrap();
+        let mut w2 = connect_retry(addr).await;
         send_register(&mut w2).await;
         let id2 = expect_register_ack(&mut w2).await;
 
@@ -515,7 +528,7 @@ mod tests {
             async move { accept_workers(&config, Some(&token_clone)).await }
         });
 
-        let mut w = TcpStream::connect(addr).await.unwrap();
+        let mut w = connect_retry(addr).await;
         let register = Message::Register(RegisterPayload {
             protocol_version: PROTOCOL_VERSION,
             auth_token: Some(*token.as_bytes()),
@@ -559,7 +572,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         // Send wrong token — should get RegisterNack
-        let mut w = TcpStream::connect(addr).await.unwrap();
+        let mut w = connect_retry(addr).await;
         let register = Message::Register(RegisterPayload {
             protocol_version: PROTOCOL_VERSION,
             auth_token: Some(*wrong_token.as_bytes()),
@@ -606,7 +619,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         // Send Register without token — should get RegisterNack
-        let mut w = TcpStream::connect(addr).await.unwrap();
+        let mut w = connect_retry(addr).await;
         send_register(&mut w).await; // sends auth_token: None
 
         let (msg, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
@@ -625,8 +638,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         // Connect 2 "workers"
-        let w1 = TcpStream::connect(addr).await.unwrap();
-        let w2 = TcpStream::connect(addr).await.unwrap();
+        let w1 = connect_retry(addr).await;
+        let w2 = connect_retry(addr).await;
 
         let (s1, _) = listener.accept().await.unwrap();
         let (s2, _) = listener.accept().await.unwrap();
@@ -652,8 +665,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let w1 = TcpStream::connect(addr).await.unwrap();
-        let w2 = TcpStream::connect(addr).await.unwrap();
+        let w1 = connect_retry(addr).await;
+        let w2 = connect_retry(addr).await;
 
         let (s1, _) = listener.accept().await.unwrap();
         let (s2, _) = listener.accept().await.unwrap();
@@ -724,8 +737,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let mut w1 = TcpStream::connect(addr).await.unwrap();
-        let mut w2 = TcpStream::connect(addr).await.unwrap();
+        let mut w1 = connect_retry(addr).await;
+        let mut w2 = connect_retry(addr).await;
 
         let (s1, _) = listener.accept().await.unwrap();
         let (s2, _) = listener.accept().await.unwrap();
@@ -779,7 +792,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let mut w1 = TcpStream::connect(addr).await.unwrap();
+        let mut w1 = connect_retry(addr).await;
         let (s1, _) = listener.accept().await.unwrap();
         let mut streams = vec![s1];
 
