@@ -17,7 +17,8 @@ Motor de reducao distribuida de Interaction Combinators para Grid Computing.
 9. [Docker](#9-docker)
 10. [Pipeline Completa: Gerar, Inspecionar, Reduzir, Comparar](#10-pipeline-completa)
 11. [Formatos de Arquivo](#11-formatos-de-arquivo)
-12. [Referencia Rapida](#12-referencia-rapida)
+12. [Desenvolvimento: Verificacoes Pre-Push](#12-desenvolvimento-verificacoes-pre-push)
+13. [Referencia Rapida](#13-referencia-rapida)
 
 ---
 
@@ -759,7 +760,79 @@ Portas: `principal`, `left` (aux1), `right` (aux2).
 
 ---
 
-## 12. Referencia Rapida
+## 12. Desenvolvimento: Verificacoes Pre-Push
+
+Antes de fazer commit/push ou criar tags de release, **sempre** execute estas verificacoes localmente.
+Sao as mesmas que o CI (GitHub Actions) executa — se passarem localmente, a pipeline passa.
+
+### Checklist rapido (copie e cole)
+
+```bash
+cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && cargo build --release
+```
+
+Se tudo passar sem erros, seu codigo esta pronto para push.
+
+### Passo a passo
+
+**1. Formatacao (rustfmt)**
+
+```bash
+cargo fmt --check
+```
+
+Se houver diferencas, corrija com `cargo fmt` e faca o commit.
+
+**2. Linter (clippy)**
+
+```bash
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+Flags importantes:
+- `--all-targets`: checa lib, testes, benchmarks e binarios
+- `--all-features`: habilita features opcionais (tls, metrics, otel)
+- `-D warnings`: trata warnings como erros (mesmo comportamento do CI)
+
+**3. Testes**
+
+```bash
+cargo test
+```
+
+Todos os 639+ testes devem passar, com 0 warnings.
+
+**4. Build release**
+
+```bash
+cargo build --release
+```
+
+Garante que o binario final compila sem erros.
+
+### Antes de criar uma tag de release
+
+```bash
+# 1. Verificacoes completas
+cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && cargo build --release
+
+# 2. Atualizar versao no Cargo.toml (se necessario)
+# version = "0.7.0"
+
+# 3. Commit e tag
+git add -A && git commit -m "release: vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+A tag `v*` dispara automaticamente:
+- **CI** (`ci.yml`): fmt + clippy + test + build
+- **Release** (`release.yml`): compila binarios Linux/Windows, cria GitHub Release com checksums
+- **Docker** (`docker.yml`): build e push da imagem para GHCR
+
+---
+
+## 13. Referencia Rapida
 
 ```
 relativist --version              # Versao
