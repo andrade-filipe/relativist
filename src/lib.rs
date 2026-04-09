@@ -45,3 +45,6 @@ pub mod io;
 
 // Arithmetic encoding: Church numerals, arithmetic combinators (SPEC-14)
 pub mod encoding;
+
+// Benchmark suite: parametric workloads, metrics, CSV output (SPEC-09)
+pub mod bench;
