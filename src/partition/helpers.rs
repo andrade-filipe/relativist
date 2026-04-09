@@ -222,6 +222,7 @@ pub fn build_subnet(
         redex_queue,
         next_id: 0, // Caller sets this based on ID range
         root: None, // Caller sets this based on R28
+        freeport_redirects: std::collections::HashMap::new(),
     }
 }
 

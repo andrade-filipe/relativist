@@ -3,6 +3,7 @@
 //! The complete interaction net data structure with agent arena,
 //! port array, redex queue, and all CRUD operations.
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use super::types::{total_ports, Agent, AgentId, PortRef, Symbol, DISCONNECTED, PORTS_PER_SLOT};
@@ -40,6 +41,19 @@ pub struct Net {
     /// Constrained to `None` or `Some(AgentPort(id, 0))` where `id` is a
     /// live agent (R6a). `FreePort` values are NOT valid for root.
     pub root: Option<PortRef>,
+
+    /// Tracks FreePort-to-FreePort redirections that occur during reduction.
+    ///
+    /// When `connect(FreePort(a), FreePort(b))` is called, neither side has
+    /// a slot in the port array, so the connection is normally lost. This map
+    /// records the intended redirect: `a -> FreePort(b)` and `b -> FreePort(a)`.
+    ///
+    /// Used by `rebuild_free_port_index` (SPEC-05) to recover border FreePort
+    /// references that were consumed during local partition reduction.
+    /// Empty for nets that are not partition subnets.
+    /// Not serialized: only relevant during the grid cycle.
+    #[serde(skip)]
+    pub freeport_redirects: HashMap<u32, PortRef>,
 }
 
 impl Default for Net {
@@ -57,6 +71,7 @@ impl Net {
             redex_queue: VecDeque::new(),
             next_id: 0,
             root: None,
+            freeport_redirects: HashMap::new(),
         }
     }
 
@@ -71,6 +86,7 @@ impl Net {
             redex_queue: VecDeque::new(),
             next_id: 0,
             root: None,
+            freeport_redirects: HashMap::new(),
         }
     }
 
@@ -158,6 +174,19 @@ impl Net {
 
         self.set_port(a, b);
         self.set_port(b, a);
+
+        // Track FreePort-to-FreePort redirections (both set_port calls are
+        // no-ops for FreePort, so the connection would be lost without this).
+        // Used by rebuild_free_port_index to recover border references
+        // consumed during local partition reduction (SPEC-05).
+        if let (PortRef::FreePort(fid_a), PortRef::FreePort(fid_b)) = (a, b) {
+            if fid_a != u32::MAX {
+                self.freeport_redirects.insert(fid_a, b);
+            }
+            if fid_b != u32::MAX {
+                self.freeport_redirects.insert(fid_b, a);
+            }
+        }
 
         // Incremental redex detection: if both are principal ports,
         // an active pair is formed.

@@ -77,6 +77,11 @@ pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
         }
         1 => {
             // lambda f. lambda x. f x — single application, no DUP needed
+            //
+            // Application CON port convention (dictated by CON-CON CROSS annihilation):
+            //   p0 = principal (function), p1 = result/continuation, p2 = argument
+            // CROSS links app.p1 ↔ lam.p2 (result ↔ body) and
+            //              app.p2 ↔ lam.p1 (argument ↔ variable) — correct beta-reduction.
             let app = net.create_agent(Symbol::Con); // application node
             net.connect(
                 PortRef::AgentPort(lam_f, 1), // f binding
@@ -84,11 +89,11 @@ pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
             );
             net.connect(
                 PortRef::AgentPort(lam_x, 1), // x binding
-                PortRef::AgentPort(app, 1),   // -> app argument
+                PortRef::AgentPort(app, 2),   // -> app argument (p2)
             );
             net.connect(
                 PortRef::AgentPort(lam_x, 2), // body result
-                PortRef::AgentPort(app, 2),   // -> app result
+                PortRef::AgentPort(app, 1),   // -> app result (p1)
             );
         }
         n => {
@@ -132,24 +137,24 @@ pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
                 }
             }
 
-            // Wire x variable to innermost application's argument
+            // Wire x variable to innermost application's argument (p2)
             net.connect(
                 PortRef::AgentPort(lam_x, 1),
-                PortRef::AgentPort(apps[n - 1], 1),
+                PortRef::AgentPort(apps[n - 1], 2),
             );
 
-            // Chain application results: app[i].p2 -> app[i-1].p1
+            // Chain application results: app[i].p1 (result) -> app[i-1].p2 (argument)
             // (each app's result feeds the previous app's argument)
             for i in (1..n).rev() {
                 net.connect(
-                    PortRef::AgentPort(apps[i], 2),
-                    PortRef::AgentPort(apps[i - 1], 1),
+                    PortRef::AgentPort(apps[i], 1),
+                    PortRef::AgentPort(apps[i - 1], 2),
                 );
             }
 
-            // Outermost application result -> body result of lambda_x
+            // Outermost application result (p1) -> body result of lambda_x
             net.connect(
-                PortRef::AgentPort(apps[0], 2),
+                PortRef::AgentPort(apps[0], 1),
                 PortRef::AgentPort(lam_x, 2),
             );
         }
@@ -206,19 +211,17 @@ pub fn decode_nat(net: &Net) -> Option<u64> {
     }
 
     // Check self-loop: x_bind == lambda_x.p2 and x_body == lambda_x.p1
+    // This is the definitive indicator of Church(0): the body ignores x entirely.
+    // The f variable may be erased directly (ERA) or through DUP+ERA chains
+    // (common after arithmetic reduction). We don't check f's target here —
+    // the self-loop alone is sufficient to identify Church(0).
     if x_bind == PortRef::AgentPort(lam_x, 2) && x_body == PortRef::AgentPort(lam_x, 1) {
-        // Verify ERA on f
-        if let PortRef::AgentPort(era_id, 0) = f_target {
-            let era_agent = net.get_agent(era_id)?;
-            if era_agent.symbol == Symbol::Era {
-                return Some(0);
-            }
-        }
-        return None;
+        return Some(0);
     }
 
     // Step 4: Walk application chain from lambda_x.p2 (body result)
-    // In Normal Form, lambda_x.p2 connects to the outermost application's p2.
+    // In Normal Form, lambda_x.p2 connects to the outermost application's p1 (result port).
+    // Application port convention: p0 = function, p1 = result, p2 = argument.
     let mut count: u64 = 0;
     let mut current = PortRef::AgentPort(lam_x, 2);
 
@@ -228,21 +231,24 @@ pub fn decode_nat(net: &Net) -> Option<u64> {
             return None;
         }
         match target {
-            PortRef::AgentPort(app_id, 2) => {
-                // This is an application agent (CON used as @)
-                let agent = net.get_agent(app_id)?;
+            PortRef::AgentPort(id, port) => {
+                if id == lam_x && port == 1 {
+                    // Reached the x variable binding — end of chain
+                    break;
+                }
+                if port != 1 {
+                    return None; // Must be result port (p1) of an application
+                }
+                // This is an application agent's result port (p1)
+                let agent = net.get_agent(id)?;
                 if agent.symbol != Symbol::Con {
                     return None;
                 }
                 count += 1;
-                // Follow to the application's argument port (p1),
-                // which connects to the next application's result (p2)
+                // Follow to the application's argument port (p2),
+                // which connects to the next application's result (p1)
                 // or to lambda_x.p1 for the innermost application
-                current = PortRef::AgentPort(app_id, 1);
-            }
-            PortRef::AgentPort(id, 1) if id == lam_x => {
-                // Reached the x variable binding — end of chain
-                break;
+                current = PortRef::AgentPort(id, 2);
             }
             _ => return None,
         }
@@ -449,15 +455,15 @@ mod tests {
             _ => panic!("lam_f.p2 should connect to lam_x.p0"),
         };
 
-        // lam_x.p1 -> app.p1
+        // lam_x.p1 -> app.p2 (x variable -> app argument)
         assert_eq!(
             net.get_target(PortRef::AgentPort(lam_x, 1)),
-            PortRef::AgentPort(app, 1)
+            PortRef::AgentPort(app, 2)
         );
-        // lam_x.p2 -> app.p2
+        // lam_x.p2 -> app.p1 (body result -> app result)
         assert_eq!(
             net.get_target(PortRef::AgentPort(lam_x, 2)),
-            PortRef::AgentPort(app, 2)
+            PortRef::AgentPort(app, 1)
         );
     }
 }

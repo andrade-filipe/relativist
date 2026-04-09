@@ -39,6 +39,7 @@ pub fn rebuild_free_port_index(
 ) -> HashMap<u32, PortRef> {
     let mut index = HashMap::new();
 
+    // Phase 1: scan agent ports for boundary FreePorts still held by live agents
     for (i, slot) in subnet.agents.iter().enumerate() {
         if let Some(agent) = slot {
             let num_ports = total_ports(agent.symbol);
@@ -51,6 +52,18 @@ pub fn rebuild_free_port_index(
                     }
                 }
             }
+        }
+    }
+
+    // Phase 2: recover border references lost in FreePort-to-FreePort links.
+    //
+    // When a local reduction links a border FreePort(B) to a Lafont FreePort(N),
+    // connect(FreePort, FreePort) is a no-op in the port array. The redirect
+    // is recorded in freeport_redirects so we can recover B's destination here.
+    for (&fid, &target) in &subnet.freeport_redirects {
+        if fid >= border_id_start && fid < border_id_end && fid != u32::MAX {
+            // Only add if not already found by Phase 1 (agent port takes priority)
+            index.entry(fid).or_insert(target);
         }
     }
 

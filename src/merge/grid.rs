@@ -585,4 +585,142 @@ mod tests {
         assert_eq!(seq.count_live_agents(), grid_result.count_live_agents());
         assert_eq!(seq_stats.total_interactions, metrics.total_interactions);
     }
+
+    // G1i: FreePort-FreePort redirect regression — annihilation consumes both
+    // agents in one partition, leaving the border reference unresolvable.
+    //
+    // Topology: c0-c1 (internal pair in W0), c2 survives in W1.
+    //   c0.0 <-> c1.0 (active pair, internal to W0)
+    //   c1.1 <-> c2.1 (border wire)
+    //   c1.2 <-> c2.2 (border wire)
+    //   c0.1, c0.2 = Lafont FreePorts; c2.0 = Lafont FreePort
+    //
+    // Bug: W0 reduces c0-c1 (CON-CON CROSS). The CROSS links
+    //   FreePort(B0) <-> FreePort(Lafont) — a no-op in the port array.
+    //   Border refs B0, B1 are lost. Merge can't restore c2.1 and c2.2,
+    //   leaving them DISCONNECTED → T1 violation.
+    //
+    // Fix: Net::connect records FreePort-FreePort redirects in
+    //   freeport_redirects, which rebuild_free_port_index uses.
+    #[test]
+    fn test_g1_freeport_redirect_regression() {
+        let mut net = Net::new();
+        let c0 = net.create_agent(Symbol::Con); // id=0 → W0
+        let c1 = net.create_agent(Symbol::Con); // id=1 → W0
+        let c2 = net.create_agent(Symbol::Con); // id=2 → W1
+
+        // Active pair in W0
+        net.connect(PortRef::AgentPort(c0, 0), PortRef::AgentPort(c1, 0));
+        // Border wires (will cross the partition boundary)
+        net.connect(PortRef::AgentPort(c1, 1), PortRef::AgentPort(c2, 1));
+        net.connect(PortRef::AgentPort(c1, 2), PortRef::AgentPort(c2, 2));
+        // Lafont FreePorts
+        net.connect(PortRef::AgentPort(c0, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(c0, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(c2, 0), PortRef::FreePort(2));
+
+        // Sequential baseline
+        let mut seq = net.clone();
+        let seq_stats = reduce_all(&mut seq);
+
+        // Grid with 2 workers
+        let config = GridConfig {
+            num_workers: 2,
+            max_rounds: None,
+        };
+        let (grid_result, metrics) = run_grid(net, &config, &ContiguousIdStrategy);
+
+        // Both should produce 1 agent (c2 survives) with 1 interaction
+        assert_eq!(seq.count_live_agents(), 1);
+        assert_eq!(grid_result.count_live_agents(), 1);
+        assert_eq!(seq_stats.total_interactions, metrics.total_interactions);
+
+        // c2's ports should match sequential result
+        // Sequential: c2.0 = FP(2), c2.1 = FP(1) (via CROSS), c2.2 = FP(0) (via CROSS)
+        assert_eq!(
+            grid_result.get_target(PortRef::AgentPort(c2, 0)),
+            seq.get_target(PortRef::AgentPort(c2, 0))
+        );
+        assert_eq!(
+            grid_result.get_target(PortRef::AgentPort(c2, 1)),
+            seq.get_target(PortRef::AgentPort(c2, 1))
+        );
+        assert_eq!(
+            grid_result.get_target(PortRef::AgentPort(c2, 2)),
+            seq.get_target(PortRef::AgentPort(c2, 2))
+        );
+    }
+
+    // G1j: Same as G1i but with DUP-DUP (PARALLEL pattern)
+    #[test]
+    fn test_g1_freeport_redirect_dup_dup() {
+        let mut net = Net::new();
+        let d0 = net.create_agent(Symbol::Dup); // id=0 → W0
+        let d1 = net.create_agent(Symbol::Dup); // id=1 → W0
+        let d2 = net.create_agent(Symbol::Dup); // id=2 → W1
+
+        net.connect(PortRef::AgentPort(d0, 0), PortRef::AgentPort(d1, 0));
+        net.connect(PortRef::AgentPort(d1, 1), PortRef::AgentPort(d2, 1));
+        net.connect(PortRef::AgentPort(d1, 2), PortRef::AgentPort(d2, 2));
+        net.connect(PortRef::AgentPort(d0, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(d0, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(d2, 0), PortRef::FreePort(2));
+
+        let mut seq = net.clone();
+        let seq_stats = reduce_all(&mut seq);
+
+        let config = GridConfig {
+            num_workers: 2,
+            max_rounds: None,
+        };
+        let (grid_result, metrics) = run_grid(net, &config, &ContiguousIdStrategy);
+
+        assert_eq!(seq.count_live_agents(), 1);
+        assert_eq!(grid_result.count_live_agents(), 1);
+        assert_eq!(seq_stats.total_interactions, metrics.total_interactions);
+        assert_eq!(
+            grid_result.get_target(PortRef::AgentPort(d2, 1)),
+            seq.get_target(PortRef::AgentPort(d2, 1))
+        );
+        assert_eq!(
+            grid_result.get_target(PortRef::AgentPort(d2, 2)),
+            seq.get_target(PortRef::AgentPort(d2, 2))
+        );
+    }
+
+    // G1k: Symmetric — both partitions consume agents with border wires
+    #[test]
+    fn test_g1_freeport_redirect_symmetric() {
+        let mut net = Net::new();
+        let c0 = net.create_agent(Symbol::Con); // id=0 → W0
+        let c1 = net.create_agent(Symbol::Con); // id=1 → W0
+        let c2 = net.create_agent(Symbol::Con); // id=2 → W1
+        let c3 = net.create_agent(Symbol::Con); // id=3 → W1
+
+        // Internal pairs in both partitions
+        net.connect(PortRef::AgentPort(c0, 0), PortRef::AgentPort(c1, 0));
+        net.connect(PortRef::AgentPort(c2, 0), PortRef::AgentPort(c3, 0));
+        // Border wires (c1 aux <-> c2 aux)
+        net.connect(PortRef::AgentPort(c1, 1), PortRef::AgentPort(c2, 1));
+        net.connect(PortRef::AgentPort(c1, 2), PortRef::AgentPort(c2, 2));
+        // Lafont FreePorts
+        net.connect(PortRef::AgentPort(c0, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(c0, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(c3, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(c3, 2), PortRef::FreePort(3));
+
+        let mut seq = net.clone();
+        let seq_stats = reduce_all(&mut seq);
+
+        let config = GridConfig {
+            num_workers: 2,
+            max_rounds: None,
+        };
+        let (grid_result, metrics) = run_grid(net, &config, &ContiguousIdStrategy);
+
+        // All agents consumed
+        assert_eq!(seq.count_live_agents(), 0);
+        assert_eq!(grid_result.count_live_agents(), 0);
+        assert_eq!(seq_stats.total_interactions, metrics.total_interactions);
+    }
 }

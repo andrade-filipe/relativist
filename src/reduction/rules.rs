@@ -126,19 +126,36 @@ pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
 /// a redex with its neighbor (detected by `link`), propagating erasure
 /// until meeting other ERA agents (terminating with ERA-ERA void) or free ports.
 ///
+/// Self-loop handling: if the arity-2 agent has a self-loop (p1 <-> p2,
+/// e.g., Church(0)'s `lambda x. x`), there are no external neighbors to
+/// propagate erasure to. Both agents are simply removed without creating
+/// new ERAs. Without this check, the new ERAs would be linked to ports
+/// of the already-removed self-looping agent, resulting in no-ops that
+/// leave DISCONNECTED principal ports (T1 violation).
+///
 /// Precondition: `node_id` MUST be Con or Dup, `era_id` MUST be Era.
 ///   Guaranteed by `normalize_pair` (R9) and `reduce_step` (R12).
-/// Postcondition: both removed; 2 new ERA connected to old aux neighbors.
+/// Postcondition: both removed; 2 new ERA connected to old aux neighbors
+///   (or 0 new ERA if self-loop detected).
 ///
-/// Agent balance: 0 (removes 2, creates 2). Link calls: 2.
+/// Agent balance: 0 (removes 2, creates 0 or 2). Link calls: 0 or 2.
 /// Complexity: O(1).
 pub fn interact_eras(net: &mut Net, node_id: AgentId, era_id: AgentId) {
     // Read auxiliary port targets of the arity-2 agent
     let a1 = net.get_target(PortRef::AgentPort(node_id, 1));
     let a2 = net.get_target(PortRef::AgentPort(node_id, 2));
 
+    // Detect self-loop: p1 <-> p2 on the arity-2 agent (e.g., Church(0) identity).
+    // If self-looping, there are no external ports — just remove both agents.
+    let self_loop = a1 == PortRef::AgentPort(node_id, 2)
+        && a2 == PortRef::AgentPort(node_id, 1);
+
     net.remove_agent(node_id);
     net.remove_agent(era_id);
+
+    if self_loop {
+        return;
+    }
 
     // Create 2 new ERA, one for each auxiliary port
     let e1 = net.create_agent(Symbol::Era);
