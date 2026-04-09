@@ -141,7 +141,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
             return Err(RelativistError::Config(format!(
                 "unknown mode '{}' (supported: sequential, local, tcp-localhost, tcp-network)",
                 other
-            )))
+            )));
         }
     };
 
@@ -181,7 +181,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
                     return Err(RelativistError::Config(format!(
                         "unknown benchmark '{}'",
                         other
-                    )))
+                    )));
                 }
             };
             ids.push(id);
