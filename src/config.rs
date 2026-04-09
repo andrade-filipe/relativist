@@ -57,6 +57,12 @@ pub enum Command {
 
     /// Run the benchmark suite (SPEC-09).
     Bench(BenchArgs),
+
+    /// Check for and install the latest release (SPEC-15 R19).
+    Update(UpdateArgs),
+
+    /// Generate shell completion scripts (SPEC-15 R20).
+    Completions(CompletionsArgs),
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +316,31 @@ pub struct BenchArgs {
     /// Grid loop round limit.
     #[arg(long)]
     pub max_rounds: Option<u32>,
+}
+
+/// Arguments for the `update` subcommand (SPEC-15 R19).
+#[derive(clap::Args, Debug)]
+pub struct UpdateArgs {
+    /// Only check for a new version without installing.
+    #[arg(long)]
+    pub check: bool,
+}
+
+/// Shell type for completion generation (SPEC-15 R20).
+#[derive(Debug, Clone, ValueEnum)]
+pub enum ShellType {
+    Bash,
+    Zsh,
+    Fish,
+    #[value(name = "powershell")]
+    PowerShell,
+}
+
+/// Arguments for the `completions` subcommand (SPEC-15 R20).
+#[derive(clap::Args, Debug)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for.
+    pub shell: ShellType,
 }
 
 // ---------------------------------------------------------------------------

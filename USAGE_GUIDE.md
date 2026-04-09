@@ -17,8 +17,10 @@ Motor de reducao distribuida de Interaction Combinators para Grid Computing.
 9. [Docker](#9-docker)
 10. [Pipeline Completa: Gerar, Inspecionar, Reduzir, Comparar](#10-pipeline-completa)
 11. [Formatos de Arquivo](#11-formatos-de-arquivo)
-12. [Desenvolvimento: Verificacoes Pre-Push](#12-desenvolvimento-verificacoes-pre-push)
-13. [Referencia Rapida](#13-referencia-rapida)
+12. [update — Atualizar Relativist](#12-update--atualizar-relativist)
+13. [completions — Autocompletar no Shell](#13-completions--autocompletar-no-shell)
+14. [Desenvolvimento: Verificacoes Pre-Push](#14-desenvolvimento-verificacoes-pre-push)
+15. [Referencia Rapida](#15-referencia-rapida)
 
 ---
 
@@ -774,7 +776,58 @@ Portas: `principal`, `left` (aux1), `right` (aux2).
 
 ---
 
-## 12. Desenvolvimento: Verificacoes Pre-Push
+## 12. update — Atualizar Relativist
+
+Verifica se ha uma versao mais recente e atualiza automaticamente.
+
+### Verificar se ha atualizacao
+
+```bash
+relativist update --check
+```
+
+Saida:
+```
+Current version: 0.7.0
+Latest version:  0.7.1
+
+Update available: 0.7.0 -> 0.7.1
+```
+
+### Atualizar automaticamente
+
+```bash
+relativist update
+```
+
+O comando baixa o binario correto para seu OS, verifica o checksum SHA256, e substitui o executavel atual.
+
+**Requisitos:** `gh` (GitHub CLI) autenticado para repositorios privados, ou `curl` para repositorios publicos.
+
+---
+
+## 13. completions — Autocompletar no Shell
+
+Gera scripts de autocompletar para seu shell. Os subcomandos e flags sao preenchidos com Tab.
+
+```bash
+# Bash
+relativist completions bash > ~/.bash_completion.d/relativist
+source ~/.bash_completion.d/relativist
+
+# Zsh
+relativist completions zsh > ~/.zfunc/_relativist
+
+# Fish
+relativist completions fish > ~/.config/fish/completions/relativist.fish
+
+# PowerShell
+relativist completions powershell >> $PROFILE
+```
+
+---
+
+## 14. Desenvolvimento: Verificacoes Pre-Push
 
 Antes de fazer commit/push ou criar tags de release, **sempre** execute estas verificacoes localmente.
 Sao as mesmas que o CI (GitHub Actions) executa — se passarem localmente, a pipeline passa.
@@ -846,7 +899,7 @@ A tag `v*` dispara automaticamente:
 
 ---
 
-## 13. Referencia Rapida
+## 15. Referencia Rapida
 
 ```
 relativist --version              # Versao
@@ -873,6 +926,13 @@ relativist compute exp <A> <B> [--workers <N>]
 relativist bench [--benchmark <B>] [--sizes <S>] [--workers <W>]
                  [--warmup <N>] [--repetitions <N>]
                  [--csv-detail <F>] [--csv-rounds <F>] [--csv-summary <F>]
+
+# Atualizar
+relativist update              # Baixar e instalar ultima versao
+relativist update --check      # Apenas verificar se ha atualizacao
+
+# Shell completions
+relativist completions bash|zsh|fish|powershell
 
 # Docker
 docker build -t relativist .

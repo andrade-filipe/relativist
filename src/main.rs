@@ -1,4 +1,4 @@
-//! Relativist CLI — single binary with 7 subcommands (SPEC-07 R1, SPEC-13 R43).
+//! Relativist CLI — single binary with 10 subcommands (SPEC-07 R1, SPEC-13 R43, SPEC-15 R19-R20).
 //!
 //! The main function parses CLI arguments, initializes tracing,
 //! and dispatches to the appropriate command entry point.
@@ -61,6 +61,8 @@ fn main() {
         Command::Generate(args) => commands::run_generate_command(args),
         Command::Compute(args) => commands::run_compute_command(args),
         Command::Bench(args) => commands::run_bench_command(args),
+        Command::Update(args) => commands::run_update_command(args),
+        Command::Completions(args) => commands::run_completions_command(args),
     };
 
     if let Err(e) = result {

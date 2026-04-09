@@ -5,8 +5,8 @@
 
 use crate::config::{
     build_grid_config, build_grid_config_from_local, build_node_config_coordinator,
-    build_node_config_worker, parse_strategy, BenchArgs, CoordinatorArgs, GenerateArgs,
-    InspectArgs, LocalArgs, ReduceArgs, WorkerArgs,
+    build_node_config_worker, parse_strategy, BenchArgs, CompletionsArgs, CoordinatorArgs,
+    GenerateArgs, InspectArgs, LocalArgs, ReduceArgs, UpdateArgs, WorkerArgs,
 };
 use crate::error::RelativistError;
 use crate::io::{load_net_from_file, print_summary, save_net_to_file, write_metrics};
@@ -404,5 +404,287 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
         save_net_to_file(&net, path)?;
     }
 
+    Ok(())
+}
+
+/// Execute update: check for and install the latest release (SPEC-15 R19).
+pub fn run_update_command(args: UpdateArgs) -> Result<(), RelativistError> {
+    let current = env!("CARGO_PKG_VERSION");
+    let repo = "andrade-filipe/relativist";
+    let api_path = format!("repos/{}/releases/latest", repo);
+
+    // Try `gh api` first (works with private repos), fall back to `curl`
+    let body = fetch_release_json(&api_path, repo)?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        RelativistError::Config(format!("Failed to parse GitHub API response: {}", e))
+    })?;
+
+    let tag = json["tag_name"]
+        .as_str()
+        .ok_or_else(|| RelativistError::Config("No tag_name in release".into()))?;
+    let latest = tag.strip_prefix('v').unwrap_or(tag);
+
+    println!("Current version: {}", current);
+    println!("Latest version:  {}", latest);
+
+    if current == latest {
+        println!("\nAlready up to date!");
+        return Ok(());
+    }
+
+    println!("\nUpdate available: {} -> {}", current, latest);
+
+    if args.check {
+        return Ok(());
+    }
+
+    // Determine platform artifact name
+    let (target, ext) = if cfg!(target_os = "windows") {
+        ("x86_64-pc-windows-msvc", "exe")
+    } else if cfg!(target_os = "linux") {
+        ("x86_64-unknown-linux-gnu", "tar.gz")
+    } else if cfg!(target_os = "macos") {
+        ("x86_64-apple-darwin", "tar.gz")
+    } else {
+        return Err(RelativistError::Config(
+            "Unsupported platform for self-update".into(),
+        ));
+    };
+
+    let artifact_name = if ext == "exe" {
+        format!("relativist-{}-{}.exe", tag, target)
+    } else {
+        format!("relativist-{}-{}.tar.gz", tag, target)
+    };
+
+    let tmp_dir = std::env::temp_dir().join("relativist-update");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|e| RelativistError::Config(format!("Failed to create temp dir: {}", e)))?;
+
+    let artifact_path = tmp_dir.join(&artifact_name);
+    let checksums_path = tmp_dir.join("SHA256SUMS");
+
+    // Download artifact
+    println!("\nDownloading {}...", artifact_name);
+    download_release_asset(repo, tag, &artifact_name, &artifact_path)?;
+
+    // Download and verify checksum
+    println!("Verifying checksum...");
+    let checksums_ok = download_release_asset(repo, tag, "SHA256SUMS", &checksums_path).is_ok();
+
+    if checksums_ok {
+        let checksums_content = std::fs::read_to_string(&checksums_path).unwrap_or_default();
+        if let Some(expected_line) = checksums_content
+            .lines()
+            .find(|l| l.contains(&artifact_name))
+        {
+            let expected_hash = expected_line.split_whitespace().next().unwrap_or("");
+            // Compute SHA256 of downloaded file
+            let hash = compute_sha256(&artifact_path)?;
+            if hash != expected_hash {
+                return Err(RelativistError::Config(format!(
+                    "Checksum mismatch!\n  Expected: {}\n  Got:      {}",
+                    expected_hash, hash
+                )));
+            }
+            println!("Checksum OK: {}", &hash[..16]);
+        } else {
+            eprintln!("Warning: artifact not found in SHA256SUMS, skipping verification.");
+        }
+    } else {
+        eprintln!("Warning: could not download SHA256SUMS, skipping verification.");
+    }
+
+    // Extract/install
+    let current_exe = std::env::current_exe().map_err(|e| {
+        RelativistError::Config(format!("Cannot determine current executable path: {}", e))
+    })?;
+
+    if cfg!(target_os = "windows") {
+        // Windows: rename current .exe to .old, copy new
+        let old_path = current_exe.with_extension("exe.old");
+        let _ = std::fs::remove_file(&old_path);
+        std::fs::rename(&current_exe, &old_path).map_err(|e| {
+            RelativistError::Config(format!(
+                "Cannot rename current executable: {}. Try running as administrator.",
+                e
+            ))
+        })?;
+        std::fs::copy(&artifact_path, &current_exe).map_err(|e| {
+            // Try to restore old binary
+            let _ = std::fs::rename(&old_path, &current_exe);
+            RelativistError::Config(format!("Cannot install new binary: {}", e))
+        })?;
+        let _ = std::fs::remove_file(&old_path);
+    } else {
+        // Unix: extract from tar.gz, then replace
+        let status = std::process::Command::new("tar")
+            .args([
+                "xzf",
+                &artifact_path.display().to_string(),
+                "-C",
+                &tmp_dir.display().to_string(),
+            ])
+            .status()
+            .map_err(|e| RelativistError::Config(format!("tar failed: {}", e)))?;
+
+        if !status.success() {
+            return Err(RelativistError::Config("Failed to extract archive".into()));
+        }
+
+        let new_binary = tmp_dir.join("relativist");
+        std::fs::copy(&new_binary, &current_exe).map_err(|e| {
+            RelativistError::Config(format!(
+                "Cannot replace binary at {}: {}. Try: sudo relativist update",
+                current_exe.display(),
+                e
+            ))
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    println!("\nrelativist updated: {} -> {}", current, latest);
+    println!("Verify: relativist --version");
+
+    Ok(())
+}
+
+/// Fetch latest release JSON from GitHub API.
+/// Tries `gh api` first (handles private repos via auth), falls back to `curl`.
+fn fetch_release_json(api_path: &str, _repo: &str) -> Result<String, RelativistError> {
+    // Try gh first
+    if let Ok(output) = std::process::Command::new("gh")
+        .args(["api", api_path])
+        .output()
+    {
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        }
+    }
+
+    // Fallback: curl (works for public repos)
+    let url = format!("https://api.github.com/{}", api_path);
+    let output = std::process::Command::new("curl")
+        .args(["-sSfL", "-H", "Accept: application/json", &url])
+        .output()
+        .map_err(|e| {
+            RelativistError::Config(format!(
+                "Neither gh nor curl available: {}. Install gh (https://cli.github.com) or curl.",
+                e
+            ))
+        })?;
+
+    if !output.status.success() {
+        return Err(RelativistError::Config(format!(
+            "Failed to fetch release info. If the repo is private, install and authenticate gh:\n  gh auth login\nError: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Download a file from GitHub Release assets.
+/// Tries `gh release download` first (handles private repos), falls back to `curl`.
+fn download_release_asset(
+    repo: &str,
+    tag: &str,
+    asset_name: &str,
+    dest: &std::path::Path,
+) -> Result<(), RelativistError> {
+    // Try gh first
+    if let Ok(status) = std::process::Command::new("gh")
+        .args([
+            "release",
+            "download",
+            tag,
+            "--repo",
+            repo,
+            "--pattern",
+            asset_name,
+            "--dir",
+            &dest.parent().unwrap_or(dest).display().to_string(),
+        ])
+        .status()
+    {
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    // Fallback: curl (public repos)
+    let url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        repo, tag, asset_name
+    );
+    let status = std::process::Command::new("curl")
+        .args(["-sSfL", "-o", &dest.display().to_string(), &url])
+        .status()
+        .map_err(|e| RelativistError::Config(format!("curl failed: {}", e)))?;
+
+    if !status.success() {
+        return Err(RelativistError::Config(format!(
+            "Failed to download {}",
+            asset_name
+        )));
+    }
+    Ok(())
+}
+
+/// Compute SHA256 hash of a file (for update checksum verification).
+fn compute_sha256(path: &std::path::Path) -> Result<String, RelativistError> {
+    // Shell out to a platform tool to avoid adding a SHA256 dependency
+    if cfg!(target_os = "windows") {
+        let output = std::process::Command::new("certutil")
+            .args(["-hashfile", &path.display().to_string(), "SHA256"])
+            .output()
+            .map_err(|e| RelativistError::Config(format!("certutil failed: {}", e)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // certutil output: line 0 = header, line 1 = hash, line 2 = footer
+        let hash = stdout
+            .lines()
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .replace(' ', "")
+            .to_lowercase();
+        Ok(hash)
+    } else {
+        let output = std::process::Command::new("sha256sum")
+            .arg(path.as_os_str())
+            .output()
+            .map_err(|e| RelativistError::Config(format!("sha256sum failed: {}", e)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let hash = stdout.split_whitespace().next().unwrap_or("").to_string();
+        Ok(hash)
+    }
+}
+
+/// Execute completions: generate shell completion scripts (SPEC-15 R20).
+pub fn run_completions_command(args: CompletionsArgs) -> Result<(), RelativistError> {
+    use crate::config::{Cli, ShellType};
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+
+    let shell = match args.shell {
+        ShellType::Bash => Shell::Bash,
+        ShellType::Zsh => Shell::Zsh,
+        ShellType::Fish => Shell::Fish,
+        ShellType::PowerShell => Shell::PowerShell,
+    };
+
+    let mut cmd = Cli::command();
+    generate(shell, &mut cmd, "relativist", &mut std::io::stdout());
     Ok(())
 }
