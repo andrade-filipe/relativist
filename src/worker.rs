@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_all_states_distinct() {
-        let states = vec![
+        let states = [
             WorkerState::Init,
             WorkerState::Idle,
             WorkerState::Reducing,

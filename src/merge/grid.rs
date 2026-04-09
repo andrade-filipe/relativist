@@ -277,8 +277,8 @@ mod tests {
             max_rounds: None,
         };
         let (_result, metrics) = run_grid(net, &config, &ContiguousIdStrategy);
-        // Can't assert exact time, but it should be >= 0
-        assert!(metrics.total_time.as_nanos() >= 0);
+        // Verify the grid actually ran and produced metrics
+        let _ = metrics.total_time;
     }
 
     // === TASK-0072: n == 1 optimization ===

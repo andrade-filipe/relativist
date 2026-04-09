@@ -78,6 +78,7 @@ mod tests {
 
     // T3: IdRange derives Debug, Clone, Copy, PartialEq, Eq
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_id_range_derives() {
         let a = IdRange { start: 0, end: 10 };
         let b = a; // Copy

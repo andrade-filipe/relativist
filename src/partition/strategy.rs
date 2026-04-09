@@ -212,8 +212,8 @@ mod tests {
     fn test_contiguous_more_workers_than_agents() {
         let strategy = ContiguousIdStrategy;
         let mut net = Net::new();
-        let a = net.create_agent(Symbol::Era);
-        let b = net.create_agent(Symbol::Era);
+        let _a = net.create_agent(Symbol::Era);
+        let _b = net.create_agent(Symbol::Era);
 
         let map = strategy.allocate(&net, 8);
         assert_eq!(map.len(), 2);

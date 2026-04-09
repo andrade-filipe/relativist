@@ -1474,7 +1474,7 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
 
         // Drain the existing redexes from queue (a<->b)
-        let initial_redexes = net.redex_queue.len();
+        let _initial_redexes = net.redex_queue.len();
 
         interact_anni(&mut net, a, b);
 
@@ -1485,7 +1485,7 @@ mod tests {
         );
         // New redex should be in the queue
         assert!(
-            net.redex_queue.len() > 0,
+            !net.redex_queue.is_empty(),
             "Expected new redex from self-loop annihilation linking two principal ports"
         );
     }

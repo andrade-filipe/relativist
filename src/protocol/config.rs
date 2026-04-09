@@ -74,13 +74,14 @@ mod tests {
     // T2: Fields can be overridden after construction
     #[test]
     fn test_node_config_override() {
-        let mut config = NodeConfig::default();
-        config.bind = "0.0.0.0:8080".parse().unwrap();
-        config.num_workers = 16;
-        config.max_payload_size = 1024;
-        config.worker_connect_timeout = Duration::from_secs(30);
-        config.distribute_timeout = Duration::from_secs(10);
-        config.collect_timeout = Duration::from_secs(120);
+        let config = NodeConfig {
+            bind: "0.0.0.0:8080".parse().unwrap(),
+            num_workers: 16,
+            max_payload_size: 1024,
+            worker_connect_timeout: Duration::from_secs(30),
+            distribute_timeout: Duration::from_secs(10),
+            collect_timeout: Duration::from_secs(120),
+        };
 
         assert_eq!(config.bind, "0.0.0.0:8080".parse::<SocketAddr>().unwrap());
         assert_eq!(config.num_workers, 16);

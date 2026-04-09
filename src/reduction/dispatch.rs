@@ -190,6 +190,7 @@ mod tests {
 
     // T3: Rule derives Debug, Clone, Copy, PartialEq, Eq.
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_rule_derives() {
         let r = Rule::Anni;
         let r2 = r; // Copy
@@ -246,6 +247,7 @@ mod tests {
 
     // T7: SpecificRule derives Debug, Clone, Copy, PartialEq, Eq.
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_specific_rule_derives() {
         let r = SpecificRule::ConDup;
         let r2 = r; // Copy

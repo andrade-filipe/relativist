@@ -362,8 +362,8 @@ mod tests {
         let ranges = compute_id_ranges(4, 5);
         // With base=5, proportional=50 < min=100_000, so chunk=100_000
         // Worker 0: [5, 100_005), Worker 1: [100_005, 200_005), etc.
-        for i in 0..3 {
-            assert!(ranges[i].end - ranges[i].start >= 100_000);
+        for range in &ranges[..3] {
+            assert!(range.end - range.start >= 100_000);
         }
     }
 
@@ -626,7 +626,7 @@ mod tests {
         assert!(subnet.agents[1].is_none());
         // Slot 1's ports should be DISCONNECTED
         for p in 0..PORTS_PER_SLOT {
-            assert_eq!(subnet.ports[1 * PORTS_PER_SLOT + p], DISCONNECTED);
+            assert_eq!(subnet.ports[PORTS_PER_SLOT + p], DISCONNECTED);
         }
     }
 

@@ -207,6 +207,7 @@ mod tests {
 
     // T2: StepResult derives Debug, Clone, Copy, PartialEq, Eq
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_step_result_derives() {
         let a = StepResult::NormalForm;
         let b = a; // Copy

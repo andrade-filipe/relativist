@@ -227,7 +227,7 @@ mod tests {
         let merge_err = MergeError::UnresolvedBorder(1);
         let _: RelativistError = merge_err.into();
 
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let io_err = std::io::Error::other("test");
         let _: RelativistError = io_err.into();
     }
 }

@@ -114,21 +114,23 @@ fn measure_sequential(
 }
 
 /// Measure a single grid (distributed) execution (R4, R22).
-fn measure_grid(
-    net: &Net,
-    benchmark: &dyn Benchmark,
+struct GridMeasureParams<'a> {
+    net: &'a Net,
+    benchmark: &'a dyn Benchmark,
     size: u32,
     workers: u32,
     repetition: u32,
-    seq_result: &Net,
+    seq_result: &'a Net,
     seq_baseline_secs: f64,
     max_rounds: Option<u32>,
-) -> BenchmarkResult {
-    let net_clone = net.clone();
+}
+
+fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
+    let net_clone = params.net.clone();
     let strategy = ContiguousIdStrategy;
     let config = GridConfig {
-        num_workers: workers,
-        max_rounds,
+        num_workers: params.workers,
+        max_rounds: params.max_rounds,
     };
 
     let start = Instant::now();
@@ -136,7 +138,7 @@ fn measure_grid(
     let elapsed = start.elapsed().as_secs_f64();
 
     // Correctness verification (R36): verify on EVERY repetition
-    let correct = benchmark.verify(seq_result, &result_net);
+    let correct = params.benchmark.verify(params.seq_result, &result_net);
 
     let total_interactions = grid_metrics.total_interactions;
     let mips = if elapsed > 0.0 {
@@ -147,12 +149,12 @@ fn measure_grid(
 
     // Derived metrics (R20)
     let speedup = if elapsed > 0.0 {
-        seq_baseline_secs / elapsed
+        params.seq_baseline_secs / elapsed
     } else {
         0.0
     };
-    let efficiency = if workers > 0 {
-        speedup / workers as f64
+    let efficiency = if params.workers > 0 {
+        speedup / params.workers as f64
     } else {
         speedup
     };
@@ -185,11 +187,11 @@ fn measure_grid(
         .collect();
 
     BenchmarkResult {
-        benchmark: benchmark.id(),
-        input_size: size,
+        benchmark: params.benchmark.id(),
+        input_size: params.size,
         mode: Mode::Local,
-        workers,
-        repetition,
+        workers: params.workers,
+        repetition: params.repetition,
         correct,
         wall_clock_secs: elapsed,
         total_interactions,
@@ -367,16 +369,16 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                 let mut rep_results: Vec<BenchmarkResult> = Vec::new();
 
                 for rep in 0..config.repetitions {
-                    let result = measure_grid(
-                        &input_net,
-                        bench.as_ref(),
+                    let result = measure_grid(&GridMeasureParams {
+                        net: &input_net,
+                        benchmark: bench.as_ref(),
                         size,
                         workers,
-                        rep,
-                        &seq_net,
+                        repetition: rep,
+                        seq_result: &seq_net,
                         seq_baseline_secs,
-                        config.max_rounds,
-                    );
+                        max_rounds: config.max_rounds,
+                    });
 
                     // R38: halt on correctness failure
                     if !result.correct {
@@ -464,7 +466,16 @@ mod tests {
         reduce_all(&mut seq_net);
         let seq_baseline = 0.001; // arbitrary baseline for test
 
-        let result = measure_grid(&net, bench.as_ref(), 20, 2, 0, &seq_net, seq_baseline, None);
+        let result = measure_grid(&GridMeasureParams {
+            net: &net,
+            benchmark: bench.as_ref(),
+            size: 20,
+            workers: 2,
+            repetition: 0,
+            seq_result: &seq_net,
+            seq_baseline_secs: seq_baseline,
+            max_rounds: None,
+        });
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Local);
         assert_eq!(result.workers, 2);
@@ -617,16 +628,16 @@ mod tests {
         let mut seq_net = net.clone();
         reduce_all(&mut seq_net);
 
-        let result = measure_grid(
-            &net,
-            bench.as_ref(),
-            100,
-            2,
-            0,
-            &seq_net,
-            1.0, // 1 second baseline
-            None,
-        );
+        let result = measure_grid(&GridMeasureParams {
+            net: &net,
+            benchmark: bench.as_ref(),
+            size: 100,
+            workers: 2,
+            repetition: 0,
+            seq_result: &seq_net,
+            seq_baseline_secs: 1.0, // 1 second baseline
+            max_rounds: None,
+        });
         // Speedup = baseline / elapsed. Since EP is fast, speedup should be large
         assert!(result.speedup > 0.0);
         // Efficiency = speedup / workers

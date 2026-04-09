@@ -291,26 +291,28 @@ mod tests {
 
     #[test]
     fn test_write_metrics_json() {
-        let mut metrics = GridMetrics::default();
-        metrics.rounds = 2;
-        metrics.total_interactions = 100;
-        metrics.converged = true;
-        metrics.agents_per_round = vec![50, 30];
-        metrics.local_interactions_per_round = vec![40, 60];
-        metrics.border_interactions_per_round = vec![0, 0];
-        metrics.border_redexes_per_round = vec![0, 0];
-        metrics.partition_time_per_round = vec![
-            std::time::Duration::from_millis(1),
-            std::time::Duration::from_millis(2),
-        ];
-        metrics.compute_time_per_round = vec![
-            std::time::Duration::from_millis(10),
-            std::time::Duration::from_millis(20),
-        ];
-        metrics.merge_time_per_round = vec![
-            std::time::Duration::from_millis(5),
-            std::time::Duration::from_millis(5),
-        ];
+        let metrics = GridMetrics {
+            rounds: 2,
+            total_interactions: 100,
+            converged: true,
+            agents_per_round: vec![50, 30],
+            local_interactions_per_round: vec![40, 60],
+            border_interactions_per_round: vec![0, 0],
+            border_redexes_per_round: vec![0, 0],
+            partition_time_per_round: vec![
+                std::time::Duration::from_millis(1),
+                std::time::Duration::from_millis(2),
+            ],
+            compute_time_per_round: vec![
+                std::time::Duration::from_millis(10),
+                std::time::Duration::from_millis(20),
+            ],
+            merge_time_per_round: vec![
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(5),
+            ],
+            ..GridMetrics::default()
+        };
 
         let path = std::env::temp_dir().join("relativist_test_metrics_p9.json");
         write_metrics(&metrics, &path).unwrap();
@@ -321,24 +323,26 @@ mod tests {
 
     #[test]
     fn test_write_metrics_csv() {
-        let mut metrics = GridMetrics::default();
-        metrics.rounds = 2;
-        metrics.agents_per_round = vec![50, 30];
-        metrics.local_interactions_per_round = vec![40, 60];
-        metrics.border_interactions_per_round = vec![0, 0];
-        metrics.border_redexes_per_round = vec![1, 2];
-        metrics.partition_time_per_round = vec![
-            std::time::Duration::from_millis(1),
-            std::time::Duration::from_millis(2),
-        ];
-        metrics.compute_time_per_round = vec![
-            std::time::Duration::from_millis(10),
-            std::time::Duration::from_millis(20),
-        ];
-        metrics.merge_time_per_round = vec![
-            std::time::Duration::from_millis(5),
-            std::time::Duration::from_millis(5),
-        ];
+        let metrics = GridMetrics {
+            rounds: 2,
+            agents_per_round: vec![50, 30],
+            local_interactions_per_round: vec![40, 60],
+            border_interactions_per_round: vec![0, 0],
+            border_redexes_per_round: vec![1, 2],
+            partition_time_per_round: vec![
+                std::time::Duration::from_millis(1),
+                std::time::Duration::from_millis(2),
+            ],
+            compute_time_per_round: vec![
+                std::time::Duration::from_millis(10),
+                std::time::Duration::from_millis(20),
+            ],
+            merge_time_per_round: vec![
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(5),
+            ],
+            ..GridMetrics::default()
+        };
 
         let path = std::env::temp_dir().join("relativist_test_metrics_p9.csv");
         write_metrics(&metrics, &path).unwrap();

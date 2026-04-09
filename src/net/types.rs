@@ -172,6 +172,7 @@ mod tests {
 
     // T3: Symbol implements Copy and Clone
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_symbol_copy_clone() {
         let s = Symbol::Con;
         let s2 = s; // Copy
