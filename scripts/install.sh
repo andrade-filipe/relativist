@@ -123,7 +123,59 @@ if [ -f "${TMPDIR}/SHA256SUMS" ]; then
   cd - > /dev/null
 fi
 
-# --- Extract binary ---
+# --- Choose install method ---
+
+INSTALL_METHOD="${INSTALL_METHOD:-auto}"
+
+if [ "${INSTALL_METHOD}" = "auto" ] && [ "${OS}" = "linux" ]; then
+  if command -v dpkg > /dev/null 2>&1; then
+    INSTALL_METHOD="deb"
+  else
+    INSTALL_METHOD="binary"
+  fi
+else
+  INSTALL_METHOD="binary"
+fi
+
+# --- Install via .deb (Debian/Ubuntu) ---
+
+if [ "${INSTALL_METHOD}" = "deb" ]; then
+  DEB_NAME="relativist-${TAG}-x86_64.deb"
+  DEB_URL="https://github.com/${REPO}/releases/download/${TAG}/${DEB_NAME}"
+  echo "Downloading ${DEB_NAME}..."
+  curl -sSfL -o "${TMPDIR}/${DEB_NAME}" "${DEB_URL}" || {
+    echo "Warning: .deb not found for ${TAG}, falling back to binary install." >&2
+    INSTALL_METHOD="binary"
+  }
+fi
+
+if [ "${INSTALL_METHOD}" = "deb" ]; then
+  # Verify .deb checksum
+  if [ -f "${TMPDIR}/SHA256SUMS" ]; then
+    cd "${TMPDIR}"
+    if command -v sha256sum > /dev/null 2>&1; then
+      grep "${DEB_NAME}" SHA256SUMS | sha256sum -c - || {
+        echo "Error: checksum verification failed for ${DEB_NAME}!" >&2
+        exit 1
+      }
+    fi
+    cd - > /dev/null
+  fi
+
+  echo "Installing via dpkg..."
+  sudo dpkg -i "${TMPDIR}/${DEB_NAME}" || {
+    echo "Error: dpkg install failed. Try: INSTALL_METHOD=binary to use direct binary install." >&2
+    exit 1
+  }
+
+  echo ""
+  echo "relativist ${TAG} installed via .deb package to /usr/local/bin/relativist"
+  echo ""
+  echo "Verify: relativist --version"
+  exit 0
+fi
+
+# --- Extract binary (fallback) ---
 
 echo "Extracting..."
 case "${EXT}" in
@@ -133,7 +185,7 @@ esac
 
 BINARY_NAME="relativist"
 
-# --- Install ---
+# --- Install binary ---
 
 INSTALL_DIR="${INSTALL_DIR:-}"
 

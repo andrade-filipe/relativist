@@ -47,6 +47,26 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ../../../relativist-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.binary_name }}
 
+      - name: Build .deb package (SPEC-15 R18)
+        if: matrix.archive_ext == 'tar.gz'
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          PKG_DIR="${{ runner.temp }}/deb-pkg"
+          mkdir -p "${PKG_DIR}/usr/local/bin"
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} "${PKG_DIR}/usr/local/bin/relativist"
+          chmod 755 "${PKG_DIR}/usr/local/bin/relativist"
+          cat > "${PKG_DIR}/DEBIAN/control" << CTRL
+          Package: relativist
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: Filipe Andrade Nascimento <filipeandrade.work@gmail.com>
+          Description: Distributed reduction of Interaction Combinators on Grid Computing
+          Homepage: https://github.com/andrade-filipe/relativist
+          CTRL
+          dpkg-deb --build "${PKG_DIR}" "relativist-${{ github.ref_name }}-x86_64.deb"
+
       - name: Package (Windows)
         if: matrix.archive_ext == 'zip'
         shell: pwsh
@@ -63,7 +83,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: relativist-${{ matrix.target }}
-          path: relativist-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: |
+            relativist-${{ github.ref_name }}-${{ matrix.target }}.*
+            relativist-${{ github.ref_name }}-x86_64.deb
 
   create-release:
     name: Create GitHub Release
@@ -104,6 +126,12 @@ jobs:
             echo "" >> $GITHUB_OUTPUT
             echo '```bash' >> $GITHUB_OUTPUT
             echo 'curl -sSfL https://raw.githubusercontent.com/andrade-filipe/relativist/main/scripts/install.sh | sh' >> $GITHUB_OUTPUT
+            echo '```' >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "### Debian/Ubuntu" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo '```bash' >> $GITHUB_OUTPUT
+            echo "sudo dpkg -i relativist-${{ github.ref_name }}-x86_64.deb" >> $GITHUB_OUTPUT
             echo '```' >> $GITHUB_OUTPUT
             echo "$EOF" >> $GITHUB_OUTPUT
           fi

@@ -114,6 +114,12 @@ The script MUST:
 
 **Note:** SignPath Foundation requirements: OSI-approved license (MIT — satisfied), public GitHub repository (satisfied), MFA enabled on GitHub account (must verify). Application is submitted via signpath.org; approval timeline is days to weeks.
 
+### 3.10 Linux Native Packages
+
+**R18.** Each GitHub Release SHOULD include a Debian package (`relativist-{version}-x86_64.deb`) for the `x86_64-unknown-linux-gnu` target. The package MUST install the binary to `/usr/local/bin/relativist`, declare the package name `relativist`, and set the architecture to `amd64`. The `.deb` is built via `dpkg-deb --build` in the release workflow, requiring no external tools beyond what `ubuntu-latest` provides. **(SHOULD)**
+
+**Rationale:** Debian/Ubuntu is the primary Linux distribution family for the TCC experimental campaign. Native packages enable `sudo dpkg -i relativist.deb` or `sudo apt install ./relativist.deb` without manual PATH configuration or archive extraction.
+
 ---
 
 ## 4. Design
@@ -139,8 +145,9 @@ Jobs:
       - install Rust stable
       - cargo build --release --target ${{ matrix.target }}
       - package binary into archive
+      - build .deb via dpkg-deb (Linux only, R18)
       - copy bare .exe with versioned name (Windows only, R15)
-      - upload artifact (glob matches .tar.gz, .zip, and .exe)
+      - upload artifact (glob matches .tar.gz, .deb, .zip, and .exe)
 
   create-release:
     needs: build-binaries
@@ -186,6 +193,7 @@ set -eu
 | Method | Command | Requires | Platform |
 |--------|---------|----------|----------|
 | Install script | `curl -sSfL .../install.sh \| sh` | curl, sh | Linux, macOS |
+| Debian package | `sudo dpkg -i relativist-*.deb` | dpkg | Debian/Ubuntu |
 | Docker | `docker pull ghcr.io/andrade-filipe/relativist` | Docker | Any |
 | GitHub Release | Download from Releases page | Browser | Any |
 | cargo install | `cargo install --git ...` | Rust toolchain | Any |
@@ -210,4 +218,5 @@ scripts/
 3. On a clean Ubuntu container: `curl -sSfL .../install.sh | sh && relativist --version` prints the installed version.
 4. On Windows: download `.exe` directly from Releases, right-click → Properties → Unblock, run `relativist.exe --version`.
 5. Checksum: download artifact and `SHA256SUMS`, run `sha256sum -c SHA256SUMS` → `OK`.
-6. `SHA256SUMS` contains entries for all 3 artifacts (linux `.tar.gz`, windows `.zip`, windows `.exe`).
+6. `SHA256SUMS` contains entries for all artifacts (linux `.tar.gz`, `.deb`, windows `.zip`, windows `.exe`).
+7. On Debian/Ubuntu: `sudo dpkg -i relativist-v*-x86_64.deb && relativist --version` prints the installed version. `dpkg -L relativist` shows `/usr/local/bin/relativist`.

@@ -51,11 +51,15 @@ docker run --rm ghcr.io/andrade-filipe/relativist --version
 Baixe o binario para seu sistema em:
 https://github.com/andrade-filipe/relativist/releases
 
+- **Linux (recomendado para Debian/Ubuntu):** `relativist-vX.Y.Z-x86_64.deb`
+  ```bash
+  sudo dpkg -i relativist-vX.Y.Z-x86_64.deb
+  ```
+- **Linux (alternativa):** `relativist-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` (extrair e colocar no PATH)
 - **Windows (recomendado):** `relativist-vX.Y.Z-x86_64-pc-windows-msvc.exe` (download direto, sem extrair)
 - **Windows (alternativa):** `relativist-vX.Y.Z-x86_64-pc-windows-msvc.zip` (extrair o .exe)
-- **Linux:** `relativist-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
 
-Coloque o binario numa pasta do seu PATH.
+Para Linux .tar.gz e Windows .exe/.zip, coloque o binario numa pasta do seu PATH.
 
 **Nota Windows (SmartScreen):** Como o executavel ainda nao possui assinatura digital,
 o Windows pode exibir um aviso "O Windows protegeu seu PC". Para executar:
