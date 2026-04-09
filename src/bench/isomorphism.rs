@@ -46,45 +46,140 @@ pub fn nets_isomorphic(a: &Net, b: &Net) -> bool {
     backtrack(a, b, &agents_a, 0, &mut mapping, &mut reverse, &groups_b)
 }
 
-/// Recursive backtracking search for a valid bijection.
+/// Iterative backtracking search for a valid bijection.
+///
+/// Uses an explicit stack instead of recursion to avoid stack overflow
+/// on large nets (>700 agents hit the default 1MB Windows stack limit).
 fn backtrack(
     a: &Net,
     b: &Net,
     agents_a: &[AgentId],
-    index: usize,
+    start_index: usize,
     mapping: &mut HashMap<AgentId, AgentId>,
     reverse: &mut HashMap<AgentId, AgentId>,
     groups_b: &HashMap<Symbol, Vec<AgentId>>,
 ) -> bool {
-    if index == agents_a.len() {
-        return true; // Complete bijection found
-    }
+    // Each frame tracks: which agent index we're matching, and which
+    // candidate index within that agent's candidate list we'll try next.
+    let mut stack: Vec<usize> = Vec::with_capacity(agents_a.len() - start_index);
+    let mut index = start_index;
 
-    let id_a = agents_a[index];
-    let sym = a.get_agent(id_a).unwrap().symbol;
-    let candidates = match groups_b.get(&sym) {
-        Some(c) => c,
-        None => return false,
-    };
-
-    for &id_b in candidates {
-        if reverse.contains_key(&id_b) {
-            continue; // Already mapped
+    loop {
+        if index == agents_a.len() {
+            return true; // Complete bijection found
         }
 
+        let id_a = agents_a[index];
+        let sym = a.get_agent(id_a).unwrap().symbol;
+        let candidates = match groups_b.get(&sym) {
+            Some(c) => c,
+            None => {
+                // Backtrack
+                if let Some(cand_idx) = stack.pop() {
+                    index -= 1;
+                    let prev_a = agents_a[index];
+                    let prev_sym = a.get_agent(prev_a).unwrap().symbol;
+                    let prev_candidates = &groups_b[&prev_sym];
+                    // Undo the mapping that got us here
+                    if let Some(&mapped_b) = mapping.get(&prev_a) {
+                        reverse.remove(&mapped_b);
+                    }
+                    mapping.remove(&prev_a);
+                    // Continue searching from the next candidate
+                    if try_candidates_from(
+                        a, b, prev_a, prev_candidates, cand_idx, mapping, reverse,
+                    ) {
+                        stack.push(cand_idx);
+                        index += 1;
+                        continue;
+                    } else {
+                        // Keep backtracking
+                        continue;
+                    }
+                }
+                return false;
+            }
+        };
+
+        // Try candidates starting from index 0
+        let mut found = false;
+        for (ci, &id_b) in candidates.iter().enumerate() {
+            if reverse.contains_key(&id_b) {
+                continue;
+            }
+            if is_consistent(a, b, id_a, id_b, mapping) {
+                mapping.insert(id_a, id_b);
+                reverse.insert(id_b, id_a);
+                stack.push(ci + 1); // Next candidate to try on backtrack
+                index += 1;
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            // Backtrack
+            loop {
+                if let Some(cand_start) = stack.pop() {
+                    index -= 1;
+                    let prev_a = agents_a[index];
+                    let prev_sym = a.get_agent(prev_a).unwrap().symbol;
+                    let prev_candidates = &groups_b[&prev_sym];
+                    // Undo mapping
+                    if let Some(&mapped_b) = mapping.get(&prev_a) {
+                        reverse.remove(&mapped_b);
+                    }
+                    mapping.remove(&prev_a);
+                    // Try remaining candidates
+                    let mut backtrack_found = false;
+                    for ci in cand_start..prev_candidates.len() {
+                        let id_b = prev_candidates[ci];
+                        if reverse.contains_key(&id_b) {
+                            continue;
+                        }
+                        if is_consistent(a, b, prev_a, id_b, mapping) {
+                            mapping.insert(prev_a, id_b);
+                            reverse.insert(id_b, prev_a);
+                            stack.push(ci + 1);
+                            index += 1;
+                            backtrack_found = true;
+                            break;
+                        }
+                    }
+                    if backtrack_found {
+                        break;
+                    }
+                    // Continue backtracking
+                } else {
+                    return false; // Exhausted all possibilities
+                }
+            }
+        }
+    }
+}
+
+/// Helper: try candidates starting from a given index. Returns true if a
+/// consistent candidate was found and mapped.
+fn try_candidates_from(
+    a: &Net,
+    b: &Net,
+    id_a: AgentId,
+    candidates: &[AgentId],
+    start: usize,
+    mapping: &mut HashMap<AgentId, AgentId>,
+    reverse: &mut HashMap<AgentId, AgentId>,
+) -> bool {
+    for ci in start..candidates.len() {
+        let id_b = candidates[ci];
+        if reverse.contains_key(&id_b) {
+            continue;
+        }
         if is_consistent(a, b, id_a, id_b, mapping) {
             mapping.insert(id_a, id_b);
             reverse.insert(id_b, id_a);
-
-            if backtrack(a, b, agents_a, index + 1, mapping, reverse, groups_b) {
-                return true;
-            }
-
-            mapping.remove(&id_a);
-            reverse.remove(&id_b);
+            return true;
         }
     }
-
     false
 }
 

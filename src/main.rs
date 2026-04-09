@@ -61,6 +61,7 @@ fn main() {
         Command::Generate(args) => commands::run_generate_command(args),
         Command::Compute(args) => commands::run_compute_command(args),
         Command::Bench(args) => commands::run_bench_command(args),
+        Command::Validate(args) => commands::run_validate_command(args),
         Command::Update(args) => commands::run_update_command(args),
         Command::Completions(args) => commands::run_completions_command(args),
     };

@@ -10,6 +10,7 @@ pub mod isomorphism;
 pub mod memory;
 pub mod stats;
 pub mod suite;
+pub mod validate;
 
 use crate::net::Net;
 

@@ -58,6 +58,9 @@ pub enum Command {
     /// Run the benchmark suite (SPEC-09).
     Bench(BenchArgs),
 
+    /// Validate benchmark campaign CSV outputs (DATA-COLLECTION-PLAN Section 10).
+    Validate(ValidateArgs),
+
     /// Check for and install the latest release (SPEC-15 R19).
     Update(UpdateArgs),
 
@@ -316,6 +319,22 @@ pub struct BenchArgs {
     /// Grid loop round limit.
     #[arg(long)]
     pub max_rounds: Option<u32>,
+}
+
+/// CLI arguments for the `validate` subcommand (DATA-COLLECTION-PLAN Section 10).
+#[derive(clap::Args, Debug)]
+pub struct ValidateArgs {
+    /// Path to the detail CSV file.
+    #[arg(long, default_value = "results/detail.csv")]
+    pub detail: PathBuf,
+
+    /// Path to the summary CSV file.
+    #[arg(long, default_value = "results/summary.csv")]
+    pub summary: PathBuf,
+
+    /// Path to the rounds CSV file.
+    #[arg(long, default_value = "results/rounds.csv")]
+    pub rounds: PathBuf,
 }
 
 /// Arguments for the `update` subcommand (SPEC-15 R19).

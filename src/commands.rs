@@ -6,7 +6,7 @@
 use crate::config::{
     build_grid_config, build_grid_config_from_local, build_node_config_coordinator,
     build_node_config_worker, parse_strategy, BenchArgs, CompletionsArgs, CoordinatorArgs,
-    GenerateArgs, InspectArgs, LocalArgs, ReduceArgs, UpdateArgs, WorkerArgs,
+    GenerateArgs, InspectArgs, LocalArgs, ReduceArgs, UpdateArgs, ValidateArgs, WorkerArgs,
 };
 use crate::error::RelativistError;
 use crate::io::{load_net_from_file, print_summary, save_net_to_file, write_metrics};
@@ -405,6 +405,22 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
     }
 
     Ok(())
+}
+
+/// Execute validate: run data quality checks on benchmark CSVs (DATA-COLLECTION-PLAN Section 10).
+pub fn run_validate_command(args: ValidateArgs) -> Result<(), RelativistError> {
+    use crate::bench::validate::validate_campaign;
+
+    let report = validate_campaign(&args.detail, &args.summary, &args.rounds);
+    report.print();
+
+    if report.all_hard_passed {
+        Ok(())
+    } else {
+        Err(RelativistError::Config(
+            "Data quality validation failed: one or more hard checks did not pass".into(),
+        ))
+    }
 }
 
 /// Execute update: check for and install the latest release (SPEC-15 R19).
