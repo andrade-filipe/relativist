@@ -684,16 +684,30 @@ fn ensure_in_path(dir: &std::path::Path) -> Result<bool, RelativistError> {
     Ok(true)
 }
 
+/// Return candidate paths for the `gh` CLI binary.
+/// On Windows, the default installer puts it in `C:\Program Files\GitHub CLI\`
+/// which may not be in the process PATH (e.g., when launched from PowerShell
+/// or from a cargo-built binary).
+fn gh_candidates() -> Vec<String> {
+    let mut candidates = vec!["gh".to_string()];
+    if cfg!(target_os = "windows") {
+        candidates.push(r"C:\Program Files\GitHub CLI\gh.exe".to_string());
+    }
+    candidates
+}
+
 /// Fetch latest release JSON from GitHub API.
 /// Tries `gh api` first (handles private repos via auth), falls back to `curl`.
 fn fetch_release_json(api_path: &str, _repo: &str) -> Result<String, RelativistError> {
-    // Try gh first
-    if let Ok(output) = std::process::Command::new("gh")
-        .args(["api", api_path])
-        .output()
-    {
-        if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    // Try gh first (check multiple paths on Windows)
+    for gh_cmd in gh_candidates() {
+        if let Ok(output) = std::process::Command::new(&gh_cmd)
+            .args(["api", api_path])
+            .output()
+        {
+            if output.status.success() {
+                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+            }
         }
     }
 
@@ -727,23 +741,25 @@ fn download_release_asset(
     asset_name: &str,
     dest: &std::path::Path,
 ) -> Result<(), RelativistError> {
-    // Try gh first
-    if let Ok(status) = std::process::Command::new("gh")
-        .args([
-            "release",
-            "download",
-            tag,
-            "--repo",
-            repo,
-            "--pattern",
-            asset_name,
-            "--dir",
-            &dest.parent().unwrap_or(dest).display().to_string(),
-        ])
-        .status()
-    {
-        if status.success() {
-            return Ok(());
+    // Try gh first (check multiple paths on Windows)
+    for gh_cmd in gh_candidates() {
+        if let Ok(status) = std::process::Command::new(&gh_cmd)
+            .args([
+                "release",
+                "download",
+                tag,
+                "--repo",
+                repo,
+                "--pattern",
+                asset_name,
+                "--dir",
+                &dest.parent().unwrap_or(dest).display().to_string(),
+            ])
+            .status()
+        {
+            if status.success() {
+                return Ok(());
+            }
         }
     }
 
