@@ -211,18 +211,18 @@ pub struct InspectArgs {
 
 /// Arguments for the `generate` subcommand (SPEC-07 R8, SPEC-12 R33).
 ///
-/// Full definition with ExampleNet value_enum will be added in
-/// Phase 9 (TASK-0178). For now, accepts a string name and size.
+/// CLI arguments for the `generate` subcommand (SPEC-07 R8, SPEC-12 R35-R42a).
 #[derive(clap::Args, Debug)]
 pub struct GenerateArgs {
-    /// Example network name (e.g., ep-annihilation, dual-tree).
-    pub example: String,
+    /// Example network to generate.
+    #[arg(value_enum)]
+    pub example: crate::io::generators::ExampleNet,
 
-    /// Problem size (number of agents or depth).
+    /// Problem size (number of pairs, depth, or items depending on the benchmark).
     #[arg(short = 'n', long)]
     pub size: u32,
 
-    /// Output path for the generated network.
+    /// Output path for the generated network (.bin or .ic).
     #[arg(short = 'o', long)]
     pub output: PathBuf,
 }
@@ -510,7 +510,7 @@ mod tests {
         .unwrap();
         match cli.command {
             Command::Generate(args) => {
-                assert_eq!(args.example, "dual-tree");
+                assert_eq!(args.example, crate::io::generators::ExampleNet::DualTree);
                 assert_eq!(args.size, 1000);
                 assert_eq!(args.output, PathBuf::from("out.bin"));
             }

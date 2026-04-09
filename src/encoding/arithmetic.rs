@@ -391,7 +391,7 @@ pub fn compute_arithmetic(
 ///
 /// Returns `None` for DUP cycles (e.g., from exponentiation) — those require
 /// a full recursive readback which is not implemented.
-fn decode_shared_chain(net: &Net) -> Option<u64> {
+pub(crate) fn decode_shared_chain(net: &Net) -> Option<u64> {
     let root = net.root?;
     let lam_f = match root {
         PortRef::AgentPort(id, 0) => id,

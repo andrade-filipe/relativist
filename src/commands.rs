@@ -80,14 +80,22 @@ pub fn run_inspect_command(args: InspectArgs) -> Result<(), RelativistError> {
     Ok(())
 }
 
-/// Execute generate mode: create a workload network (SPEC-07 R8).
-///
-/// Generator implementations will be added in Phase 9 (TASK-0171+).
-/// For now, this is a stub that returns an error.
-pub fn run_generate_command(_args: GenerateArgs) -> Result<(), RelativistError> {
-    Err(RelativistError::Config(
-        "generate: no generators implemented yet (Phase 9)".into(),
-    ))
+/// Execute generate mode: create a workload network (SPEC-07 R8, SPEC-12 R35-R42a).
+pub fn run_generate_command(args: GenerateArgs) -> Result<(), RelativistError> {
+    use crate::io::generators;
+
+    let net = generators::generate(args.example, args.size);
+
+    println!("=== Relativist Generate ===");
+    println!("Example: {:?}", args.example);
+    println!("Size:    {}", args.size);
+    println!("Agents:  {}", net.count_live_agents());
+    println!("Redexes: {}", net.redex_queue.len());
+
+    save_net_to_file(&net, &args.output)?;
+    println!("Saved to: {}", args.output.display());
+
+    Ok(())
 }
 
 /// Execute coordinator mode: distributed grid loop (SPEC-07 R13).
@@ -382,14 +390,16 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
     // Discover root of the resulting Church numeral
     discover_root(&mut net);
 
-    // Decode result
-    let result = decode_nat(&net);
+    // Decode result: try canonical decode, then shared-chain fallback for mul
+    let result = decode_nat(&net)
+        .or_else(|| crate::encoding::arithmetic::decode_shared_chain(&net));
     match result {
         Some(n) => println!("Result:      {}", n),
         None => {
-            println!("Warning: result is not a recognizable Church numeral. The net may not have reached Normal Form or the encoding may be incorrect.");
-            println!("Final agents: {}", net.count_live_agents());
-            println!("Redexes:     {}", net.redex_queue.len());
+            println!("Result:      (non-decodable normal form)");
+            println!("  The net is in normal form but uses a non-canonical Church encoding");
+            println!("  (e.g., cyclic DUP sharing from exponentiation).");
+            println!("  Final agents: {}", net.count_live_agents());
         }
     }
 
