@@ -44,6 +44,55 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
     Ok(())
 }
 
+/// Write rounds CSV: one row per round per execution (SPEC-09 R39b).
+/// Only populated for distributed modes (rounds > 0).
+pub fn write_csv_rounds<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -> io::Result<()> {
+    writeln!(
+        writer,
+        "benchmark,input_size,workers,mode,repetition,round,\
+         partition_time_secs,compute_time_secs,merge_time_secs,network_time_secs,\
+         border_redexes,border_ratio,agents_at_start,bytes_sent,bytes_received"
+    )?;
+
+    for r in results {
+        if r.rounds == 0 {
+            continue;
+        }
+        for round in 0..r.rounds as usize {
+            let partition_t = r.partition_time_per_round.get(round).copied().unwrap_or(0.0);
+            let compute_t = r.compute_time_per_round.get(round).copied().unwrap_or(0.0);
+            let merge_t = r.merge_time_per_round.get(round).copied().unwrap_or(0.0);
+            let network_t = r.network_time_per_round.get(round).copied().unwrap_or(0.0);
+            let border_redexes = r.border_redexes_per_round.get(round).copied().unwrap_or(0);
+            let border_ratio = r.border_ratio_per_round.get(round).copied().unwrap_or(0.0);
+            let agents = r.agents_per_round.get(round).copied().unwrap_or(0);
+            let sent = r.bytes_sent_per_round.get(round).copied().unwrap_or(0);
+            let recv = r.bytes_received_per_round.get(round).copied().unwrap_or(0);
+
+            writeln!(
+                writer,
+                "{},{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{},{:.6},{},{},{}",
+                r.benchmark,
+                r.input_size,
+                r.workers,
+                r.mode,
+                r.repetition,
+                round,
+                partition_t,
+                compute_t,
+                merge_t,
+                network_t,
+                border_redexes,
+                border_ratio,
+                agents,
+                sent,
+                recv,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Write summary CSV: one row per configuration (SPEC-09 R39c).
 pub fn write_csv_summary<W: Write>(
     writer: &mut W,
@@ -141,6 +190,48 @@ mod tests {
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 2); // header + 1 row
         assert!(lines[1].starts_with("ep_annihilation,100,sequential,1"));
+    }
+
+    #[test]
+    fn test_csv_rounds_header() {
+        let mut buf = Vec::new();
+        write_csv_rounds(&mut buf, &[]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+        assert!(csv.starts_with("benchmark,input_size,workers,mode"));
+        assert!(csv.contains("partition_time_secs"));
+    }
+
+    #[test]
+    fn test_csv_rounds_skips_sequential() {
+        let mut buf = Vec::new();
+        // sample_result has rounds=0, so should produce no data rows
+        write_csv_rounds(&mut buf, &[sample_result()]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 1); // header only
+    }
+
+    #[test]
+    fn test_csv_rounds_with_data() {
+        let mut r = sample_result();
+        r.rounds = 2;
+        r.mode = Mode::Local;
+        r.workers = 2;
+        r.partition_time_per_round = vec![0.001, 0.002];
+        r.compute_time_per_round = vec![0.01, 0.02];
+        r.merge_time_per_round = vec![0.003, 0.004];
+        r.network_time_per_round = vec![0.0, 0.0];
+        r.border_redexes_per_round = vec![5, 3];
+        r.border_ratio_per_round = vec![0.1, 0.05];
+        r.agents_per_round = vec![100, 50];
+        r.bytes_sent_per_round = vec![1024, 512];
+        r.bytes_received_per_round = vec![2048, 1024];
+
+        let mut buf = Vec::new();
+        write_csv_rounds(&mut buf, &[r]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 rounds
     }
 
     #[test]
