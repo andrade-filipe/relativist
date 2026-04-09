@@ -1,9 +1,9 @@
 # DATA-COLLECTION-PLAN.md
 
-**Version:** 1.0
-**Date:** 2026-04-05
+**Version:** 1.1
+**Date:** 2026-04-09
 **Author:** Spec-Driven Development pipeline
-**Status:** Draft
+**Status:** Active
 **Cross-references:** SPEC-09 (Benchmarks), SPEC-08 (Test Strategy), SPEC-01 (Invariants, G1), ARG-001 (P1-P6), Section 4.6 and Section 5 of the TCC article
 
 ---
@@ -143,7 +143,13 @@ The table below defines all configurations for the TCC campaign. Each row is a b
 | Data-bound | TreeSum, TreeSumBal | 540 |
 | **Total (Local + TcpLH)** | **9 benchmarks** | **~2,700** |
 
-**Optional: TcpNetwork on physical machines.** For benchmarks where TcpLH shows speedup > 1.0 (expected: Profile A large sizes, possibly Profile B), run the same configuration on 4 and 8 physical machines. Estimated additional datapoints: ~120 (selected configurations only). These provide the real-network validation required by SPEC-09 R27.
+**Campaign Phases.** The experimental campaign follows a 3-phase progression that decomposes overhead layer by layer (SPEC-09 R26-R27):
+
+- **Phase 1 (Sequential + Local):** Pure `reduce_all` baseline and in-process grid simulation. Measures algorithmic overhead only. **Status: COMPLETE** (1900 datapoints, validated via `relativist validate`).
+- **Phase 2 (TcpLocalhost via Docker):** Coordinator and workers as separate Docker containers on the same machine, communicating via TCP loopback. Adds serialization + TCP overhead (~0.01ms RTT). Uses `docker compose` orchestration. Estimated: ~400-600 additional datapoints on a selected subset of benchmarks.
+- **Phase 3 (TcpNetwork on physical machines):** Workers on distinct physical machines over real LAN. Adds real network latency (~0.1-1ms RTT). Required by SPEC-09 R27 (MUST). Conditional on hardware availability; if not feasible, report TcpLocalhost results and document as limitation (Section 10.2 fallback). Estimated: ~120 additional datapoints.
+
+**Note on bench CLI:** The `relativist bench` command supports Sequential and Local modes only (in-process). TcpLocalhost and TcpNetwork campaigns require external orchestration via `docker compose` or manual coordinator+worker process management. The coordinator/worker subcommands are fully functional for this purpose.
 
 ---
 
@@ -594,14 +600,36 @@ A G1 failure is a correctness bug in the system (reduction engine, partitioning,
 
 5. **Record environment** again (date/time, uptime, any anomalies).
 
-### 9.5 Optional: TcpNetwork Campaign
+### 9.5 Phase 2: TcpLocalhost Campaign (Docker)
 
-If TcpLH results show speedup > 1.0 for any configuration:
+Run selected benchmarks with coordinator and workers as separate Docker containers:
 
-1. Deploy Relativist on 4 and 8 physical machines (SPEC-07, bare-metal procedure).
-2. Run selected configurations (those with speedup > 1.0 in TcpLH).
-3. Append results to the same CSV files with `mode=TcpNetwork`.
-4. Record network latency and bandwidth measurements.
+1. Build Docker image: `docker compose build`.
+2. Generate input net: `relativist generate <benchmark> -n <size> -o data/input.bin`.
+3. Run with N workers: `NUM_WORKERS=N docker compose up`.
+4. Collect output net and metrics from `data/` volume mount.
+5. Verify G1: compare output with sequential baseline via `relativist validate` or manual isomorphism check.
+6. Repeat for each (benchmark, size, workers) configuration with 10 repetitions.
+7. Append results to the same CSV files with `mode=tcp_localhost`.
+
+**Selected benchmarks for Phase 2** (subset showing interesting Phase 1 results):
+- Profile A: ep_annihilation_con (1K, 5K)
+- Profile B: condup_expansion (100, 500, 1K)
+- Profile C: dual_tree (8, 10, 12)
+- Encoding: church_add (3+4, 5+5), church_mul (3*4)
+- Workers: 1, 2, 4, 8
+- Repetitions: 10
+
+### 9.6 Phase 3: TcpNetwork Campaign (Physical Machines)
+
+Required by SPEC-09 R27 (MUST). Conditional on hardware availability.
+
+1. Deploy Relativist on 4 and 8 physical machines (SPEC-07, bare-metal or Docker).
+2. Measure baseline network latency (`ping`, `iperf3`) and record in environment log.
+3. Run selected configurations (benchmarks with speedup > 1.0 in Phase 2).
+4. Append results to the same CSV files with `mode=tcp_network`.
+5. Record network latency and bandwidth measurements per run.
+6. If hardware unavailable: report TcpLocalhost results only and document as limitation (Section 10.2 fallback).
 
 ---
 

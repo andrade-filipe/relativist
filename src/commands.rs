@@ -100,29 +100,102 @@ pub fn run_generate_command(args: GenerateArgs) -> Result<(), RelativistError> {
 
 /// Execute coordinator mode: distributed grid loop (SPEC-07 R13).
 ///
-/// Full implementation depends on the async runtime wiring (TASK-0112).
-/// This is a placeholder that validates config and loads the net.
+/// Creates a tokio runtime and runs the async coordinator protocol
+/// (accept workers, distribute partitions, collect results, merge).
 pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistError> {
-    let _grid_config = build_grid_config(&args);
-    let _node_config = build_node_config_coordinator(&args);
-    let _strategy = parse_strategy(&args.strategy)?;
-    let _net = load_net_from_file(&args.input)?;
+    use crate::protocol::coordinator::run_coordinator;
+    use crate::security::{build_security_config, check_bind_warnings, write_token_file};
 
-    Err(RelativistError::Config(
-        "coordinator: distributed mode not yet wired (needs async runtime)".into(),
-    ))
+    let grid_config = build_grid_config(&args);
+    let node_config = build_node_config_coordinator(&args);
+    let strategy = parse_strategy(&args.strategy)?;
+    let net = load_net_from_file(&args.input)?;
+
+    // Build security config from --token flag
+    #[cfg(feature = "tls")]
+    let has_tls = args.tls_cert.is_some();
+    #[cfg(not(feature = "tls"))]
+    let has_tls = false;
+    let security = build_security_config(args.token.as_deref(), has_tls)
+        .map_err(|e| RelativistError::Config(format!("security: {}", e)))?;
+
+    check_bind_warnings(&node_config.bind, security.token.is_some());
+
+    // Write token file if a token was generated/provided
+    if let Some(ref token) = security.token {
+        write_token_file(token, &args.token_file)
+            .map_err(|e| RelativistError::Config(format!("token file: {}", e)))?;
+    }
+
+    println!("=== Relativist Coordinator ===");
+    println!("Workers:  {}", grid_config.num_workers);
+    println!("Bind:     {}", node_config.bind);
+    println!("Input:    {}", args.input.display());
+    println!("Agents:   {}", net.count_live_agents());
+    println!("Redexes:  {}", net.redex_queue.len());
+    println!("Security: {:?}", security.tier);
+    println!();
+
+    // Run the async coordinator
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| RelativistError::Config(format!("tokio runtime: {}", e)))?;
+
+    let (reduced_net, metrics) = rt
+        .block_on(run_coordinator(
+            net,
+            &node_config,
+            &grid_config,
+            &*strategy,
+            security.token.as_ref(),
+        ))
+        .map_err(crate::error::CoordinatorError::from)
+        .map_err(RelativistError::from)?;
+
+    print_summary(&reduced_net, &metrics);
+
+    if let Some(ref path) = args.output {
+        save_net_to_file(&reduced_net, path)?;
+    }
+    if let Some(ref path) = args.metrics {
+        write_metrics(&metrics, path)?;
+    }
+
+    Ok(())
 }
 
-/// Execute worker mode: connect to coordinator (SPEC-07 R16).
+/// Execute worker mode: connect to coordinator, reduce partitions (SPEC-07 R16).
 ///
-/// Full implementation depends on the async runtime wiring (TASK-0113).
-/// This is a placeholder that validates config.
+/// Creates a tokio runtime and runs the async worker protocol
+/// (connect with retry, register, receive/reduce/return partitions).
 pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
-    let _node_config = build_node_config_worker(&args)?;
+    use crate::protocol::worker::run_worker;
+    use crate::security::build_security_config;
 
-    Err(RelativistError::Config(
-        "worker: distributed mode not yet wired (needs async runtime)".into(),
-    ))
+    let node_config = build_node_config_worker(&args)?;
+
+    // Build security config from --token flag
+    #[cfg(feature = "tls")]
+    let has_tls = args.tls_ca.is_some();
+    #[cfg(not(feature = "tls"))]
+    let has_tls = false;
+    let security = build_security_config(args.token.as_deref(), has_tls)
+        .map_err(|e| RelativistError::Config(format!("security: {}", e)))?;
+
+    println!("=== Relativist Worker ===");
+    println!("Coordinator: {}", args.coordinator);
+    println!("Security:    {:?}", security.tier);
+    println!();
+
+    // Run the async worker
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| RelativistError::Config(format!("tokio runtime: {}", e)))?;
+
+    rt.block_on(run_worker(&node_config, security.token.as_ref()))
+        .map_err(crate::error::WorkerError::from)
+        .map_err(RelativistError::from)?;
+
+    println!("Worker finished successfully.");
+    Ok(())
 }
 
 /// Execute bench mode: run the benchmark suite (SPEC-09 R1, R6).

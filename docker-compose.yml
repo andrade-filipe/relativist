@@ -4,8 +4,8 @@ services:
     command:
       - coordinator
       - --workers=${NUM_WORKERS:-2}
-      - --port=9000
-      - --net=/data/input.bin
+      - --bind=0.0.0.0:9000
+      - --input=/data/input.bin
     ports:
       - "9000:9000"
     volumes:

@@ -392,13 +392,27 @@ pub fn build_node_config_coordinator(args: &CoordinatorArgs) -> NodeConfig {
 }
 
 /// Build NodeConfig for worker mode, parsing the coordinator address.
+///
+/// Accepts both IP:PORT (e.g. "192.168.1.100:9000") and HOST:PORT
+/// (e.g. "coordinator:9000") formats per SPEC-07 R4.
 pub fn build_node_config_worker(args: &WorkerArgs) -> Result<NodeConfig, RelativistError> {
-    let addr: SocketAddr = args.coordinator.parse().map_err(|e| {
-        RelativistError::Config(format!(
-            "invalid coordinator address '{}': {}",
-            args.coordinator, e
-        ))
-    })?;
+    // Try direct SocketAddr parse first (IP:PORT), then fall back to DNS resolution.
+    let addr: SocketAddr = args
+        .coordinator
+        .parse()
+        .or_else(|_| {
+            use std::net::ToSocketAddrs;
+            args.coordinator
+                .to_socket_addrs()
+                .map_err(|e| e.to_string())
+                .and_then(|mut addrs| addrs.next().ok_or_else(|| "no addresses found".into()))
+        })
+        .map_err(|e| {
+            RelativistError::Config(format!(
+                "invalid coordinator address '{}': {}",
+                args.coordinator, e
+            ))
+        })?;
     Ok(NodeConfig {
         bind: addr,
         num_workers: 0,
