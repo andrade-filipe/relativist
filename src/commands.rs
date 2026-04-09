@@ -5,8 +5,8 @@
 
 use crate::config::{
     build_grid_config, build_grid_config_from_local, build_node_config_coordinator,
-    build_node_config_worker, parse_strategy, CoordinatorArgs, GenerateArgs, InspectArgs,
-    LocalArgs, ReduceArgs, WorkerArgs,
+    build_node_config_worker, parse_strategy, BenchArgs, CoordinatorArgs, GenerateArgs,
+    InspectArgs, LocalArgs, ReduceArgs, WorkerArgs,
 };
 use crate::error::RelativistError;
 use crate::io::{load_net_from_file, print_summary, save_net_to_file, write_metrics};
@@ -115,6 +115,193 @@ pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
     Err(RelativistError::Config(
         "worker: distributed mode not yet wired (needs async runtime)".into(),
     ))
+}
+
+/// Execute bench mode: run the benchmark suite (SPEC-09 R1, R6).
+pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
+    use crate::bench::csv::{write_csv_detail, write_csv_rounds, write_csv_summary};
+    use crate::bench::suite::run_benchmark_suite;
+    use crate::bench::{BenchmarkId, BenchmarkSuiteConfig, Mode};
+
+    // Parse mode
+    let mode = match args.mode.as_str() {
+        "sequential" => Mode::Sequential,
+        "local" => Mode::Local,
+        "tcp-localhost" | "tcp_localhost" => Mode::TcpLocalhost,
+        "tcp-network" | "tcp_network" => Mode::TcpNetwork,
+        other => {
+            return Err(RelativistError::Config(format!(
+                "unknown mode '{}' (supported: sequential, local, tcp-localhost, tcp-network)",
+                other
+            )))
+        }
+    };
+
+    // Parse benchmark IDs
+    let benchmarks = if let Some(ref names) = args.benchmark {
+        let mut ids = Vec::new();
+        for name in names {
+            let id = match name.as_str() {
+                "ep_annihilation" => BenchmarkId::EPAnnihilation,
+                "ep_annihilation_con" => BenchmarkId::EPAnnihilationCon,
+                "ep_annihilation_dup" => BenchmarkId::EPAnnihilationDup,
+                "condup_expansion" => BenchmarkId::ConDupExpansion,
+                "dual_tree" => BenchmarkId::DualTree,
+                "tree_sum" => BenchmarkId::TreeSum,
+                "tree_sum_balanced" => BenchmarkId::TreeSumBalanced,
+                "mixed_net" => BenchmarkId::MixedNet,
+                "erasure_propagation" => BenchmarkId::ErasurePropagation,
+                "church_add" => BenchmarkId::ChurchAdd,
+                "church_mul" => BenchmarkId::ChurchMul,
+                "all" => {
+                    ids = vec![
+                        BenchmarkId::EPAnnihilation,
+                        BenchmarkId::EPAnnihilationCon,
+                        BenchmarkId::EPAnnihilationDup,
+                        BenchmarkId::ConDupExpansion,
+                        BenchmarkId::DualTree,
+                        BenchmarkId::TreeSum,
+                        BenchmarkId::TreeSumBalanced,
+                        BenchmarkId::MixedNet,
+                        BenchmarkId::ErasurePropagation,
+                        BenchmarkId::ChurchAdd,
+                        BenchmarkId::ChurchMul,
+                    ];
+                    break;
+                }
+                other => {
+                    return Err(RelativistError::Config(format!(
+                        "unknown benchmark '{}'",
+                        other
+                    )))
+                }
+            };
+            ids.push(id);
+        }
+        ids
+    } else {
+        // Default: all benchmarks
+        vec![
+            BenchmarkId::EPAnnihilation,
+            BenchmarkId::EPAnnihilationCon,
+            BenchmarkId::EPAnnihilationDup,
+            BenchmarkId::ConDupExpansion,
+            BenchmarkId::DualTree,
+            BenchmarkId::TreeSum,
+            BenchmarkId::TreeSumBalanced,
+            BenchmarkId::MixedNet,
+            BenchmarkId::ErasurePropagation,
+            BenchmarkId::ChurchAdd,
+            BenchmarkId::ChurchMul,
+        ]
+    };
+
+    let config = BenchmarkSuiteConfig {
+        benchmarks,
+        sizes: args.sizes,
+        workers: args.workers,
+        mode,
+        warmup_runs: args.warmup,
+        repetitions: args.repetitions,
+        csv_detail_path: args.csv_detail.as_ref().map(|p| p.display().to_string()),
+        csv_rounds_path: args.csv_rounds.as_ref().map(|p| p.display().to_string()),
+        csv_summary_path: args.csv_summary.as_ref().map(|p| p.display().to_string()),
+        max_rounds: args.max_rounds,
+    };
+
+    println!("=== Relativist Benchmark Suite ===");
+    println!(
+        "Benchmarks:  {}",
+        config
+            .benchmarks
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("Mode:        {}", config.mode);
+    println!("Workers:     {:?}", config.workers);
+    println!("Warmup:      {}", config.warmup_runs);
+    println!("Repetitions: {}", config.repetitions);
+    println!();
+
+    let suite_result = run_benchmark_suite(&config).map_err(|e| {
+        RelativistError::Config(format!("Benchmark suite failed: {}", e))
+    })?;
+
+    // Print summary table (R41)
+    println!("=== Results ===");
+    println!(
+        "{:<25} {:>6} {:>7} {:>10} {:>8} {:>8} {:>10}",
+        "Benchmark", "Size", "Workers", "Time(s)", "MIPS", "Speedup", "Efficiency"
+    );
+    println!("{}", "-".repeat(80));
+    for s in &suite_result.summaries {
+        println!(
+            "{:<25} {:>6} {:>7} {:>10.6} {:>8.1} {:>8.4} {:>10.4}",
+            s.benchmark,
+            s.input_size,
+            s.workers,
+            s.wall_clock_median,
+            s.mips_mean,
+            s.speedup_mean,
+            s.efficiency_mean,
+        );
+        if s.cv > 0.10 {
+            println!(
+                "  WARNING: high variance (CV={:.2}%) for {} size={} workers={}",
+                s.cv * 100.0,
+                s.benchmark,
+                s.input_size,
+                s.workers
+            );
+        }
+    }
+    println!();
+    println!(
+        "Total datapoints: {}  |  All correct: {}",
+        suite_result.results.len(),
+        suite_result.all_correct
+    );
+
+    // CSV output (R39-R40)
+    if let Some(ref path) = args.csv_detail {
+        let mut f = std::fs::File::create(path).map_err(|e| {
+            RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
+        })?;
+        write_csv_detail(&mut f, &suite_result.results).map_err(|e| {
+            RelativistError::Config(format!("CSV detail write error: {}", e))
+        })?;
+        println!("Detail CSV written to: {}", path.display());
+    }
+
+    if let Some(ref path) = args.csv_rounds {
+        let mut f = std::fs::File::create(path).map_err(|e| {
+            RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
+        })?;
+        write_csv_rounds(&mut f, &suite_result.results).map_err(|e| {
+            RelativistError::Config(format!("CSV rounds write error: {}", e))
+        })?;
+        println!("Rounds CSV written to: {}", path.display());
+    }
+
+    if let Some(ref path) = args.csv_summary {
+        let mut f = std::fs::File::create(path).map_err(|e| {
+            RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
+        })?;
+        write_csv_summary(&mut f, &suite_result.summaries).map_err(|e| {
+            RelativistError::Config(format!("CSV summary write error: {}", e))
+        })?;
+        println!("Summary CSV written to: {}", path.display());
+    }
+
+    if !suite_result.all_correct {
+        return Err(RelativistError::Config(
+            "One or more benchmarks had correctness failures!".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Execute compute mode: encode arithmetic, reduce, decode result (SPEC-14 R22-R25).

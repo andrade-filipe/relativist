@@ -54,6 +54,9 @@ pub enum Command {
 
     /// Encode arithmetic, reduce, decode result (SPEC-14).
     Compute(ComputeArgs),
+
+    /// Run the benchmark suite (SPEC-09).
+    Bench(BenchArgs),
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +263,54 @@ pub struct ComputeArgs {
     /// Path to write metrics JSON.
     #[arg(short = 'm', long)]
     pub metrics: Option<PathBuf>,
+}
+
+// ---------------------------------------------------------------------------
+// Bench subcommand (SPEC-09 R1, R6)
+// ---------------------------------------------------------------------------
+
+/// CLI arguments for the `bench` subcommand (SPEC-09 R6).
+#[derive(clap::Args, Debug)]
+pub struct BenchArgs {
+    /// Which benchmark to execute (all if omitted).
+    #[arg(long, value_delimiter = ',')]
+    pub benchmark: Option<Vec<String>>,
+
+    /// Problem sizes (overrides per-benchmark defaults).
+    #[arg(long, value_delimiter = ',')]
+    pub sizes: Option<Vec<u32>>,
+
+    /// Worker counts to test.
+    #[arg(long, value_delimiter = ',', default_value = "1,2,4,8")]
+    pub workers: Vec<u32>,
+
+    /// Execution mode.
+    #[arg(long, default_value = "local")]
+    pub mode: String,
+
+    /// Warmup runs (discarded).
+    #[arg(long, default_value_t = 2)]
+    pub warmup: u32,
+
+    /// Timed repetitions.
+    #[arg(long, default_value_t = 5)]
+    pub repetitions: u32,
+
+    /// Path for detail CSV output.
+    #[arg(long)]
+    pub csv_detail: Option<PathBuf>,
+
+    /// Path for rounds CSV output.
+    #[arg(long)]
+    pub csv_rounds: Option<PathBuf>,
+
+    /// Path for summary CSV output.
+    #[arg(long)]
+    pub csv_summary: Option<PathBuf>,
+
+    /// Grid loop round limit.
+    #[arg(long)]
+    pub max_rounds: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------

@@ -63,6 +63,7 @@ fn main() {
         Command::Inspect(args) => commands::run_inspect_command(args),
         Command::Generate(args) => commands::run_generate_command(args),
         Command::Compute(args) => commands::run_compute_command(args),
+        Command::Bench(args) => commands::run_bench_command(args),
     };
 
     if let Err(e) = result {
