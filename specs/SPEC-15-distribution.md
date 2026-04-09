@@ -120,6 +120,26 @@ The script MUST:
 
 **Rationale:** Debian/Ubuntu is the primary Linux distribution family for the TCC experimental campaign. Native packages enable `sudo dpkg -i relativist.deb` or `sudo apt install ./relativist.deb` without manual PATH configuration or archive extraction.
 
+### 3.11 Self-Update
+
+**R19.** Relativist MUST provide a `relativist update` subcommand that checks for and installs the latest release from GitHub Releases. **(MUST)**
+
+The command MUST:
+- Query the GitHub API (`/repos/andrade-filipe/relativist/releases/latest`) to determine the latest available version.
+- Compare the latest version against the compiled version (`env!("CARGO_PKG_VERSION")`).
+- With `--check` flag: print current and latest versions without performing any update.
+- Without `--check`: download the correct binary for the current OS/architecture, verify its SHA-256 checksum against the published `SHA256SUMS`, and replace the currently running executable.
+- On Windows: handle in-use executable replacement (rename current `.exe` to `.old`, copy new, clean up).
+- Print a clear success or failure message with version numbers.
+
+**Rationale:** Without self-update, users must manually find and replace the binary, which is error-prone and creates version confusion — especially across multiple test machines in the TCC experimental campaign.
+
+### 3.12 Shell Completions
+
+**R20.** Relativist SHOULD provide a `relativist completions <SHELL>` subcommand that outputs shell completion scripts for bash, zsh, fish, and PowerShell. **(SHOULD)**
+
+**Rationale:** Shell completions improve discoverability of subcommands and flags, reducing the learning curve for new users. Implementation is trivial via the `clap_complete` crate.
+
 ---
 
 ## 4. Design
