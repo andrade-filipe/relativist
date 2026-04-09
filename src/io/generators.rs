@@ -20,6 +20,10 @@ pub enum ExampleNet {
     DualTree,
     /// Mixed net: ERA-ERA + CON-CON + CON-DUP in thirds (Profile C). SPEC-09 R14.
     MixedRules,
+    /// Chain of N CON agents with ERA at head (Profile C). SPEC-09 R16a.
+    ErasurePropagation,
+    /// N items summed via Church add in a left-fold chain. SPEC-09 R14.
+    TreeSum,
 }
 
 /// Generate the specified example net with the given size parameter.
@@ -31,6 +35,8 @@ pub fn generate(example: ExampleNet, size: u32) -> Net {
         ExampleNet::ConDupExpansion => con_dup_expansion(size),
         ExampleNet::DualTree => dual_tree(size),
         ExampleNet::MixedRules => mixed_rules(size),
+        ExampleNet::ErasurePropagation => erasure_propagation(size),
+        ExampleNet::TreeSum => tree_sum(size),
     }
 }
 
@@ -231,6 +237,75 @@ pub fn mixed_rules(n: u32) -> Net {
     }
 
     net
+}
+
+/// Erasure propagation chain: ERA connected to head of N CON chain (SPEC-09 R16a).
+///
+/// Creates a chain of N CON agents connected through auxiliary ports,
+/// with an ERA agent connected to the head CON's principal port.
+/// The ERA propagates through the chain, erasing each CON and creating
+/// 2 new ERA agents per step (sequential dependency, Profile C).
+///
+/// Total agents: N CON + 1 ERA = N+1. After reduction: 2N ERA agents remain.
+pub fn erasure_propagation(n: u32) -> Net {
+    let mut net = Net::new();
+    if n == 0 {
+        return net;
+    }
+
+    let mut free_id = 0u32;
+
+    // Create CON chain
+    let cons: Vec<_> = (0..n).map(|_| net.create_agent(Symbol::Con)).collect();
+
+    // Chain CONs: each CON.p1 -> next CON.p0 (principal)
+    for i in 0..cons.len() - 1 {
+        net.connect(
+            PortRef::AgentPort(cons[i], 1),
+            PortRef::AgentPort(cons[i + 1], 0),
+        );
+    }
+
+    // Last CON.p1 -> free port (chain tail)
+    net.connect(
+        PortRef::AgentPort(cons[cons.len() - 1], 1),
+        PortRef::FreePort(free_id),
+    );
+    free_id += 1;
+
+    // Each CON.p2 -> free port (unused auxiliary)
+    for &c in &cons {
+        net.connect(PortRef::AgentPort(c, 2), PortRef::FreePort(free_id));
+        free_id += 1;
+    }
+
+    // ERA connected to head CON's principal port (creates the initial redex)
+    let era = net.create_agent(Symbol::Era);
+    net.connect(
+        PortRef::AgentPort(era, 0),
+        PortRef::AgentPort(cons[0], 0),
+    );
+
+    net
+}
+
+/// Tree sum: N Church(1) values summed via left-fold addition (SPEC-09 R14).
+///
+/// Builds: add(add(add(Church(1), Church(1)), Church(1)), ..., Church(1))
+/// Result after reduction: Church(N).
+pub fn tree_sum(n: u32) -> Net {
+    use crate::encoding::build_add;
+
+    if n == 0 {
+        return crate::encoding::encode_nat(0);
+    }
+    if n == 1 {
+        return crate::encoding::encode_nat(1);
+    }
+
+    // Build left-fold: add(1, 1) then add(result, 1) for each additional item
+    // Using build_add which creates a complete net for each addition
+    build_add(1, (n - 1) as u64)
 }
 
 #[cfg(test)]
