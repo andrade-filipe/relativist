@@ -231,13 +231,26 @@ mod tests {
         let metrics = CoordinatorMetrics::register(&mut registry);
 
         // Increment ConCon rule counter via get_or_create
-        let label = RuleLabel { rule: RuleValue::ConCon };
-        metrics.interactions_by_rule_total.get_or_create(&label).inc();
-        metrics.interactions_by_rule_total.get_or_create(&label).inc();
+        let label = RuleLabel {
+            rule: RuleValue::ConCon,
+        };
+        metrics
+            .interactions_by_rule_total
+            .get_or_create(&label)
+            .inc();
+        metrics
+            .interactions_by_rule_total
+            .get_or_create(&label)
+            .inc();
 
         // Increment EraEra rule counter
-        let era_label = RuleLabel { rule: RuleValue::EraEra };
-        metrics.interactions_by_rule_total.get_or_create(&era_label).inc();
+        let era_label = RuleLabel {
+            rule: RuleValue::EraEra,
+        };
+        metrics
+            .interactions_by_rule_total
+            .get_or_create(&era_label)
+            .inc();
 
         // Verify via encoding (Family counters are not directly readable)
         let mut buf = String::new();
@@ -254,8 +267,13 @@ mod tests {
         metrics.active_workers.set(3);
 
         // Exercise interactions_by_rule_total so it appears in encoding
-        let label = RuleLabel { rule: RuleValue::DupDup };
-        metrics.interactions_by_rule_total.get_or_create(&label).inc();
+        let label = RuleLabel {
+            rule: RuleValue::DupDup,
+        };
+        metrics
+            .interactions_by_rule_total
+            .get_or_create(&label)
+            .inc();
 
         // Encode to OpenMetrics text format
         let mut buf = String::new();

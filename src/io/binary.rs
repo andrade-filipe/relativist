@@ -20,9 +20,8 @@ pub fn deserialize_net(bytes: &[u8]) -> Result<Net, RelativistError> {
 /// Load a Net from a .bin file.
 pub fn load_bin(path: &Path) -> Result<Net, RelativistError> {
     let bytes = std::fs::read(path)?;
-    deserialize_net(&bytes).map_err(|e| {
-        RelativistError::Config(format!("failed to deserialize {:?}: {}", path, e))
-    })
+    deserialize_net(&bytes)
+        .map_err(|e| RelativistError::Config(format!("failed to deserialize {:?}: {}", path, e)))
 }
 
 /// Save a Net to a .bin file.

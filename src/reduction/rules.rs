@@ -82,10 +82,8 @@ pub fn interact_anni(net: &mut Net, a_id: AgentId, b_id: AgentId) {
     // `lambda x. x` where lam_x.p1 connects to lam_x.p2).
     // When one agent has a self-loop, it acts as identity: the other
     // agent's external ports should be connected directly to each other.
-    let a_self_loop =
-        a1 == PortRef::AgentPort(a_id, 2) && a2 == PortRef::AgentPort(a_id, 1);
-    let b_self_loop =
-        b1 == PortRef::AgentPort(b_id, 2) && b2 == PortRef::AgentPort(b_id, 1);
+    let a_self_loop = a1 == PortRef::AgentPort(a_id, 2) && a2 == PortRef::AgentPort(a_id, 1);
+    let b_self_loop = b1 == PortRef::AgentPort(b_id, 2) && b2 == PortRef::AgentPort(b_id, 1);
 
     net.remove_agent(a_id);
     net.remove_agent(b_id);
@@ -147,8 +145,7 @@ pub fn interact_eras(net: &mut Net, node_id: AgentId, era_id: AgentId) {
 
     // Detect self-loop: p1 <-> p2 on the arity-2 agent (e.g., Church(0) identity).
     // If self-looping, there are no external ports — just remove both agents.
-    let self_loop = a1 == PortRef::AgentPort(node_id, 2)
-        && a2 == PortRef::AgentPort(node_id, 1);
+    let self_loop = a1 == PortRef::AgentPort(node_id, 2) && a2 == PortRef::AgentPort(node_id, 1);
 
     net.remove_agent(node_id);
     net.remove_agent(era_id);

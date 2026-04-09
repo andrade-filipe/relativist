@@ -296,7 +296,10 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
 
     for &bench_id in &config.benchmarks {
         let bench = get_benchmark(bench_id);
-        let sizes = config.sizes.clone().unwrap_or_else(|| bench.default_sizes());
+        let sizes = config
+            .sizes
+            .clone()
+            .unwrap_or_else(|| bench.default_sizes());
 
         for &size in &sizes {
             // --- Sequential baseline (R3) ---
@@ -312,8 +315,7 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             let mut seq_reference_net: Option<Net> = None;
 
             for rep in 0..config.repetitions {
-                let (result, reduced_net) =
-                    measure_sequential(&input_net, bench_id, size, rep);
+                let (result, reduced_net) = measure_sequential(&input_net, bench_id, size, rep);
 
                 // R37b: verify each sequential repetition against the first
                 if let Some(ref first_net) = seq_reference_net {
@@ -332,8 +334,12 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             }
 
             // Sequential baseline time (median of repetitions, R30)
-            let seq_baseline_secs =
-                stats::median(&seq_results.iter().map(|r| r.wall_clock_secs).collect::<Vec<_>>());
+            let seq_baseline_secs = stats::median(
+                &seq_results
+                    .iter()
+                    .map(|r| r.wall_clock_secs)
+                    .collect::<Vec<_>>(),
+            );
             let seq_net = seq_reference_net.unwrap();
 
             // Add sequential results to output
@@ -458,16 +464,7 @@ mod tests {
         reduce_all(&mut seq_net);
         let seq_baseline = 0.001; // arbitrary baseline for test
 
-        let result = measure_grid(
-            &net,
-            bench.as_ref(),
-            20,
-            2,
-            0,
-            &seq_net,
-            seq_baseline,
-            None,
-        );
+        let result = measure_grid(&net, bench.as_ref(), 20, 2, 0, &seq_net, seq_baseline, None);
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Local);
         assert_eq!(result.workers, 2);
@@ -565,10 +562,7 @@ mod tests {
             let result = run_benchmark_suite(&config).unwrap_or_else(|e| {
                 panic!("Suite failed for {bench_id}: {e}");
             });
-            assert!(
-                result.all_correct,
-                "Correctness failure for {bench_id}"
-            );
+            assert!(result.all_correct, "Correctness failure for {bench_id}");
         }
     }
 

@@ -853,18 +853,18 @@ mod tests {
 
         // Spawn worker (Tier 1: no token)
         let worker_config = config.clone();
-        let worker_handle = tokio::spawn(async move {
-            crate::protocol::worker::run_worker(&worker_config, None).await
-        });
+        let worker_handle =
+            tokio::spawn(
+                async move { crate::protocol::worker::run_worker(&worker_config, None).await },
+            );
 
         // Run coordinator (accepts + grid loop + shutdown)
         // We need to drop the original listener first
         drop(listener);
 
-        let (result_net, metrics) =
-            run_coordinator(net, &config, &grid_config, &strategy, None)
-                .await
-                .unwrap();
+        let (result_net, metrics) = run_coordinator(net, &config, &grid_config, &strategy, None)
+            .await
+            .unwrap();
 
         // Worker should have exited cleanly
         worker_handle.await.unwrap().unwrap();
@@ -913,17 +913,18 @@ mod tests {
         // Spawn 2 workers (Tier 1: no token)
         let w1_config = config.clone();
         let w2_config = config.clone();
-        let w1 = tokio::spawn(async move {
-            crate::protocol::worker::run_worker(&w1_config, None).await
-        });
-        let w2 = tokio::spawn(async move {
-            crate::protocol::worker::run_worker(&w2_config, None).await
-        });
+        let w1 =
+            tokio::spawn(
+                async move { crate::protocol::worker::run_worker(&w1_config, None).await },
+            );
+        let w2 =
+            tokio::spawn(
+                async move { crate::protocol::worker::run_worker(&w2_config, None).await },
+            );
 
-        let (result_net, metrics) =
-            run_coordinator(net, &config, &grid_config, &strategy, None)
-                .await
-                .unwrap();
+        let (result_net, metrics) = run_coordinator(net, &config, &grid_config, &strategy, None)
+            .await
+            .unwrap();
 
         w1.await.unwrap().unwrap();
         w2.await.unwrap().unwrap();
@@ -957,14 +958,14 @@ mod tests {
         drop(listener);
 
         let worker_config = config.clone();
-        let worker = tokio::spawn(async move {
-            crate::protocol::worker::run_worker(&worker_config, None).await
-        });
+        let worker =
+            tokio::spawn(
+                async move { crate::protocol::worker::run_worker(&worker_config, None).await },
+            );
 
-        let (result_net, metrics) =
-            run_coordinator(net, &config, &grid_config, &strategy, None)
-                .await
-                .unwrap();
+        let (result_net, metrics) = run_coordinator(net, &config, &grid_config, &strategy, None)
+            .await
+            .unwrap();
 
         worker.await.unwrap().unwrap();
 

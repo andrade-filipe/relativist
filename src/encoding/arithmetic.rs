@@ -103,18 +103,9 @@ pub fn build_add(a: u64, b: u64) -> Net {
     let dup_f = net.create_agent(Symbol::Dup);
 
     // Lambda chain: each lambda's body (p2) connects to next lambda's principal (p0)
-    net.connect(
-        PortRef::AgentPort(lam_m, 2),
-        PortRef::AgentPort(lam_n, 0),
-    );
-    net.connect(
-        PortRef::AgentPort(lam_n, 2),
-        PortRef::AgentPort(lam_f, 0),
-    );
-    net.connect(
-        PortRef::AgentPort(lam_f, 2),
-        PortRef::AgentPort(lam_x, 0),
-    );
+    net.connect(PortRef::AgentPort(lam_m, 2), PortRef::AgentPort(lam_n, 0));
+    net.connect(PortRef::AgentPort(lam_n, 2), PortRef::AgentPort(lam_f, 0));
+    net.connect(PortRef::AgentPort(lam_f, 2), PortRef::AgentPort(lam_x, 0));
 
     // Variable bindings (each lambda's p1 connects to where the variable is used):
     // Application port convention: p0 = function, p1 = result, p2 = argument.
@@ -166,10 +157,7 @@ pub fn build_add(a: u64, b: u64) -> Net {
     // Step 3: Apply add to church(a) and church(b)
     // Application port convention: p1 = result, p2 = argument.
     let app_1 = net.create_agent(Symbol::Con);
-    net.connect(
-        PortRef::AgentPort(app_1, 0),
-        PortRef::AgentPort(lam_m, 0),
-    );
+    net.connect(PortRef::AgentPort(app_1, 0), PortRef::AgentPort(lam_m, 0));
     net.connect(
         PortRef::AgentPort(app_1, 2),
         PortRef::AgentPort(m_root, 0), // argument (p2) = church(a)
@@ -217,14 +205,8 @@ pub fn build_mul(a: u64, b: u64) -> Net {
     let app_m = net.create_agent(Symbol::Con); // (m (nf))
 
     // Lambda chain
-    net.connect(
-        PortRef::AgentPort(lam_m, 2),
-        PortRef::AgentPort(lam_n, 0),
-    );
-    net.connect(
-        PortRef::AgentPort(lam_n, 2),
-        PortRef::AgentPort(lam_f, 0),
-    );
+    net.connect(PortRef::AgentPort(lam_m, 2), PortRef::AgentPort(lam_n, 0));
+    net.connect(PortRef::AgentPort(lam_n, 2), PortRef::AgentPort(lam_f, 0));
 
     // Variable bindings
     // Application port convention: p0 = function, p1 = result, p2 = argument.
@@ -253,10 +235,7 @@ pub fn build_mul(a: u64, b: u64) -> Net {
 
     // Apply mul to church(a) and church(b)
     let app_1 = net.create_agent(Symbol::Con);
-    net.connect(
-        PortRef::AgentPort(app_1, 0),
-        PortRef::AgentPort(lam_m, 0),
-    );
+    net.connect(PortRef::AgentPort(app_1, 0), PortRef::AgentPort(lam_m, 0));
     net.connect(
         PortRef::AgentPort(app_1, 2),
         PortRef::AgentPort(m_root, 0), // argument (p2)
@@ -307,10 +286,7 @@ pub fn build_exp(base: u64, exp: u64) -> Net {
     let app_nm = net.create_agent(Symbol::Con); // (n m)
 
     // Lambda chain
-    net.connect(
-        PortRef::AgentPort(lam_m, 2),
-        PortRef::AgentPort(lam_n, 0),
-    );
+    net.connect(PortRef::AgentPort(lam_m, 2), PortRef::AgentPort(lam_n, 0));
 
     // Variable bindings
     // Application port convention: p0 = function, p1 = result, p2 = argument.
@@ -331,10 +307,7 @@ pub fn build_exp(base: u64, exp: u64) -> Net {
 
     // Apply exp to church(base) and church(exp)
     let app_1 = net.create_agent(Symbol::Con);
-    net.connect(
-        PortRef::AgentPort(app_1, 0),
-        PortRef::AgentPort(lam_m, 0),
-    );
+    net.connect(PortRef::AgentPort(app_1, 0), PortRef::AgentPort(lam_m, 0));
     net.connect(
         PortRef::AgentPort(app_1, 2),
         PortRef::AgentPort(m_root, 0), // argument (p2)
@@ -369,9 +342,7 @@ pub fn build_exp(base: u64, exp: u64) -> Net {
 /// sharing (common after mul). Returns `None` for forms with DUP cycles
 /// (exp with exponent >= 2) — the computation is correct, but readback of
 /// cyclic shared normal forms is a known open problem in optimal reduction.
-pub fn compute_arithmetic(
-    build_fn: impl FnOnce() -> Net,
-) -> (Net, Option<u64>) {
+pub fn compute_arithmetic(build_fn: impl FnOnce() -> Net) -> (Net, Option<u64>) {
     use crate::reduction::reduce_all;
 
     let mut net = build_fn();

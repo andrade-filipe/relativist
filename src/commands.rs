@@ -233,9 +233,8 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
     println!("Repetitions: {}", config.repetitions);
     println!();
 
-    let suite_result = run_benchmark_suite(&config).map_err(|e| {
-        RelativistError::Config(format!("Benchmark suite failed: {}", e))
-    })?;
+    let suite_result = run_benchmark_suite(&config)
+        .map_err(|e| RelativistError::Config(format!("Benchmark suite failed: {}", e)))?;
 
     // Print summary table (R41)
     println!("=== Results ===");
@@ -277,9 +276,8 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         let mut f = std::fs::File::create(path).map_err(|e| {
             RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
         })?;
-        write_csv_detail(&mut f, &suite_result.results).map_err(|e| {
-            RelativistError::Config(format!("CSV detail write error: {}", e))
-        })?;
+        write_csv_detail(&mut f, &suite_result.results)
+            .map_err(|e| RelativistError::Config(format!("CSV detail write error: {}", e)))?;
         println!("Detail CSV written to: {}", path.display());
     }
 
@@ -287,9 +285,8 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         let mut f = std::fs::File::create(path).map_err(|e| {
             RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
         })?;
-        write_csv_rounds(&mut f, &suite_result.results).map_err(|e| {
-            RelativistError::Config(format!("CSV rounds write error: {}", e))
-        })?;
+        write_csv_rounds(&mut f, &suite_result.results)
+            .map_err(|e| RelativistError::Config(format!("CSV rounds write error: {}", e)))?;
         println!("Rounds CSV written to: {}", path.display());
     }
 
@@ -297,9 +294,8 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         let mut f = std::fs::File::create(path).map_err(|e| {
             RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
         })?;
-        write_csv_summary(&mut f, &suite_result.summaries).map_err(|e| {
-            RelativistError::Config(format!("CSV summary write error: {}", e))
-        })?;
+        write_csv_summary(&mut f, &suite_result.summaries)
+            .map_err(|e| RelativistError::Config(format!("CSV summary write error: {}", e)))?;
         println!("Summary CSV written to: {}", path.display());
     }
 
@@ -391,8 +387,8 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
     discover_root(&mut net);
 
     // Decode result: try canonical decode, then shared-chain fallback for mul
-    let result = decode_nat(&net)
-        .or_else(|| crate::encoding::arithmetic::decode_shared_chain(&net));
+    let result =
+        decode_nat(&net).or_else(|| crate::encoding::arithmetic::decode_shared_chain(&net));
     match result {
         Some(n) => println!("Result:      {}", n),
         None => {

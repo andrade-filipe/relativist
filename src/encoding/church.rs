@@ -54,26 +54,17 @@ pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
     let lam_x = net.create_agent(Symbol::Con); // inner lambda (lambda x)
 
     // Connect lambda_f body (p2) to lambda_x principal (p0)
-    net.connect(
-        PortRef::AgentPort(lam_f, 2),
-        PortRef::AgentPort(lam_x, 0),
-    );
+    net.connect(PortRef::AgentPort(lam_f, 2), PortRef::AgentPort(lam_x, 0));
 
     match n {
         0 => {
             // lambda f. lambda x. x — f is erased, x is identity (self-loop)
             // ERA agent erases the unused f variable
             let era = net.create_agent(Symbol::Era);
-            net.connect(
-                PortRef::AgentPort(lam_f, 1),
-                PortRef::AgentPort(era, 0),
-            );
+            net.connect(PortRef::AgentPort(lam_f, 1), PortRef::AgentPort(era, 0));
             // Self-loop on lambda_x auxiliaries: p1 <-> p2 (identity on x)
             // This is correct per SPEC-14 R5 and satisfies T1/I1 from SPEC-01.
-            net.connect(
-                PortRef::AgentPort(lam_x, 1),
-                PortRef::AgentPort(lam_x, 2),
-            );
+            net.connect(PortRef::AgentPort(lam_x, 1), PortRef::AgentPort(lam_x, 2));
         }
         1 => {
             // lambda f. lambda x. f x — single application, no DUP needed
@@ -104,15 +95,10 @@ pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
             let apps: Vec<AgentId> = (0..n).map(|_| net.create_agent(Symbol::Con)).collect();
 
             // Create (n-1) DUP agents for sharing the f variable
-            let dups: Vec<AgentId> = (0..n - 1)
-                .map(|_| net.create_agent(Symbol::Dup))
-                .collect();
+            let dups: Vec<AgentId> = (0..n - 1).map(|_| net.create_agent(Symbol::Dup)).collect();
 
             // Wire f variable to DUP chain head
-            net.connect(
-                PortRef::AgentPort(lam_f, 1),
-                PortRef::AgentPort(dups[0], 0),
-            );
+            net.connect(PortRef::AgentPort(lam_f, 1), PortRef::AgentPort(dups[0], 0));
 
             // Wire DUP chain: each DUP's left output (p1) feeds one app,
             // right output (p2) feeds the next DUP (or last app)
@@ -153,10 +139,7 @@ pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
             }
 
             // Outermost application result (p1) -> body result of lambda_x
-            net.connect(
-                PortRef::AgentPort(apps[0], 1),
-                PortRef::AgentPort(lam_x, 2),
-            );
+            net.connect(PortRef::AgentPort(apps[0], 1), PortRef::AgentPort(lam_x, 2));
         }
     }
 

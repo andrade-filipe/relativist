@@ -72,8 +72,9 @@ pub fn detect_tier(has_token: bool, has_tls: bool) -> SecurityTier {
 /// On other platforms, uses default permissions.
 pub fn write_token_file(token: &AuthToken, path: &Path) -> Result<(), SecurityError> {
     let encoded = token.to_base64();
-    std::fs::write(path, encoded.as_bytes())
-        .map_err(|e| SecurityError::Config(format!("failed to write token file {:?}: {}", path, e)))?;
+    std::fs::write(path, encoded.as_bytes()).map_err(|e| {
+        SecurityError::Config(format!("failed to write token file {:?}: {}", path, e))
+    })?;
 
     #[cfg(unix)]
     {

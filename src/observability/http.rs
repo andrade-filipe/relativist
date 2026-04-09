@@ -24,14 +24,8 @@ pub struct AppState {
 }
 
 /// Build the axum Router with /health, /ready, /metrics routes (SPEC-11 R21).
-pub fn metrics_router(
-    registry: Arc<Registry>,
-    is_ready: Arc<AtomicBool>,
-) -> Router {
-    let state = AppState {
-        registry,
-        is_ready,
-    };
+pub fn metrics_router(registry: Arc<Registry>, is_ready: Arc<AtomicBool>) -> Router {
+    let state = AppState { registry, is_ready };
 
     Router::new()
         .route("/health", get(health_handler))
@@ -194,14 +188,9 @@ mod tests {
         let is_ready = Arc::new(AtomicBool::new(true));
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        let handle = spawn_metrics_server(
-            "127.0.0.1:0".parse().unwrap(),
-            registry,
-            is_ready,
-            rx,
-        )
-        .await
-        .unwrap();
+        let handle = spawn_metrics_server("127.0.0.1:0".parse().unwrap(), registry, is_ready, rx)
+            .await
+            .unwrap();
 
         // Signal shutdown
         let _ = tx.send(());

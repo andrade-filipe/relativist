@@ -15,8 +15,7 @@ pub fn std_dev(values: &[f64]) -> f64 {
         return 0.0;
     }
     let m = mean(values);
-    let variance =
-        values.iter().map(|v| (v - m).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+    let variance = values.iter().map(|v| (v - m).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     variance.sqrt()
 }
 
@@ -73,7 +72,10 @@ mod tests {
     #[test]
     fn test_std_dev() {
         let sd = std_dev(&[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]);
-        assert!((sd - 2.138).abs() < 0.001, "std_dev = {sd}, expected ~2.138");
+        assert!(
+            (sd - 2.138).abs() < 0.001,
+            "std_dev = {sd}, expected ~2.138"
+        );
     }
 
     #[test]

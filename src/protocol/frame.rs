@@ -67,12 +67,14 @@ pub async fn send_frame<W: AsyncWriteExt + Unpin>(
     // Guard: payload length must fit in u32 (frame header uses u32 for length).
     // In practice DEFAULT_MAX_PAYLOAD_SIZE (256 MiB) is far below u32::MAX (4 GiB),
     // but this prevents silent truncation if a pathological message is serialized.
-    let payload_len: u32 = payload.len().try_into().map_err(|_| {
-        ProtocolError::PayloadTooLarge {
-            size: u32::MAX,
-            max: u32::MAX,
-        }
-    })?;
+    let payload_len: u32 =
+        payload
+            .len()
+            .try_into()
+            .map_err(|_| ProtocolError::PayloadTooLarge {
+                size: u32::MAX,
+                max: u32::MAX,
+            })?;
 
     // 2. CRC32C checksum
     let checksum = crc32fast::hash(&payload);

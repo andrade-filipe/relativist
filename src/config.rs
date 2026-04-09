@@ -129,7 +129,6 @@ pub struct CoordinatorArgs {
     #[cfg(feature = "tls")]
     #[arg(long)]
     pub tls_key: Option<std::path::PathBuf>,
-
     // --metrics-port (default 9090, feature-gated on `metrics`)
     // will be added in Phase 8 (SPEC-11 R20).
 }
@@ -424,13 +423,8 @@ mod tests {
 
     #[test]
     fn test_parse_worker() {
-        let cli = Cli::try_parse_from([
-            "relativist",
-            "worker",
-            "--coordinator",
-            "127.0.0.1:9000",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["relativist", "worker", "--coordinator", "127.0.0.1:9000"])
+            .unwrap();
         match cli.command {
             Command::Worker(args) => {
                 assert_eq!(args.coordinator, "127.0.0.1:9000");
@@ -441,8 +435,7 @@ mod tests {
 
     #[test]
     fn test_parse_worker_short() {
-        let cli =
-            Cli::try_parse_from(["relativist", "worker", "-c", "192.168.1.1:9000"]).unwrap();
+        let cli = Cli::try_parse_from(["relativist", "worker", "-c", "192.168.1.1:9000"]).unwrap();
         match cli.command {
             Command::Worker(args) => {
                 assert_eq!(args.coordinator, "192.168.1.1:9000");
@@ -520,8 +513,7 @@ mod tests {
 
     #[test]
     fn test_parse_compute() {
-        let cli =
-            Cli::try_parse_from(["relativist", "compute", "add", "3", "5"]).unwrap();
+        let cli = Cli::try_parse_from(["relativist", "compute", "add", "3", "5"]).unwrap();
         match cli.command {
             Command::Compute(args) => {
                 assert!(matches!(args.operation, ArithmeticOp::Add));
@@ -585,7 +577,10 @@ mod tests {
         let config = build_node_config_coordinator(&args);
         assert_eq!(config.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
         assert_eq!(config.num_workers, 8);
-        assert_eq!(config.worker_connect_timeout, std::time::Duration::from_secs(120));
+        assert_eq!(
+            config.worker_connect_timeout,
+            std::time::Duration::from_secs(120)
+        );
         assert_eq!(config.collect_timeout, std::time::Duration::from_secs(600));
     }
 

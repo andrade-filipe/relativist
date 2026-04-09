@@ -8,10 +8,7 @@ use clap::Parser;
 use relativist::commands;
 use relativist::config::{Cli, Command, LogFormat};
 use relativist::observability::{
-    init_tracing,
-    LogFormat as ObsLogFormat,
-    ObservabilityConfig,
-    ProcessRole,
+    init_tracing, LogFormat as ObsLogFormat, ObservabilityConfig, ProcessRole,
 };
 
 /// Extract the `--log-format` option from whichever subcommand was parsed.

@@ -5,9 +5,9 @@
 
 use std::path::PathBuf;
 
-use relativist::config::LocalArgs;
 use relativist::commands::run_local_command;
-use relativist::io::{save_net_to_file, load_net_from_file};
+use relativist::config::LocalArgs;
+use relativist::io::{load_net_from_file, save_net_to_file};
 use relativist::net::{Net, PortRef, Symbol};
 
 fn temp_path(name: &str) -> PathBuf {
@@ -54,7 +54,11 @@ fn test_local_mode_roundtrip() {
 
     // Verify output net exists and is in normal form
     let reduced = load_net_from_file(&output_path).unwrap();
-    assert_eq!(reduced.count_live_agents(), 0, "annihilation should remove both agents");
+    assert_eq!(
+        reduced.count_live_agents(),
+        0,
+        "annihilation should remove both agents"
+    );
     assert!(reduced.redex_queue.is_empty(), "should be in normal form");
 
     // Verify metrics file exists and is valid JSON
@@ -133,7 +137,10 @@ fn test_local_mode_csv_metrics() {
     run_local_command(args).unwrap();
 
     let csv = std::fs::read_to_string(&metrics_path).unwrap();
-    assert!(csv.starts_with("round,agents,"), "CSV should start with header");
+    assert!(
+        csv.starts_with("round,agents,"),
+        "CSV should start with header"
+    );
 
     let _ = std::fs::remove_file(&input_path);
     let _ = std::fs::remove_file(&metrics_path);

@@ -60,10 +60,7 @@ pub enum WorkerAction {
     /// the coordinator has already aborted (SPEC-06 R25). No reconnection.
     ShutdownSelf,
     /// Log a state transition at INFO level (SPEC-13 R23).
-    LogTransition {
-        from: WorkerState,
-        to: WorkerState,
-    },
+    LogTransition { from: WorkerState, to: WorkerState },
 }
 
 // ---------------------------------------------------------------------------
@@ -122,18 +119,20 @@ pub fn transition(ctx: &mut WorkerContext, event: WorkerEvent) -> Vec<WorkerActi
         // Reducing + ReductionComplete → Returning
         (WorkerState::Reducing, WorkerEvent::ReductionComplete(partition)) => {
             ctx.state = WorkerState::Returning;
-            actions.push(WorkerAction::SendMessage(Box::new(Message::PartitionResult {
-                round: ctx.round,
-                partition: partition.clone(),
-                stats: crate::merge::WorkerRoundStats {
-                    worker_id: partition.worker_id,
-                    agents_before: 0, // filled by the runtime
-                    agents_after: partition.subnet.count_live_agents(),
-                    local_redexes: 0, // filled by the runtime
-                    reduce_duration_secs: 0.0, // filled by the runtime
-                    interactions_by_rule: [0; 6], // filled by the runtime
+            actions.push(WorkerAction::SendMessage(Box::new(
+                Message::PartitionResult {
+                    round: ctx.round,
+                    partition: partition.clone(),
+                    stats: crate::merge::WorkerRoundStats {
+                        worker_id: partition.worker_id,
+                        agents_before: 0, // filled by the runtime
+                        agents_after: partition.subnet.count_live_agents(),
+                        local_redexes: 0,             // filled by the runtime
+                        reduce_duration_secs: 0.0,    // filled by the runtime
+                        interactions_by_rule: [0; 6], // filled by the runtime
+                    },
                 },
-            })));
+            )));
             actions.push(WorkerAction::LogTransition {
                 from,
                 to: ctx.state.clone(),
@@ -256,7 +255,9 @@ mod tests {
         let mut ctx = WorkerContext::new();
         let actions = transition(&mut ctx, WorkerEvent::Connected);
         assert_eq!(ctx.state, WorkerState::Idle);
-        assert!(actions.iter().any(|a| matches!(a, WorkerAction::LogTransition { .. })));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, WorkerAction::LogTransition { .. })));
     }
 
     #[test]
@@ -274,7 +275,9 @@ mod tests {
         ctx.state = WorkerState::Reducing;
         let actions = transition(&mut ctx, WorkerEvent::ReductionComplete(make_partition()));
         assert_eq!(ctx.state, WorkerState::Returning);
-        assert!(actions.iter().any(|a| matches!(a, WorkerAction::SendMessage(_))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, WorkerAction::SendMessage(_))));
     }
 
     #[test]
@@ -292,7 +295,9 @@ mod tests {
         ctx.state = WorkerState::Idle;
         let actions = transition(&mut ctx, WorkerEvent::Shutdown);
         assert_eq!(ctx.state, WorkerState::Done);
-        assert!(actions.iter().any(|a| matches!(a, WorkerAction::CloseConnection)));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, WorkerAction::CloseConnection)));
     }
 
     #[test]
@@ -301,7 +306,9 @@ mod tests {
         ctx.state = WorkerState::Reducing;
         let actions = transition(&mut ctx, WorkerEvent::ReductionError("bad".into()));
         assert_eq!(ctx.state, WorkerState::Error);
-        assert!(actions.iter().any(|a| matches!(a, WorkerAction::SendMessage(m) if matches!(**m, Message::Error { .. }))));
+        assert!(actions.iter().any(
+            |a| matches!(a, WorkerAction::SendMessage(m) if matches!(**m, Message::Error { .. }))
+        ));
     }
 
     #[test]
@@ -316,7 +323,9 @@ mod tests {
             ctx.state = initial.clone();
             let actions = transition(&mut ctx, WorkerEvent::ConnectionLost);
             assert_eq!(ctx.state, WorkerState::Error);
-            assert!(actions.iter().any(|a| matches!(a, WorkerAction::ShutdownSelf)));
+            assert!(actions
+                .iter()
+                .any(|a| matches!(a, WorkerAction::ShutdownSelf)));
         }
     }
 }

@@ -23,9 +23,8 @@ use crate::net::{AgentId, Net, PortRef, Symbol};
 /// Parse a .ic text file into a Net.
 pub fn load_ic(path: &Path) -> Result<Net, RelativistError> {
     let text = std::fs::read_to_string(path)?;
-    parse_ic(&text).map_err(|e| {
-        RelativistError::Config(format!("parse error in {:?}: {}", path, e))
-    })
+    parse_ic(&text)
+        .map_err(|e| RelativistError::Config(format!("parse error in {:?}: {}", path, e)))
 }
 
 /// Parse IC text DSL string into a Net (SPEC-12 R7-R11).
@@ -55,7 +54,11 @@ pub fn parse_ic(input: &str) -> Result<Net, String> {
             let name = tokens[1].to_string();
             let symbol = parse_symbol(tokens[2], line_num + 1)?;
             if name_to_id.contains_key(&name) {
-                return Err(format!("line {}: duplicate agent name '{}'", line_num + 1, name));
+                return Err(format!(
+                    "line {}: duplicate agent name '{}'",
+                    line_num + 1,
+                    name
+                ));
             }
             let id = net.create_agent(symbol);
             name_to_id.insert(name, id);
@@ -94,8 +97,7 @@ pub fn parse_ic(input: &str) -> Result<Net, String> {
                 }
 
                 // R59: Reject free-to-free wires
-                if matches!(port_a, PortRef::FreePort(_))
-                    && matches!(port_b, PortRef::FreePort(_))
+                if matches!(port_a, PortRef::FreePort(_)) && matches!(port_b, PortRef::FreePort(_))
                 {
                     return Err(format!(
                         "free-to-free wires are not supported; at least one endpoint must be an agent port, at line {}",
@@ -127,7 +129,8 @@ pub fn parse_ic(input: &str) -> Result<Net, String> {
             other => {
                 return Err(format!(
                     "line {}: unknown keyword '{}' (expected 'agent', 'wire', or 'root')",
-                    line_num + 1, other
+                    line_num + 1,
+                    other
                 ));
             }
         }
@@ -158,9 +161,9 @@ fn parse_port_ref(
 ) -> Result<PortRef, String> {
     // Check for free(N) syntax
     if let Some(inner) = s.strip_prefix("free(").and_then(|s| s.strip_suffix(')')) {
-        let id: u32 = inner.parse().map_err(|_| {
-            format!("line {}: invalid free port id '{}'", line, inner)
-        })?;
+        let id: u32 = inner
+            .parse()
+            .map_err(|_| format!("line {}: invalid free port id '{}'", line, inner))?;
         return Ok(PortRef::FreePort(id));
     }
 
@@ -176,9 +179,9 @@ fn parse_port_ref(
     let agent_name = parts[0];
     let port_name = parts[1];
 
-    let &agent_id = names.get(agent_name).ok_or_else(|| {
-        format!("line {}: unknown agent '{}'", line, agent_name)
-    })?;
+    let &agent_id = names
+        .get(agent_name)
+        .ok_or_else(|| format!("line {}: unknown agent '{}'", line, agent_name))?;
 
     let port_id = parse_port_name(port_name, line)?;
 
@@ -398,7 +401,9 @@ wire a.p2 b.p2
         let input = "agent a CON\nwire a.left a.left\n";
         let result = parse_ic(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("port cannot be connected to itself"));
+        assert!(result
+            .unwrap_err()
+            .contains("port cannot be connected to itself"));
     }
 
     // R59: Free-to-free wire rejected
@@ -407,7 +412,9 @@ wire a.p2 b.p2
         let input = "agent a CON\nwire free(0) free(1)\n";
         let result = parse_ic(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("free-to-free wires are not supported"));
+        assert!(result
+            .unwrap_err()
+            .contains("free-to-free wires are not supported"));
     }
 
     // R54: Root declaration support

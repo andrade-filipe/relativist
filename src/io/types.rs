@@ -55,9 +55,18 @@ pub struct ReductionSummary {
 /// skipping unused port slots beyond the agent's arity (R61).
 pub fn net_summary(net: &crate::net::Net) -> NetSummary {
     let agents = net.count_live_agents();
-    let con = net.live_agents().filter(|a| a.symbol == Symbol::Con).count();
-    let dup = net.live_agents().filter(|a| a.symbol == Symbol::Dup).count();
-    let era = net.live_agents().filter(|a| a.symbol == Symbol::Era).count();
+    let con = net
+        .live_agents()
+        .filter(|a| a.symbol == Symbol::Con)
+        .count();
+    let dup = net
+        .live_agents()
+        .filter(|a| a.symbol == Symbol::Dup)
+        .count();
+    let era = net
+        .live_agents()
+        .filter(|a| a.symbol == Symbol::Era)
+        .count();
     let redexes = net.redex_queue.len();
 
     // Count distinct wires (AgentPort-AgentPort pairs) and free ports

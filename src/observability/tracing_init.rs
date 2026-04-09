@@ -47,9 +47,13 @@ pub fn init_tracing(config: &ObservabilityConfig) {
     }
 
     let using_rust_log = std::env::var("RUST_LOG").is_ok();
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
-    let filter_desc = if using_rust_log { "RUST_LOG" } else { "defaults" };
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+    let filter_desc = if using_rust_log {
+        "RUST_LOG"
+    } else {
+        "defaults"
+    };
 
     match config.log_format {
         LogFormat::Text => {
@@ -106,7 +110,11 @@ mod tests {
     fn test_default_log_filter_is_valid() {
         // Verify the filter string parses without error
         let filter = EnvFilter::try_new(DEFAULT_LOG_FILTER);
-        assert!(filter.is_ok(), "DEFAULT_LOG_FILTER should parse: {:?}", filter.err());
+        assert!(
+            filter.is_ok(),
+            "DEFAULT_LOG_FILTER should parse: {:?}",
+            filter.err()
+        );
     }
 
     #[test]

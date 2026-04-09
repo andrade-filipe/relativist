@@ -137,11 +137,7 @@ pub fn dual_tree(depth: u32) -> Net {
     let mut net = Net::new();
     let mut free_id = 0u32;
 
-    fn build_tree(
-        net: &mut Net,
-        depth: u32,
-        free_id: &mut u32,
-    ) -> PortRef {
+    fn build_tree(net: &mut Net, depth: u32, free_id: &mut u32) -> PortRef {
         if depth == 0 {
             let fp = PortRef::FreePort(*free_id);
             *free_id += 1;
@@ -281,10 +277,7 @@ pub fn erasure_propagation(n: u32) -> Net {
 
     // ERA connected to head CON's principal port (creates the initial redex)
     let era = net.create_agent(Symbol::Era);
-    net.connect(
-        PortRef::AgentPort(era, 0),
-        PortRef::AgentPort(cons[0], 0),
-    );
+    net.connect(PortRef::AgentPort(era, 0), PortRef::AgentPort(cons[0], 0));
 
     net
 }

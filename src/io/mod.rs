@@ -106,22 +106,67 @@ fn write_metrics_csv(metrics: &GridMetrics, path: &Path) -> Result<(), Relativis
 
     for r in 0..metrics.rounds as usize {
         let agents = metrics.agents_per_round.get(r).copied().unwrap_or(0);
-        let local = metrics.local_interactions_per_round.get(r).copied().unwrap_or(0);
-        let border = metrics.border_interactions_per_round.get(r).copied().unwrap_or(0);
-        let border_redexes = metrics.border_redexes_per_round.get(r).copied().unwrap_or(0);
-        let partition_ms = metrics.partition_time_per_round.get(r).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
-        let compute_ms = metrics.compute_time_per_round.get(r).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
-        let merge_ms = metrics.merge_time_per_round.get(r).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
+        let local = metrics
+            .local_interactions_per_round
+            .get(r)
+            .copied()
+            .unwrap_or(0);
+        let border = metrics
+            .border_interactions_per_round
+            .get(r)
+            .copied()
+            .unwrap_or(0);
+        let border_redexes = metrics
+            .border_redexes_per_round
+            .get(r)
+            .copied()
+            .unwrap_or(0);
+        let partition_ms = metrics
+            .partition_time_per_round
+            .get(r)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let compute_ms = metrics
+            .compute_time_per_round
+            .get(r)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let merge_ms = metrics
+            .merge_time_per_round
+            .get(r)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         let bytes_sent = metrics.bytes_sent_per_round.get(r).copied().unwrap_or(0);
-        let bytes_recv = metrics.bytes_received_per_round.get(r).copied().unwrap_or(0);
-        let net_send_ms = metrics.network_send_time_per_round.get(r).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
-        let net_recv_ms = metrics.network_recv_time_per_round.get(r).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
+        let bytes_recv = metrics
+            .bytes_received_per_round
+            .get(r)
+            .copied()
+            .unwrap_or(0);
+        let net_send_ms = metrics
+            .network_send_time_per_round
+            .get(r)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let net_recv_ms = metrics
+            .network_recv_time_per_round
+            .get(r)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
 
         csv.push_str(&format!(
             "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{:.3},{:.3}\n",
-            r + 1, agents, local, border, border_redexes,
-            partition_ms, compute_ms, merge_ms,
-            bytes_sent, bytes_recv, net_send_ms, net_recv_ms
+            r + 1,
+            agents,
+            local,
+            border,
+            border_redexes,
+            partition_ms,
+            compute_ms,
+            merge_ms,
+            bytes_sent,
+            bytes_recv,
+            net_send_ms,
+            net_recv_ms
         ));
     }
 
@@ -142,10 +187,16 @@ pub fn count_agents_by_symbol(net: &Net, symbol: Symbol) -> usize {
 /// Print a human-readable execution summary to stdout.
 pub fn print_summary(net: &Net, metrics: &GridMetrics) {
     println!("=== Relativist Execution Summary ===");
-    println!("Converged:          {}", if metrics.converged { "yes" } else { "no" });
+    println!(
+        "Converged:          {}",
+        if metrics.converged { "yes" } else { "no" }
+    );
     println!("Rounds:             {}", metrics.rounds);
     println!("Total interactions: {}", metrics.total_interactions);
-    println!("Total time:         {:.3}s", metrics.total_time.as_secs_f64());
+    println!(
+        "Total time:         {:.3}s",
+        metrics.total_time.as_secs_f64()
+    );
     println!("Final agents:       {}", net.count_live_agents());
     println!("  CON: {}", count_agents_by_symbol(net, Symbol::Con));
     println!("  DUP: {}", count_agents_by_symbol(net, Symbol::Dup));
@@ -166,7 +217,10 @@ pub fn print_summary(net: &Net, metrics: &GridMetrics) {
         let recv: usize = metrics.bytes_received_per_round.iter().sum();
         println!("Bytes sent:         {}", sent);
         println!("Bytes received:     {}", recv);
-        println!("Network overhead:   {:.1}%", metrics.network_overhead_fraction() * 100.0);
+        println!(
+            "Network overhead:   {:.1}%",
+            metrics.network_overhead_fraction() * 100.0
+        );
     }
 }
 
@@ -245,9 +299,18 @@ mod tests {
         metrics.local_interactions_per_round = vec![40, 60];
         metrics.border_interactions_per_round = vec![0, 0];
         metrics.border_redexes_per_round = vec![0, 0];
-        metrics.partition_time_per_round = vec![std::time::Duration::from_millis(1), std::time::Duration::from_millis(2)];
-        metrics.compute_time_per_round = vec![std::time::Duration::from_millis(10), std::time::Duration::from_millis(20)];
-        metrics.merge_time_per_round = vec![std::time::Duration::from_millis(5), std::time::Duration::from_millis(5)];
+        metrics.partition_time_per_round = vec![
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(2),
+        ];
+        metrics.compute_time_per_round = vec![
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(20),
+        ];
+        metrics.merge_time_per_round = vec![
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(5),
+        ];
 
         let path = std::env::temp_dir().join("relativist_test_metrics_p9.json");
         write_metrics(&metrics, &path).unwrap();
@@ -264,9 +327,18 @@ mod tests {
         metrics.local_interactions_per_round = vec![40, 60];
         metrics.border_interactions_per_round = vec![0, 0];
         metrics.border_redexes_per_round = vec![1, 2];
-        metrics.partition_time_per_round = vec![std::time::Duration::from_millis(1), std::time::Duration::from_millis(2)];
-        metrics.compute_time_per_round = vec![std::time::Duration::from_millis(10), std::time::Duration::from_millis(20)];
-        metrics.merge_time_per_round = vec![std::time::Duration::from_millis(5), std::time::Duration::from_millis(5)];
+        metrics.partition_time_per_round = vec![
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(2),
+        ];
+        metrics.compute_time_per_round = vec![
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(20),
+        ];
+        metrics.merge_time_per_round = vec![
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(5),
+        ];
 
         let path = std::env::temp_dir().join("relativist_test_metrics_p9.csv");
         write_metrics(&metrics, &path).unwrap();

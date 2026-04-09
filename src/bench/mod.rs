@@ -232,10 +232,7 @@ mod tests {
             BenchmarkId::EPAnnihilationDup.to_string(),
             "ep_annihilation_dup"
         );
-        assert_eq!(
-            BenchmarkId::ConDupExpansion.to_string(),
-            "condup_expansion"
-        );
+        assert_eq!(BenchmarkId::ConDupExpansion.to_string(), "condup_expansion");
         assert_eq!(BenchmarkId::DualTree.to_string(), "dual_tree");
         assert_eq!(BenchmarkId::TreeSum.to_string(), "tree_sum");
         assert_eq!(

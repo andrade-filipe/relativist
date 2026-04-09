@@ -59,7 +59,11 @@ pub fn write_csv_rounds<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
             continue;
         }
         for round in 0..r.rounds as usize {
-            let partition_t = r.partition_time_per_round.get(round).copied().unwrap_or(0.0);
+            let partition_t = r
+                .partition_time_per_round
+                .get(round)
+                .copied()
+                .unwrap_or(0.0);
             let compute_t = r.compute_time_per_round.get(round).copied().unwrap_or(0.0);
             let merge_t = r.merge_time_per_round.get(round).copied().unwrap_or(0.0);
             let network_t = r.network_time_per_round.get(round).copied().unwrap_or(0.0);
@@ -94,10 +98,7 @@ pub fn write_csv_rounds<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
 }
 
 /// Write summary CSV: one row per configuration (SPEC-09 R39c).
-pub fn write_csv_summary<W: Write>(
-    writer: &mut W,
-    stats: &[AggregatedStats],
-) -> io::Result<()> {
+pub fn write_csv_summary<W: Write>(writer: &mut W, stats: &[AggregatedStats]) -> io::Result<()> {
     writeln!(
         writer,
         "benchmark,input_size,mode,workers,repetitions,all_correct,\

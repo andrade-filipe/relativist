@@ -71,10 +71,7 @@ pub enum CoordinatorEvent {
     PhaseTimeout(WorkerId),
     /// Merge and post-merge reduce_all completed. `is_normal_form`
     /// indicates whether the merged-and-reduced net has an empty redex queue.
-    MergeComplete {
-        net: Net,
-        is_normal_form: bool,
-    },
+    MergeComplete { net: Net, is_normal_form: bool },
     /// Fatal error — triggers immediate shutdown.
     FatalError(String),
 }
@@ -161,10 +158,7 @@ impl CoordinatorContext {
 /// Takes the coordinator context and an event, updates the state,
 /// and returns a list of side-effectful actions for the async runtime
 /// to execute.
-pub fn transition(
-    ctx: &mut CoordinatorContext,
-    event: CoordinatorEvent,
-) -> Vec<CoordinatorAction> {
+pub fn transition(ctx: &mut CoordinatorContext, event: CoordinatorEvent) -> Vec<CoordinatorAction> {
     let from = ctx.state.clone();
     let mut actions = Vec::new();
 
@@ -382,7 +376,9 @@ mod tests {
         let mut ctx = make_ctx();
         let actions = transition(&mut ctx, CoordinatorEvent::ConfigLoaded);
         assert_eq!(ctx.state, CoordinatorState::WaitingForWorkers);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::BindListener(_))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::BindListener(_))));
     }
 
     #[test]
@@ -401,7 +397,9 @@ mod tests {
         transition(&mut ctx, CoordinatorEvent::WorkerConnected(0));
         let actions = transition(&mut ctx, CoordinatorEvent::WorkerConnected(1));
         assert_eq!(ctx.state, CoordinatorState::Partitioning);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::InvokeSplit { .. })));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::InvokeSplit { .. })));
     }
 
     #[test]
@@ -422,14 +420,20 @@ mod tests {
             subnet: Net::new(),
             worker_id: 1,
             free_port_index: Default::default(),
-            id_range: crate::partition::IdRange { start: 100, end: 200 },
+            id_range: crate::partition::IdRange {
+                start: 100,
+                end: 200,
+            },
             border_id_start: 0,
             border_id_end: 0,
         };
 
         let actions = transition(&mut ctx, CoordinatorEvent::SplitComplete(vec![p1, p2]));
         assert_eq!(ctx.state, CoordinatorState::Dispatching);
-        let send_count = actions.iter().filter(|a| matches!(a, CoordinatorAction::SendMessage(..))).count();
+        let send_count = actions
+            .iter()
+            .filter(|a| matches!(a, CoordinatorAction::SendMessage(..)))
+            .count();
         assert_eq!(send_count, 2);
     }
 
@@ -440,7 +444,9 @@ mod tests {
 
         let actions = transition(&mut ctx, CoordinatorEvent::AllDispatched);
         assert_eq!(ctx.state, CoordinatorState::WaitingForResults);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::StartTimer(..))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::StartTimer(..))));
     }
 
     #[test]
@@ -458,18 +464,26 @@ mod tests {
             border_id_end: 0,
         };
 
-        transition(&mut ctx, CoordinatorEvent::PartitionReturned {
-            worker_id: 0,
-            partition: p.clone(),
-        });
+        transition(
+            &mut ctx,
+            CoordinatorEvent::PartitionReturned {
+                worker_id: 0,
+                partition: p.clone(),
+            },
+        );
         assert_eq!(ctx.state, CoordinatorState::WaitingForResults);
 
-        let actions = transition(&mut ctx, CoordinatorEvent::PartitionReturned {
-            worker_id: 1,
-            partition: p,
-        });
+        let actions = transition(
+            &mut ctx,
+            CoordinatorEvent::PartitionReturned {
+                worker_id: 1,
+                partition: p,
+            },
+        );
         assert_eq!(ctx.state, CoordinatorState::Merging);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::InvokeMergeAndReduce(_))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::InvokeMergeAndReduce(_))));
     }
 
     #[test]
@@ -477,13 +491,20 @@ mod tests {
         let mut ctx = make_ctx();
         ctx.state = CoordinatorState::Merging;
 
-        let actions = transition(&mut ctx, CoordinatorEvent::MergeComplete {
-            net: Net::new(),
-            is_normal_form: true,
-        });
+        let actions = transition(
+            &mut ctx,
+            CoordinatorEvent::MergeComplete {
+                net: Net::new(),
+                is_normal_form: true,
+            },
+        );
         assert_eq!(ctx.state, CoordinatorState::Done);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::WriteOutput(_))));
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::ShutdownAll)));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::WriteOutput(_))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::ShutdownAll)));
     }
 
     #[test]
@@ -491,12 +512,17 @@ mod tests {
         let mut ctx = make_ctx();
         ctx.state = CoordinatorState::Merging;
 
-        let actions = transition(&mut ctx, CoordinatorEvent::MergeComplete {
-            net: Net::new(),
-            is_normal_form: false,
-        });
+        let actions = transition(
+            &mut ctx,
+            CoordinatorEvent::MergeComplete {
+                net: Net::new(),
+                is_normal_form: false,
+            },
+        );
         assert_eq!(ctx.state, CoordinatorState::Partitioning);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::InvokeSplit { .. })));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::InvokeSplit { .. })));
         assert_eq!(ctx.round, 1);
     }
 
@@ -507,7 +533,9 @@ mod tests {
 
         let actions = transition(&mut ctx, CoordinatorEvent::PhaseTimeout(0));
         assert_eq!(ctx.state, CoordinatorState::Error);
-        assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::ShutdownAll)));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, CoordinatorAction::ShutdownAll)));
     }
 
     #[test]
@@ -524,7 +552,9 @@ mod tests {
             ctx.state = initial.clone();
             let actions = transition(&mut ctx, CoordinatorEvent::FatalError("crash".into()));
             assert_eq!(ctx.state, CoordinatorState::Error);
-            assert!(actions.iter().any(|a| matches!(a, CoordinatorAction::ShutdownAll)));
+            assert!(actions
+                .iter()
+                .any(|a| matches!(a, CoordinatorAction::ShutdownAll)));
         }
     }
 }
