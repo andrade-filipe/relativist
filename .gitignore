@@ -40,6 +40,10 @@ flamegraph.svg
 perf.data
 perf.data.old
 
+# Temporary data files (test inputs/outputs)
+/data/
+/*.bin
+
 # Docker
 .docker/
 
