@@ -1,6 +1,6 @@
 # SPEC-15: Binary Distribution and Installation
 
-**Status:** Draft v1
+**Status:** Draft v2
 **Depends on:** SPEC-00 (Glossary), SPEC-07 (Deployment), SPEC-13 (System Architecture)
 **Gray zones resolved:** ---
 **References consumed:** ---
@@ -29,6 +29,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 | **GHCR** | GitHub Container Registry (`ghcr.io`), GitHub's built-in Docker image registry. Used to distribute the Relativist Docker image without requiring users to build from source. |
 | **Install Script** | A POSIX shell script downloadable via `curl` that detects the user's OS and architecture, downloads the correct release artifact from GitHub Releases, verifies its checksum, and places the binary in a directory on the user's PATH. |
 | **Checksum Manifest** | A file (`SHA256SUMS`) published alongside release artifacts containing the SHA-256 hash of every artifact in the release. Enables integrity verification before installation. |
+| **SmartScreen** | Windows Defender SmartScreen, a Microsoft security feature that warns users before running executables that lack a code signing certificate or sufficient download reputation. Unsigned `.exe` files downloaded from the internet trigger a "Windows protected your PC" dialog. |
+| **Code Signing** | The process of digitally signing executables with an Authenticode certificate so that Windows recognizes the publisher and suppresses SmartScreen warnings. |
 
 ---
 
@@ -94,7 +96,23 @@ The script MUST:
 
 **R14.** Version tags MUST follow Semantic Versioning 2.0.0 in the format `vMAJOR.MINOR.PATCH` (e.g., `v0.6.0`). The `version` field in `Cargo.toml` MUST match the Git tag (without the `v` prefix). Before creating a release tag, the developer MUST update `Cargo.toml` to the target version. **(MUST)**
 
-**Note:** The current `Cargo.toml` says `version = "0.0.1"` while existing Git tags go up to `v0.5.0`. This discrepancy MUST be resolved before the first automated release by updating `Cargo.toml` to match the next release version.
+**Note:** The current `Cargo.toml` says `version = "0.0.1"` while existing Git tags go up to `v0.5.0`. This discrepancy MUST be resolved before the first automated release by updating `Cargo.toml` to match the next release version. *(Resolved in v0.6.0: Cargo.toml synced to 0.6.0.)*
+
+### 3.8 Windows Direct Download
+
+**R15.** Each GitHub Release SHOULD include the bare Windows executable (`relativist-{version}-x86_64-pc-windows-msvc.exe`) as a separate release asset alongside the `.zip` archive (R2). This eliminates the double-extraction step for Windows users who download via browser (browser download produces `.zip`, which must then be extracted — the bare `.exe` is a single step). The `.zip` is retained for backward compatibility and for users who prefer archives. **(SHOULD)**
+
+**Rationale:** When a user downloads a `.zip` from a browser, the browser saves the `.zip` file, and the user must then extract it to obtain `relativist.exe`. With a direct `.exe` download, the user downloads and runs — one step instead of two.
+
+### 3.9 SmartScreen Mitigation
+
+**R16.** The USAGE_GUIDE and GitHub Release notes MUST document how Windows users can bypass the SmartScreen warning for unsigned executables. The documentation MUST include both methods: (1) right-click the `.exe` → Properties → check "Unblock" → OK, and (2) in the SmartScreen dialog, click "More info" → "Run anyway". **(MUST)**
+
+**Rationale:** Until code signing is implemented (R17), unsigned executables will trigger SmartScreen. Clear documentation prevents user confusion and support burden.
+
+**R17.** Windows release executables SHOULD be signed with an Authenticode code signing certificate to suppress SmartScreen warnings automatically. The recommended approach is [SignPath Foundation](https://signpath.org), which provides free code signing certificates for open-source projects hosted on GitHub with an OSI-approved license. Until code signing is implemented, R16 provides the interim solution. **(SHOULD)**
+
+**Note:** SignPath Foundation requirements: OSI-approved license (MIT — satisfied), public GitHub repository (satisfied), MFA enabled on GitHub account (must verify). Application is submitted via signpath.org; approval timeline is days to weeks.
 
 ---
 
@@ -121,7 +139,8 @@ Jobs:
       - install Rust stable
       - cargo build --release --target ${{ matrix.target }}
       - package binary into archive
-      - upload artifact
+      - copy bare .exe with versioned name (Windows only, R15)
+      - upload artifact (glob matches .tar.gz, .zip, and .exe)
 
   create-release:
     needs: build-binaries
@@ -186,8 +205,9 @@ scripts/
 
 ## 5. Verification
 
-1. Push tag `v0.6.0` → `release.yml` runs, GitHub Release appears with Linux `.tar.gz`, Windows `.zip`, and `SHA256SUMS`.
-2. Push tag `v0.6.0` → `docker.yml` runs, `docker pull ghcr.io/andrade-filipe/relativist:v0.6.0` succeeds.
-3. On a clean Ubuntu container: `curl -sSfL .../install.sh | sh && relativist --version` prints `relativist 0.6.0`.
-4. On Windows: download `.zip` from Releases, extract, run `relativist.exe --version`.
+1. Push tag `v*` → `release.yml` runs, GitHub Release appears with Linux `.tar.gz`, Windows `.zip`, Windows `.exe`, and `SHA256SUMS`.
+2. Push tag `v*` → `docker.yml` runs, `docker pull ghcr.io/andrade-filipe/relativist:{tag}` succeeds.
+3. On a clean Ubuntu container: `curl -sSfL .../install.sh | sh && relativist --version` prints the installed version.
+4. On Windows: download `.exe` directly from Releases, right-click → Properties → Unblock, run `relativist.exe --version`.
 5. Checksum: download artifact and `SHA256SUMS`, run `sha256sum -c SHA256SUMS` → `OK`.
+6. `SHA256SUMS` contains entries for all 3 artifacts (linux `.tar.gz`, windows `.zip`, windows `.exe`).

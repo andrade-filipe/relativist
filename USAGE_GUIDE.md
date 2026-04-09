@@ -51,10 +51,20 @@ docker run --rm ghcr.io/andrade-filipe/relativist --version
 Baixe o binario para seu sistema em:
 https://github.com/andrade-filipe/relativist/releases
 
-- Linux: `relativist-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
-- Windows: `relativist-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+- **Windows (recomendado):** `relativist-vX.Y.Z-x86_64-pc-windows-msvc.exe` (download direto, sem extrair)
+- **Windows (alternativa):** `relativist-vX.Y.Z-x86_64-pc-windows-msvc.zip` (extrair o .exe)
+- **Linux:** `relativist-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
 
-Extraia e coloque o binario numa pasta do seu PATH.
+Coloque o binario numa pasta do seu PATH.
+
+**Nota Windows (SmartScreen):** Como o executavel ainda nao possui assinatura digital,
+o Windows pode exibir um aviso "O Windows protegeu seu PC". Para executar:
+
+1. Clique com botao direito no `.exe` → Propriedades → marque "Desbloquear" → OK
+2. Ou: no dialogo SmartScreen, clique "Mais informacoes" → "Executar assim mesmo"
+
+Isso e normal para executaveis sem certificado de code signing e nao indica risco.
+O checksum SHA256 do arquivo pode ser verificado no `SHA256SUMS` do release.
 
 ### Opcao 4: Compilar do codigo fonte
 
