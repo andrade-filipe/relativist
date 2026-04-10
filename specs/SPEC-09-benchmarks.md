@@ -1,12 +1,13 @@
 # SPEC-09: Benchmark Suite
 
-**Status:** Revised v3
+**Status:** Revised v3.1 — per-benchmark round columns split into lenient/strict, and cascade_cross benchmark added (plano curious-sleeping-patterson)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-12 (User I/O -- canonical generators), SPEC-14 (Arithmetic Encoding -- Church numeral benchmarks)
 **Gray zones resolved:** Z4 (communication overhead vs. parallelism benefit), Z6 (scalability transfer from shared to distributed memory), Z7 (work granularity)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-007 (Casanova 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015), REF-017 (Foster, Kesselman, Tuecke 2001)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, P1-P5), DISC-006 v2 (overhead anatomy, break-even analysis, workload profiles), DISC-008 v2 (shared-to-distributed transition, 6 operational dimensions)
 **Arguments consumed:** ARG-001 (central argument, P1-P6, fundamental property), ARG-004 (practical viability and limits, workload classification A/B/C, break-even, granularity thresholds)
 **Code analyses consumed:** AC-005 (Haskell benchmark framework, 5 benchmarks, 9 CSVs, ~110 datapoints, 8 limitations, experimental results), AC-014 (HigherOrderCO bench methodology, wall-clock sampling, 29 benchmarks, gaps identified)
+**Revision history:** v3.1 (2026-04-10): the `Rounds (grid)` property row of every benchmark table has been split into `Rounds (grid, lenient)` and `Rounds (grid, strict, expected)` to make the distinction introduced by SPEC-05 R30a explicit in the benchmark contract. A new benchmark `cascade_cross` (R18) is introduced as the primary validation vehicle for strict-mode multi-round behavior. No existing benchmarks are removed and no metric fields of `BenchmarkResult` are changed. Source: plano curious-sleeping-patterson, Fase 1.
 
 ---
 
@@ -87,7 +88,7 @@ pub trait Benchmark {
 
 ### 3.2 Mandatory Benchmarks
 
-**R8.** Relativist MUST implement at least 10 benchmarks organized by overhead profile. **(MUST)**
+**R8.** Relativist MUST implement at least 11 benchmarks organized by overhead profile (10 general-purpose benchmarks plus `cascade_cross` as the strict-mode validation benchmark, R17c). **(MUST)**
 
 #### 3.2.1 Profile A -- Embarrassingly Parallel
 
@@ -97,7 +98,8 @@ pub trait Benchmark {
 |----------|-------|
 | Agents | 2N |
 | Redexes | N |
-| Rounds (grid) | 1 |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | 1 (all redexes are internal under ContiguousIdStrategy; no cascades) |
 | Border redexes | 0 (contiguous partitioning) |
 | Rules exercised | ERA-ERA (void) |
 | Profile | A |
@@ -109,7 +111,8 @@ pub trait Benchmark {
 |----------|-------|
 | Agents | 2N |
 | Redexes | N |
-| Rounds (grid) | 1 |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | 1 (independent pairs, no cross-partition cascades) |
 | Border redexes | 0 |
 | Rules exercised | CON-CON (annihilation cross) |
 | Profile | A |
@@ -123,7 +126,8 @@ pub trait Benchmark {
 |----------|-------|
 | Agents | 2N |
 | Redexes | N |
-| Rounds (grid) | 1 |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | 1 (independent pairs, no cross-partition cascades) |
 | Border redexes | 0 |
 | Rules exercised | DUP-DUP (annihilation parallel) |
 | Profile | A |
@@ -139,7 +143,8 @@ pub trait Benchmark {
 |----------|-------|
 | Initial agents | 2N |
 | Initial redexes | N |
-| Rounds (grid) | Variable (> 1 for large N) |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | Variable (grows with N as expansion promotes internal wires to cross-partition wires) |
 | Border redexes | Variable (emergent from expansion) |
 | Rules exercised | CON-DUP (commutation), CON-CON, DUP-DUP (post-expansion annihilation) |
 | Profile | B |
@@ -155,7 +160,8 @@ pub trait Benchmark {
 |----------|-------|
 | Agents | 2 * (2^d - 1) |
 | Interactions | 2^d - 1 |
-| Rounds (grid) | d (minimum) |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | >= d (one round per cascade level; exact count depends on partitioning and butterfly depth) |
 | Border redexes | ~50% per level (cross-connect butterfly pattern) |
 | Rules exercised | CON-CON (annihilation cross, cascade) |
 | Profile | C |
@@ -173,7 +179,8 @@ pub trait Benchmark {
 |----------|-------|
 | Agents | ~2N + N (CON + ERA pairs) |
 | Redexes | N (ERA-ERA) + CON cascade |
-| Rounds (grid) | Variable |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | Variable (grows with depth of the CON cascade under cross-partition cuts) |
 | Rules exercised | ERA-ERA, CON-ERA (propagation) |
 | Profile | A/B (depends on size) |
 | Default sizes | [4, 8, 16, 32, 64, 128, 256] |
@@ -196,7 +203,8 @@ The net MUST contain at least:
 |----------|-------|
 | Agents | ~12N (2 agents per pair, 6 pair types, N pairs of each) |
 | Redexes | 6N |
-| Rounds (grid) | Variable (CON-DUP generates cascade) |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | Variable (CON-DUP commutation in different pair groups may or may not cross partition boundaries depending on N and the partition strategy) |
 | Border redexes | Variable |
 | Rules exercised | ALL 6 |
 | Profile | B (due to CON-DUP) |
@@ -221,7 +229,8 @@ All pairs are fully independent (unique FreePort IDs per SPEC-12 R41), so post-C
 |----------|-------|
 | Agents | N + 1 (N CON/DUP + 1 ERA) |
 | Redexes | 1 (initial), cascade of N |
-| Rounds (grid) | Depends on distribution |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | Variable (one round per cross-partition step of the erasure cascade; maximum bounded by N+1 under ContiguousIdStrategy with cut-through placement) |
 | Border redexes | Variable (propagation may cross boundaries) |
 | Rules exercised | CON-ERA or DUP-ERA (erasure propagation) |
 | Profile | C (sequential cascade) |
@@ -241,7 +250,8 @@ All pairs are fully independent (unique FreePort IDs per SPEC-12 R41), so post-C
 |----------|-------|
 | Initial agents | O(N) (two Church numerals + add combinator) |
 | Initial redexes | O(1) (beta-reduction entry point) |
-| Rounds (grid) | Variable (multiple, due to CON-DUP expansion phase) |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | Variable (grows with the number of beta-reduction stages whose CON-DUP commutations cross partition boundaries) |
 | Border redexes | Variable (emergent from CON-DUP commutation during beta-reduction) |
 | Rules exercised | CON-DUP (commutation during duplication), CON-CON, DUP-DUP (post-expansion annihilation), CON-ERA, DUP-ERA (erasure of unused branches) |
 | Profile | B (DUP-CON expansion during beta-reduction, then collapse) |
@@ -255,10 +265,35 @@ All pairs are fully independent (unique FreePort IDs per SPEC-12 R41), so post-C
 |----------|-------|
 | Initial agents | O(a + b) |
 | Initial redexes | O(1) |
-| Rounds (grid) | Variable (many, due to larger expansion) |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | Variable (larger than ChurchAdd under the same partition strategy, due to a larger expansion factor and more nested CON-DUP stages) |
 | Rules exercised | Same as ChurchAdd (all 6 rules via beta-reduction) |
 | Profile | B (larger expansion factor than ChurchAdd) |
 | Default sizes (a=b) | [5, 10, 20, 50] |
+
+#### 3.2.7 Strict-Mode Validation Benchmark
+
+**R17c (Cascade Cross Benchmark).** The **cascade_cross** benchmark MUST generate a synthetic net designed to stress-test multi-round behavior under strict BSP mode (SPEC-05 R30a). The benchmark consists of N stacked CON-DUP commutation stages arranged so that each stage's cascade falls into a different partition under the default `ContiguousIdStrategy`. Under strict mode, each stage takes at least one round to propagate; under lenient mode, the same work collapses into the single coordinator-side `reduce_all` pass. The benchmark ID is placed after R17a (ChurchAdd) and R17b (ChurchMul) in the "Mandatory Benchmarks" section (3.2) to keep the benchmark catalog contiguous; the next requirement (R18) is the canonical definition of `BenchmarkResult` in Section 3.3, which is unchanged. **(MUST)**
+
+| Property | Value |
+|----------|-------|
+| Initial agents | ~4N |
+| Initial redexes | N |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | >= 2 for N >= 2; grows with N |
+| Border redexes | proportional to N |
+| Rules exercised | CON-DUP commutation, CON-CON annihilation |
+| Profile | B (expansion under distribution) |
+| Default sizes | [10, 50, 100, 500, 1_000] |
+| Correctness | full G1 (sizes kept small to avoid isomorphism intractability) |
+
+**Purpose:** exercises the BSP multi-round loop by stacking CON-DUP commutation stages whose cascades fall into different partitions under `ContiguousIdStrategy`. Under strict_bsp, each stage takes at least one round to propagate. Under lenient mode, the same work collapses into the single coordinator `reduce_all` pass. cascade_cross is the only benchmark where strict mode measurably differs from lenient, making it the primary validation vehicle for SPEC-05's BSP-faithfulness claims (Section 4.5a Properties 1-4).
+
+**Rationale:** Before this benchmark, there was no datapoint in the suite that could empirically distinguish `run_grid_lenient` from `run_grid_strict`. All other benchmarks either have rounds bounded above by 1 in both modes (Profile A: no cross-partition cascades) or have unpredictable strict-mode round counts that depend on size-sensitive partition boundaries (Profile B/C benchmarks: round counts vary but only at scales where full-G1 verification becomes intractable). cascade_cross is tuned for the opposite regime: sizes small enough that `nets_isomorphic` completes in sub-second, but topology deliberately crafted to force `rounds >= 2` under strict mode from `N >= 2`. This makes it the canonical regression test for R30a (SPEC-05) and the primary empirical support for D6 (SPEC-01 v3.1: `R_lenient(mu, n) <= R_strict(mu, n)`).
+
+**Correctness:** The cascade_cross verifier MUST compare sequential and distributed results by full graph isomorphism (`nets_isomorphic`), the same as MixedNet and ErasurePropagation. The default sizes are deliberately kept small (maximum 1_000) so that the isomorphism check remains tractable regardless of the strict-mode round count.
+
+**Benchmark matrix note:** cascade_cross MUST be executed in BOTH lenient and strict modes for the same configurations. The strict-mode run is the one that produces non-trivial `rounds > 1` data; the lenient-mode run serves as the non-regression baseline (proving that strict mode did not accidentally become the default for other benchmarks and confirming that the two modes reach the same Normal Form via G1 verification on every repetition).
 
 ### 3.3 Mandatory Metrics
 
@@ -595,6 +630,8 @@ pub enum BenchmarkId {
     ErasurePropagation,
     ChurchAdd,
     ChurchMul,
+    /// R17c: strict-mode multi-round validation benchmark.
+    CascadeCross,
 }
 
 /// Execution mode.
@@ -910,6 +947,7 @@ codigo/relativist/
       erasure_propagation.rs # ErasurePropagation
       church_add.rs          # ChurchAdd (SPEC-14)
       church_mul.rs          # ChurchMul (SPEC-14, SHOULD)
+      cascade_cross.rs       # CascadeCross (R17c, strict-mode validation)
     io/
       examples.rs        # Canonical net generator functions (SPEC-12 R35-R42a)
   src/bin/
@@ -937,7 +975,8 @@ The table below summarizes the complete experimental plan. The total number of d
 | ErasurePropagation | C | 6 | 13 | 5 | 390 |
 | ChurchAdd | B | 4 | 13 | 5 | 260 |
 | ChurchMul (SHOULD) | B | 4 | 13 | 5 | 260 |
-| **Total** | | | | | **~4160** |
+| CascadeCross (strict + lenient) | B | 5 | 13 x 2 modes | 5 | 650 |
+| **Total** | | | | | **~4810** |
 
 **Note on config count:** Each benchmark has 13 configurations per size: 1 sequential baseline (mode=Sequential, workers=0) + 4 worker counts (1,2,4,8) x 3 distributed modes (Local, TcpLocalhost, TcpNetwork) = 13. The Sequential mode (R26) is the baseline; it does not combine with non-zero worker counts.
 
@@ -1036,6 +1075,7 @@ The TCC's research question (OBJETIVO_TCC.md) asks whether IC properties "allow 
 | (does not exist) | ErasurePropagation | New. Erasure cascade. |
 | (does not exist) | ChurchAdd | New. SPEC-14. Arithmetic computation via Church encoding. Profile B. |
 | (does not exist) | ChurchMul (SHOULD) | New. SPEC-14. Multiplication with O(a*b) interactions. Profile B. |
+| (does not exist) | CascadeCross | New. R17c. Synthetic multi-round BSP stress test. The only benchmark whose strict-mode round count measurably differs from lenient-mode (`rounds == 1`). Primary validation vehicle for SPEC-05 R30a and SPEC-01 D6 v3.1. Profile B. |
 
 ### 6.2 Metrics: prototype vs. Relativist
 

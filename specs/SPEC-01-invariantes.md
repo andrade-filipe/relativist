@@ -1,12 +1,13 @@
 # SPEC-01: System Invariants
 
-**Status:** Revised v3
+**Status:** Revised v3.1 — D6 and G1 clarified for lenient vs strict BSP modes (plano curious-sleeping-patterson)
 **Depends on:** SPEC-00 (Glossary)
 **Gray zones resolved:** Z1 (strong confluence local to distributed determinism)
 **References consumed:** REF-001, REF-002, REF-003, REF-005, REF-013, REF-014, REF-018
 **Discussions consumed:** DISC-001 v2, DISC-003 v2, DISC-004 v2
 **Arguments consumed:** ARG-001 (central argument, P1-P6), ARG-002 (partitioning, C1-C3)
 **Code analyses consumed:** AC-001, AC-002, AC-003, AC-004, AC-015
+**Revision history:** v3.1 (2026-04-10): D6 refined and a note added under G1 to clarify that both lenient and strict BSP modes (SPEC-05 R30a) preserve the Fundamental Property. No change to T1-T7, D1-D5, I1-I7, or G1 itself. Source: plano curious-sleeping-patterson, Fase 1.
 
 ---
 
@@ -237,18 +238,21 @@ Each live agent belongs to exactly one partition at any given moment. No agent e
 
 **D6. Protocol Termination (Premise P5)**
 
-For terminating nets, the round cycle of the grid protocol MUST terminate in a finite number of rounds.
+For terminating nets, the round cycle of the grid protocol MUST terminate in a finite number of rounds, in both lenient and strict BSP modes (SPEC-05 R30a).
 
-- **Formal statement:** If `mu` is a Terminating Net, `run_grid(mu, n)` terminates in at most `R` rounds, where `R <= N` and `N` is the total number of reduction steps to reach Normal Form (invariant by T7).
-- **Justification:** DISC-003 v2, Section 2.4. ARG-001, P5 (derived from P1+P2+P3+P4). The argument:
+- **Formal statement:** If `mu` is a Terminating Net, `run_grid(mu, config, strategy)` terminates in at most `R` rounds, where `R` depends on `config.strict_bsp`:
+  - **Lenient mode (`strict_bsp = false`, default):** `R_lenient(mu, n) <= 1`. More precisely, `R_lenient(mu, n) = 0` iff `mu` is already in Normal Form, and `R_lenient(mu, n) = 1` otherwise. The coordinator's post-merge `reduce_all` exhausts the merged queue in a single round.
+  - **Strict mode (`strict_bsp = true`):** `R_lenient(mu, n) <= R_strict(mu, n) <= N`, where `N` is the total number of reduction steps to reach Normal Form (invariant by T7). Each strict round consumes at least one interaction from the global interaction budget, so the upper bound `N` is guaranteed.
+  - **Both modes reach the same Normal Form (G1).**
+- **Justification:** DISC-003 v2, Section 2.4. ARG-001, P5 (derived from P1+P2+P3+P4). SPEC-05 Section 4.5a (Lenient vs Strict BSP, Properties 1-4). The argument:
   1. The initial net is terminating (Premise P6, scope restriction).
   2. By strong confluence (T4, P1) and REF-005 Lemma 2.1, the total number of reductions to Normal Form is finite and invariant (T7).
   3. Split/merge/remap do not create or destroy redexes (D1, D4 -- P2, P4).
-  4. In each round, at least one redex is reduced: either at least one is internal to some partition (reduced locally), or all are border redexes (resolved in the merge phase by D3 -- P3).
-  5. Therefore, the number of remaining reductions decreases strictly at each round. The protocol terminates in at most N rounds.
-- **In practice:** Each round reduces many redexes simultaneously (all internal redexes of all partitions + all border redexes), so the number of rounds is much smaller than N.
-- **How to verify:** For known terminating test nets, verify that `run_grid` terminates. Monitor the redex count across rounds to confirm strict decrease.
-- **Consequence of violation:** The grid protocol would loop indefinitely for a terminating net, indicating a bug in border redex detection (D3) or in the split/merge cycle (D1).
+  4. In each round, at least one redex is reduced: in lenient mode by `reduce_all` at the coordinator after merge (resolving all internal and border redexes in one pass), or in strict mode by the workers of the next round processing border-origin redexes left in the merged queue.
+  5. Therefore the number of remaining reductions decreases strictly between the start and end of each round (strict) or within the single round (lenient). The protocol terminates in at most `N` rounds in strict mode and in at most 1 round in lenient mode.
+- **In practice:** In lenient mode, the round count is always 0 or 1 for terminating nets. In strict mode, each round reduces many redexes simultaneously (all internal redexes of all partitions), so the round count is much smaller than `N`; strict round counts grow with the depth of cross-partition cascades, not with the total work (SPEC-05 Section 4.5a, Property 4: total work is mode-invariant).
+- **How to verify:** For known terminating test nets, verify that `run_grid` terminates in both modes. Monitor the redex count across rounds to confirm strict decrease. Verify `R_lenient(mu, n) <= R_strict(mu, n)` for nets with cross-partition cascades (e.g., the `cascade_cross` benchmark in SPEC-09 R18).
+- **Consequence of violation:** In either mode, non-termination for a terminating net indicates a bug in border redex detection (D3) or in the split/merge cycle (D1). In strict mode specifically, non-termination can also indicate a bug in `Net::connect`'s redex-enqueueing logic (SPEC-02 R13): if border redexes are not enqueued during merge, the termination check sees an empty queue, and the protocol terminates prematurely with a non-Normal-Form net, violating G1.
 
 ---
 
@@ -369,6 +373,15 @@ for any Terminating Net `net` and any number of workers `n >= 1`, where `~` deno
   - P6 (scope restriction to terminating nets) is the precondition for T6, T7, and the proof by induction (ARG-001, Section "Induction Proof").
 - **How to verify:** This is Relativist's fundamental test. For each test case: (a) construct the net, (b) reduce sequentially with `reduce_all`, (c) reduce distributedly with `run_grid` for various values of `n`, (d) compare normal forms by graph isomorphism. For arithmetic nets (SPEC-14), correctness can also be verified by comparing decoded results: `decode_nat(reduce_all(build_op(a, b))) == decode_nat(extract_result(run_grid(build_op(a, b), n)))` for all valid operands. This is simpler than graph isomorphism and directly validates the end-to-end encoding/reduction/decoding workflow.
 - **Consequence of violation:** The TCC hypothesis would be refuted. Distributed reduction would not preserve IC determinism.
+
+> **Note on BSP mode independence (v3.1, added 2026-04-10):** G1 holds under both `strict_bsp = false` (lenient) and `strict_bsp = true` (strict). The total reduction work performed is identical between modes; strict mode only distributes that work across more BSP rounds instead of concentrating cascades at the coordinator. Formally (SPEC-05 Section 4.5a, Properties 1 and 4): for every terminating net `mu` and every `n >= 1`,
+>
+> ```
+> reduce_all(mu)  ~  extract_result(run_grid_lenient(mu, n))
+>                 ~  extract_result(run_grid_strict(mu, n))
+> ```
+>
+> and the sum of per-rule interaction counts is identical across the two modes. D6 (refined above) states the companion property that both modes terminate in a finite number of rounds, with `R_lenient(mu, n) <= R_strict(mu, n) <= S(mu)` (where `S(mu)` is the total interaction count invariant of T7). The SPEC-09 benchmark suite validates this empirically on every datapoint of the `cascade_cross` benchmark (SPEC-09 R18), which is the stress test designed specifically for strict-mode multi-round iteration.
 
 ---
 
