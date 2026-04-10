@@ -1,0 +1,4 @@
+benchmark,input_size,mode,workers,repetitions,all_correct,wall_clock_mean,wall_clock_std,wall_clock_median,wall_clock_min,wall_clock_max,mips_mean,speedup_mean,efficiency_mean,overhead_ratio_mean,cv
+ep_annihilation_con,500000,sequential,0,10,true,0.240364,0.065007,0.224252,0.177173,0.364010,2.211,1.0000,1.0000,0.0000,0.2705
+ep_annihilation_con,1000000,sequential,0,10,true,0.393489,0.014002,0.391185,0.374789,0.424968,2.544,1.0000,1.0000,0.0000,0.0356
+ep_annihilation_con,5000000,sequential,0,10,true,2.900251,0.086799,2.913525,2.705561,3.014640,1.725,1.0000,1.0000,0.0000,0.0299

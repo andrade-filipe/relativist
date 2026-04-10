@@ -1,0 +1,4 @@
+benchmark,input_size,mode,workers,repetitions,all_correct,wall_clock_mean,wall_clock_std,wall_clock_median,wall_clock_min,wall_clock_max,mips_mean,speedup_mean,efficiency_mean,overhead_ratio_mean,cv
+dual_tree,18,sequential,0,10,true,0.046638,0.001414,0.046539,0.044897,0.049754,5.625,1.0000,1.0000,0.0000,0.0303
+dual_tree,20,sequential,0,10,true,0.220885,0.008028,0.221969,0.211926,0.234199,4.753,1.0000,1.0000,0.0000,0.0363
+dual_tree,22,sequential,0,10,true,1.161989,0.023541,1.167830,1.110808,1.190618,3.611,1.0000,1.0000,0.0000,0.0203
