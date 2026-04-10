@@ -14,8 +14,14 @@ use super::types::Message;
 /// Header size in bytes: 4 (length) + 4 (CRC32 checksum).
 pub const FRAME_HEADER_SIZE: usize = 8;
 
-/// Default maximum payload size (256 MiB).
-pub const DEFAULT_MAX_PAYLOAD_SIZE: u32 = 268_435_456;
+/// Default maximum payload size (1 GiB).
+///
+/// Raised from 256 MiB as part of the L6 fix (see `docs/PHASE2-FINDINGS.md`).
+/// The cap is a DoS guard, not a memory budget: large dense nets (e.g.
+/// `dual_tree` depth 22 or `ep_annihilation_con` at 5M agents sent to a
+/// single worker) legitimately serialise to >256 MiB even with the
+/// `CompactSubnet` wire wrapper, because every agent slot is live.
+pub const DEFAULT_MAX_PAYLOAD_SIZE: u32 = 1_073_741_824;
 
 /// Header of a frame in the wire protocol.
 /// Precedes each payload transmitted over TCP.
@@ -227,7 +233,7 @@ mod tests {
     #[test]
     fn test_framing_constants() {
         assert_eq!(FRAME_HEADER_SIZE, 8);
-        assert_eq!(DEFAULT_MAX_PAYLOAD_SIZE, 268_435_456);
+        assert_eq!(DEFAULT_MAX_PAYLOAD_SIZE, 1_073_741_824);
     }
 
     // T4: edge case — length = 0

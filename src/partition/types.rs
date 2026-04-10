@@ -23,6 +23,17 @@ pub struct IdRange {
 pub struct Partition {
     /// The sub-net containing the agents of this partition.
     /// Border wires appear as connections to FreePort(borderId).
+    ///
+    /// Wire format: the dense `Net` layout (with `max_id + 1` arena slots)
+    /// is replaced on the wire by `CompactSubnet`, which only carries live
+    /// agents and non-`DISCONNECTED` ports. In memory the field is still
+    /// a `Net`. This mitigates L6 (PHASE2-FINDINGS.md): under
+    /// `ContiguousIdStrategy` the last worker's subnet would otherwise
+    /// span the full arena and push past the 256 MiB frame cap.
+    #[serde(
+        serialize_with = "crate::partition::compact::serialize_subnet_compact",
+        deserialize_with = "crate::partition::compact::deserialize_subnet_compact"
+    )]
     pub subnet: Net,
 
     /// Identifier of the worker responsible for this partition.

@@ -26,7 +26,7 @@ pub struct NodeConfig {
     pub num_workers: u32,
 
     /// Maximum accepted payload size, in bytes.
-    /// Default: DEFAULT_MAX_PAYLOAD_SIZE (256 MiB).
+    /// Default: DEFAULT_MAX_PAYLOAD_SIZE (1 GiB).
     pub max_payload_size: u32,
 
     /// Timeout for waiting for all workers to connect (coordinator).
@@ -65,7 +65,7 @@ mod tests {
         let config = NodeConfig::default();
         assert_eq!(config.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
         assert_eq!(config.num_workers, 1);
-        assert_eq!(config.max_payload_size, 268_435_456);
+        assert_eq!(config.max_payload_size, 1_073_741_824);
         assert_eq!(config.worker_connect_timeout, Duration::from_secs(120));
         assert_eq!(config.distribute_timeout, Duration::from_secs(60));
         assert_eq!(config.collect_timeout, Duration::from_secs(600));
