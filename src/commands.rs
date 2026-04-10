@@ -288,6 +288,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         csv_rounds_path: args.csv_rounds.as_ref().map(|p| p.display().to_string()),
         csv_summary_path: args.csv_summary.as_ref().map(|p| p.display().to_string()),
         max_rounds: args.max_rounds,
+        skip_g1: args.skip_g1,
     };
 
     println!("=== Relativist Benchmark Suite ===");

@@ -194,6 +194,10 @@ pub struct BenchmarkSuiteConfig {
     pub csv_rounds_path: Option<String>,
     pub csv_summary_path: Option<String>,
     pub max_rounds: Option<u32>,
+    /// When true, replace the full isomorphism check with a symbol-count
+    /// fast check (L3 mitigation — see PHASE1-FINDINGS.md). A pass is
+    /// recorded as "G1 weak" rather than "G1 strong".
+    pub skip_g1: bool,
 }
 
 /// Aggregated statistics across repetitions (SPEC-09 R31-R34).

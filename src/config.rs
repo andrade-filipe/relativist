@@ -319,6 +319,16 @@ pub struct BenchArgs {
     /// Grid loop round limit.
     #[arg(long)]
     pub max_rounds: Option<u32>,
+
+    /// Skip full graph isomorphism (G1) in favor of a fast symbol-count check.
+    ///
+    /// When the distributed result has > ~5000 non-empty agents, the O(N!)
+    /// backtracking in `nets_isomorphic` becomes intractable (see
+    /// `PHASE1-FINDINGS.md` L3). This flag switches every benchmark's
+    /// `verify()` to `nets_match_counts`, a necessary-but-not-sufficient
+    /// check. Results are marked "G1 weak" in the CSV.
+    #[arg(long, default_value_t = false)]
+    pub skip_g1: bool,
 }
 
 /// CLI arguments for the `validate` subcommand (DATA-COLLECTION-PLAN Section 10).

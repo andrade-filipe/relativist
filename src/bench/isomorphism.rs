@@ -246,6 +246,16 @@ fn count_agents_by_symbol(net: &Net) -> HashMap<Symbol, usize> {
     counts
 }
 
+/// Fast structural check: two nets have identical agent counts per symbol.
+///
+/// Weaker than `nets_isomorphic`: it is a necessary but not sufficient
+/// condition for isomorphism. Use when full backtracking isomorphism is
+/// intractable (L3 mitigation — see PHASE1-FINDINGS.md). A pass here
+/// means "G1 weak pass"; a fail means G1 definitely fails.
+pub fn nets_match_counts(a: &Net, b: &Net) -> bool {
+    count_agents_by_symbol(a) == count_agents_by_symbol(b)
+}
+
 /// Group live agent IDs by symbol.
 fn group_agents_by_symbol(net: &Net) -> HashMap<Symbol, Vec<AgentId>> {
     let mut groups: HashMap<Symbol, Vec<AgentId>> = HashMap::new();

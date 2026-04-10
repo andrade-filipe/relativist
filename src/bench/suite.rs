@@ -21,6 +21,7 @@ use crate::bench::benchmarks::{
     mixed_net::MixedNet,
     tree_sum::{TreeSum, TreeSumBalanced},
 };
+use crate::bench::isomorphism::nets_match_counts;
 use crate::bench::memory::get_peak_memory_bytes;
 use crate::bench::stats;
 use crate::bench::{
@@ -123,6 +124,9 @@ struct GridMeasureParams<'a> {
     seq_result: &'a Net,
     seq_baseline_secs: f64,
     max_rounds: Option<u32>,
+    /// When true, replace `benchmark.verify` with `nets_match_counts`
+    /// (symbol-count fast check). L3 mitigation — see PHASE1-FINDINGS.md.
+    skip_g1: bool,
 }
 
 fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
@@ -137,8 +141,14 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
     let (result_net, grid_metrics) = run_grid(net_clone, &config, &strategy);
     let elapsed = start.elapsed().as_secs_f64();
 
-    // Correctness verification (R36): verify on EVERY repetition
-    let correct = params.benchmark.verify(params.seq_result, &result_net);
+    // Correctness verification (R36): verify on EVERY repetition.
+    // When --skip-g1 is active, use the symbol-count fast check instead of
+    // the full O(N!) isomorphism (L3 mitigation).
+    let correct = if params.skip_g1 {
+        nets_match_counts(params.seq_result, &result_net)
+    } else {
+        params.benchmark.verify(params.seq_result, &result_net)
+    };
 
     let total_interactions = grid_metrics.total_interactions;
     let mips = if elapsed > 0.0 {
@@ -319,9 +329,15 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             for rep in 0..config.repetitions {
                 let (result, reduced_net) = measure_sequential(&input_net, bench_id, size, rep);
 
-                // R37b: verify each sequential repetition against the first
+                // R37b: verify each sequential repetition against the first.
+                // Under --skip-g1, use the symbol-count fast check.
                 if let Some(ref first_net) = seq_reference_net {
-                    if !bench.verify(first_net, &reduced_net) {
+                    let matches = if config.skip_g1 {
+                        nets_match_counts(first_net, &reduced_net)
+                    } else {
+                        bench.verify(first_net, &reduced_net)
+                    };
+                    if !matches {
                         return Err(format!(
                             "Sequential baseline mismatch! bench={}, size={}, rep={}. \
                              T6 violation: sequential reduction produced different normal forms.",
@@ -378,6 +394,7 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                         seq_result: &seq_net,
                         seq_baseline_secs,
                         max_rounds: config.max_rounds,
+                        skip_g1: config.skip_g1,
                     });
 
                     // R38: halt on correctness failure
@@ -475,6 +492,7 @@ mod tests {
             seq_result: &seq_net,
             seq_baseline_secs: seq_baseline,
             max_rounds: None,
+            skip_g1: false,
         });
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Local);
@@ -513,6 +531,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -533,6 +552,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -569,6 +589,7 @@ mod tests {
                 csv_rounds_path: None,
                 csv_summary_path: None,
                 max_rounds: None,
+                skip_g1: false,
             };
             let result = run_benchmark_suite(&config).unwrap_or_else(|e| {
                 panic!("Suite failed for {bench_id}: {e}");
@@ -590,6 +611,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -612,6 +634,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -637,6 +660,7 @@ mod tests {
             seq_result: &seq_net,
             seq_baseline_secs: 1.0, // 1 second baseline
             max_rounds: None,
+            skip_g1: false,
         });
         // Speedup = baseline / elapsed. Since EP is fast, speedup should be large
         assert!(result.speedup > 0.0);
