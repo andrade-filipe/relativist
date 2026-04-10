@@ -1,5 +1,6 @@
 //! Individual benchmark implementations (SPEC-09 R8).
 
+pub mod cascade_cross;
 pub mod church_add;
 pub mod church_mul;
 pub mod condup_expansion;

@@ -12,6 +12,7 @@
 use std::time::Instant;
 
 use crate::bench::benchmarks::{
+    cascade_cross::CascadeCross,
     church_add::ChurchAdd,
     church_mul::ChurchMul,
     condup_expansion::ConDupExpansion,
@@ -47,6 +48,7 @@ pub fn get_benchmark(id: BenchmarkId) -> Box<dyn Benchmark> {
         BenchmarkId::ErasurePropagation => Box::new(ErasurePropagation),
         BenchmarkId::ChurchAdd => Box::new(ChurchAdd),
         BenchmarkId::ChurchMul => Box::new(ChurchMul),
+        BenchmarkId::CascadeCross => Box::new(CascadeCross),
     }
 }
 
@@ -124,6 +126,8 @@ struct GridMeasureParams<'a> {
     seq_result: &'a Net,
     seq_baseline_secs: f64,
     max_rounds: Option<u32>,
+    /// Strict BSP mode (SPEC-05 R30a).
+    strict_bsp: bool,
     /// When true, replace `benchmark.verify` with `nets_match_counts`
     /// (symbol-count fast check). L3 mitigation — see PHASE1-FINDINGS.md.
     skip_g1: bool,
@@ -135,6 +139,8 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
     let config = GridConfig {
         num_workers: params.workers,
         max_rounds: params.max_rounds,
+        strict_bsp: params.strict_bsp,
+        ..GridConfig::default()
     };
 
     let start = Instant::now();
@@ -377,6 +383,8 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                     let grid_config = GridConfig {
                         num_workers: workers,
                         max_rounds: config.max_rounds,
+                        strict_bsp: config.strict_bsp,
+                        ..GridConfig::default()
                     };
                     let _ = run_grid(warmup_net, &grid_config, &strategy);
                 }
@@ -394,6 +402,7 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                         seq_result: &seq_net,
                         seq_baseline_secs,
                         max_rounds: config.max_rounds,
+                        strict_bsp: config.strict_bsp,
                         skip_g1: config.skip_g1,
                     });
 
@@ -492,6 +501,7 @@ mod tests {
             seq_result: &seq_net,
             seq_baseline_secs: seq_baseline,
             max_rounds: None,
+            strict_bsp: false,
             skip_g1: false,
         });
         assert!(result.correct);
@@ -531,6 +541,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            strict_bsp: false,
             skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
@@ -552,6 +563,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            strict_bsp: false,
             skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
@@ -589,6 +601,7 @@ mod tests {
                 csv_rounds_path: None,
                 csv_summary_path: None,
                 max_rounds: None,
+                strict_bsp: false,
                 skip_g1: false,
             };
             let result = run_benchmark_suite(&config).unwrap_or_else(|e| {
@@ -611,6 +624,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            strict_bsp: false,
             skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
@@ -634,6 +648,7 @@ mod tests {
             csv_rounds_path: None,
             csv_summary_path: None,
             max_rounds: None,
+            strict_bsp: false,
             skip_g1: false,
         };
         let result = run_benchmark_suite(&config).unwrap();
@@ -660,6 +675,7 @@ mod tests {
             seq_result: &seq_net,
             seq_baseline_secs: 1.0, // 1 second baseline
             max_rounds: None,
+            strict_bsp: false,
             skip_g1: false,
         });
         // Speedup = baseline / elapsed. Since EP is fast, speedup should be large

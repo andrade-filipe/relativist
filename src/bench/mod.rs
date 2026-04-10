@@ -31,6 +31,7 @@ pub enum BenchmarkId {
     ErasurePropagation,
     ChurchAdd,
     ChurchMul,
+    CascadeCross,
 }
 
 impl std::fmt::Display for BenchmarkId {
@@ -47,6 +48,7 @@ impl std::fmt::Display for BenchmarkId {
             Self::ErasurePropagation => write!(f, "erasure_propagation"),
             Self::ChurchAdd => write!(f, "church_add"),
             Self::ChurchMul => write!(f, "church_mul"),
+            Self::CascadeCross => write!(f, "cascade_cross"),
         }
     }
 }
@@ -194,6 +196,11 @@ pub struct BenchmarkSuiteConfig {
     pub csv_rounds_path: Option<String>,
     pub csv_summary_path: Option<String>,
     pub max_rounds: Option<u32>,
+    /// Strict BSP mode forwarded to GridConfig (SPEC-05 R30a).
+    /// When true, the grid loop does not reduce border cascades at the
+    /// coordinator, exposing multi-round BSP behavior required for Phase 3
+    /// LAN measurements.
+    pub strict_bsp: bool,
     /// When true, replace the full isomorphism check with a symbol-count
     /// fast check (L3 mitigation — see PHASE1-FINDINGS.md). A pass is
     /// recorded as "G1 weak" rather than "G1 strong".
@@ -251,6 +258,7 @@ mod tests {
         );
         assert_eq!(BenchmarkId::ChurchAdd.to_string(), "church_add");
         assert_eq!(BenchmarkId::ChurchMul.to_string(), "church_mul");
+        assert_eq!(BenchmarkId::CascadeCross.to_string(), "cascade_cross");
     }
 
     // --- T2: Mode Display ---
@@ -294,8 +302,9 @@ mod tests {
             BenchmarkId::ErasurePropagation,
             BenchmarkId::ChurchAdd,
             BenchmarkId::ChurchMul,
+            BenchmarkId::CascadeCross,
         ];
-        assert_eq!(all.len(), 11);
+        assert_eq!(all.len(), 12);
     }
 
     // --- Edge case: Display != Debug ---

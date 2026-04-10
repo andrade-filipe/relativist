@@ -234,6 +234,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
                 "erasure_propagation" => BenchmarkId::ErasurePropagation,
                 "church_add" => BenchmarkId::ChurchAdd,
                 "church_mul" => BenchmarkId::ChurchMul,
+                "cascade_cross" => BenchmarkId::CascadeCross,
                 "all" => {
                     ids = vec![
                         BenchmarkId::EPAnnihilation,
@@ -247,6 +248,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
                         BenchmarkId::ErasurePropagation,
                         BenchmarkId::ChurchAdd,
                         BenchmarkId::ChurchMul,
+                        BenchmarkId::CascadeCross,
                     ];
                     break;
                 }
@@ -274,6 +276,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
             BenchmarkId::ErasurePropagation,
             BenchmarkId::ChurchAdd,
             BenchmarkId::ChurchMul,
+            BenchmarkId::CascadeCross,
         ]
     };
 
@@ -288,6 +291,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         csv_rounds_path: args.csv_rounds.as_ref().map(|p| p.display().to_string()),
         csv_summary_path: args.csv_summary.as_ref().map(|p| p.display().to_string()),
         max_rounds: args.max_rounds,
+        strict_bsp: args.strict_bsp,
         skip_g1: args.skip_g1,
     };
 
@@ -416,6 +420,7 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
         let grid_config = crate::merge::GridConfig {
             num_workers: workers,
             max_rounds: None,
+            ..crate::merge::GridConfig::default()
         };
         let strategy = crate::partition::ContiguousIdStrategy;
         let (reduced_net, metrics) = run_grid(net, &grid_config, &strategy);
