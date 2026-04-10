@@ -14,13 +14,15 @@ Motor de reducao distribuida de Interaction Combinators para Grid Computing.
 6. [local — Simulacao de Grid](#6-local--simulacao-de-grid)
 7. [compute — Aritmetica Church](#7-compute--aritmetica-church)
 8. [bench — Suite de Benchmarks](#8-bench--suite-de-benchmarks)
-9. [Docker](#9-docker)
-10. [Pipeline Completa: Gerar, Inspecionar, Reduzir, Comparar](#10-pipeline-completa)
-11. [Formatos de Arquivo](#11-formatos-de-arquivo)
-12. [update — Atualizar Relativist](#12-update--atualizar-relativist)
-13. [completions — Autocompletar no Shell](#13-completions--autocompletar-no-shell)
-14. [Desenvolvimento: Verificacoes Pre-Push](#14-desenvolvimento-verificacoes-pre-push)
-15. [Referencia Rapida](#15-referencia-rapida)
+9. [coordinator e worker — Modo Distribuido (TCP)](#9-coordinator-e-worker--modo-distribuido-tcp)
+10. [Docker](#10-docker)
+11. [Campanhas de Benchmark (Phase 1/2/3)](#11-campanhas-de-benchmark-phase-123)
+12. [Pipeline Completa: Gerar, Inspecionar, Reduzir, Comparar](#12-pipeline-completa)
+13. [Formatos de Arquivo](#13-formatos-de-arquivo)
+14. [update — Atualizar Relativist](#14-update--atualizar-relativist)
+15. [completions — Autocompletar no Shell](#15-completions--autocompletar-no-shell)
+16. [Desenvolvimento: Verificacoes Pre-Push](#16-desenvolvimento-verificacoes-pre-push)
+17. [Referencia Rapida](#17-referencia-rapida)
 
 ---
 
@@ -600,7 +602,116 @@ mips_mean,speedup_mean,efficiency_mean,overhead_ratio_mean,cv
 
 ---
 
-## 9. Docker
+## 9. coordinator e worker — Modo Distribuido (TCP)
+
+Executa o ciclo BSP sobre TCP com processos separados para o coordinator
+(1 no mestre) e workers (N nos de calculo). Este e o mesmo mecanismo usado
+no Docker (secao 10) e em testes em rede real (secao 11.3), a diferenca e
+apenas como os processos sao lancados e orquestrados.
+
+### 9.1 Quando usar cada modo
+
+| Modo               | Comando             | Cenario                                             |
+|--------------------|---------------------|-----------------------------------------------------|
+| Sequencial         | `reduce`            | Baseline, rede pequena, sem paralelismo             |
+| Local (in-process) | `local -w N`        | Simular grid numa unica maquina sem TCP             |
+| TCP (loopback)     | `coordinator`+`worker` | Exercitar protocolo TCP localmente sem Docker    |
+| TCP (Docker)       | `docker compose up` | Isolar processos em containers (secao 10)           |
+| TCP (rede real)    | `coordinator`+`worker` em maquinas diferentes | Grid distribuido real (secao 11.3) |
+
+### 9.2 coordinator — Nó mestre
+
+```bash
+relativist coordinator --workers N --bind HOST:PORT \
+  -i <ENTRADA> [-o <SAIDA>] [-m <METRICAS>] [opcoes]
+```
+
+| Flag               | Descricao                                           |
+|--------------------|-----------------------------------------------------|
+| `--workers N`      | Quantos workers conectarao (obrigatorio)            |
+| `--bind HOST:PORT` | Endereco de bind (ex: `0.0.0.0:9000`)               |
+| `-i, --input`      | Arquivo da rede de entrada                          |
+| `-o, --output`     | Salvar rede reduzida final                          |
+| `-m, --metrics`    | Salvar metricas detalhadas em .json ou .csv         |
+| `--max-rounds N`   | Limitar rodadas BSP                                 |
+| `--strategy`       | Estrategia de particao (`round-robin`, default)     |
+| `--token auto\|<base64>` | Autenticacao (secao 9.5)                      |
+| `--log-format`     | `text` ou `json`                                    |
+
+O coordinator bloqueia esperando os N workers conectarem antes de iniciar
+o primeiro round BSP.
+
+### 9.3 worker — Nó de calculo
+
+```bash
+relativist worker --coordinator HOST:PORT [--token <base64>]
+```
+
+| Flag                      | Descricao                                    |
+|---------------------------|----------------------------------------------|
+| `--coordinator HOST:PORT` | Endereco do coordinator (obrigatorio)        |
+| `--token <base64>`        | Token de autenticacao (se coordinator exigir)|
+| `--log-format`            | `text` ou `json`                             |
+
+O worker conecta ao coordinator com retry automatico (exponencial, ate
+30s total). Ele recebe particoes, reduz localmente, e devolve o resultado.
+
+### 9.4 Exemplo: 1 coordinator + 2 workers numa maquina (loopback)
+
+Use 3 terminais (ou `&` em background):
+
+**Terminal 1 (coordinator):**
+```bash
+# Gerar rede de teste
+relativist generate ep-annihilation-con -n 10000 -o ep10k.bin
+
+# Iniciar coordinator com 2 workers
+relativist coordinator \
+  --workers 2 \
+  --bind 127.0.0.1:9000 \
+  -i ep10k.bin \
+  -o ep10k_grid.bin \
+  -m ep10k_metrics.json
+```
+
+**Terminal 2 (worker 1):**
+```bash
+relativist worker --coordinator 127.0.0.1:9000
+```
+
+**Terminal 3 (worker 2):**
+```bash
+relativist worker --coordinator 127.0.0.1:9000
+```
+
+Apos os 2 workers conectarem, o coordinator executa o grid, imprime o
+resumo, e todos os processos terminam. O arquivo `ep10k_metrics.json`
+contem metricas detalhadas por rodada (bytes enviados/recebidos, tempo
+de compute, merge, network, etc.).
+
+### 9.5 Seguranca: autenticacao por token
+
+Por padrao o bind em `0.0.0.0` sem token emite um aviso. Para habilitar
+autenticacao (SPEC-10):
+
+**Coordinator gera token automatico:**
+```bash
+relativist coordinator --workers 2 --bind 0.0.0.0:9000 \
+  --token auto --token-file /tmp/rel-token \
+  -i input.bin
+```
+
+O token base64 e impresso e salvo em `/tmp/rel-token`. Os workers devem
+usar esse mesmo token:
+
+```bash
+TOKEN=$(cat /tmp/rel-token)
+relativist worker --coordinator coord-host:9000 --token "$TOKEN"
+```
+
+---
+
+## 10. Docker
 
 ### Construir a imagem
 
@@ -677,7 +788,328 @@ No Windows/Mac nativo, retorna 0.
 
 ---
 
-## 10. Pipeline Completa
+## 11. Campanhas de Benchmark (Phase 1/2/3)
+
+Esta secao documenta os **comandos exatos** usados para reproduzir a
+campanha de benchmarks do TCC, dividida em tres fases progressivas:
+
+| Fase    | Modo                    | Maquinas             | Dataset alvo |
+|---------|-------------------------|----------------------|--------------|
+| Phase 1 | Sequential + Local (in-process) | 1 maquina     | 2 260 datapoints |
+| Phase 2 | TcpLocalhost via Docker Compose | 1 maquina     | 400 datapoints |
+| Phase 3 | TcpNetwork em maquinas reais    | 2+ maquinas   | ate definir |
+
+Todas as fases gravam os resultados em `results/phase{N}_detail.csv`,
+`results/phase{N}_summary.csv` e `results/phase{N}_rounds.csv` com o
+mesmo schema, de forma que a analise posterior pode cruzar as fases
+diretamente.
+
+### 11.1 Phase 1 — Sequential + Local (in-process)
+
+Executa em um unico processo, sem TCP. Usa o comando `relativist bench`
+nativo. E o baseline de referencia: se Phase 1 nao mostra speedup, nao
+ha como Phase 2/3 ser melhor, ja que elas somam overhead de rede.
+
+**Pre-requisitos:**
+- `relativist` instalado (`cargo build --release`)
+- `results/` criado na raiz do repositorio
+
+**Comando completo (todos os profiles + encoding + data-bound):**
+
+```bash
+cd codigo/relativist
+mkdir -p results
+
+# Profile A (embarrassingly parallel) — EP annihilation
+relativist bench \
+  --benchmark ep_annihilation_con,ep_annihilation_dup,ep_annihilation \
+  --sizes 100,500,1000,5000,10000,50000,100000,500000,1000000,5000000 \
+  --workers 1,2,4,8 \
+  --warmup 2 \
+  --repetitions 10 \
+  --csv-detail results/phase1_profile_a_detail.csv \
+  --csv-rounds results/phase1_profile_a_rounds.csv \
+  --csv-summary results/phase1_profile_a_summary.csv
+
+# Profile B (expansion + collapse) — CON-DUP expansion
+relativist bench \
+  --benchmark condup_expansion,mixed_net \
+  --sizes 10,50,100,500,1000,5000 \
+  --workers 1,2,4,8 \
+  --warmup 2 \
+  --repetitions 10 \
+  --csv-detail results/phase1_profile_b_detail.csv \
+  --csv-rounds results/phase1_profile_b_rounds.csv \
+  --csv-summary results/phase1_profile_b_summary.csv
+
+# Profile C (sequential dependency) — DualTree, Erasure
+relativist bench \
+  --benchmark dual_tree,erasure_propagation \
+  --sizes 4,6,8,10,12,14,16,18,20,22 \
+  --workers 1,2,4,8 \
+  --warmup 2 \
+  --repetitions 10 \
+  --csv-detail results/phase1_profile_c_detail.csv \
+  --csv-rounds results/phase1_profile_c_rounds.csv \
+  --csv-summary results/phase1_profile_c_summary.csv
+
+# Encoding + data-bound — Church arithmetic, TreeSum
+relativist bench \
+  --benchmark church_add,church_mul,tree_sum \
+  --sizes 10,50,100,500,1000 \
+  --workers 1,2,4,8 \
+  --warmup 2 \
+  --repetitions 10 \
+  --csv-detail results/phase1_encoding_detail.csv \
+  --csv-rounds results/phase1_encoding_rounds.csv \
+  --csv-summary results/phase1_encoding_summary.csv
+```
+
+**Dicas:**
+
+- `workers 0` e adicionado automaticamente pelo comando `bench` para
+  gerar a linha de baseline `sequential`.
+- O flag `--warmup 2` executa duas rodadas descartadas para estabilizar
+  cache/JIT antes da medicao.
+- Para rodadas mais rapidas durante desenvolvimento: `--repetitions 3
+  --warmup 1`.
+
+### 11.2 Phase 2 — Docker (TcpLocalhost)
+
+Executa o protocolo BSP completo sobre TCP, porem com coordinator e
+workers em containers na **mesma maquina** (loopback). Isola o custo
+algoritmico + protocolo TCP, sem interferencia de rede fisica.
+
+**Pre-requisitos:**
+- Docker Desktop em execucao (`docker info` deve funcionar)
+- `docker-compose.yml` presente em `codigo/relativist/`
+- Binario `relativist` compilado em `target/release/`
+- Python 3 disponivel (`python3`) para o script de orquestracao
+
+**Execucao via script de orquestracao:**
+
+```bash
+cd codigo/relativist
+bash scripts/bench_docker.sh
+```
+
+O script `bench_docker.sh`:
+
+1. Constroi a imagem Docker (`relativist-worker` e `relativist-coordinator`)
+2. Para cada benchmark, gera o input net uma vez
+3. Para cada tamanho, mede o baseline sequencial nativo (fora do Docker)
+4. Para cada (benchmark, tamanho, workers), executa `docker compose up`
+   repetidamente com warmup + repeticoes
+5. Verifica G1 estrutural (inspect seq vs inspect distributed)
+6. Agrega em `results/phase2_{detail,summary,rounds}.csv`
+
+**Flags do orquestrador:**
+
+| Flag               | Efeito                                              |
+|--------------------|-----------------------------------------------------|
+| `--dry-run`        | Imprime o plano sem executar Docker                 |
+| `--skip-build`     | Pula `docker compose build` (imagem ja pronta)      |
+| `--skip-sequential`| Pula os baselines nativos (reusa os anteriores)     |
+
+**Executar apenas uma parte (sem recomeco do zero):**
+
+```bash
+# Usar imagem ja construida e baselines ja medidos
+bash scripts/bench_docker.sh --skip-build --skip-sequential
+```
+
+**Executar manualmente um unico config (debug):**
+
+```bash
+# 1. Gerar o input net
+relativist generate ep-annihilation-con -n 500000 -o data/bench_ep_500000.bin
+
+# 2. Copiar para o volume do docker-compose
+cp data/bench_ep_500000.bin data/input.bin
+rm -f data/output.bin data/metrics.json
+
+# 3. Subir a stack com N workers
+NUM_WORKERS=4 docker compose up \
+  --abort-on-container-exit \
+  --exit-code-from coordinator \
+  --scale worker=4
+
+# 4. Inspecionar o resultado
+cat data/metrics.json
+relativist inspect -i data/output.bin
+
+# 5. Limpar
+docker compose down --remove-orphans
+```
+
+**Retomar uma campanha parcial:**
+
+Se o `bench_docker.sh` for interrompido, os scripts `bench_docker_resume.sh`
+e `bench_docker_resume2.sh` (presentes em `scripts/`) mostram o padrao
+para re-rodar apenas os configs que falharam sem reprocessar os demais.
+Ajuste o array `CONFIGS` no script para listar apenas os itens que
+precisam ser executados.
+
+### 11.3 Phase 3 — TcpNetwork (maquinas reais)
+
+Executa o mesmo protocolo BSP em **maquinas fisicas diferentes**
+conectadas por rede Ethernet/Wi-Fi. Expoe o custo real de um grid
+distribuido: latencia de RTT, throughput limitado, jitter, contencao
+de NIC.
+
+**Pre-requisitos:**
+- 2+ maquinas na mesma LAN (ou em VPN com rotas TCP abertas)
+- Mesma versao do `relativist` instalada em todas (`relativist --version`)
+- Porta TCP do coordinator liberada no firewall (ex: `9000/tcp`)
+- Input net identico em todas as maquinas (transferir com `scp`/rsync)
+- Sincronizacao de relogio razoavel (NTP) para logs coerentes
+
+**Setup manual (exemplo: 1 coordinator + 2 workers em 3 maquinas):**
+
+*Maquina A (coordinator) — IP 192.168.1.10:*
+
+```bash
+# Liberar porta (Linux ufw)
+sudo ufw allow 9000/tcp
+
+# Gerar input
+relativist generate ep-annihilation-con -n 1000000 -o input.bin
+
+# Iniciar coordinator gerando token automatico
+relativist coordinator \
+  --workers 2 \
+  --bind 0.0.0.0:9000 \
+  --token auto --token-file /tmp/rel-token \
+  -i input.bin \
+  -o output.bin \
+  -m metrics.json \
+  --log-format json
+```
+
+O coordinator imprime o token base64 no stdout e o grava em
+`/tmp/rel-token`. Copie esse valor para as maquinas dos workers
+(via `scp` seguro, nao por canal em claro).
+
+*Maquina B (worker 1) — IP 192.168.1.11:*
+
+```bash
+# Receber o token da maquina A (ou copiar manualmente)
+scp user@192.168.1.10:/tmp/rel-token /tmp/rel-token
+TOKEN=$(cat /tmp/rel-token)
+
+# Conectar ao coordinator
+relativist worker \
+  --coordinator 192.168.1.10:9000 \
+  --token "$TOKEN" \
+  --log-format json
+```
+
+*Maquina C (worker 2) — IP 192.168.1.12:*
+
+```bash
+scp user@192.168.1.10:/tmp/rel-token /tmp/rel-token
+TOKEN=$(cat /tmp/rel-token)
+
+relativist worker \
+  --coordinator 192.168.1.10:9000 \
+  --token "$TOKEN" \
+  --log-format json
+```
+
+Quando todos os workers conectam, o coordinator executa o grid BSP
+sobre TCP real, grava `output.bin` e `metrics.json` (no host A), e
+todos os processos terminam.
+
+**Verificacao G1 pos-execucao:**
+
+```bash
+# Na maquina A, reduzir sequencialmente o mesmo input
+relativist reduce -i input.bin -o output_seq.bin
+
+# Comparar (estrutural rapido)
+relativist inspect -i output.bin > /tmp/dist.txt
+relativist inspect -i output_seq.bin > /tmp/seq.txt
+diff /tmp/dist.txt /tmp/seq.txt
+```
+
+**Orquestracao de uma campanha em Phase 3:**
+
+Uma campanha exige rodar muitas combinacoes (benchmark × tamanho ×
+workers × repeticoes) ao longo de varias maquinas. Duas estrategias:
+
+1. **SSH + script unico:** um script na maquina A usa `ssh worker1` e
+   `ssh worker2` para lancar os workers remotamente, espera o
+   coordinator finalizar, coleta `metrics.json` e repete. E o mesmo
+   padrao do `bench_docker.sh`, trocando `docker compose up` por
+   `ssh ... relativist worker ...`.
+2. **Orquestrador dedicado:** Ansible, Nomad, ou Kubernetes agendando
+   os processos. Mais robusto para LANs grandes; excessivo para 2–3
+   nos.
+
+Para o TCC atual, o objetivo minimo e produzir comparacoes
+pontuais entre Phase 1, Phase 2 e Phase 3 no mesmo conjunto de
+benchmarks (ex: `ep_annihilation_con` tamanho 500k com 2, 4 e 8
+workers), ja suficientes para decompor o overhead em:
+`overhead_total = overhead_algoritmico + overhead_tcp + overhead_rede`.
+
+### 11.4 Tabela de Correspondencia entre Fases
+
+| Comando base             | Modo no CSV      | Origem do overhead                 |
+|--------------------------|------------------|------------------------------------|
+| `relativist reduce`      | `sequential`     | Nenhum (baseline)                  |
+| `relativist local -w N`  | `local`          | Particionamento + merge in-process |
+| `docker compose up`      | `tcp_localhost`  | + serializacao + TCP loopback      |
+| `coordinator`/`worker` LAN | `tcp_network`  | + RTT de rede fisica + jitter      |
+
+Isso permite isolar a contribuicao de cada camada no `overhead_ratio`
+reportado no summary CSV.
+
+### 11.5 Limitacoes Conhecidas
+
+Duas limitacoes praticas afetam a execucao de benchmarks grandes em
+Phase 2 (Docker) e Phase 3 (LAN). Ambas sao tratadas em detalhe em
+`docs/PHASE2-FINDINGS.md`.
+
+- **L6 (teto de payload do protocolo).** O protocolo v0.9 impoe um
+  limite de 256 MiB por frame (`DEFAULT_MAX_PAYLOAD_SIZE` em
+  `src/protocol/frame.rs`). A mensagem `AssignPartition` serializa a
+  particao inteira em um unico frame, e o sub-net de cada particao e
+  construido com um `Vec<PortRef>` de tamanho
+  `(max_agent_id_do_worker + 1) * 3`. Como o `ContiguousIdStrategy`
+  atribui os agentes de id mais alto ao ultimo worker, esse ultimo
+  worker sempre carrega o overhead do tamanho total da rede (~250 MB
+  para 10 milhoes de agentes), somado a dados variaveis que escalam
+  com `total_agents / num_workers`. O teto e atingido por
+  `dual_tree=22` com `workers=1` (~293 MB) e por
+  `ep_annihilation_con=5M` com `workers={1, 2, 4}` (frame de 282-350
+  MB); `workers=8` fica por ~267 MB e passa. A solucao paliativa e
+  aumentar `num_workers` ate o frame do ultimo worker ficar abaixo do
+  cap. A correcao estrutural envolve chunking de payload
+  (`docs/ROADMAP.md` item 2.19) e encoding compacto do sub-net
+  (`docs/ROADMAP.md` item 2.20); as duas sao ortogonais e, juntas,
+  eliminam tanto o teto de frame quanto o overhead fixo do layout
+  dense-indexed.
+
+- **L7 (shutdown race do coordinator).** Rodar o driver com
+  `docker compose up --abort-on-container-exit --exit-code-from coordinator`
+  mata o coordinator com SIGTERM (e depois SIGKILL, exit 137) assim que
+  o primeiro worker sai, antes dele terminar de persistir `metrics.json`
+  e `output.bin`. A reducao completa corretamente e o summary e
+  impresso no stdout, mas os artefatos em disco nunca sao escritos.
+  A mitigacao em `scripts/bench_docker_resume2.sh::run_docker_cycle()`
+  e rodar o compose com `up -d` (detached) e bloquear em
+  `docker wait relativist-coordinator-1` ate o coordinator sair
+  sozinho, sem nenhum flag de abort. Nao requer mudanca no binario.
+
+Para detalhes, causa raiz e implicacoes para Phase 3, consulte
+`docs/PHASE2-FINDINGS.md`. A trilha de evolucao do protocolo que
+resolveria L6 estruturalmente esta em `docs/ROADMAP.md` itens 2.2,
+2.3 (workers dinamicos, habilitados por confluencia) e 2.19 (chunking
+de payload).
+
+---
+
+## 12. Pipeline Completa
 
 Exemplo de pipeline completa: gerar, inspecionar, reduzir de duas formas, comparar.
 
@@ -746,7 +1178,7 @@ relativist bench \
 
 ---
 
-## 11. Formatos de Arquivo
+## 13. Formatos de Arquivo
 
 ### .bin (Binario — bincode)
 
@@ -776,7 +1208,7 @@ Portas: `principal`, `left` (aux1), `right` (aux2).
 
 ---
 
-## 12. update — Atualizar Relativist
+## 14. update — Atualizar Relativist
 
 Verifica se ha uma versao mais recente e atualiza automaticamente.
 
@@ -806,7 +1238,7 @@ O comando baixa o binario correto para seu OS, verifica o checksum SHA256, e sub
 
 ---
 
-## 13. completions — Autocompletar no Shell
+## 15. completions — Autocompletar no Shell
 
 Gera scripts de autocompletar para seu shell. Os subcomandos e flags sao preenchidos com Tab.
 
@@ -827,7 +1259,7 @@ relativist completions powershell >> $PROFILE
 
 ---
 
-## 14. Desenvolvimento: Verificacoes Pre-Push
+## 16. Desenvolvimento: Verificacoes Pre-Push
 
 Antes de fazer commit/push ou criar tags de release, **sempre** execute estas verificacoes localmente.
 Sao as mesmas que o CI (GitHub Actions) executa — se passarem localmente, a pipeline passa.
@@ -899,7 +1331,7 @@ A tag `v*` dispara automaticamente:
 
 ---
 
-## 15. Referencia Rapida
+## 17. Referencia Rapida
 
 ```
 relativist --version              # Versao

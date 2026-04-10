@@ -228,6 +228,63 @@ Browser-based IC reduction for education and demonstration.
 
 **v1 exclusion source:** SPEC-14 Section 5.1 (Church encoding chosen for simplicity and theoretical alignment).
 
+### 2.19 Protocol Payload Chunking (Streaming Large Frames)
+
+**v1 limitation:** Each protocol frame is capped at 256 MiB (`DEFAULT_MAX_PAYLOAD_SIZE` in `src/protocol/frame.rs`). `AssignPartition` and `PartitionResult` serialize the entire partition into a single frame via bincode. The frame size of the last worker's partition is `~250 MB + k * (total_agents / num_workers)` under the current subnet encoding (see item 2.20 for the root cause of the fixed term), so the cap is reached not only at `workers=1` but also at intermediate worker counts on very large nets: `ep_annihilation_con=5M` fails at `workers=1`, `workers=2` (~315 MB), and `workers=4` (282 MB), and only passes at `workers=8` (~267 MB). `dual_tree=22` fails only at `workers=1` (~293 MB). Documented as limitation L6 in `docs/PHASE2-FINDINGS.md`. Item 2.19 addresses the per-frame cap; item 2.20 addresses the fixed overhead and is orthogonal.
+
+**v2 change:** Support chunked transmission of large payloads across multiple frames:
+
+1. Append new `Message` variants (preserving bincode discriminant stability per SPEC-06 R5): `AssignPartitionChunk { round, chunk_id, total_chunks, data }` and `PartitionResultChunk { round, worker_id, chunk_id, total_chunks, data, stats_opt }`.
+2. Add helper functions `send_partition_chunked()` and `recv_partition_chunked()` in `src/protocol/frame.rs` (or a new `src/protocol/chunking.rs`): serialize the partition once with bincode, split the raw bytes into chunks below a configurable chunk size, send frames sequentially per worker.
+3. Add FSM state to the worker loop in `src/protocol/worker.rs`: an optional `(round, Vec<u8>, expected_chunks)` accumulator that buffers chunks until the last one arrives, then concatenates and deserializes.
+4. Refactor `distribute_partitions()` in `src/protocol/coordinator.rs` to use the chunked sender.
+5. Mirror the logic on the return path (worker to coordinator) so `PartitionResult` can also exceed the cap.
+6. Per-chunk CRC32C already comes from the existing frame header. Add a `full_partition_crc: u32` field in the final chunk to detect corruption after reassembly.
+7. Add per-chunk and per-partition timeouts; a stalled transfer should fail the round gracefully rather than hang indefinitely.
+8. Tests: chunk roundtrip, CRC integrity, out-of-order rejection, per-chunk timeout, full-partition reassembly.
+9. Update SPEC-06 (protocol) and SPEC-07 (framing) to describe the chunk message flow and the relationship to the atomic-frame invariants.
+
+**Why v1 chose atomic frames:** Simplicity. SPEC-06 and SPEC-07 treat each `Message` as one atomic frame, which matches bincode's all-or-nothing serialization and keeps the worker FSM stateless between messages. For the benchmark sizes the TCC targets (up to 5 million agents, distributed across 2 or more workers), the 256 MiB cap is not a limiting factor.
+
+**Why v2 would switch:** Unblocks `workers=1` on nets above 256 MiB, enables real-world grid workloads with arbitrarily large inputs, and removes a DoS-style cap that has no theoretical justification in the IC model itself. Complements 2.16 (Streaming Reduction Mode) by handling the transport layer rather than the reduction layer.
+
+**Limitation (does NOT solve):** bincode is atomic, so reassembly still requires the full buffer in memory on both sides. Chunking circumvents the **frame-level** cap, not the memory cost of serialization. True streaming (incremental parsing, constant-memory deserialization) would require replacing bincode with a codec that supports progressive parsing -- a separate, larger refactor and a new item if it proves necessary.
+
+**Complexity:** Medium. Approximately 560 lines of Rust (around 200 for code, 100 for tests, 100 for coordinator/worker wiring, 80 for SPEC updates, 80 for spec review cycles). Estimated effort: 1-2 days of focused work, plus the debatedor and especialista-specs review pipeline mandated by the TCC workflow.
+
+**v1 exclusion source:** SPEC-06 Section on framing (atomic messages), `DEFAULT_MAX_PAYLOAD_SIZE` constant in `src/protocol/frame.rs`, and the frozen v0.9 spec baseline.
+
+### 2.20 Compact Subnet Encoding (Sparse-to-Dense Conversion)
+
+**v1 limitation:** The partition subnet built by `src/partition/helpers.rs::build_subnet` creates a `Vec<Option<Agent>>` and `Vec<PortRef>` both sized to `(max_agent_id_of_worker + 1) * PORTS_PER_SLOT`, where `max_agent_id_of_worker` is the maximum live agent ID assigned to the worker under the allocation strategy. Because `ContiguousIdStrategy` gives the highest-ID agents to the last worker, that worker's subnet is always a full-length dense-indexed array of the entire net, regardless of how many live agents it actually owns. Under bincode 1.x with fixed-int encoding, the port Vec alone contributes roughly `8.5 * 3 * total_agents` bytes of serialized output -- about 240 MB for a 10 million-agent net -- even when the last worker owns only a fraction of those slots. This fixed term is the dominant component of the L6 frame-size failures and is independent of the framing cap addressed by 2.19.
+
+**Why the dense-index layout exists in v1:** O(1) lookup by agent ID. The reduction loop in `src/reduction/reduce.rs` indexes directly into `net.agents[id]` and `net.ports[id * PORTS_PER_SLOT + port]` without any map translation, which keeps the hot path branch-free and cache-friendly. Changing the in-memory representation would touch every reduction rule.
+
+**v2 change:** Split the in-memory representation from the wire representation. Keep the dense layout for `Net` in memory, but introduce a compact serialization path that emits only the live agents of a partition as an ordered list of `(agent_id, Agent, [PortRef; 3])` entries, plus the small auxiliary structures (`free_port_index`, `id_range`, borders, redex queue):
+
+1. Add a `CompactSubnet` intermediate struct in `src/partition/types.rs` that represents a partition in list form: `Vec<(AgentId, Agent, [PortRef; 3])>` plus the Partition's existing small fields.
+2. Add a `Partition::to_compact(&self) -> CompactSubnet` method that walks the dense arrays and emits only the live slots.
+3. Add a `CompactSubnet::into_partition(self) -> Partition` method that rebuilds a dense `Net` on the receiving side by allocating a Vec of size `max_id_in_list + 1` and filling only the entries present in the list.
+4. Change `Message::AssignPartition` to carry `CompactSubnet` instead of `Partition` (or add a new `AssignCompactPartition` variant appended to the enum to preserve R5 discriminant stability).
+5. Do the same for `Message::PartitionResult` on the return path.
+6. Update `distribute_partitions()` in `src/protocol/coordinator.rs` to call `to_compact()` before sending.
+7. Update the worker's FSM in `src/protocol/worker.rs` to call `into_partition()` before handing the Partition to the reduction loop.
+8. Benchmark the compact encoding on the L6 failure cases (ep_annihilation_con=5M w=1,2,4 and dual_tree=22 w=1); confirm the wire size drops to ~6 bytes per live agent (~60 MB for a 10M-agent net with w=1, under 20 MB with w=4).
+9. Tests: compact roundtrip preserves all agent data and port connections, compact size is strictly linear in live agents, and the reconstructed Partition produces the same reduction output as the original.
+10. Update SPEC-04 (partitioning) and SPEC-06 (protocol) to describe the compact wire format and the in-memory/wire separation.
+
+**Why v1 did not do this:** The dense layout is both simpler (no serialization translation) and matches the internal reduction loop directly. For the benchmark sizes the TCC targets on a typical development machine, the fixed 250 MB overhead is hidden because the total frame never exceeds the cap except at the extreme configurations documented in L6.
+
+**Why v2 would switch:** Linear serialization cost in live agents rather than in `max_id`. This unblocks every configuration in L6 without touching the framing layer, and it reduces TCP transfer time on Phase 3 (real network) where every byte saved is a real latency reduction. It also removes a surprising scaling behavior where adding workers does not reduce the per-worker frame size as much as expected because the last worker always pays the fixed cost.
+
+**Relationship to 2.19:** Independent. 2.19 lifts the per-frame cap; 2.20 shrinks the payloads that would hit the cap. Either one alone unblocks L6 for the current benchmarks; doing both defends against arbitrarily skewed partition topologies that future benchmarks might exercise. Implementing 2.20 first is probably the better order because it benefits every run, not just large-net runs, while 2.19 only matters when 2.20 is insufficient.
+
+**Limitation (does NOT solve):** Memory pressure on the reduction loop itself. If the reduction loop is the bottleneck (rather than transport), switching the wire format does nothing. Also, the compact-to-dense reconstruction on the worker side still allocates a full-length Vec before reduction starts, so peak memory on the worker is unchanged; only the bytes-on-the-wire shrink.
+
+**Complexity:** Medium. Approximately 400-500 lines of Rust: 100 for `CompactSubnet` and conversion methods, 80 for the new protocol variant and serialization, 100 for coordinator/worker wiring, 80 for tests, 80 for SPEC updates. Estimated effort: 1-2 days of focused work plus the standard review pipeline.
+
+**v1 exclusion source:** `src/partition/helpers.rs::build_subnet` (dense-index allocation), SPEC-04 Section 4.5 (subnet construction), and the frozen v0.9 spec baseline.
+
 ---
 
 ## The Confluence Argument for the Paper
