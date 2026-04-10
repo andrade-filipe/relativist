@@ -6,6 +6,8 @@ services:
       - --workers=${NUM_WORKERS:-2}
       - --bind=0.0.0.0:9000
       - --input=/data/input.bin
+      - --output=/data/output.bin
+      - --metrics=/data/metrics.json
     ports:
       - "9000:9000"
     volumes:
