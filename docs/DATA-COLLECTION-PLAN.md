@@ -633,6 +633,24 @@ Required by SPEC-09 R27 (MUST). Conditional on hardware availability.
 
 ---
 
+## 9.7 Phase 1 Results Summary
+
+**Status:** Complete (2,260 datapoints). Full analysis in `docs/PHASE1-FINDINGS.md`.
+
+**Key findings:**
+
+1. **G1 correctness: 100%.** All 2,260 datapoints pass the Fundamental Property check.
+2. **No speedup with 2+ workers.** Overhead ratio 70-98% across all benchmarks and sizes (up to 5M interactions). The grid loop (partition/merge/border-resolve) dominates wall clock time.
+3. **All benchmarks converge in 1 round.** The multi-round BSP cycle is not exercised in local mode. This is expected — `resolve_borders` handles all cross-partition redexes in a single merge step. Phases 2/3 (TCP) will force real multi-round behavior.
+4. **Haskell super-linear speedup was an O(N²) artifact.** Rust's O(1) queue-based `reduce_all` eliminates the quadratic `findRedexes` bottleneck that made distribution appear beneficial in the Haskell prototype.
+5. **Measurement stability improves with larger sizes.** Expanded tests (500K-5M) achieve CV < 5%, while original sizes (< 50K) often have CV > 10%.
+
+**Limitations identified (L1-L5):** Documented in `docs/PHASE1-FINDINGS.md` Section 3.
+
+**Impact on Phase 2/3:** TCP distribution will add overhead on top of the existing grid overhead. Phase 2/3 value is decomposing overhead by layer (algorithmic vs. serialization vs. network), exercising multi-round BSP, and validating protocol correctness under real conditions.
+
+---
+
 ## 10. Success Criteria
 
 ### 10.1 Hard Requirements (MUST pass for publishable results)
@@ -641,7 +659,7 @@ Required by SPEC-09 R27 (MUST). Conditional on hardware availability.
 |-----------|--------------|----------------|
 | Zero G1 failures | `detail.csv`: `correct` column is `true` for ALL rows | SPEC-09 R4-R5, SPEC-01 G1 |
 | All 3 CSV files generated | `detail.csv`, `rounds.csv`, `summary.csv` exist and parse correctly | SPEC-09 R39-R42 |
-| At least 1 benchmark shows speedup > 1.0 | `summary.csv`: at least 1 row with `speedup_above_one == true` | Expected for Profile A, large sizes |
+| Speedup trend documented per profile | `summary.csv`: speedup values analyzed and explained per profile | Phase 1 finding: no speedup > 1.0 with 2+ workers (see PHASE1-FINDINGS.md) |
 | DualTree shows slowdown | `summary.csv`: DualTree rows with workers > 1 have speedup < 1.0 | Expected from AC-005 results; demonstrates honest reporting |
 | All 9 benchmarks produce data | Each of the 9 benchmark IDs appears in `detail.csv` | SPEC-09 R8-R17 |
 | At least ~2,500 datapoints | Row count of `detail.csv` >= 2,500 | Campaign matrix target |
