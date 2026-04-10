@@ -1,0 +1,43 @@
+[15:40:39] === Phase 2 L6 fix validation ===
+[15:40:39] Timeout per run: 1800s
+[15:40:39] Output dir: /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/post_fix
+
+[15:40:39] Rebuilding Docker image with CompactSubnet fix...
+
+#19 [coordinator] resolving provenance for metadata file
+#19 DONE 0.0s
+ Image relativist-worker Built 
+ Image relativist-coordinator Built 
+[15:40:42] Docker image OK.
+
+[15:40:42] Baseline dual_tree:22 = 2.541810s
+[15:40:42] 
+[15:40:42] [1/4] dual_tree size=22 workers=1
+[15:40:59]   Warmup 1/1 (exit=0)
+[15:41:30]   Rep 1/3: 5.255885s correct=true
+[15:42:05]   Rep 2/3: 3.082500s correct=true
+[15:42:28]   Rep 3/3: 4.557710s correct=true
+[15:42:28] Baseline ep_annihilation_con:5000000 = 4.475921s
+[15:42:28] 
+[15:42:28] [2/4] ep_annihilation_con size=5000000 workers=1
+[15:42:50]   Warmup 1/1 (exit=0)
+[15:43:15]   Rep 1/3: 5.969639s correct=true
+[15:43:42]   Rep 2/3: 6.665718s correct=true
+[15:44:07]   Rep 3/3: 7.268027s correct=true
+[15:44:07] 
+[15:44:07] [3/4] ep_annihilation_con size=5000000 workers=2
+[15:44:37]   Warmup 1/1 (exit=0)
+[15:45:07]   Rep 1/3: 11.818008s correct=true
+[15:45:42]   Rep 2/3: 13.156700s correct=true
+[15:46:17]   Rep 3/3: 13.743905s correct=true
+[15:46:18] 
+[15:46:18] [4/4] ep_annihilation_con size=5000000 workers=4
+[15:46:52]   Warmup 1/1 (exit=0)
+[15:47:29]   Rep 1/3: 13.060922s correct=true
+[15:48:04]   Rep 2/3: 12.066198s correct=true
+[15:48:38]   Rep 3/3: 12.268713s correct=true
+[15:48:39] 
+[15:48:39] === L6 validation complete ===
+[15:48:39] Detail  rows: 13
+[15:48:39] Summary rows: 5
+[15:48:39] Rounds  rows: 13

@@ -1,0 +1,42 @@
+[2m2026-04-10T18:01:37.782341Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  dual_tree
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 5
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+dual_tree     18       0   0.061606      4.1   1.0000     1.0000
+  WARNING: high variance (CV=17.47%) for dual_tree size=18 workers=0
+dual_tree     18       1   0.090256      3.4   0.8057     0.8057
+  WARNING: high variance (CV=46.38%) for dual_tree size=18 workers=1
+dual_tree     18       2   0.217300      1.1   0.2658     0.1329
+  WARNING: high variance (CV=40.05%) for dual_tree size=18 workers=2
+dual_tree     18       4   0.330151      0.8   0.1852     0.0463
+dual_tree     18       8   0.309032      0.8   0.1863     0.0233
+  WARNING: high variance (CV=24.61%) for dual_tree size=18 workers=8
+dual_tree     20       0   0.257152      4.0   1.0000     1.0000
+  WARNING: high variance (CV=10.76%) for dual_tree size=20 workers=0
+dual_tree     20       1   0.415115      2.8   0.6763     0.6763
+  WARNING: high variance (CV=16.12%) for dual_tree size=20 workers=1
+dual_tree     20       2   1.475044      0.7   0.1764     0.0882
+dual_tree     20       4   1.410387      0.8   0.1876     0.0469
+  WARNING: high variance (CV=12.37%) for dual_tree size=20 workers=4
+dual_tree     20       8   1.309693      0.8   0.2075     0.0259
+  WARNING: high variance (CV=23.51%) for dual_tree size=20 workers=8
+dual_tree     22       0   1.876981      2.2   1.0000     1.0000
+dual_tree     22       1   2.522173      1.9   0.8501     0.8501
+  WARNING: high variance (CV=21.57%) for dual_tree size=22 workers=1
+dual_tree     22       2   5.390477      0.8   0.3474     0.1737
+dual_tree     22       4   6.312985      0.7   0.3048     0.0762
+  WARNING: high variance (CV=13.69%) for dual_tree size=22 workers=4
+dual_tree     22       8   5.714130      0.7   0.3046     0.0381
+  WARNING: high variance (CV=15.89%) for dual_tree size=22 workers=8
+
+Total datapoints: 75  |  All correct: true
+Detail CSV written to: results/post_fix/dualtree_local_detail.csv
+Rounds CSV written to: results/post_fix/dualtree_local_rounds.csv
+Summary CSV written to: results/post_fix/dualtree_local_summary.csv
