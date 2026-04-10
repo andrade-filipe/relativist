@@ -1066,9 +1066,33 @@ reportado no summary CSV.
 
 ### 11.5 Limitacoes Conhecidas
 
-Duas limitacoes praticas apareceram durante a campanha de Phase 2
-(Docker) e ambas foram mitigadas apos v0.9.0. O historico completo
-fica em `docs/PHASE2-FINDINGS.md`; esta secao resume o estado atual.
+Tres limitacoes praticas apareceram durante as campanhas locais e de
+Phase 2 (Docker) e todas foram mitigadas. O historico completo fica em
+`docs/PHASE1-FINDINGS.md` e `docs/PHASE2-FINDINGS.md`; esta secao resume
+o estado atual.
+
+- **L2 (loop BSP colapsado em uma rodada) — RESOLVIDO via strict BSP
+  mode em v0.10.0-bench.** Ate v0.9.x, `run_grid` em `src/merge/grid.rs`
+  rodava `reduce_all(&mut merged_net)` na Fase 4 (RESOLVE BORDERS) apos
+  cada merge, o que esgotava completamente a fila de redexes do net
+  mergido — incluindo cascatas cross-partition recem-criadas pela
+  resolucao das border redexes. Efeito colateral: todo run terminava em
+  exatamente uma rodada BSP, independentemente da topologia, tornando
+  ilusoria qualquer medicao de "custo por rodada" e divergindo do spec
+  (SPEC-09 prometia "Rounds (grid) = d (minimum)" para DualTree). A
+  correcao adiciona um modo opt-in `strict_bsp=true` ao `GridConfig`
+  que substitui `reduce_all` por um novo `reduce_border_once` em
+  `src/reduction/engine.rs`: a fila atual e processada exatamente uma
+  vez, e quaisquer novas cascatas geradas ficam enfileiradas para a
+  proxima rodada. Assim, nets com cascatas cross-partition iteram
+  genuinamente ate a normal form, preservando G1 (SPEC-01) em ambos os
+  modos. O modo default continua sendo `strict_bsp=false` (lenient),
+  zero regressao nos 643+ testes existentes. A baseline v1 usa lenient
+  como padrao; `cascade_cross` (todos os tamanhos) e `dual_tree`
+  (tamanhos 6/10/14) tem dados adicionais em modo strict em
+  `results/locked/v1_local_baseline/phase1_strict_rounds.csv` para a
+  Phase 3 LAN. Veja `specs/SPEC-05-merge.md` Secao "Lenient vs Strict
+  BSP" e use `--strict-bsp` na CLI para ativar.
 
 - **L6 (teto de payload do protocolo) — RESOLVIDO.** Em v0.9.0, o
   protocolo impunha um limite de 256 MiB por frame
@@ -1110,6 +1134,79 @@ Para detalhes, causa raiz e implicacoes para Phase 3, consulte
 para o fix). A trilha de evolucao do protocolo (workers dinamicos
 habilitados por confluencia) esta em `docs/ROADMAP.md` itens 2.2 e
 2.3.
+
+#### 11.5.1 Verificacao G1 completa (abordagem B, opcional, overnight) para `condup_expansion` em 10k / 50k
+
+A baseline `v1_local_baseline` usa a **abordagem A** como padrao para
+`condup_expansion` em tamanhos grandes (10_000 e 50_000 agentes):
+`--skip-g1` desliga o teste de isomorfismo estrutural (`nets_isomorphic`)
+e mantem apenas o *weak check* — igualdade de contagem de agentes,
+redexes e totais de cada regra entre a reducao sequencial e a do grid.
+Esse weak check detecta qualquer divergencia de tamanho na normal form,
+mas nao prova identidade ponto-a-ponto de topologia.
+
+A razao do default e pragmatica: `nets_isomorphic` faz backtracking
+O(N!) sobre o grafo, e `condup_expansion` e justamente o benchmark de
+Perfil B onde cada agente inicial explode em varios filhos apos a
+cascata CON-DUP, produzindo redes densas de dezenas de milhares de
+agentes na normal form. Em tamanho 10k a verificacao completa nao
+termina em tempo de teste integrado, e em 50k e intratavel.
+
+Se voce quiser **fortalecer** (mas nao substituir) o weak check da
+baseline v1 com uma evidencia adicional, rode os comandos da
+**abordagem B** abaixo com a maquina ociosa — literalmente deixe o
+computador reduzindo durante a noite. Nao precisa repetir 10 vezes
+(1 repeticao e o suficiente para validar a topologia); o tempo
+dominante e o proprio isomorfismo, nao a reducao:
+
+```bash
+mkdir -p results/optional
+
+# Abordagem B — G1 completo para condup_expansion(10000)
+# Expectativa: varias horas. Rode com a maquina ociosa.
+./target/release/relativist bench \
+    --benchmark condup_expansion \
+    --sizes 10000 \
+    --workers 2 \
+    --repetitions 1 \
+    --warmup 0 \
+    --mode local \
+    --csv-detail  results/optional/condup_10k_fullg1_detail.csv \
+    --csv-rounds  results/optional/condup_10k_fullg1_rounds.csv \
+    --csv-summary results/optional/condup_10k_fullg1_summary.csv
+
+# Abordagem B — G1 completo para condup_expansion(50000)
+# Expectativa: potencialmente intratavel (>12h). Documente o timeout
+# como evidencia de intratabilidade se nao completar.
+./target/release/relativist bench \
+    --benchmark condup_expansion \
+    --sizes 50000 \
+    --workers 2 \
+    --repetitions 1 \
+    --warmup 0 \
+    --mode local \
+    --csv-detail  results/optional/condup_50k_fullg1_detail.csv \
+    --csv-rounds  results/optional/condup_50k_fullg1_rounds.csv \
+    --csv-summary results/optional/condup_50k_fullg1_summary.csv
+```
+
+Interpretacao dos resultados:
+
+- Se a verificacao **completar com `correct=true`**, isso reforca a
+  confianca no weak check usado na baseline v1 (nao substitui, pois
+  cada run sai de um estado inicial levemente diferente devido ao
+  shuffle do `--warmup 0`, mas e evidencia topologica direta).
+- Se **nao completar em 12h** por size, documente o wall-clock e o
+  estado parcial e reporte no TCC como **evidencia empirica de
+  intratabilidade** do isomorfismo completo nesse perfil de carga —
+  justificando a escolha da abordagem A como metodologia padrao.
+- Se a verificacao **completar com `correct=false`**, pare tudo,
+  abra issue no repo e trate como regressao critica: o weak check da
+  baseline v1 tambem estaria inconsistente.
+
+Nota: `--repetitions 1` e deliberado. A abordagem A roda 10 repeticoes
+porque o objetivo la e estatistica de wall-clock (mean, std, CV); a
+abordagem B e uma prova topologica unica, nao uma medicao temporal.
 
 ---
 
