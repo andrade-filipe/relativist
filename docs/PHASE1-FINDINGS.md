@@ -1,9 +1,9 @@
 # Phase 1 Findings: Sequential + Local Benchmarks
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** 2026-04-10
-**Status:** Complete
-**Cross-references:** SPEC-09 (Benchmarks), SPEC-01 (Invariants, G1), ARG-001 (P1-P6), ARG-004 (Overhead Analysis), DATA-COLLECTION-PLAN v1.1
+**Status:** Complete (canonical v0.9.0 + post-fix validation in Section 7)
+**Cross-references:** SPEC-09 (Benchmarks), SPEC-01 (Invariants, G1), ARG-001 (P1-P6), ARG-004 (Overhead Analysis), DATA-COLLECTION-PLAN v1.1, `results/post_fix/B3_comparison.md`, PHASE2-FINDINGS.md Section 6
 
 ---
 
@@ -133,7 +133,7 @@ All benchmarks converge in exactly 1 grid round in local mode. This means the BS
 
 **Impact:** Phase 1 data does not validate the multi-round BSP protocol. Phases 2/3 (TCP) will exercise this.
 
-### L3: G1 Isomorphism Intractable for Large Non-Empty Nets
+### L3: G1 Isomorphism Intractable for Large Non-Empty Nets (MITIGATED — see Section 7)
 
 **Evidence:** `condup_expansion` benchmarks above size 5,000 cause the benchmark suite to hang (minutes per G1 verification call).
 
@@ -141,7 +141,9 @@ All benchmarks converge in exactly 1 grid round in local mode. This means the BS
 
 **Benchmarks affected:** Only `condup_expansion` (Profile B). All other benchmarks either reduce to empty nets (EP variants, DualTree — trivial isomorphism) or have small results (Church numerals, TreeSum).
 
-**Mitigation:** Accept data up to size 5K for `condup_expansion`. Document as known limitation.
+**Mitigation (v0.9.0):** Accept data up to size 5K for `condup_expansion`. Document as known limitation.
+
+**Mitigation (post-v0.9.0, see Section 7.2):** A `--skip-g1` CLI flag on the bench command falls back to a weak structural check — agent counts by symbol (`nets_match_counts`) — which is a necessary-but-not-sufficient condition. Weak check is labelled as such in the post-fix CSVs. Using this flag, the re-campaign measured `condup_expansion` at sizes 10K and 50K for the first time.
 
 ### L4: High Measurement Variance (CV > 10%)
 
@@ -249,3 +251,55 @@ Use the expanded sizes that produce stable measurements (CV < 10%):
 | **Expanded (>100ms)** | **16 / 18 (89%)** | **2 / 18 (11%)** | 0.13 |
 
 Expanded tests with wall clock > 100ms achieve stable measurements (CV < 10% in 89% of cases).
+
+---
+
+## 7. Phase 1b — Post-fix Validation
+
+The canonical Phase 1 data in Sections 1-6 was collected against Relativist v0.9.0. After Phase 2 finished, a second round of fixes targeted the engineering overheads documented in L3 and L6. Section 7 summarises a narrow re-run of the sequential + local benchmarks that re-measures the affected configurations on top of the fixes, without invalidating any v0.9.0 datapoint.
+
+The full re-run data lives in `results/post_fix/` (`ep_con_local_*.csv`, `dualtree_local_*.csv`, `condup_local_*.csv`). The comparison against the canonical CSVs is documented in `results/post_fix/B3_comparison.md`. The scope and methodology are deliberately smaller than the canonical campaign: 1 warmup + 5 repetitions per config instead of 2 warmup + 10 reps, and only the three benchmark families that the fixes can affect (`ep_annihilation_con`, `dual_tree`, `condup_expansion`).
+
+### 7.1 CompactSubnet local-mode effect (L6 fix applied in-process)
+
+The `CompactSubnet` serde adapter on `Partition::subnet` runs on every partition serialization path — both the Docker TCP transport and the in-process grid loop, because the in-process path goes through bincode as well. For sparse last-worker subnets under `ContiguousIdStrategy`, this reduces partition+merge time even when the net never leaves the process.
+
+The strongest signal is on the largest canonical benchmarks:
+
+| Benchmark | Size | Workers | Canonical speedup | Post-fix speedup | Δ |
+|-----------|------|---------|-------------------|------------------|---|
+| ep_annihilation_con | 5M | 2 | 0.291 | 0.514 | **+76.6%** |
+| ep_annihilation_con | 5M | 4 | 0.275 | 0.391 | +42.2% |
+| ep_annihilation_con | 5M | 8 | 0.208 | 0.306 | +47.5% |
+| dual_tree | 22 | 2 | 0.175 | 0.350 | **+100.0%** |
+| dual_tree | 22 | 4 | 0.176 | 0.303 | +72.5% |
+| dual_tree | 22 | 8 | 0.176 | 0.302 | +71.6% |
+
+At smaller sizes (500K ep_con, dual_tree depths 18 and 20) the effect sits inside machine-state noise. This is expected: the dense-arena padding is only a dominant cost when the last worker's arena length is a meaningful fraction of the total frame, which requires a large enough net that the fixed overhead dwarfs the per-interaction work. The L6 fix therefore matters most for the scenarios where L1 was already biting hardest.
+
+Sequential baselines drift between runs (machine-state noise on the same hardware), so the comparable metric is the `post_seq / post_wall` and `pre_seq / pre_wall` ratio rather than raw wall clock. The drift normalization is documented in `results/post_fix/B3_comparison.md`.
+
+### 7.2 L3 weak check unblocks condup_expansion at 10K and 50K
+
+With `bench --skip-g1`, the `condup_expansion` benchmark now runs at sizes 10000 and 50000, which were previously intractable under full G1 backtracking. Post-fix summary:
+
+| Size | Workers | Sequential time | Local time | Speedup | Weak G1 |
+|------|---------|-----------------|------------|---------|---------|
+| 10000 | 1 | 0.0020 | 0.0021 | 0.947 | pass |
+| 10000 | 2 | 0.0020 | 0.0146 | 0.134 | pass |
+| 10000 | 4 | 0.0020 | 0.0495 | 0.040 | pass |
+| 10000 | 8 | 0.0020 | 0.2690 | 0.007 | pass |
+| 50000 | 1 | 0.0134 | 0.0143 | 0.832 | pass |
+| 50000 | 2 | 0.0134 | 0.1423 | 0.082 | pass |
+| 50000 | 4 | 0.0134 | 0.3325 | 0.035 | pass |
+| 50000 | 8 | 0.0134 | 1.2430 | 0.009 | pass |
+
+All 75 datapoints pass the weak check (agent counts per symbol match the sequential reference), which is a necessary condition for isomorphism but not sufficient. Profile B (`condup_expansion`) remains the hardest case for distribution: speedup at W≥2 stays near 0.1 even at 50K agents, because CON-DUP commutation spawns work during reduction and the grid loop pays partition+merge overhead on a net that the sequential baseline processes in fractions of a millisecond.
+
+**Caveat.** A future campaign that wants to claim full G1 correctness on these sizes needs either canonical hashing over the agent/port structure or incremental isomorphism verification. The weak check is good enough for this TCC because (a) the distributed pipeline already passes full G1 on every other benchmark family up to 10 million agents, (b) Profile B is the least favorable case for distribution and the speedup conclusions do not depend on strict verification of the post-reduction net.
+
+### 7.3 L1 narrative survives the fixes
+
+No configuration crosses speedup > 1.0 at W ≥ 2 after the fixes. The magnitude of the overhead is smaller on the largest benchmarks (76-100% improvement on ep_con 5M and dual_tree 22), but the ceiling is still below 1.0 — the best post-fix W≥2 speedup on any local configuration is `ep_annihilation_con 5M W=2` at 0.514, still a slowdown relative to sequential.
+
+This is the load-bearing observation for ARG-004 (overhead analysis): the L6 fix converted a pure engineering artifact (dense-arena frame padding) into zero cost, and the remaining overhead is structural in the sense of Section 4 (partition + clone + merge + border resolution comparable in absolute cost to `reduce_all` on a Rust queue-based dispatcher). A second engineering refactor (different partitioning strategy, different in-memory layout, chunked serialization) would likely move the ceiling a bit more but would not cross 1.0 under the current BSP model at the benchmark sizes the TCC targets. The break-even point, extrapolating from the per-interaction costs measured here, sits somewhere between 50 million and 100 million agents per round — outside the TCC scope but identified as a direct consequence of the measurements.

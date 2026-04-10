@@ -1066,46 +1066,50 @@ reportado no summary CSV.
 
 ### 11.5 Limitacoes Conhecidas
 
-Duas limitacoes praticas afetam a execucao de benchmarks grandes em
-Phase 2 (Docker) e Phase 3 (LAN). Ambas sao tratadas em detalhe em
-`docs/PHASE2-FINDINGS.md`.
+Duas limitacoes praticas apareceram durante a campanha de Phase 2
+(Docker) e ambas foram mitigadas apos v0.9.0. O historico completo
+fica em `docs/PHASE2-FINDINGS.md`; esta secao resume o estado atual.
 
-- **L6 (teto de payload do protocolo).** O protocolo v0.9 impoe um
-  limite de 256 MiB por frame (`DEFAULT_MAX_PAYLOAD_SIZE` em
-  `src/protocol/frame.rs`). A mensagem `AssignPartition` serializa a
-  particao inteira em um unico frame, e o sub-net de cada particao e
-  construido com um `Vec<PortRef>` de tamanho
-  `(max_agent_id_do_worker + 1) * 3`. Como o `ContiguousIdStrategy`
-  atribui os agentes de id mais alto ao ultimo worker, esse ultimo
-  worker sempre carrega o overhead do tamanho total da rede (~250 MB
-  para 10 milhoes de agentes), somado a dados variaveis que escalam
-  com `total_agents / num_workers`. O teto e atingido por
-  `dual_tree=22` com `workers=1` (~293 MB) e por
-  `ep_annihilation_con=5M` com `workers={1, 2, 4}` (frame de 282-350
-  MB); `workers=8` fica por ~267 MB e passa. A solucao paliativa e
-  aumentar `num_workers` ate o frame do ultimo worker ficar abaixo do
-  cap. A correcao estrutural envolve chunking de payload
-  (`docs/ROADMAP.md` item 2.19) e encoding compacto do sub-net
-  (`docs/ROADMAP.md` item 2.20); as duas sao ortogonais e, juntas,
-  eliminam tanto o teto de frame quanto o overhead fixo do layout
-  dense-indexed.
+- **L6 (teto de payload do protocolo) — RESOLVIDO.** Em v0.9.0, o
+  protocolo impunha um limite de 256 MiB por frame
+  (`DEFAULT_MAX_PAYLOAD_SIZE` em `src/protocol/frame.rs`), o que
+  bloqueava 4 das 40 configuracoes de Phase 2: `dual_tree=22 w=1` e
+  `ep_annihilation_con=5M w={1,2,4}`. A causa raiz era dupla: o
+  `ContiguousIdStrategy` atribuia os agentes de id mais alto ao ultimo
+  worker, forcando um `Vec<PortRef>` de tamanho total da rede mesmo
+  quando aquele worker possuia poucos slots vivos; e o teto de 256 MiB
+  era um guard-rail anti-DoS sem contrapartida na propriedade de
+  confluencia do modelo IC. O fix tem duas partes ortogonais. **(a)**
+  `CompactSubnet` em `src/partition/compact.rs` e um adaptador de
+  `serialize_with`/`deserialize_with` em `Partition::subnet` que serializa
+  apenas agentes vivos na forma `(id, agent, [ports; 3])` e reconstroi o
+  arena denso no receptor — roundtrip preserva `agents`, `ports`,
+  `redex_queue`, `next_id` e `root` byte-por-byte. **(b)** O cap foi
+  elevado de 256 MiB para 1 GiB. Juntos, eliminam o overhead fixo do
+  layout dense-indexed e comportam as redes totalmente densas que
+  precisam legitimamente de mais de 256 MiB por frame. Pos-fix: Phase 2
+  roda 40 de 40 configs com G1 = 100%, e benchmarks locais ganham
+  40-100% de speedup nos casos onde o padding era dominante (ver
+  `results/post_fix/B3_comparison.md`).
 
-- **L7 (shutdown race do coordinator).** Rodar o driver com
+- **L7 (shutdown race do coordinator) — MITIGADO no driver.** Rodar
   `docker compose up --abort-on-container-exit --exit-code-from coordinator`
-  mata o coordinator com SIGTERM (e depois SIGKILL, exit 137) assim que
-  o primeiro worker sai, antes dele terminar de persistir `metrics.json`
-  e `output.bin`. A reducao completa corretamente e o summary e
-  impresso no stdout, mas os artefatos em disco nunca sao escritos.
-  A mitigacao em `scripts/bench_docker_resume2.sh::run_docker_cycle()`
-  e rodar o compose com `up -d` (detached) e bloquear em
+  matava o coordinator com SIGTERM (e depois SIGKILL, exit 137) assim
+  que o primeiro worker saia, antes dele terminar de persistir
+  `metrics.json` e `output.bin`. A reducao completava corretamente,
+  mas os artefatos em disco nunca eram escritos. A mitigacao em
+  `scripts/bench_docker_resume2.sh::run_docker_cycle()` usa
+  `docker compose up -d` (detached) e bloqueia em
   `docker wait relativist-coordinator-1` ate o coordinator sair
-  sozinho, sem nenhum flag de abort. Nao requer mudanca no binario.
+  sozinho, sem nenhum flag de abort. Nao requer mudanca no binario;
+  um SIGTERM handler interno no coordinator e um hardening opcional
+  registrado em ROADMAP.
 
 Para detalhes, causa raiz e implicacoes para Phase 3, consulte
-`docs/PHASE2-FINDINGS.md`. A trilha de evolucao do protocolo que
-resolveria L6 estruturalmente esta em `docs/ROADMAP.md` itens 2.2,
-2.3 (workers dinamicos, habilitados por confluencia) e 2.19 (chunking
-de payload).
+`docs/PHASE2-FINDINGS.md` (Secao 3 para o historico L6/L7, Secao 6
+para o fix). A trilha de evolucao do protocolo (workers dinamicos
+habilitados por confluencia) esta em `docs/ROADMAP.md` itens 2.2 e
+2.3.
 
 ---
 

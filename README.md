@@ -58,6 +58,8 @@ cargo build --release
 docker-compose up --scale worker=4
 ```
 
+> For the full command reference — every subcommand, every flag, end-to-end pipelines, benchmark workflows, known limitations (L1-L7), and troubleshooting — see [**USAGE_GUIDE.md**](USAGE_GUIDE.md).
+
 ## Interaction Combinators
 
 Relativist implements the three fundamental symbols and six interaction rules of Lafont's system:

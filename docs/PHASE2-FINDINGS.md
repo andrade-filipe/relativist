@@ -1,9 +1,9 @@
 # Phase 2 Findings: Docker (TcpLocalhost) Benchmarks
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** 2026-04-10
-**Status:** Complete (with documented gaps)
-**Cross-references:** SPEC-06 (Protocol), SPEC-07 (Framing), SPEC-09 (Benchmarks), PHASE1-FINDINGS.md, ROADMAP.md item 2.19, ARG-001 (P1-P6), ARG-004 (Overhead Analysis)
+**Status:** Complete (40 of 40 configurations; L6 resolved post-v0.9.0)
+**Cross-references:** SPEC-06 (Protocol), SPEC-07 (Framing), SPEC-09 (Benchmarks), PHASE1-FINDINGS.md, ROADMAP.md item 2.20, ARG-001 (P1-P6), ARG-004 (Overhead Analysis), `results/post_fix/B3_comparison.md`
 
 ---
 
@@ -12,13 +12,14 @@
 | Metric | Value |
 |--------|-------|
 | Target configurations | 40 (8 benchmarks/sizes x 4 worker counts + 8 sequential baselines) |
-| Configurations completed | **36 of 40 (90%)** |
-| Datapoints collected | 360 (36 configs x 10 reps) |
+| Configurations completed (v0.9.0, canonical) | **36 of 40 (90%)** |
+| Configurations completed (post-fix validation) | **40 of 40 (100%)** — 4 L6 configs unblocked |
+| Datapoints collected | 360 canonical (36 configs x 10 reps) + 12 post-fix (4 configs x 3 reps) |
 | Sequential baselines (reused from Phase 1) | 8 |
 | Execution mode | Docker Compose, TCP over localhost (TcpLocalhost) |
 | Worker counts | 1, 2, 4, 8 (plus 0 for sequential baseline) |
-| G1 correctness | **100%** on completed datapoints |
-| Repetitions | 10 per configuration (2 warmup discarded) |
+| G1 correctness | **100%** on all datapoints (canonical + post-fix) |
+| Repetitions | 10 per configuration canonical (2 warmup discarded); 3 per post-fix config (1 warmup) |
 | Timeout per run | 1800 s (30 min) |
 
 ### Configurations
@@ -31,12 +32,12 @@ The Phase 2 campaign targets the same benchmark matrix as Phase 1b (expanded siz
 | condup_expansion | 5000 | 1, 2, 4, 8 | Complete |
 | dual_tree | 18 | 1, 2, 4, 8 | Complete |
 | dual_tree | 20 | 1, 2, 4, 8 | Complete |
-| dual_tree | 22 | **2, 4, 8** | Complete (workers=1 blocked, see L6) |
+| dual_tree | 22 | 1 (post-fix), 2, 4, 8 | Complete |
 | ep_annihilation_con | 500000 | 1, 2, 4, 8 | Complete |
 | ep_annihilation_con | 1000000 | 1, 2, 4, 8 | Complete |
-| ep_annihilation_con | 5000000 | **8** | Complete (workers=1, 2, 4 blocked, see L6) |
+| ep_annihilation_con | 5000000 | 1 (post-fix), 2 (post-fix), 4 (post-fix), 8 | Complete |
 
-The 4 missing configurations (`dual_tree=22 workers=1`, `ep_annihilation_con=5000000 workers=1`, `ep_annihilation_con=5000000 workers=2`, and `ep_annihilation_con=5000000 workers=4`) are blocked by an architectural limit of the v0.9 protocol framing layer, documented as L6 below.
+The four post-fix configurations (`dual_tree=22 workers=1`, `ep_annihilation_con=5000000 workers=1`, `workers=2`, `workers=4`) were blocked by L6 in the v0.9.0 canonical campaign and unblocked after the L6 fix described in Section 6 below. Their validation data lives in `results/post_fix/phase2_l6_{detail,summary,rounds}.csv`. The original 36 configurations remain in `results/phase2_{detail,summary,rounds}.csv` as the canonical v0.9.0 baseline.
 
 ---
 
@@ -64,9 +65,11 @@ This result is consistent with the central argument of the TCC: distributed redu
 
 ## 3. New Limitations (extending Phase 1)
 
-### L6: Protocol payload cap blocks low-worker runs for very large nets
+### L6: Protocol payload cap blocks low-worker runs for very large nets (RESOLVED — see Section 6)
 
-**Evidence.** Running `dual_tree=22` (8,388,606 agents) or `ep_annihilation_con=5000000` (10,000,000 agents) on Docker/TcpLocalhost fails at the worker side with frames exceeding the 256 MiB cap:
+**Status.** Present in the canonical v0.9.0 campaign (4 of 40 configs blocked). Resolved post-v0.9.0 by the two-part fix described in Section 6 (CompactSubnet wire wrapper + cap raise from 256 MiB to 1 GiB). All four previously-blocked configs now complete end-to-end under Docker TcpLocalhost with G1 = 100%.
+
+**Evidence (pre-fix).** Running `dual_tree=22` (8,388,606 agents) or `ep_annihilation_con=5000000` (10,000,000 agents) on Docker/TcpLocalhost failed at the worker side with frames exceeding the 256 MiB cap:
 
 ```
 worker-3 | error: payload too large: 282500065 bytes (max 268435456)
@@ -107,7 +110,7 @@ frame_size(last_worker) ~= 250 MB  (fixed full-length overhead)
 
 For `ep_annihilation_con=5M`, the variable slope is large enough that `workers=2` reaches 315 MB, `workers=4` reaches 282 MB, and `workers=8` drops to 267 MB — just under the 268.4 MB cap. The cap sits right between `workers=4` and `workers=8`. For `dual_tree=22` (20% fewer agents) the fixed overhead is closer to 200 MB, so the cap is only crossed at `workers=1`.
 
-**Impact.** Four out of 40 Phase 2 configurations cannot be executed as specified: `dual_tree=22 workers=1`, `ep_annihilation_con=5000000 workers={1,2,4}`. Phase 2 reports 90% campaign coverage with the remaining 10% documented here.
+**Impact (canonical v0.9.0 campaign).** Four out of 40 Phase 2 configurations could not be executed as specified: `dual_tree=22 workers=1`, `ep_annihilation_con=5000000 workers={1,2,4}`. The canonical Phase 2 tables therefore report 90% campaign coverage. Post-fix validation (Section 6) raises coverage to 100% without invalidating any of the original 36 datapoints.
 
 **Why this is an architectural limit, not a bug.** The 256 MiB cap exists as a denial-of-service guard rather than a theoretical constraint on the IC model. The deeper issue is structural: the subnet representation is a sparse dense-indexed array, so any partition assigned to the worker holding the highest-ID agents carries the full-net overhead even when it owns a small slice of the agents. Removing the cap would unblock the current cases but would not change the quadratic-like scaling of last-worker frame size with total net size. The cap is not mentioned in SPEC-01 (invariants) and has no counterpart in the confluence argument of ARG-001.
 
@@ -185,3 +188,48 @@ Results are appended to:
 - `results/phase2_rounds.csv` (per-round breakdown of partition, compute, merge, and network time)
 
 The Phase 1 results in `results/phase1_*.csv` provide the local-grid comparison for any Phase 2 datapoint at the same (benchmark, size, workers) triple.
+
+The post-fix validation for the four L6-blocked configurations is reproduced by a separate script:
+
+```bash
+bash scripts/bench_docker_l6fix.sh
+```
+
+Its outputs land in `results/post_fix/phase2_l6_{detail,summary,rounds}.csv` so that the canonical `results/phase2_*.csv` files remain the v0.9.0 baseline.
+
+---
+
+## 6. Fix history — L6 resolution (post-v0.9.0)
+
+This section documents the fix applied after the canonical Phase 2 campaign finished. The four L6-blocked configurations were then re-run under Docker TcpLocalhost to confirm that the fix closes the gap.
+
+### 6.1 The fix has two orthogonal parts
+
+**(a) `CompactSubnet` wire wrapper (ROADMAP item 2.20).** The v0.9.0 subnet encoding serialized the full dense arenas `Net.agents: Vec<Option<Agent>>` and `Net.ports: Vec<PortRef>`, sized to `max_id + 1` and `(max_id + 1) * 3`, regardless of how many slots were live on a given worker. Under `ContiguousIdStrategy` the last worker always pays the full-length cost even when it owns a small slice. `CompactSubnet` (in `src/partition/compact.rs`) carries only live agents inline as `Vec<(AgentId, Agent, [PortRef; 3])>` plus the arena length needed for byte-exact reconstruction on the receiving side. The adapter is hooked via `#[serde(serialize_with / deserialize_with)]` on `Partition::subnet`, so the in-memory `Net` layout is untouched and the wire format changes transparently. Round-trip preserves `agents`, `ports`, `redex_queue`, `next_id`, and `root`; `freeport_redirects` is `#[serde(skip)]` on `Net` and is not carried, consistent with the pre-fix behavior.
+
+**(b) `DEFAULT_MAX_PAYLOAD_SIZE` raised from 256 MiB to 1 GiB.** The 256 MiB cap was a DoS guard, not a resource limit: it has no counterpart in SPEC-01 invariants or in Lafont's confluence argument. For fully-dense nets (`dual_tree` depth 22, `ep_annihilation_con` at 5M) every agent slot is live, so `CompactSubnet` has nothing to strip — the frame legitimately needs 300-420 MB on the wire. The cap raise is the load-bearing part of the fix for these four configurations; `CompactSubnet` alone is insufficient here and the chunking alternative (ROADMAP 2.19) is not needed.
+
+These two changes compose: sparse last-worker subnets now send ~6 bytes per live agent (down from ~9 bytes per dense slot over the whole arena), and fully-dense subnets are transported in a single frame under the new cap. Neither change touches the reduction loop, border resolution, or any protocol state machine.
+
+### 6.2 Validation data
+
+Running `scripts/bench_docker_l6fix.sh` on the four previously-blocked configurations (1 warmup + 3 repetitions each, Docker TcpLocalhost, same host hardware as the canonical campaign) produced:
+
+| Benchmark | Size | Workers | Wall clock mean (s) | Speedup | Frame size | G1 |
+|-----------|------|---------|---------------------|---------|------------|----|
+| dual_tree | 22 | 1 | 4.299 | 0.591 | 318.8 MB | 100% |
+| ep_annihilation_con | 5000000 | 1 | 6.634 | 0.675 | 410.0 MB | 100% |
+| ep_annihilation_con | 5000000 | 2 | 12.906 | 0.347 | 410.0 MB | 100% |
+| ep_annihilation_con | 5000000 | 4 | 12.465 | 0.359 | 410.0 MB | 100% |
+
+All 12 post-fix repetitions pass the G1 check against the sequential reference `output.bin`. The speedup values are consistent with the Phase 1 local-grid overhead profile: W=1 retains ~60-68% of the sequential baseline (one-worker shortcut dominates serialization cost), and W=2/4 sit near the 0.35 ceiling already documented in PHASE1-FINDINGS.md Section 2.1. The fix does not change the L1 conclusion — no new configuration crosses speedup > 1.0 at W≥2 — but it does complete the parameter-space coverage for ARG-004 (overhead analysis), letting the TCC discuss W=1 through W=8 on the same footing for every targeted benchmark size.
+
+### 6.3 Impact on ARG-004
+
+ARG-004 separates overhead into **structural** (inherent to BSP: split + merge + border resolution per round) and **engineering** (artifacts of layout choices, framing limits, and similar mechanical constants). L6 was the cleanest engineering artifact in the v0.9.0 campaign — a hard cap with no theoretical counterpart plus a dense-arena layout that penalized the coordinator-to-last-worker transfer. Resolving it without touching the BSP algorithm is exactly the demonstration ARG-004 needed: engineering overhead can be reduced to zero (frame padding) or widened until it stops biting (cap), while the structural overhead from L1 persists unchanged across the full 40-config matrix. The post-fix speedup values still sit under 1.0 at W≥2 because partition+clone+merge costs are comparable to `reduce_all` on a Rust queue-based dispatcher, as PHASE1-FINDINGS.md Section 4 already established.
+
+### 6.4 Relationship to ROADMAP items
+
+- **ROADMAP 2.20 (Compact Subnet Encoding)** — implemented as the `CompactSubnet` serde adapter in `src/partition/compact.rs`. The item can be marked completed.
+- **ROADMAP 2.19 (Protocol Payload Chunking)** — not implemented. The cap raise and CompactSubnet together cover every configuration in the TCC benchmark matrix. Chunking remains a valid alternative for future workloads where even a 1 GiB frame is insufficient (e.g., nets with >25M fully-live agents distributed to W=1), but the TCC does not need it.
+- **ROADMAP 2.2 / 2.3 (dynamic workers)** — orthogonal to L6 and still open; they are about persistent worker pools, not per-frame size.
