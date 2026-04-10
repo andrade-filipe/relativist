@@ -180,6 +180,89 @@ pub fn reduce_n(net: &mut Net, budget: usize) -> ReductionStats {
     stats
 }
 
+// ---------------------------------------------------------------------------
+// reduce_border_once
+// ---------------------------------------------------------------------------
+
+/// Processes every redex currently in the queue exactly once, deferring any
+/// new cascades to the next call (SPEC-05 R30a, strict BSP mode).
+///
+/// Snapshots the current `net.redex_queue`, empties it, and applies one
+/// reduction step per snapshotted pair. Any new redexes produced by those
+/// reductions accumulate in `net.redex_queue` and are intentionally left
+/// there for a future round to consume — they are NOT reduced in this call.
+///
+/// Stale pairs (both agents no longer alive, or the principal-principal
+/// invariant broken) are skipped silently, as in `reduce_step`.
+///
+/// Complexity: O(k) where k is the number of redexes in the initial queue.
+/// Each rule application is O(1) (SPEC-03 R14).
+///
+/// Semantics guarantee:
+///   `reduce_border_once(net)` performs at most one interaction per redex
+///   present when the call started. Any cascade produced by those
+///   interactions is still pending in `net.redex_queue` when the call
+///   returns.
+pub fn reduce_border_once(net: &mut Net) -> ReductionStats {
+    let mut stats = ReductionStats {
+        total_interactions: 0,
+        anni_count: 0,
+        comm_count: 0,
+        eras_count: 0,
+        void_count: 0,
+        interactions_by_rule: [0; 6],
+    };
+
+    // Snapshot the current queue and clear it. Any new redexes created by
+    // rule application during this call will land back in net.redex_queue
+    // via Net::connect and remain there as the deferred-cascade set.
+    let initial: std::collections::VecDeque<(crate::net::AgentId, crate::net::AgentId)> =
+        std::mem::take(&mut net.redex_queue);
+    let mut deferred: std::collections::VecDeque<(crate::net::AgentId, crate::net::AgentId)> =
+        std::collections::VecDeque::new();
+
+    for (a_id, b_id) in initial {
+        // Skip stale pairs (same logic as reduce_step's loop).
+        if !net.is_valid_redex(a_id, b_id) {
+            continue;
+        }
+
+        // Move any cascades accumulated from the previous iteration off the
+        // live queue so reduce_step sees only this one pair.
+        deferred.extend(std::mem::take(&mut net.redex_queue));
+
+        // Place this pair as the sole item in the live queue, then drive
+        // exactly one reduction step.
+        debug_assert!(net.redex_queue.is_empty());
+        net.redex_queue.push_back((a_id, b_id));
+
+        match reduce_step(net) {
+            StepResult::NormalForm => {
+                // Pair became stale between validity check and reduce_step
+                // (should not happen with single-threaded code, but handled
+                // defensively).
+            }
+            StepResult::Reduced(rule, specific) => {
+                stats.total_interactions += 1;
+                match rule {
+                    Rule::Anni => stats.anni_count += 1,
+                    Rule::Comm => stats.comm_count += 1,
+                    Rule::Eras => stats.eras_count += 1,
+                    Rule::Void => stats.void_count += 1,
+                }
+                stats.interactions_by_rule[specific as usize] += 1;
+            }
+        }
+    }
+
+    // Everything left in net.redex_queue after the final iteration is a
+    // newly-created cascade; merge it with any earlier deferred cascades.
+    deferred.extend(std::mem::take(&mut net.redex_queue));
+    net.redex_queue = deferred;
+
+    stats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

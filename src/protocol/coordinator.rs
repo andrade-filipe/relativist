@@ -861,6 +861,7 @@ mod tests {
         let grid_config = GridConfig {
             num_workers: 1,
             max_rounds: None,
+            ..GridConfig::default()
         };
         let strategy = ContiguousIdStrategy;
 
@@ -918,6 +919,7 @@ mod tests {
         let grid_config = GridConfig {
             num_workers: 2,
             max_rounds: None,
+            ..GridConfig::default()
         };
         let strategy = ContiguousIdStrategy;
 
@@ -965,6 +967,7 @@ mod tests {
         let grid_config = GridConfig {
             num_workers: 1,
             max_rounds: None,
+            ..GridConfig::default()
         };
         let strategy = ContiguousIdStrategy;
 
@@ -1009,6 +1012,7 @@ mod tests {
         let grid_config = GridConfig {
             num_workers: 1,
             max_rounds: None,
+            ..GridConfig::default()
         };
         let strategy = ContiguousIdStrategy;
 

@@ -121,7 +121,7 @@ pub struct WorkerRoundStats {
     pub interactions_by_rule: [u64; 6],
 }
 
-/// Configuration for the grid loop (SPEC-05, R25, R29).
+/// Configuration for the grid loop (SPEC-05, R25, R29, R30a).
 ///
 /// The partition strategy is NOT stored here because trait objects
 /// are not Clone. It is passed as a separate parameter to `run_grid`.
@@ -135,6 +135,30 @@ pub struct GridConfig {
     /// None = no limit (loop until Normal Form).
     /// Some(limit) = terminate after `limit` rounds even if not converged (R29).
     pub max_rounds: Option<u32>,
+
+    /// Strict BSP mode (SPEC-05 R30a).
+    ///
+    /// When false (lenient, default), `run_grid` performs a full `reduce_all`
+    /// on the merged net after each round, concentrating all cascade work at
+    /// the coordinator and terminating in exactly 1 round for most inputs.
+    ///
+    /// When true (strict), border resolution is deferred: the merged net is
+    /// left with its border redexes in the queue, and the grid loop iterates
+    /// — redistributing those redexes to workers in the next round. Cascades
+    /// that cross partition boundaries force additional rounds until Normal
+    /// Form is reached. The Fundamental Property G1 (SPEC-01) holds in both
+    /// modes; only the round distribution changes.
+    pub strict_bsp: bool,
+}
+
+impl Default for GridConfig {
+    fn default() -> Self {
+        Self {
+            num_workers: 1,
+            max_rounds: None,
+            strict_bsp: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +284,7 @@ mod tests {
         let config = GridConfig {
             num_workers: 4,
             max_rounds: Some(100),
+            ..GridConfig::default()
         };
         assert_eq!(config.num_workers, 4);
         assert_eq!(config.max_rounds, Some(100));
@@ -271,9 +296,31 @@ mod tests {
         let config = GridConfig {
             num_workers: 8,
             max_rounds: None,
+            ..GridConfig::default()
         };
         assert_eq!(config.num_workers, 8);
         assert_eq!(config.max_rounds, None);
+    }
+
+    // T3: GridConfig::default() — lenient BSP, single worker, no round limit
+    #[test]
+    fn test_grid_config_default() {
+        let config = GridConfig::default();
+        assert_eq!(config.num_workers, 1);
+        assert_eq!(config.max_rounds, None);
+        assert!(!config.strict_bsp);
+    }
+
+    // T4: GridConfig with strict_bsp
+    #[test]
+    fn test_grid_config_strict_bsp() {
+        let config = GridConfig {
+            num_workers: 4,
+            strict_bsp: true,
+            ..GridConfig::default()
+        };
+        assert!(config.strict_bsp);
+        assert_eq!(config.num_workers, 4);
     }
 
     // === GridMetrics network extensions (TASK-0094) ===

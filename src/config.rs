@@ -105,6 +105,14 @@ pub struct CoordinatorArgs {
     #[arg(long)]
     pub max_rounds: Option<u32>,
 
+    /// Run the grid loop in strict BSP mode (SPEC-05 R30a).
+    ///
+    /// When enabled, border cascades are not reduced at the coordinator;
+    /// the grid loop iterates until Normal Form, forcing rounds > 1 for
+    /// nets with cross-partition cascades. Default: false (lenient).
+    #[arg(long, default_value_t = false)]
+    pub strict_bsp: bool,
+
     /// Path to write the reduced network (.bin).
     #[arg(short = 'o', long)]
     pub output: Option<PathBuf>,
@@ -177,6 +185,14 @@ pub struct LocalArgs {
     /// Maximum number of grid rounds. Unlimited if not specified.
     #[arg(long)]
     pub max_rounds: Option<u32>,
+
+    /// Run the grid loop in strict BSP mode (SPEC-05 R30a).
+    ///
+    /// When enabled, border cascades are not reduced at the coordinator;
+    /// the grid loop iterates until Normal Form, forcing rounds > 1 for
+    /// nets with cross-partition cascades. Default: false (lenient).
+    #[arg(long, default_value_t = false)]
+    pub strict_bsp: bool,
 
     /// Path to write the reduced network (.bin).
     #[arg(short = 'o', long)]
@@ -320,6 +336,14 @@ pub struct BenchArgs {
     #[arg(long)]
     pub max_rounds: Option<u32>,
 
+    /// Run the grid loop in strict BSP mode (SPEC-05 R30a).
+    ///
+    /// When enabled, border cascades are not reduced at the coordinator;
+    /// the grid loop iterates until Normal Form, forcing rounds > 1 for
+    /// nets with cross-partition cascades. Default: false (lenient).
+    #[arg(long, default_value_t = false)]
+    pub strict_bsp: bool,
+
     /// Skip full graph isomorphism (G1) in favor of a fast symbol-count check.
     ///
     /// When the distributed result has > ~5000 non-empty agents, the O(N!)
@@ -381,6 +405,8 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
     GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
+        strict_bsp: args.strict_bsp,
+        ..GridConfig::default()
     }
 }
 
@@ -389,6 +415,8 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
     GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
+        strict_bsp: args.strict_bsp,
+        ..GridConfig::default()
     }
 }
 
@@ -612,6 +640,7 @@ mod tests {
             bind: "127.0.0.1:9000".parse().unwrap(),
             input: PathBuf::from("test.bin"),
             max_rounds,
+            strict_bsp: false,
             output: None,
             metrics: None,
             strategy: "round-robin".to_string(),
