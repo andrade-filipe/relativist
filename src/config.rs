@@ -406,7 +406,6 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
-        ..GridConfig::default()
     }
 }
 
@@ -416,7 +415,6 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
-        ..GridConfig::default()
     }
 }
 

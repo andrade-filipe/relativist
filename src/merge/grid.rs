@@ -842,7 +842,7 @@ mod tests {
         // Left chain (worker 0): ids 0, 1
         let l0 = net.create_agent(Symbol::Con); // id=0 -> w0
         let l1 = net.create_agent(Symbol::Con); // id=1 -> w0
-        // Right chain (worker 1): ids 2, 3
+                                                // Right chain (worker 1): ids 2, 3
         let r0 = net.create_agent(Symbol::Con); // id=2 -> w1
         let r1 = net.create_agent(Symbol::Con); // id=3 -> w1
 
@@ -981,8 +981,7 @@ mod tests {
 
         let (lenient_net, lenient_metrics) =
             run_grid(net.clone(), &lenient_cfg, &ContiguousIdStrategy);
-        let (strict_net, strict_metrics) =
-            run_grid(net, &strict_cfg, &ContiguousIdStrategy);
+        let (strict_net, strict_metrics) = run_grid(net, &strict_cfg, &ContiguousIdStrategy);
 
         assert!(lenient_metrics.converged);
         assert!(strict_metrics.converged);

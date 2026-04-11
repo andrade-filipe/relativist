@@ -78,6 +78,7 @@ impl ValidationReport {
 // ── CSV row structs ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct DetailRow {
     benchmark: String,
     input_size: u32,
@@ -101,6 +102,7 @@ struct DetailRow {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct SummaryRow {
     benchmark: String,
     input_size: u32,
@@ -117,6 +119,7 @@ struct SummaryRow {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct RoundsRow {
     benchmark: String,
     input_size: u32,
@@ -129,8 +132,8 @@ struct RoundsRow {
 // ── CSV parsing ──────────────────────────────────────────────────────────
 
 fn parse_detail_csv(path: &Path) -> Result<Vec<DetailRow>, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     let mut rows = Vec::new();
     let mut lines = content.lines();
     let header = lines.next().ok_or("detail.csv is empty")?;
@@ -151,32 +154,64 @@ fn parse_detail_csv(path: &Path) -> Result<Vec<DetailRow>, String> {
         }
         rows.push(DetailRow {
             benchmark: cols[0].to_string(),
-            input_size: cols[1].parse().map_err(|e| format!("line {}: input_size: {}", i + 2, e))?,
+            input_size: cols[1]
+                .parse()
+                .map_err(|e| format!("line {}: input_size: {}", i + 2, e))?,
             mode: cols[2].to_string(),
-            workers: cols[3].parse().map_err(|e| format!("line {}: workers: {}", i + 2, e))?,
-            repetition: cols[4].parse().map_err(|e| format!("line {}: repetition: {}", i + 2, e))?,
+            workers: cols[3]
+                .parse()
+                .map_err(|e| format!("line {}: workers: {}", i + 2, e))?,
+            repetition: cols[4]
+                .parse()
+                .map_err(|e| format!("line {}: repetition: {}", i + 2, e))?,
             correct: cols[5] == "true",
-            wall_clock_secs: cols[6].parse().map_err(|e| format!("line {}: wall_clock: {}", i + 2, e))?,
-            total_interactions: cols[7].parse().map_err(|e| format!("line {}: interactions: {}", i + 2, e))?,
-            mips: cols[8].parse().map_err(|e| format!("line {}: mips: {}", i + 2, e))?,
-            rounds: cols[9].parse().map_err(|e| format!("line {}: rounds: {}", i + 2, e))?,
-            speedup: cols[10].parse().map_err(|e| format!("line {}: speedup: {}", i + 2, e))?,
-            efficiency: cols[11].parse().map_err(|e| format!("line {}: efficiency: {}", i + 2, e))?,
-            overhead_ratio: cols[12].parse().map_err(|e| format!("line {}: overhead: {}", i + 2, e))?,
-            con_con: cols[16].parse().map_err(|e| format!("line {}: con_con: {}", i + 2, e))?,
-            dup_dup: cols[17].parse().map_err(|e| format!("line {}: dup_dup: {}", i + 2, e))?,
-            era_era: cols[18].parse().map_err(|e| format!("line {}: era_era: {}", i + 2, e))?,
-            con_dup: cols[19].parse().map_err(|e| format!("line {}: con_dup: {}", i + 2, e))?,
-            con_era: cols[20].parse().map_err(|e| format!("line {}: con_era: {}", i + 2, e))?,
-            dup_era: cols[21].parse().map_err(|e| format!("line {}: dup_era: {}", i + 2, e))?,
+            wall_clock_secs: cols[6]
+                .parse()
+                .map_err(|e| format!("line {}: wall_clock: {}", i + 2, e))?,
+            total_interactions: cols[7]
+                .parse()
+                .map_err(|e| format!("line {}: interactions: {}", i + 2, e))?,
+            mips: cols[8]
+                .parse()
+                .map_err(|e| format!("line {}: mips: {}", i + 2, e))?,
+            rounds: cols[9]
+                .parse()
+                .map_err(|e| format!("line {}: rounds: {}", i + 2, e))?,
+            speedup: cols[10]
+                .parse()
+                .map_err(|e| format!("line {}: speedup: {}", i + 2, e))?,
+            efficiency: cols[11]
+                .parse()
+                .map_err(|e| format!("line {}: efficiency: {}", i + 2, e))?,
+            overhead_ratio: cols[12]
+                .parse()
+                .map_err(|e| format!("line {}: overhead: {}", i + 2, e))?,
+            con_con: cols[16]
+                .parse()
+                .map_err(|e| format!("line {}: con_con: {}", i + 2, e))?,
+            dup_dup: cols[17]
+                .parse()
+                .map_err(|e| format!("line {}: dup_dup: {}", i + 2, e))?,
+            era_era: cols[18]
+                .parse()
+                .map_err(|e| format!("line {}: era_era: {}", i + 2, e))?,
+            con_dup: cols[19]
+                .parse()
+                .map_err(|e| format!("line {}: con_dup: {}", i + 2, e))?,
+            con_era: cols[20]
+                .parse()
+                .map_err(|e| format!("line {}: con_era: {}", i + 2, e))?,
+            dup_era: cols[21]
+                .parse()
+                .map_err(|e| format!("line {}: dup_era: {}", i + 2, e))?,
         });
     }
     Ok(rows)
 }
 
 fn parse_summary_csv(path: &Path) -> Result<Vec<SummaryRow>, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     let mut rows = Vec::new();
     let mut lines = content.lines();
     let header = lines.next().ok_or("summary.csv is empty")?;
@@ -197,25 +232,43 @@ fn parse_summary_csv(path: &Path) -> Result<Vec<SummaryRow>, String> {
         }
         rows.push(SummaryRow {
             benchmark: cols[0].to_string(),
-            input_size: cols[1].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
+            input_size: cols[1]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
             mode: cols[2].to_string(),
-            workers: cols[3].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            repetitions: cols[4].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
+            workers: cols[3]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            repetitions: cols[4]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
             all_correct: cols[5] == "true",
-            wall_clock_mean: cols[6].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            cv: cols[15].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            speedup_mean: cols[12].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            efficiency_mean: cols[13].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            overhead_ratio_mean: cols[14].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            mips_mean: cols[11].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
+            wall_clock_mean: cols[6]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            cv: cols[15]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            speedup_mean: cols[12]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            efficiency_mean: cols[13]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            overhead_ratio_mean: cols[14]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            mips_mean: cols[11]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
         });
     }
     Ok(rows)
 }
 
 fn parse_rounds_csv(path: &Path) -> Result<Vec<RoundsRow>, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     let mut rows = Vec::new();
     let mut lines = content.lines();
     let header = lines.next().ok_or("rounds.csv is empty")?;
@@ -236,11 +289,19 @@ fn parse_rounds_csv(path: &Path) -> Result<Vec<RoundsRow>, String> {
         }
         rows.push(RoundsRow {
             benchmark: cols[0].to_string(),
-            input_size: cols[1].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            workers: cols[2].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
+            input_size: cols[1]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            workers: cols[2]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
             mode: cols[3].to_string(),
-            repetition: cols[4].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
-            round: cols[5].parse().map_err(|e| format!("line {}: {}", i + 2, e))?,
+            repetition: cols[4]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
+            round: cols[5]
+                .parse()
+                .map_err(|e| format!("line {}: {}", i + 2, e))?,
         });
     }
     Ok(rows)
@@ -413,12 +474,20 @@ fn check_h3_interaction_counts(detail: &[DetailRow], checks: &mut Vec<CheckResul
         severity: Severity::Hard,
         passed,
         detail: if passed {
-            format!("{}/{} sequential configs validated", validated, total_checked)
+            format!(
+                "{}/{} sequential configs validated",
+                validated, total_checked
+            )
         } else {
             format!(
                 "{} failures: {}",
                 failures.len(),
-                failures.iter().take(5).cloned().collect::<Vec<_>>().join("; ")
+                failures
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
             )
         },
     });
@@ -426,6 +495,7 @@ fn check_h3_interaction_counts(detail: &[DetailRow], checks: &mut Vec<CheckResul
 
 /// Returns (expected_total, rule_checker) for benchmarks with known formulas.
 /// The rule_checker returns Some(error_msg) if the per-rule breakdown is wrong.
+#[allow(clippy::type_complexity)]
 fn expected_interactions(
     benchmark: &str,
     size: u32,
@@ -503,13 +573,29 @@ fn expected_interactions(
                 total,
                 Box::new(move |r: &DetailRow| {
                     let mut errs = Vec::new();
-                    if r.con_con != n { errs.push(format!("con_con={} expected {}", r.con_con, n)); }
-                    if r.dup_dup != n { errs.push(format!("dup_dup={} expected {}", r.dup_dup, n)); }
-                    if r.era_era != n { errs.push(format!("era_era={} expected {}", r.era_era, n)); }
-                    if r.con_dup != n { errs.push(format!("con_dup={} expected {}", r.con_dup, n)); }
-                    if r.con_era != n { errs.push(format!("con_era={} expected {}", r.con_era, n)); }
-                    if r.dup_era != n { errs.push(format!("dup_era={} expected {}", r.dup_era, n)); }
-                    if errs.is_empty() { None } else { Some(errs.join(", ")) }
+                    if r.con_con != n {
+                        errs.push(format!("con_con={} expected {}", r.con_con, n));
+                    }
+                    if r.dup_dup != n {
+                        errs.push(format!("dup_dup={} expected {}", r.dup_dup, n));
+                    }
+                    if r.era_era != n {
+                        errs.push(format!("era_era={} expected {}", r.era_era, n));
+                    }
+                    if r.con_dup != n {
+                        errs.push(format!("con_dup={} expected {}", r.con_dup, n));
+                    }
+                    if r.con_era != n {
+                        errs.push(format!("con_era={} expected {}", r.con_era, n));
+                    }
+                    if r.dup_era != n {
+                        errs.push(format!("dup_era={} expected {}", r.dup_era, n));
+                    }
+                    if errs.is_empty() {
+                        None
+                    } else {
+                        Some(errs.join(", "))
+                    }
                 }),
             ))
         }
@@ -533,7 +619,11 @@ fn check_h4_speedup_baseline(detail: &[DetailRow], checks: &mut Vec<CheckResult>
         severity: Severity::Hard,
         passed: bad.is_empty(),
         detail: if bad.is_empty() {
-            format!("{}/{} sequential rows have speedup=1.0", seq_rows.len(), seq_rows.len())
+            format!(
+                "{}/{} sequential rows have speedup=1.0",
+                seq_rows.len(),
+                seq_rows.len()
+            )
         } else {
             format!(
                 "{} rows with speedup != 1.0 (e.g., {} size={} speedup={:.4})",
@@ -598,10 +688,7 @@ fn check_h6_interaction_consistency(detail: &[DetailRow], checks: &mut Vec<Check
                 u.dedup();
                 u
             };
-            inconsistent.push(format!(
-                "{} size={}: {:?}",
-                bench, size, unique
-            ));
+            inconsistent.push(format!("{} size={}: {:?}", bench, size, unique));
         }
     }
 
@@ -616,7 +703,12 @@ fn check_h6_interaction_consistency(detail: &[DetailRow], checks: &mut Vec<Check
             format!(
                 "{} inconsistencies: {}",
                 inconsistent.len(),
-                inconsistent.iter().take(5).cloned().collect::<Vec<_>>().join("; ")
+                inconsistent
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
             )
         },
     });
@@ -631,12 +723,7 @@ fn check_h7_summary_consistency(
     // Build lookup: (benchmark, size, mode, workers) -> all correct?
     let mut detail_correct: HashMap<(String, u32, String, u32), bool> = HashMap::new();
     for r in detail {
-        let key = (
-            r.benchmark.clone(),
-            r.input_size,
-            r.mode.clone(),
-            r.workers,
-        );
+        let key = (r.benchmark.clone(), r.input_size, r.mode.clone(), r.workers);
         let entry = detail_correct.entry(key).or_insert(true);
         if !r.correct {
             *entry = false;
@@ -645,12 +732,7 @@ fn check_h7_summary_consistency(
 
     let mut mismatches = Vec::new();
     for s in summary {
-        let key = (
-            s.benchmark.clone(),
-            s.input_size,
-            s.mode.clone(),
-            s.workers,
-        );
+        let key = (s.benchmark.clone(), s.input_size, s.mode.clone(), s.workers);
         if let Some(&detail_all_ok) = detail_correct.get(&key) {
             if detail_all_ok != s.all_correct {
                 mismatches.push(format!(
@@ -672,12 +754,21 @@ fn check_h7_summary_consistency(
         severity: Severity::Hard,
         passed: mismatches.is_empty(),
         detail: if mismatches.is_empty() {
-            format!("{}/{} summary rows consistent", summary.len(), summary.len())
+            format!(
+                "{}/{} summary rows consistent",
+                summary.len(),
+                summary.len()
+            )
         } else {
             format!(
                 "{} mismatches: {}",
                 mismatches.len(),
-                mismatches.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
+                mismatches
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
             )
         },
     });
@@ -753,10 +844,7 @@ fn check_w3_mips_inconsistency(summary: &[SummaryRow], checks: &mut Vec<CheckRes
             continue;
         }
         let min = mips_vals.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = mips_vals
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let max = mips_vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         if min > 0.0 && max / min > 10.0 {
             wide.push(format!(
                 "{}: MIPS range {:.1}-{:.1} (ratio {:.1}x)",
@@ -794,9 +882,7 @@ fn check_w4_ep_rounds(detail: &[DetailRow], checks: &mut Vec<CheckResult>) {
     let bad: Vec<_> = detail
         .iter()
         .filter(|r| {
-            r.mode == "local"
-                && ep_benchmarks.contains(&r.benchmark.as_str())
-                && r.rounds != 1
+            r.mode == "local" && ep_benchmarks.contains(&r.benchmark.as_str()) && r.rounds != 1
         })
         .collect();
 
@@ -834,7 +920,10 @@ fn check_w5_overhead_range(detail: &[DetailRow], checks: &mut Vec<CheckResult>) 
         severity: Severity::Warn,
         passed: bad.is_empty(),
         detail: if bad.is_empty() {
-            format!("All {} grid rows have overhead_ratio in [0, 1]", grid_rows.len())
+            format!(
+                "All {} grid rows have overhead_ratio in [0, 1]",
+                grid_rows.len()
+            )
         } else {
             format!(
                 "{} rows out of range (e.g., {} size={} w={} overhead={:.4})",
@@ -877,15 +966,11 @@ fn check_info_metrics(
         name: "Distinct benchmarks",
         severity: Severity::Info,
         passed: true,
-        detail: format!(
-            "{}: {}",
-            benchmarks.len(),
-            {
-                let mut b: Vec<_> = benchmarks.into_iter().collect();
-                b.sort();
-                b.join(", ")
-            }
-        ),
+        detail: format!("{}: {}", benchmarks.len(), {
+            let mut b: Vec<_> = benchmarks.into_iter().collect();
+            b.sort();
+            b.join(", ")
+        }),
     });
 
     // I3: MIPS range per benchmark (sequential only)
@@ -920,9 +1005,7 @@ fn check_info_metrics(
     // I4: Average CV by benchmark
     let mut cv_sums: HashMap<&str, (f64, usize)> = HashMap::new();
     for s in summary {
-        let entry = cv_sums
-            .entry(s.benchmark.as_str())
-            .or_insert((0.0, 0));
+        let entry = cv_sums.entry(s.benchmark.as_str()).or_insert((0.0, 0));
         entry.0 += s.cv;
         entry.1 += 1;
     }

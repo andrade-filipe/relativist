@@ -109,7 +109,11 @@ impl Benchmark for CascadeCross {
     }
 
     fn describe(&self, size: u32) -> String {
-        format!("cascade_cross(N={size}): {} CON agents, 1 initial redex, {} annihilations to NF", 2 * size, size)
+        format!(
+            "cascade_cross(N={size}): {} CON agents, 1 initial redex, {} annihilations to NF",
+            2 * size,
+            size
+        )
     }
 
     fn make_net(&self, size: u32) -> Net {
@@ -141,11 +145,7 @@ mod tests {
         let b = CascadeCross;
         let net = b.make_net(5);
         assert_eq!(net.count_live_agents(), 10, "expected 2N = 10 live agents");
-        assert_eq!(
-            net.redex_queue.len(),
-            1,
-            "expected exactly 1 initial redex"
-        );
+        assert_eq!(net.redex_queue.len(), 1, "expected exactly 1 initial redex");
         // The redex must be principal-principal and cross-chain.
         let (a_id, b_id) = net.redex_queue[0];
         // ids 0 and 5 (L_0 and R_0 under a size-5 cascade).

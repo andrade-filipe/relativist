@@ -140,7 +140,6 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         num_workers: params.workers,
         max_rounds: params.max_rounds,
         strict_bsp: params.strict_bsp,
-        ..GridConfig::default()
     };
 
     let start = Instant::now();
@@ -384,7 +383,6 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                         num_workers: workers,
                         max_rounds: config.max_rounds,
                         strict_bsp: config.strict_bsp,
-                        ..GridConfig::default()
                     };
                     let _ = run_grid(warmup_net, &grid_config, &strategy);
                 }

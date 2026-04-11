@@ -87,7 +87,13 @@ fn backtrack(
                     mapping.remove(&prev_a);
                     // Continue searching from the next candidate
                     if try_candidates_from(
-                        a, b, prev_a, prev_candidates, cand_idx, mapping, reverse,
+                        a,
+                        b,
+                        prev_a,
+                        prev_candidates,
+                        cand_idx,
+                        mapping,
+                        reverse,
                     ) {
                         stack.push(cand_idx);
                         index += 1;
@@ -132,6 +138,7 @@ fn backtrack(
                     mapping.remove(&prev_a);
                     // Try remaining candidates
                     let mut backtrack_found = false;
+                    #[allow(clippy::needless_range_loop)]
                     for ci in cand_start..prev_candidates.len() {
                         let id_b = prev_candidates[ci];
                         if reverse.contains_key(&id_b) {
@@ -169,6 +176,7 @@ fn try_candidates_from(
     mapping: &mut HashMap<AgentId, AgentId>,
     reverse: &mut HashMap<AgentId, AgentId>,
 ) -> bool {
+    #[allow(clippy::needless_range_loop)]
     for ci in start..candidates.len() {
         let id_b = candidates[ci];
         if reverse.contains_key(&id_b) {

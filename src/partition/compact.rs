@@ -22,9 +22,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::net::{
-    port_index, Agent, AgentId, Net, PortRef, DISCONNECTED, PORTS_PER_SLOT,
-};
+use crate::net::{port_index, Agent, AgentId, Net, PortRef, DISCONNECTED, PORTS_PER_SLOT};
 
 /// Sparse wire-only representation of a partition sub-`Net`.
 ///
@@ -66,11 +64,7 @@ impl CompactSubnet {
         for (idx, slot) in net.agents.iter().enumerate() {
             if let Some(agent) = slot {
                 let base = port_index(idx as AgentId, 0);
-                let ports = [
-                    net.ports[base],
-                    net.ports[base + 1],
-                    net.ports[base + 2],
-                ];
+                let ports = [net.ports[base], net.ports[base + 1], net.ports[base + 2]];
                 live.push((idx as AgentId, *agent, ports));
             }
         }
