@@ -1,7 +1,7 @@
 # Progress — Relativist Software Implementation
 
-**Last updated:** 2026-04-09
-**Updated by:** Documentation sync — Phases 10-11 COMPLETE, v0.9.0 released (643 tests, 11 benchmarks)
+**Last updated:** 2026-04-11
+**Updated by:** Local Benchmark Phase closed — tag `v0.10.0-bench` released. L2 (BSP multi-round) resolved architecturally via opt-in `strict_bsp` mode (SPEC-05 R30a) + `reduce_border_once` primitive. New benchmark `cascade_cross` (SPEC-09 R18) forces rounds > 1 under strict mode. Unified `v1_local_baseline` campaign: Phase 1 (11:39, 4200 reps, 12 lenient + 2 strict) + Phase 2 (43:42, 400 reps Docker/TcpLocalhost), **0 failures in 4600 runs**. SPEC-09 theoretical predictions confirmed empirically: `cascade_cross(N)` terminates in `N` rounds and `dual_tree(d)` in `d` rounds under strict BSP with `workers ≥ 2`. Frozen snapshot in `results/locked/v1_local_baseline/` with full provenance (`manifest.md` + `.gitattributes` fixing LF for sha256 reproducibility on Windows). 655+ tests (643 pre-existing + 12 new: T-strict-1..6, T-cc-1..5, T-equivalence-strict-lenient). Next milestone: Phase 3 LAN (`TcpNetwork` on physical machines, SPEC-09 R27 MUST).
 
 ---
 
@@ -30,9 +30,11 @@
 | Phase 7: Security | COMPLETE | SPEC-10: 14/20 tasks done (490 tests). AuthToken, 3-tier security, Register handshake with token validation, TLS configs, SecurityConfig builder. TASK-0132/0133 (TLS handshake integration), 0134/0135 (conn limits/timeout), 0139 (integration tests) deferred (P1/P2) |
 | Phase 8: Observability | COMPLETE | SPEC-11: 10/21 tasks done (497 default / 507 w/ metrics). LogFormat, ProcessRole, ObservabilityConfig, init_tracing (text+JSON+EnvFilter), CoordinatorMetrics, /health /ready /metrics endpoints, spawn_metrics_server. TASK-0145-0149 (#[instrument]/FSM logging), 0151/0153 (protocol+aggregation metrics), 0158/0159 (OTel), 0213/0214 deferred (P1/P2) |
 | Phase 9: User I/O | COMPLETE | SPEC-12: 15/20 tasks done (534 tests). Binary/IC format load/save, text DSL parser+serializer, format dispatch, NetSummary, 6 generators (EP-annihilation, CON-CON, DUP-DUP, CON-DUP expansion, dual-tree, mixed-rules). TASK-0167 (JSON), 0176/0177 (tree_sum, Church generators), 0179 (integration tests) deferred (P1/P2) |
-| Phase 10: Benchmarks | COMPLETE | SPEC-09: 11 benchmarks (EP-ERA/CON/DUP, CON-DUP, DualTree, TreeSum, TreeSumBalanced, MixedNet, ErasureProp, ChurchAdd, ChurchMul), suite runner, CSV output, correctness verification (639 unit tests + 4 integration) |
-| Phase 11: Encoding | COMPLETE | SPEC-14: Church numeral encode/decode, add, mul, exp (with known exp limitation). 643 total tests |
+| Phase 10: Benchmarks | COMPLETE | SPEC-09: 12 benchmarks (EP-ERA/CON/DUP, CON-DUP, DualTree, TreeSum, TreeSumBalanced, MixedNet, ErasureProp, ChurchAdd, ChurchMul, **cascade_cross**), suite runner, CSV output, correctness verification |
+| Phase 11: Encoding | COMPLETE | SPEC-14: Church numeral encode/decode, add, mul, exp (with known exp limitation) |
 | Distribution | COMPLETE | SPEC-15: GitHub Releases (Windows .exe, Linux .tar.gz/.deb), Docker GHCR, install script, self-update command, shell completions. v0.9.0 |
+| **Strict BSP (L2 resolved)** | **COMPLETE** | **SPEC-05 R30a opt-in `strict_bsp` mode in `run_grid` + `reduce_border_once` primitive. Default `strict_bsp=false` preserves all prior behavior (zero regression across 643+ tests). CLI flag `--strict-bsp` + 12 new tests (T-strict-1..6, T-cc-1..5, T-equivalence-strict-lenient). Empirically validated: `cascade_cross(N) = N` rounds and `dual_tree(d) = d` rounds under strict + `workers ≥ 2`** |
+| **Local Benchmark Phase (v1_local_baseline)** | **FROZEN** | **Tag `v0.10.0-bench` (commit 787b195 moved via force-push). Phase 1: 11:39 wall-clock, 3800 lenient reps + 400 strict reps, 0 correctness failures. Phase 2: 43:42 wall-clock, 400 Docker reps, 0 failures, L6 configs unblocked (dual_tree=22 w=1, ep_annihilation_con=5M w∈{1,2,4} now within 1800s timeout). CV triage: 63 flagged / 63 keep / 0 rerun / 0 exclude. Snapshot in `results/locked/v1_local_baseline/` with `manifest.md`, `README.md`, `cv_triage.md`, `.gitattributes` (LF enforcement for cross-platform sha256), raw logs in `raw/phase{1,2}/`. Immutable reference for Phase 3 LAN subtraction.** |
 
 ---
 

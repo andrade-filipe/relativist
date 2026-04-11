@@ -953,104 +953,867 @@ precisam ser executados.
 ### 11.3 Phase 3 — TcpNetwork (maquinas reais)
 
 Executa o mesmo protocolo BSP em **maquinas fisicas diferentes**
-conectadas por rede Ethernet/Wi-Fi. Expoe o custo real de um grid
-distribuido: latencia de RTT, throughput limitado, jitter, contencao
-de NIC.
+conectadas por rede Ethernet real. Expoe o custo que nenhum outro
+modo consegue reproduzir: latencia de RTT, throughput limitado,
+jitter, contencao de NIC. E a campanha que transforma Relativist de
+"implementacao correta de ICs distribuidos" em "evidencia empirica
+sobre o custo real de distribuir reducao de ICs num grid".
 
-**Pre-requisitos:**
-- 2+ maquinas na mesma LAN (ou em VPN com rotas TCP abertas)
-- Mesma versao do `relativist` instalada em todas (`relativist --version`)
-- Porta TCP do coordinator liberada no firewall (ex: `9000/tcp`)
-- Input net identico em todas as maquinas (transferir com `scp`/rsync)
-- Sincronizacao de relogio razoavel (NTP) para logs coerentes
+> **Pre-requisito forte:** a Phase 3 so faz sentido depois que
+> `v1_local_baseline` (tag `v0.10.0-bench`) esta congelada em
+> `results/locked/v1_local_baseline/`. A medida principal e a
+> subtracao `t_network = t_lan - t_localhost`, e essa subtracao exige
+> que Phase 2 Docker ja tenha produzido `phase2_summary.csv` no mesmo
+> binario. Nao comece Phase 3 sem ter a Phase 2 travada.
 
-**Setup manual (exemplo: 1 coordinator + 2 workers em 3 maquinas):**
+#### 11.3.0 O que Phase 3 mede (e o que nao mede)
 
-*Maquina A (coordinator) — IP 192.168.1.10:*
+**Medida primaria — overhead de LAN por subtracao.** Para cada triple
+`(bench, size, workers)`:
+
+```
+t_network(bench, size, W) = t_lan(bench, size, W)  -  t_localhost(bench, size, W)
+                            ^^^^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                            produzido aqui           v1_local_baseline/phase2_summary.csv
+```
+
+`t_localhost` ja esta congelado em `v1_local_baseline`. Phase 3
+produz `t_lan`. A diferenca e a fracao de wall clock atribuida a
+latencia de fio + banda + jitter — tudo que Docker em loopback nao
+consegue reproduzir. E o numero que o artigo do TCC reporta como
+"custo de rede do grid".
+
+Para a subtracao ser valida, *tudo* tem de ser identico menos a rede:
+mesmo binario (tag `v0.10.0-bench`), mesmos bytes de input, mesma
+estrategia de particao, mesmas 10 repeticoes, mesmo modo BSP
+(lenient por padrao). Qualquer drift invalida o resultado.
+
+**Medida secundaria — RTT por rodada sob strict BSP.** O modo
+`--strict-bsp` (SPEC-05 R30a) ja foi validado em Phase 1: empiricamente
+`cascade_cross(N) = N` rodadas e `dual_tree(d) = d` rodadas com
+`workers >= 2`. Em Phase 3, as *mesmas* topologias produzem as
+*mesmas* contagens de rodada — mas cada rodada agora inclui um RTT
+real. Decompoe-se:
+
+```
+t_round_lan  ~=  t_round_localhost  +  RTT_round
+              ~=  t_round_localhost  +  2 * RTT_wire * (split_msg + merge_msg)
+```
+
+Essa e a medida que permite ao TCC afirmar que caracterizou o
+protocolo de grid sob rede realista.
+
+**O que Phase 3 *nao* e:**
+- **Nao e** um benchmark de throughput absoluto do BSP. Phase 1 ja
+  mostrou que a cycle BSP tem overhead algoritmico alto (L1);
+  Phase 3 nao tenta esconder isso.
+- **Nao e** um teste sob rede adversa. Sem injecao de packet loss,
+  sem WAN, sem contencao proposital de NIC. LAN = melhor caso
+  distribuido.
+- **Nao e** um teste do fix L2. L2 e validado por Phase 1 strict
+  (empirico = teorico em `phase1_strict_rounds.csv`). Phase 3 apenas
+  *usa* strict mode para extrair o sinal de RTT limpo.
+
+#### 11.3.1 Hardware e rede necessarios
+
+**Maquinas.** Para cumprir SPEC-09 R27 (MUST: "pelo menos 4 e 8
+workers") voce precisa de **9 maquinas no total**: 1 coordinator + 8
+workers. Alternativas:
+
+| Opcao | Maquinas | Configs LAN | Cumpre R27? |
+|---|---|---|---|
+| A | 5 (1 coord + 4 workers) | W ∈ {1, 2, 4} | Parcial (4 sim, 8 nao — documentar exclusao) |
+| B | 9 (1 coord + 8 workers) | W ∈ {1, 2, 4, 8} | Sim, integralmente |
+| C | 3 (1 coord + 2 workers) | W ∈ {1, 2} | Nao cumpre. Apenas validacao de protocolo, nao conta como Phase 3 oficial |
+
+O alvo para o TCC e a Opcao B. Opcao A e aceitavel com ressalva
+documentada no manifest. Opcao C e so para provar que o protocolo
+funciona sobre TCP real antes de agendar as maquinas de verdade.
+
+**Requisitos por maquina** (iguais para coordinator e workers, o
+ponto central e *homogeneidade*):
+
+| Componente | Minimo | Motivo |
+|---|---|---|
+| CPU | 4 cores fisicos | Worker roda `reduce_all` single-threaded por particao |
+| RAM | 4 GiB livres | Pior caso `ep_annihilation_con=5M` em W=1: ~1.5 GiB residente |
+| Disco | 2 GiB livres | `output.bin` + `metrics.json` por run; coordinator acumula tudo |
+| OS | Linux (Debian/Ubuntu/Fedora/Arch) | Tooling de campanha assume POSIX (ssh/scp/rsync) |
+| NIC | 1 Gbps ethernet, mesmo switch, mesma VLAN | Wi-Fi introduz jitter 5-10x e contamina `t_network` |
+
+**Homogeneidade.** A subtracao `t_network = t_lan - t_localhost`
+assume que a *unica* diferenca entre Phase 2 e Phase 3 e a presenca
+do fio. Se as maquinas de Phase 3 tiverem CPU diferente, RAM
+diferente ou binario diferente, voce esta medindo uma mistura de
+delta-hardware + delta-rede, e a isolacao cai por terra. O caminho
+limpo:
+
+1. Escolha um modelo de CPU para todas as maquinas (lab da
+   universidade com desktops identicos e ideal).
+2. Compile o binario **uma unica vez** na build host a partir da tag
+   `v0.10.0-bench` e copie para todas as maquinas via `scp`. **Nao
+   recompile em cada maquina** — variacoes de toolchain geram codigo
+   diferente.
+3. Antes de comecar, confirme que todas as maquinas reportam o mesmo
+   `relativist --version` e o mesmo sha256 do binario.
+
+**Topologia de referencia:**
+
+```
+      +---------------+
+      | Coordinator   |  coord  (IP: 10.0.0.10)
+      | (Maquina A)   |
+      +-------+-------+
+              |
+              |  1 Gbps Ethernet, mesmo switch, mesma VLAN
+              |
+    +---------+-----------+------------+-----------+
+    |         |           |            |           |
+  +-+--+   +--+-+      +--+-+      +---+-+     +---+-+
+  | W1 |   | W2 |  ..  | W4 |      | W6  |     | W8  |
+  | .11|   | .12|      | .14|      | .16 |     | .18 |
+  +----+   +----+      +----+      +-----+     +-----+
+```
+
+Regras:
+- **Um switch, nao roteador.** Roteador adiciona hop IP e
+  potencialmente firewall no caminho, com jitter extra.
+- **Mesma VLAN / mesmo broadcast L2.** Workers e coordinator se
+  alcancam via 1 ARP + 1 connect. Sem NAT entre eles.
+- **Cabo, nao Wi-Fi.** Wi-Fi serve para sanity check; a campanha
+  congelada tem de ser cabeada. Documentar o modelo da NIC no
+  manifest.
+- **Sem outro trafego pesado.** Videoconferencia no mesmo switch
+  contamina a medida. Avise quem divide o switch sobre a janela da
+  campanha.
+- **IP estatico ou DHCP com lease reservado** para que os URIs
+  `tcp://10.0.0.11:9001` nos scripts permanecam estaveis atraves de
+  reboots.
+
+**Medir o RTT baseline antes de qualquer coisa.** Isto e o piso —
+nenhum `t_network` pode ser menor que `RTT * num_round_trips`. Se
+for, ou ha bug de medicao ou o protocolo fez short-circuit em algum
+lugar.
 
 ```bash
-# Liberar porta (Linux ufw)
-sudo ufw allow 9000/tcp
+# Do coordinator, para cada worker
+for W in 10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14; do
+    echo "=== $W ==="
+    ping -c 20 -i 0.2 -q "$W" | tail -2
+done
+```
 
-# Gerar input
-relativist generate ep-annihilation-con -n 1000000 -o input.bin
+Anote o bloco `rtt min/avg/max/mdev` para cada worker num arquivo de
+rascunho. Tipico LAN cabeado: `avg 0.1-0.5 ms`, `max 0.5-2 ms`,
+`mdev < 0.2 ms`. Se `avg > 2 ms` ou `mdev > 1 ms`, investigue antes
+de rodar a campanha — alguma coisa no switch esta saturada.
 
-# Iniciar coordinator gerando token automatico
+Meca tambem a banda efetiva com iperf3:
+
+```bash
+# Em cada worker (um de cada vez)
+iperf3 -s &
+
+# Do coordinator
+iperf3 -c 10.0.0.11 -t 10
+```
+
+Registre `sender -> receiver` Gbps. Espere `>= 900 Mbps` num link
+nominal de 1 Gbps. Abaixo disso, cheque cabos e negociacao da porta
+(`ethtool eth0`).
+
+#### 11.3.2 Setup de software
+
+**1. Na build host (uma vez):**
+
+```bash
+# Clone e check out da tag travada
+git clone git@github.com:andrade-filipe/relativist.git
+cd relativist
+git checkout v0.10.0-bench
+
+# Use o mesmo toolchain que gerou v1_local_baseline
+# (manifest.md registra: rustc 1.94.1 / cargo 1.94.1)
+rustup override set 1.94.1 || rustup install 1.94.1
+cargo build --release
+
+# Verifique a versao e calcule o sha256 do binario
+./target/release/relativist --version
+sha256sum target/release/relativist
+```
+
+Guarde esse sha256 — ele entra no manifest da Phase 3 como
+evidencia de que todas as maquinas rodaram o mesmo binario.
+
+**2. Distribuir o binario para todas as maquinas** (sem recompilar):
+
+```bash
+# Da build host, para cada no do cluster
+for HOST in 10.0.0.10 10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14; do
+    scp target/release/relativist "$USER@$HOST:/tmp/relativist"
+    ssh "$USER@$HOST" "sudo install -m 755 /tmp/relativist /usr/local/bin/relativist && relativist --version"
+done
+```
+
+Verifique que o sha256 de `/usr/local/bin/relativist` bate em todas
+as maquinas:
+
+```bash
+for HOST in 10.0.0.10 10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14; do
+    echo -n "$HOST: "
+    ssh "$USER@$HOST" "sha256sum /usr/local/bin/relativist" | awk '{print $1}'
+done
+```
+
+Todos os hashes tem de ser identicos.
+
+**3. Abrir porta 9000/tcp em cada maquina:**
+
+```bash
+# Ubuntu / Debian / Fedora com ufw
+sudo ufw allow from 10.0.0.0/24 to any port 9000 proto tcp
+sudo ufw reload
+
+# Arch ou qualquer setup sem ufw
+sudo iptables -A INPUT -p tcp --dport 9000 -s 10.0.0.0/24 -j ACCEPT
+```
+
+Nao exponha `9000/tcp` para a internet. A campanha usa token auth
+(passo 5), mas bind em `0.0.0.0` num IP publico ainda e superficie
+TCP visivel.
+
+**4. Sincronizar relogio via NTP:**
+
+```bash
+# Em cada no
+sudo apt install -y chrony   # ou dnf install -y chrony
+sudo systemctl enable --now chronyd
+chronyc tracking
+```
+
+Procure `System time : <valor menor que 0.100000 s>`. Wall clock e
+medido localmente no coordinator via `std::time::Instant`, entao
+drift entre relogios nao afeta os numeros diretamente — mas
+correlacionar logs de coordinator + workers fica impossivel se o
+drift for de segundos.
+
+**5. Gerar e distribuir o token de auth:**
+
+```bash
+# No coordinator
+relativist coordinator --workers 1 --bind 127.0.0.1:9999 \
+    --token auto --token-file /tmp/rel-token \
+    --dry-run 2>/dev/null || true   # gera o token e sai
+chmod 600 /tmp/rel-token
+
+# Copiar para cada worker sobre ssh
+for W in 10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14; do
+    scp /tmp/rel-token "$USER@$W:/tmp/rel-token"
+    ssh "$USER@$W" "chmod 600 /tmp/rel-token"
+done
+```
+
+Alternativa: deixe o primeiro coordinator real (passo seguinte)
+emitir o token com `--token auto --token-file /tmp/rel-token` e
+copie o arquivo depois. **Nao reutilize token entre campanhas** —
+gere um novo no inicio de cada Phase 3.
+
+**6. Pre-estagiar inputs em todas as maquinas** (para eliminar a
+variavel "transferencia de input" do caminho critico):
+
+```bash
+# No coordinator
+mkdir -p ~/phase3/data
+cd ~/phase3/data
+
+# Matriz da campanha (mesma que Phase 2)
+relativist generate ep-annihilation-con -n 500000  -o ep_con_500k.bin
+relativist generate ep-annihilation-con -n 1000000 -o ep_con_1M.bin
+relativist generate ep-annihilation-con -n 5000000 -o ep_con_5M.bin
+relativist generate dual-tree -d 18 -o dual_tree_18.bin
+relativist generate dual-tree -d 20 -o dual_tree_20.bin
+relativist generate dual-tree -d 22 -o dual_tree_22.bin
+relativist generate con-dup-expansion -n 1000 -o condup_1k.bin
+relativist generate con-dup-expansion -n 5000 -o condup_5k.bin
+
+# Subconjunto strict-BSP (opcional mas recomendado para RTT por rodada)
+relativist generate cascade-cross -n 10   -o cc_10.bin
+relativist generate cascade-cross -n 50   -o cc_50.bin
+relativist generate cascade-cross -n 100  -o cc_100.bin
+relativist generate cascade-cross -n 500  -o cc_500.bin
+relativist generate cascade-cross -n 1000 -o cc_1k.bin
+relativist generate dual-tree -d 6  -o dual_tree_6.bin
+relativist generate dual-tree -d 10 -o dual_tree_10.bin
+relativist generate dual-tree -d 14 -o dual_tree_14.bin
+```
+
+Rsync o diretorio `data/` para cada worker:
+
+```bash
+for W in 10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14; do
+    rsync -av --progress ~/phase3/data/ "$USER@$W:~/phase3/data/"
+done
+```
+
+**Confira sha256 byte-identico em todas as maquinas:**
+
+```bash
+# Em cada no
+cd ~/phase3/data && sha256sum *.bin > /tmp/input_sha256.txt
+
+# Comparar todos contra o do coordinator
+for W in 10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14; do
+    diff <(ssh "$USER@$W" "cat /tmp/input_sha256.txt") /tmp/input_sha256.txt \
+        && echo "$W OK" || echo "$W DRIFT"
+done
+```
+
+Qualquer drift aqui e **a causa #1 de bugs silenciosos em Phase 3**:
+worker roda input diferente, G1 acusa resultado divergente, e voce
+perde horas procurando no lugar errado. Pegue na verificacao
+pre-flight, nao em tempo de execucao.
+
+#### 11.3.3 Dry run — sanity checks antes da campanha
+
+Antes de lancar a campanha de varias horas, rode **tres sanity
+checks**. Se qualquer um falhar, corrija antes de continuar.
+
+**Check 1 — TCP loopback com binario real.** Numa maquina, abra
+coordinator + worker em dois terminais usando localhost e o token
+real. Isola o binario antes de envolver a rede.
+
+```bash
+# Terminal 1 (coordinator loopback)
 relativist coordinator \
-  --workers 2 \
-  --bind 0.0.0.0:9000 \
-  --token auto --token-file /tmp/rel-token \
-  -i input.bin \
-  -o output.bin \
-  -m metrics.json \
-  --log-format json
-```
+    --workers 1 \
+    --bind 127.0.0.1:9000 \
+    --token "$(cat /tmp/rel-token)" \
+    -i ~/phase3/data/ep_con_500k.bin \
+    -o /tmp/out_loop.bin \
+    -m /tmp/metrics_loop.json \
+    --log-format json
 
-O coordinator imprime o token base64 no stdout e o grava em
-`/tmp/rel-token`. Copie esse valor para as maquinas dos workers
-(via `scp` seguro, nao por canal em claro).
-
-*Maquina B (worker 1) — IP 192.168.1.11:*
-
-```bash
-# Receber o token da maquina A (ou copiar manualmente)
-scp user@192.168.1.10:/tmp/rel-token /tmp/rel-token
-TOKEN=$(cat /tmp/rel-token)
-
-# Conectar ao coordinator
+# Terminal 2 (worker loopback)
 relativist worker \
-  --coordinator 192.168.1.10:9000 \
-  --token "$TOKEN" \
-  --log-format json
+    --coordinator 127.0.0.1:9000 \
+    --token "$(cat /tmp/rel-token)" \
+    --log-format json
 ```
 
-*Maquina C (worker 2) — IP 192.168.1.12:*
+Esperado: coordinator emite `{"event":"grid_complete", ...}`, sai
+com codigo 0, `/tmp/out_loop.bin` existe, `/tmp/metrics_loop.json`
+tem um array `rounds` de comprimento 1 (modo lenient).
+
+**Check 2 — Smoke test cross-machine.** Do coordinator real:
 
 ```bash
-scp user@192.168.1.10:/tmp/rel-token /tmp/rel-token
+# No coordinator (10.0.0.10)
+relativist coordinator \
+    --workers 2 \
+    --bind 0.0.0.0:9000 \
+    --token "$(cat /tmp/rel-token)" \
+    -i ~/phase3/data/ep_con_500k.bin \
+    -o /tmp/out_smoke.bin \
+    -m /tmp/metrics_smoke.json \
+    --log-format json
+```
+
+Coordinator loga `waiting for 2 workers`. Em paralelo (ssh nos
+workers):
+
+```bash
+# Em 10.0.0.11 e 10.0.0.12
 TOKEN=$(cat /tmp/rel-token)
-
-relativist worker \
-  --coordinator 192.168.1.10:9000 \
-  --token "$TOKEN" \
-  --log-format json
+relativist worker --coordinator 10.0.0.10:9000 --token "$TOKEN"
 ```
 
-Quando todos os workers conectam, o coordinator executa o grid BSP
-sobre TCP real, grava `output.bin` e `metrics.json` (no host A), e
-todos os processos terminam.
+Esperado: coordinator sai com 0, os dois workers saem com 0,
+`/tmp/out_smoke.bin` + `/tmp/metrics_smoke.json` no coordinator.
 
-**Verificacao G1 pos-execucao:**
+Se em vez disso:
+
+| Sintoma | Diagnostico |
+|---|---|
+| Worker trava em `connecting to 10.0.0.10:9000` | Firewall ou rota. Teste `telnet 10.0.0.10 9000` do worker. |
+| Worker conecta mas falha no register | Token mismatch. Regenere e redistribua. |
+| Coordinator trava em `waiting for N workers` | Register recebido mas incompleto. Cheque stderr do coordinator. |
+| Coordinator sai com protocol error | Binario heterogeneo. Reverifique sha256. |
+
+**Check 3 — G1 equivalencia contra referencia sequencial.**
 
 ```bash
-# Na maquina A, reduzir sequencialmente o mesmo input
-relativist reduce -i input.bin -o output_seq.bin
+# No coordinator
+relativist reduce -i ~/phase3/data/ep_con_500k.bin -o /tmp/out_seq.bin
 
 # Comparar (estrutural rapido)
-relativist inspect -i output.bin > /tmp/dist.txt
-relativist inspect -i output_seq.bin > /tmp/seq.txt
-diff /tmp/dist.txt /tmp/seq.txt
+relativist inspect -i /tmp/out_smoke.bin > /tmp/dist.txt
+relativist inspect -i /tmp/out_seq.bin   > /tmp/seq.txt
+diff /tmp/dist.txt /tmp/seq.txt && echo "G1 OK" || echo "G1 FAIL"
 ```
 
-**Orquestracao de uma campanha em Phase 3:**
+Se `G1 FAIL`, **pare**. Ou o binario esta quebrado, ou os bytes do
+input divergiram entre as maquinas, ou o protocolo tem corrupcao
+silenciosa. Reconfira rodando `relativist bench --mode local -w 2`
+no coordinator e comparando. Nao rode a campanha com G1 quebrado.
 
-Uma campanha exige rodar muitas combinacoes (benchmark × tamanho ×
-workers × repeticoes) ao longo de varias maquinas. Duas estrategias:
+#### 11.3.4 Orquestracao da campanha
 
-1. **SSH + script unico:** um script na maquina A usa `ssh worker1` e
-   `ssh worker2` para lancar os workers remotamente, espera o
-   coordinator finalizar, coleta `metrics.json` e repete. E o mesmo
-   padrao do `bench_docker.sh`, trocando `docker compose up` por
-   `ssh ... relativist worker ...`.
-2. **Orquestrador dedicado:** Ansible, Nomad, ou Kubernetes agendando
-   os processos. Mais robusto para LANs grandes; excessivo para 2–3
-   nos.
+Phase 3 precisa de ~400 runs: 8 bench x size × 4 worker configs × 10
+reps + 8 baselines sequenciais × 10 reps, mesma matriz que Phase 2.
+Disparar manualmente e impossivel. Duas opcoes:
 
-Para o TCC atual, o objetivo minimo e produzir comparacoes
-pontuais entre Phase 1, Phase 2 e Phase 3 no mesmo conjunto de
-benchmarks (ex: `ep_annihilation_con` tamanho 500k com 2, 4 e 8
-workers), ja suficientes para decompor o overhead em:
-`overhead_total = overhead_algoritmico + overhead_tcp + overhead_rede`.
+**Opcao A — script SSH (recomendado para <= 9 nos).** O padrao
+espelha `scripts/bench_docker_resume2.sh`, trocando
+`docker compose up` por `ssh worker_N relativist worker ...`. O
+driver precisa, para cada triple `(bench, size, workers)`:
+
+1. Limpar artefatos da rep anterior no coordinator e nos workers.
+2. Em cada worker: lancar `relativist worker --coordinator ...` em
+   background via `ssh`, redirecionando stdout/stderr para
+   `/tmp/worker_N.log`.
+3. No coordinator: rodar `relativist coordinator --workers N ...`
+   (chamada bloqueante).
+4. Quando o coordinator sai, coletar `metrics.json` local e
+   `/tmp/worker_N.log` de cada worker via `scp`.
+5. Rodar `relativist inspect` e comparar com a referencia sequencial
+   (produzida uma vez por input no inicio da campanha).
+6. Anexar uma linha ao CSV em progresso.
+7. Repetir para a proxima repeticao.
+
+Esqueleto minimo (a ser refinado num driver
+`scripts/bench_phase3_locked.sh` proprio):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+COORD_IP=10.0.0.10
+COORD_BIND=0.0.0.0:9000
+TOKEN=$(cat /tmp/rel-token)
+WORKERS_POOL=(10.0.0.11 10.0.0.12 10.0.0.13 10.0.0.14 \
+              10.0.0.15 10.0.0.16 10.0.0.17 10.0.0.18)
+
+DATA_DIR=~/phase3/data
+OUT_DIR=~/phase3/results/locked/v1_lan_baseline
+RAW_DIR=$OUT_DIR/raw/phase3
+mkdir -p "$OUT_DIR" "$RAW_DIR"
+
+BENCH_SIZES=(
+    "ep_annihilation_con:500000:ep_con_500k.bin"
+    "ep_annihilation_con:1000000:ep_con_1M.bin"
+    "ep_annihilation_con:5000000:ep_con_5M.bin"
+    "dual_tree:18:dual_tree_18.bin"
+    "dual_tree:20:dual_tree_20.bin"
+    "dual_tree:22:dual_tree_22.bin"
+    "condup_expansion:1000:condup_1k.bin"
+    "condup_expansion:5000:condup_5k.bin"
+)
+WORKER_COUNTS=(1 2 4 8)
+REPS=10
+
+run_one() {
+    local bench=$1 size=$2 input=$3 workers=$4 rep=$5
+    local label="${bench}_${size}_w${workers}_r${rep}"
+    local metrics="$RAW_DIR/${label}.json"
+    local out="$RAW_DIR/${label}.bin"
+
+    # 1. Lanca workers nos primeiros $workers nos do pool
+    for i in $(seq 0 $((workers-1))); do
+        local host="${WORKERS_POOL[$i]}"
+        ssh "$USER@$host" "pkill -x relativist || true; nohup relativist worker \
+            --coordinator $COORD_IP:9000 --token '$TOKEN' \
+            --log-format json > /tmp/worker_${i}.log 2>&1 &"
+    done
+
+    # 2. Espera curta para os workers conectarem
+    sleep 1
+
+    # 3. Roda o coordinator ate terminar
+    relativist coordinator \
+        --workers "$workers" \
+        --bind "$COORD_BIND" \
+        --token "$TOKEN" \
+        -i "$DATA_DIR/$input" \
+        -o "$out" \
+        -m "$metrics" \
+        --log-format json > "$RAW_DIR/${label}_coord.log" 2>&1
+
+    # 4. Coleta logs dos workers
+    for i in $(seq 0 $((workers-1))); do
+        scp "$USER@${WORKERS_POOL[$i]}:/tmp/worker_${i}.log" \
+            "$RAW_DIR/${label}_worker_${i}.log"
+    done
+
+    # 5. G1 estrutural contra referencia sequencial
+    local seq_ref="$DATA_DIR/sequential_ref/${input}.seq.bin"
+    diff <(relativist inspect -i "$out") \
+         <(relativist inspect -i "$seq_ref") > /dev/null \
+        && echo "CORRECT" || echo "FAIL"
+}
+
+for triple in "${BENCH_SIZES[@]}"; do
+    IFS=':' read -r bench size input <<< "$triple"
+
+    # Baseline sequencial: 10 reps no coordinator, sem workers
+    for rep in $(seq 1 $REPS); do
+        relativist reduce -i "$DATA_DIR/$input" \
+            -o "$RAW_DIR/${bench}_${size}_seq_r${rep}.bin" \
+            -m "$RAW_DIR/${bench}_${size}_seq_r${rep}.json"
+    done
+
+    # Distribuido: 10 reps por worker count
+    for W in "${WORKER_COUNTS[@]}"; do
+        for rep in $(seq 1 $REPS); do
+            run_one "$bench" "$size" "$input" "$W" "$rep"
+        done
+    done
+done
+
+# Agregar JSONs em phase3_{detail,rounds,summary}.csv
+python3 scripts/aggregate_phase3.py "$RAW_DIR" "$OUT_DIR"
+```
+
+> **Nota:** `scripts/aggregate_phase3.py` **ainda nao existe** — e o
+> analogo para Phase 3 da logica de parsing de metricas dentro de
+> `bench_phase2_locked.sh`. Escrever esse helper faz parte da
+> preparacao de Phase 3. O schema de saida tem de bater com
+> `phase2_{detail,rounds,summary}.csv` byte-por-byte, senao a
+> subtracao quebra.
+
+**Opcao B — Ansible playbook.** Se voce tem 9+ maquinas e planeja
+rerodar a campanha multiplas vezes (ou rodar em dois labs
+diferentes), um playbook Ansible e mais robusto. Estrutura minima:
+
+```yaml
+# phase3.yml
+- name: Provisionar todos os nos
+  hosts: all
+  tasks:
+    - copy: { src: target/release/relativist, dest: /usr/local/bin/relativist, mode: '0755' }
+    - copy: { src: data/, dest: ~/phase3/data/ }
+    - copy: { src: /tmp/rel-token, dest: ~/.rel-token, mode: '0600' }
+
+- name: Rodar campanha Phase 3
+  hosts: coordinator
+  tasks:
+    - shell: ./scripts/bench_phase3_locked.sh
+```
+
+Overkill para 5 maquinas (Opcao A e mais limpo), mas paga o custo
+se o lab tem 30+ nos identicos.
+
+**Tratamento de falhas durante a campanha.** Redes falham. Workers
+crasham. O driver tem de tratar:
+
+| Falha | Sintoma | Resposta |
+|---|---|---|
+| Worker inacessivel via ssh | `ssh: connect to host X port 22` | Retry 3x com backoff 10s. Se persistir, abortar e documentar. |
+| Worker crashou no meio do run (OOM, kill) | Coordinator trava esperando | Coordinator precisa de timeout por run (`--timeout 1800`). No timeout, logar `TIMEOUT`, marcar rep como falhada, continuar. Reps falhadas tem de ser rerodadas antes do lock. |
+| `output.bin` ausente no disco | Esperado mas nao escrito | Shutdown race L7-like (ver PHASE2-FINDINGS.md §6.1). Cheque log do coordinator por SIGTERM. |
+| G1 falha num run | `diff` nao vazio | **Pare a campanha.** Um `correct=false` invalida o snapshot. Investigue: rebuild, recheque sha256 dos inputs, rode em `local` mode para isolar. |
+| CV > 0.30 num config | Triage pos-campanha | Rerode o config com mais 10 reps. Se ainda > 0.30 apos 20 reps, marque `exclude` em `cv_triage.md` e footnote no artigo. |
+
+**Nao passe `--continue` por cima de uma falha G1.** A disciplina do
+snapshot e "todos os 4000+ reps corretos ou o snapshot e invalido".
+Uma unica falha e bug que precisa ser corrigido antes de travar os
+dados.
+
+**Estimativa de wall clock.** Phase 2 levou 43 min 42 s para 400
+runs num ThinkPad Docker-Desktop sobrealocado. Phase 3 em bare-metal
+LAN sera **mais lento por run** (RTT real adiciona 5-20 ms por
+rodada, as vezes mais para `dual_tree=22` strict que tem centenas de
+rodadas), mas **mais rapido em agregado** porque cada maquina tem
+CPU dedicada.
+
+Budget aproximado:
+- Baselines sequenciais (80 runs): ~5-10 min total.
+- Runs distribuidos em W=1: Phase 2 + 10-30% de delay induzido pela rede.
+- Runs em W=2/4/8: dominados por tamanho de payload split/merge; LAN
+  Gbps aguenta o pico de 500 MB facilmente, entao ~Phase 2 + (num_rounds × RTT).
+
+**Planeje 1.5-4 horas de wall clock sem supervisao.** Abra uma
+janela de 6 horas para ter folga. Nao lance Phase 3 se alguem precisa
+do switch nas proximas 2 horas.
+
+#### 11.3.5 Coleta de dados
+
+**Schema de saida.** Os arquivos
+`phase3_{detail,rounds,summary}.csv` sob
+`results/locked/v1_lan_baseline/` tem de bater com o schema de Phase
+2 byte-por-byte (mesmo header, mesma ordem de colunas, mesma
+precisao numerica), para que ferramentas de analise consumam os dois
+intercambiavelmente. Referencia:
+`results/locked/v1_local_baseline/phase2_summary.csv`.
+
+Especificamente `phase3_summary.csv` precisa do header:
+
+```
+benchmark,input_size,mode,workers,repetitions,all_correct,wall_clock_mean,wall_clock_std,wall_clock_median,wall_clock_min,wall_clock_max,mips_mean,speedup_mean,efficiency_mean,overhead_ratio_mean,cv
+```
+
+Com `mode ∈ {sequential, tcp_network}`. Nao introduza
+`tcp_network_lan` ou similar — e apenas `tcp_network` por SPEC-09
+R25.
+
+**Retencao de JSONs por run.** Cada run emite `metrics.json` do
+lado do coordinator. Guarde **todos** em `raw/phase3/`:
+
+```
+results/locked/v1_lan_baseline/raw/phase3/
+    ep_annihilation_con_500000_w1_r01.json
+    ep_annihilation_con_500000_w1_r01_coord.log
+    ep_annihilation_con_500000_w1_r01_worker_0.log
+    ep_annihilation_con_500000_w1_r02.json
+    ...
+```
+
+Evidencia forense se algum revisor perguntar "a rep 7 de
+`ep_con_1M` foi contaminada por um spike?". Orcamento: ~5-20 KB por
+JSON, ~100-500 KB por log de worker; 400 runs x 3 arquivos x 500 KB
+≈ 600 MB. Reserve 2 GB.
+
+**CV triage.** Apos a campanha, rode o mesmo script que Phase 1 e
+Phase 2:
+
+```bash
+python3 scripts/cv_triage.py \
+    --input results/locked/v1_lan_baseline/phase3_summary.csv \
+    --output results/locked/v1_lan_baseline/cv_triage_phase3.md \
+    --threshold 0.15
+```
+
+Padrao esperado sob LAN:
+- Inputs pequenos (`condup_expansion=1000`) tem CV inflado porque os
+  runs sao tao curtos que o jitter do RTT domina. Marcar `keep` com
+  footnote.
+- Inputs grandes (`ep_con=5M`, `dual_tree=22`) devem ter CV < 0.05.
+  Se nao tem, algo no switch estava mal durante essas reps.
+- `rerun` e para CV > 0.30 em qualquer tamanho. `exclude` so para
+  CV > 0.50 que nao se reproduz apos 20 reps.
+
+**Manifest do snapshot congelado.** Crie
+`results/locked/v1_lan_baseline/manifest.md` com a mesma estrutura
+de `v1_local_baseline/manifest.md` mas especifica para Phase 3:
+
+```markdown
+# v1_lan_baseline — Campaign Manifest
+
+**Status:** COMPLETE — Phase 3 LAN campaign finished on <data>.
+
+## Provenance
+- Git tag: v0.10.0-bench (mesmo binario que v1_local_baseline)
+- Commit SHA: <SHA>
+- Binary sha256: <sha256 identico em cada no>
+- Operator: Filipe Andrade Nascimento
+- Campaign start: <timestamp>
+- Campaign end: <timestamp>
+
+## Cluster (LAN hardware)
+- Switch: <modelo, velocidade, gerenciavel?>
+- Coordinator (Maquina A): <CPU, RAM, OS, NIC>
+- Workers (Maquinas B-I): <mesmo que coord se homogeneo; por-maquina se nao>
+- Network: 1 Gbps Ethernet, VLAN unica, sem outros hosts ativos
+- RTT baseline medido (ping -c 20):
+  - A -> B: <min/avg/max/mdev ms>
+  - ...
+- Banda baseline medida (iperf3 -t 10):
+  - A -> B: <Gbps>
+  - ...
+
+## Campaign knobs
+- Bench × size: mesma matriz que v1_local_baseline Phase 2 (8 combos)
+- Worker counts: {1, 2, 4, 8}  (ou {1, 2, 4} sob Opcao A)
+- Repetitions: 10
+- Mode: tcp_network
+
+## Correctness methodology
+- Estrutural via `relativist inspect` contra a referencia sequencial
+  de v1_local_baseline Phase 2.
+
+## Checksums (sha256)
+<gerar dos CSVs finais>
+
+## Row counts
+<mesma tabela de sanity que Phase 2>
+
+## Relationship to v1_local_baseline
+- Phase 1 lenient (v1_local_baseline): mesmo
+- Phase 2 Docker   (v1_local_baseline): mesmo
+- Phase 3 LAN      (este manifest):     novo
+
+A subtracao t_network = t_lan - t_localhost e computada por triple
+(bench, size, workers) na geracao das figuras do artigo, nao aqui.
+Este manifest so garante que t_lan foi medido sob as condicoes
+declaradas.
+```
+
+**Congelar o snapshot.** Depois do CV triage passar e o manifest
+estar completo, um commit atomico (mesma disciplina de
+`v1_local_baseline`):
+
+```bash
+cd codigo/relativist
+git add results/locked/v1_lan_baseline/
+git commit -m "data: freeze v1_lan_baseline snapshot — Phase 3 LAN campaign"
+
+# Nova tag (nao mover v0.10.0-bench)
+git tag -a v0.11.0-lan -m "Phase 3 LAN baseline frozen"
+git push origin main
+git push origin v0.11.0-lan
+```
+
+**`v0.10.0-bench` fica onde esta.** Phase 3 ganha tag propria para
+que os dois baselines (local e LAN) sejam referenciaveis
+independentemente.
+
+#### 11.3.6 Analise pos-campanha
+
+**1. Tabela de overhead de rede (headline).** Subtracao
+`(bench, size, workers, t_localhost, t_lan, t_network, frac)`:
+
+```python
+import csv
+
+def load_summary(path):
+    rows = {}
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            key = (row['benchmark'], row['input_size'], row['mode'], row['workers'])
+            rows[key] = row
+    return rows
+
+local = load_summary('v1_local_baseline/phase2_summary.csv')
+lan   = load_summary('v1_lan_baseline/phase3_summary.csv')
+
+print("benchmark,size,workers,t_localhost,t_lan,t_network,net_frac")
+for key in lan:
+    if key[2] != 'tcp_network':
+        continue
+    loc_key = (key[0], key[1], 'tcp_localhost', key[3])
+    if loc_key not in local:
+        continue
+    t_local = float(local[loc_key]['wall_clock_mean'])
+    t_lan   = float(lan[key]['wall_clock_mean'])
+    t_net   = t_lan - t_local
+    frac    = t_net / t_lan if t_lan > 0 else 0
+    print(f"{key[0]},{key[1]},{key[3]},{t_local:.4f},{t_lan:.4f},{t_net:.4f},{frac:.3f}")
+```
+
+Forma esperada do output: `net_frac ∈ [0.0, 0.5]` para a maioria dos
+configs. Valores > 0.5 significam que rede domina (esperado para
+inputs pequenos como `condup_expansion=1000`). Valores < 0.05
+significam que o LAN esta tao rapido que fica indistinguivel de
+loopback (improvavel em 1 Gbps, possivel em 10 Gbps).
+
+**Valores negativos sao bug.** Se `t_lan < t_localhost`, a
+subtracao esta errada — investigue se o baseline Phase 2 teve
+contencao que Phase 3 nao teve.
+
+**2. RTT por rodada (strict BSP).** Para o subconjunto strict
+(`cascade_cross` e `dual_tree` pequenos):
+
+```
+t_round_lan           = t_lan        / rounds
+t_round_local_strict  = t_local_strict / rounds   # phase1_strict_summary.csv
+RTT_por_rodada        = t_round_lan - t_round_local_strict
+```
+
+Cross-check contra o ping RTT da Secao 11.3.1. O overhead por
+rodada do protocolo e aproximadamente `2 × RTT_ping × log2(workers)`
+(um broadcast-like down + um gather-like up por rodada). Se
+`RTT_por_rodada ≈ 4 × RTT_ping` em W=4, e consistente. Se
+`RTT_por_rodada >> 10 × RTT_ping`, tem ineficiencia em algum lugar.
+
+**3. Integracao no artigo do TCC.** O artigo (`artigo/tcc_pt_br.tex`,
+Secao 5 "Resultados e Discussoes") precisa de **tres figuras novas**
+a partir dos dados de Phase 3:
+
+- **Figura N — decomposicao de overhead.** Barras empilhadas por
+  `(bench, W)` mostrando `t_seq` vs `t_local − t_seq` vs
+  `t_localhost − t_local` vs `t_lan − t_localhost`. A ARG-004 no
+  seu formato mais concreto.
+- **Figura N+1 — teto de speedup em LAN.** Linhas de speedup vs
+  workers, uma por modo (`local`, `tcp_localhost`, `tcp_network`).
+  O gap entre `local` e `tcp_network` mostra o custo total de
+  distribuir.
+- **Figura N+2 — RTT por rodada (strict BSP).** Para cascade_cross
+  e dual_tree sob strict, plot `rounds` no eixo x e
+  `t_round_lan / t_round_localhost` no eixo y. Linha plana perto de
+  1.0 significa que o protocolo nao amplifica; linha crescente
+  indica custo que se acumula por rodada.
+
+O REDATOR possui o LaTeX/TikZ final; esta secao so documenta de
+onde os dados vem.
+
+#### 11.3.7 Checklist — antes, durante, depois
+
+**Antes (T - 24 h a T):**
+
+- [ ] `v1_local_baseline` congelado e tag confirmada: `git show v0.10.0-bench`
+- [ ] 5+ maquinas disponiveis, mesmo modelo de CPU, mesmo switch
+- [ ] Build host com `rustc 1.94.1` + check out limpo de `v0.10.0-bench`
+- [ ] `cargo build --release` sucede na build host
+- [ ] sha256 do binario registrado
+- [ ] Binario copiado para `/usr/local/bin/relativist` em todos os nos; versao bate
+- [ ] Todos os inputs pre-gerados e rsync'd para cada worker; sha256 byte-identico
+- [ ] Firewall `9000/tcp` aberto entre coordinator e cada worker
+- [ ] NTP syncado em todos os nos (`chronyc tracking` com drift < 100 ms)
+- [ ] `ping` e `iperf3` baseline anotados num arquivo de rascunho
+- [ ] Token de auth gerado uma vez e distribuido via `scp`
+- [ ] Sanity checks Secao 11.3.3 (1, 2, 3) todos verdes
+- [ ] `scripts/bench_phase3_locked.sh` escrito, revisado, com modo `--dry-run`
+- [ ] `scripts/aggregate_phase3.py` escrito (analogo Phase 3 de Phase 2)
+- [ ] >= 5 GiB livres em disco no coordinator (para `raw/phase3/`)
+- [ ] Ninguem mais precisa do switch nas proximas 6 horas
+- [ ] Laptop que roda a campanha ligado na tomada
+
+**Durante:**
+
+- [ ] Lancar `bench_phase3_locked.sh` dentro de uma sessao `tmux`/`screen`
+- [ ] Monitorar os 3 primeiros runs a olho; confirmar saida limpa
+- [ ] Checar CV no primeiro config completo (apos ~10 reps); se > 0.15 em input grande, investigue imediatamente
+- [ ] Nao abrir browser, jogo ou video call em nenhuma maquina do cluster
+- [ ] Se algo falhar, nao retry cego — diagnostique, conserte, rode so os configs falhados
+
+**Depois:**
+
+- [ ] Todos os 400+ runs com `correct=true`
+- [ ] CV triage completo; dispositions registradas em `cv_triage_phase3.md`
+- [ ] `manifest.md` preenchido com timestamps, hardware, checksums reais
+- [ ] `phase3_{detail,rounds,summary}.csv` presentes; row counts conferem
+- [ ] `.gitattributes` sob `codigo/relativist/` ja fixa `results/locked/**` em LF — nao regenerar CSVs apos commit
+- [ ] Commit atomico: `git add results/locked/v1_lan_baseline/ && git commit -m "data: freeze v1_lan_baseline snapshot"`
+- [ ] Nova tag `v0.11.0-lan` apontando para o commit do snapshot
+- [ ] Submodule pointer no repo top-level do TCC bumped
+- [ ] `docs/PHASE3-FINDINGS.md` rascunhado com a tabela de overhead
+- [ ] `progress.md` (nivel top e nivel Relativist) atualizados
+- [ ] Avisar o orientador (Yuri) que Phase 3 esta pronta + apontar para as 3 figuras novas
+
+#### 11.3.8 Riscos conhecidos e mitigacoes
+
+| Risco | Prob | Impacto | Mitigacao |
+|---|---|---|---|
+| Switch compartilhado satura durante o run | Medio | Alto | Avisar janela; rodar off-hours; pegar switch quieto |
+| Uma maquina com binario diferente | Baixo | Critico | Verificacao de sha256 no pre-flight (Secao 11.3.2 passo 2) |
+| Coordinator morto por OOM em input grande | Baixo | Alto | Maquina com >= 4 GiB livres; `sysctl vm.overcommit_memory=1` |
+| Fallback Wi-Fi no meio da campanha | Medio | Alto | `nmcli radio wifi off` em cada no antes de comecar |
+| Leak do token num filesystem compartilhado | Baixo | Medio | `chmod 600 /tmp/rel-token` em todo lugar; regenerar apos campanha |
+| Firewall bloqueia depois de reboot | Medio | Medio | Persistir regras `ufw`/`iptables` em `/etc/` |
+| Drift de relogio > 5 s entre nos | Baixo | Baixo | `chrony` em cada no; verificar antes |
+| Off-by-one na matriz do driver | Alto (primeira execucao) | Medio | Modo `--dry-run` que imprime a matriz sem executar |
+| Resultados Phase 3 contradizem Phase 2 baseline | Baixo | Critico | Rerodar subset de Phase 2 nas maquinas de LAN (sem Docker) para confirmar portabilidade do baseline |
+| Janela de 6 horas acaba no meio da campanha | Medio | Baixo | Driver tem de ser re-iniciavel. No restart, pular configs cujo `.json` ja existe em `raw/phase3/` |
+
+#### 11.3.9 Referencias cruzadas
+
+- **SPEC-09 Benchmarks** (`specs/SPEC-09-benchmarks.md`): R25 (modos), R27 (TcpNetwork MUST), R31 (10 reps), R39b (schema de `rounds.csv`), Secao 5.8 (por que TcpNetwork e mandatorio).
+- **SPEC-07 Deployment** (`specs/SPEC-07-*.md`): R41 procedimento bare-metal (referenciado por R27).
+- **SPEC-05 Grid Loop** (`specs/SPEC-05-merge.md`): R30a lenient vs strict BSP. Phase 3 usa lenient na matriz principal e strict no subconjunto `cascade_cross`/`dual_tree` pequenos.
+- **SPEC-06 Protocol** (`specs/SPEC-06-*.md`): wire format, register handshake, validacao de token.
+- **SPEC-10 Security** (`specs/SPEC-10-*.md`): Secao 3 auth por token, Secao 4 modelo de 3 niveis.
+- **PHASE1-FINDINGS.md Secao L2** (este repo): fix arquitetural que torna strict BSP observavel em Phase 3.
+- **PHASE2-FINDINGS.md Secao 7** (este repo): descricao do snapshot `v1_local_baseline` Phase 2 que Phase 3 subtrai.
+- **v1_local_baseline manifest** (`results/locked/v1_local_baseline/manifest.md`): referencia para a estrutura e a disciplina de provenance do snapshot Phase 3.
 
 ### 11.4 Tabela de Correspondencia entre Fases
 
@@ -1312,6 +2075,13 @@ bash scripts/bench_phase1_locked.sh 2>&1 | tee -a /tmp/v1_baseline.log
 echo "Phase 1 end:   $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
 ```
 
+**para copiar e colar**
+```
+echo "Phase 1 start: $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
+bash scripts/bench_phase1_locked.sh 2>&1 | tee -a /tmp/v1_baseline.log
+echo "Phase 1 end:   $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
+```
+
 O driver imprime uma linha por benchmark no formato
 `[HH:MM:SS] LENIENT ep_annihilation (workers=1,2,4,8 reps=10)`. Ao
 terminar ele concatena os CSVs individuais e imprime as contagens de
@@ -1371,11 +2141,8 @@ docker compose build worker coordinator
 
 ```bash
 cd codigo/relativist
-
 echo "Phase 2 start: $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
-
 bash scripts/bench_phase2_locked.sh 2>&1 | tee -a /tmp/v1_baseline.log
-
 echo "Phase 2 end:   $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
 ```
 

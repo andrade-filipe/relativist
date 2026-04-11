@@ -233,3 +233,44 @@ ARG-004 separates overhead into **structural** (inherent to BSP: split + merge +
 - **ROADMAP 2.20 (Compact Subnet Encoding)** — implemented as the `CompactSubnet` serde adapter in `src/partition/compact.rs`. The item can be marked completed.
 - **ROADMAP 2.19 (Protocol Payload Chunking)** — not implemented. The cap raise and CompactSubnet together cover every configuration in the TCC benchmark matrix. Chunking remains a valid alternative for future workloads where even a 1 GiB frame is insufficient (e.g., nets with >25M fully-live agents distributed to W=1), but the TCC does not need it.
 - **ROADMAP 2.2 / 2.3 (dynamic workers)** — orthogonal to L6 and still open; they are about persistent worker pools, not per-frame size.
+
+---
+
+## 7. v1_local_baseline — Unified Frozen Campaign (2026-04-11)
+
+The post-fix patches documented in Section 6 were validated in isolation using `bench_docker_l6fix.sh` on a reduced matrix (3 reps per config). Those patches were then rolled into the full unified Phase 2 campaign that produces the frozen baseline. This section documents that campaign; the per-file detail lives in `results/locked/v1_local_baseline/manifest.md`.
+
+### 7.1 Scope
+
+All 40 Phase 2 configurations at full rep count (10 reps each), single binary (tag `v0.10.0-bench`, commit SHA in manifest), single operator, single machine, single calendar window. Matrix:
+
+- **Benchmarks × sizes:** `ep_annihilation_con × {500k, 1M, 5M}`, `dual_tree × {18, 20, 22}`, `condup_expansion × {1000, 5000}` = 8 bench×size combos.
+- **Workers:** sequential baseline + Docker TcpLocalhost at `{1, 2, 4, 8}` = 5 configs each → 40 configs total.
+- **Repetitions:** 10 per config + 2 warmup runs.
+- **Total repetitions:** 8 × 5 × 10 = 400.
+
+### 7.2 Wall clock and correctness
+
+- **Total wall clock:** 43 min 42 s (`12:22:37 → 13:06:19 -0300`), well below the 1.5 – 3 h planning estimate. Per-run Docker compose overhead (~3 – 5 s) dominates the long tail, not CPU.
+- **Correctness:** 0 of 400 repetitions failed the structural check (`relativist inspect`-based agent + redex count equality to the sequential reference output). All 8 bench × size combos and all 4 Docker worker counts produced nets indistinguishable from the sequential baseline. The same L6 configs that were previously capped by the 256 MiB frame limit (`dual_tree=22` at W=1, `ep_annihilation_con=5M` at W∈{1,2,4}) now complete within the 1800 s per-run timeout under the CompactSubnet fix shipped with v0.10.0-bench — validating the Section 6 fix under full campaign conditions, not just the reduced 3-rep probe.
+- **Rounds:** every Docker run terminated in exactly 1 round, as expected under the lenient BSP mode Phase 2 uses by design. Phase 2 is deliberately *not* a strict-BSP campaign — its purpose is to characterize the distributed-local baseline on the same hardware that Phase 3 LAN will subtract from, not to count rounds. Strict-BSP round data lives in the Phase 1 `phase1_strict_*.csv` files under the same `v1_local_baseline` snapshot.
+- **CV triage:** 1 of 40 Docker summary rows flagged with `cv > 0.15` — `condup_expansion, size=1000, workers=1` with CV = 0.172 at a 1.99 ms mean wall clock. Disposition: `keep` (timer noise at sub-5 ms scale). Combined Phase 1 + Phase 2 CV triage reports **63 flagged / 63 keep / 0 rerun / 0 exclude** — see `results/locked/v1_local_baseline/cv_triage.md`.
+
+### 7.3 Role in Phase 3
+
+The frozen Phase 2 CSVs (`phase2_{detail,rounds,summary}.csv`, plus 320 per-run `metrics_*.json` under `raw/phase2/`) are the **TcpLocalhost reference** that Phase 3 subtracts to isolate LAN network cost. For any `(benchmark, size, workers)` triple that Phase 3 reruns on physical machines, the expected decomposition is:
+
+```
+t_lan(bench, size, W) = t_localhost(bench, size, W)     (from v1_local_baseline phase2_summary)
+                      + t_network(bench, size, W)       (isolated by subtraction)
+```
+
+Any config where `t_lan - t_localhost` is negative or indistinguishable from measurement noise invalidates the Phase 3 datapoint (it would indicate that the LAN copy ran on a different binary, different input, or different topology). Any config where the ratio `t_network / t_lan` is larger than the localhost `overhead_ratio_mean` quantifies the share of wall clock attributable to actual wire latency. This is the measurement Phase 3 exists to produce; without the v1_local_baseline anchor it cannot be computed.
+
+### 7.4 Immutability guarantees
+
+The snapshot directory is committed under `results/locked/v1_local_baseline/` and protected against silent drift by three mechanisms:
+
+1. **`.gitattributes`** at `codigo/relativist/.gitattributes` pins `results/locked/**` to `text eol=lf` and `results/locked/**/*.json` to `binary`. Without this, Windows clones with `core.autocrlf=true` (the default for many users) would silently rewrite line endings on checkout and invalidate the sha256 checksums recorded in `manifest.md`.
+2. **`manifest.md`** records sha256 checksums of every frozen CSV. Any reproduction run that obtains matching row counts and correctness flags but diverging wall clocks is explicitly permitted (hardware difference); any run with diverging row counts or correctness flags breaks the snapshot contract.
+3. **Tag `v0.10.0-bench`** is an annotated tag pointing at the atomic snapshot commit (containing binary + data + manifest together). Reproducers check out this tag to rebuild the exact binary that produced the frozen CSVs.

@@ -123,15 +123,36 @@ All benchmarks converge in exactly 1 grid round in local mode. This means the BS
 
 **Impact:** Distribution does not pay off for ANY tested size (up to 5M). The break-even point may not exist with the current in-process grid architecture.
 
-### L2: All Benchmarks Converge in 1 Round
+### L2: All Benchmarks Converge in 1 Round — **RESOLVED in v0.10.0-bench**
 
-**Evidence:** `rounds = 1` for ALL benchmarks in local mode.
+**Original evidence (v0.9.0):** `rounds = 1` for ALL benchmarks in local mode.
 
-**Root cause:** The contiguous-id partitioning distributes agents to workers. Each worker reduces locally in round 1. The merge step then resolves all border redexes sequentially in a single pass. Since border resolution completes in one step, the BSP cycle never iterates.
+**Original root cause investigation:** The contiguous-id partitioning distributes agents to workers. Each worker reduces locally in round 1. The merge step then called `reduce_all` on the merged net, which exhausted every cascade — including cross-partition ones — at the coordinator. Line `src/merge/grid.rs:117` in v0.9.0 drained the redex queue completely before the outer loop re-checked; the `redex_queue.is_empty()` check at line ~138 therefore always fired after round 1. This was **not a measurement artifact** — it was an architectural collapse of the BSP loop into a single round.
 
-**Theoretical exception:** DualTree should require `d` rounds (one per tree level), but in local mode the `resolve_borders` merge handles all levels at once — the multi-round behavior only manifests with real TCP distribution where each round requires a network round-trip.
+**Initial mistaken framing:** v0.9.0's finding claimed this was "in-process lenient behavior" and that real TCP distribution would naturally exercise multi-round behavior. That framing was wrong: TCP transport does not affect the `reduce_all` collapse at the coordinator. The bug was in the loop, not in the transport.
 
-**Impact:** Phase 1 data does not validate the multi-round BSP protocol. Phases 2/3 (TCP) will exercise this.
+**Resolution (v0.10.0-bench):** SPEC-05 was amended with **R30a** formalizing a **lenient vs. strict BSP dichotomy**. A new opt-in `GridConfig::strict_bsp` flag routes the merge phase through `reduce_border_once` (a single-step primitive that consumes exactly one border redex pair and stops) instead of `reduce_all` (which drained the entire cascade). Under strict mode, residual cascades are left in the queue and picked up by the next split/merge cycle, which is exactly the BSP semantics SPEC-09 originally described.
+
+**Empirical validation (v1_local_baseline, `phase1_strict_*.csv`):**
+
+| Benchmark | Size | Workers | Theoretical (SPEC-09) | Measured rounds |
+|---|---|---|---|---|
+| `cascade_cross` | 10 | 2 | 10 | 10 |
+| `cascade_cross` | 50 | 2 | 50 | 50 |
+| `cascade_cross` | 100 | 4 | 100 | 100 |
+| `cascade_cross` | 500 | 8 | 500 | 500 |
+| `cascade_cross` | 1000 | 8 | 1000 | 1000 |
+| `dual_tree` | 6 | 2 | 6 | 6 |
+| `dual_tree` | 10 | 4 | 10 | 10 |
+| `dual_tree` | 14 | 8 | 14 | 14 |
+
+All 40 strict-mode configs match the theoretical prediction exactly, with 0 correctness failures across 400 strict-mode repetitions. See `results/locked/v1_local_baseline/phase1_strict_rounds.csv` (50 781 rows — one per round emitted across the full campaign) for the raw per-round data.
+
+**Safety of the fix:** G1 is preserved in both modes — the reduction work is the *same*, just distributed across rounds instead of concentrated at the coordinator. The formal argument appears in SPEC-01 D6 (`R_strict(μ, n) ≥ R_lenient(μ, n) = 1`) and is validated empirically by the `test_g1_equivalence_strict_vs_lenient` test family (3800 sequential-vs-strict pairings in v1_local_baseline reported `correct=true` in 3800/3800 rows).
+
+**Default remains lenient.** v0.9.0 behavior is preserved under `strict_bsp = false` (the default). All 643+ pre-existing tests remain green without modification. Strict mode is opt-in via `--strict-bsp` and is used only by the cascade_cross campaign and the dual_tree subset `{6, 10, 14}`.
+
+**Impact on Phase 3:** strict-mode rounds data is now available *from local hardware* as the subtraction reference for Phase 3 LAN, where the same topologies will exhibit the same round counts but with per-round cost inflated by wire-latency RTT. The cost of a strict-BSP round on LAN minus the cost of the same round locally isolates the network round-trip contribution — which is Phase 3's primary measurement.
 
 ### L3: G1 Isomorphism Intractable for Large Non-Empty Nets (MITIGATED — see Section 7)
 

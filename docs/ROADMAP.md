@@ -180,6 +180,17 @@ Browser-based IC reduction for education and demonstration.
 
 ### 2.16 Streaming Reduction Mode **(confluence-enabled)**
 
+**Related, already shipped in v0.10.0-bench:** the **strict BSP mode** (SPEC-05 R30a,
+opt-in via `--strict-bsp`) resolves the multi-round limitation (previously tracked as
+**L2**) at the *coordinator* level without touching the BSP contract: instead of
+draining border cascades via `reduce_all` at merge time, the coordinator applies a
+single `reduce_border_once` step and lets residual cascades be redistributed by the
+next split/merge cycle. This makes `rounds > 1` observable on cross-partition topologies
+(empirically validated in `v1_local_baseline`: `cascade_cross(N) = N` rounds,
+`dual_tree(d) = d` rounds with `workers ≥ 2`), which is what Phase 3 LAN needs in
+order to amortize per-round RTT cost. Strict mode is still a *batch* BSP — Section 2.16
+below is the deeper asynchronous streaming redesign, orthogonal to strict BSP.
+
 **v1 limitation:** The BSP cycle is strictly batch: workers reduce their partition to Normal Form (`reduce_all`), return the complete result, and the coordinator waits for ALL workers before merging (SPEC-13 R2). No partial results are exchanged.
 
 **v2 change:** Replace the barrier-synchronized BSP cycle with an asynchronous streaming model:
@@ -288,6 +299,69 @@ Browser-based IC reduction for education and demonstration.
 **Complexity:** Medium. Approximately 400-500 lines of Rust: 100 for `CompactSubnet` and conversion methods, 80 for the new protocol variant and serialization, 100 for coordinator/worker wiring, 80 for tests, 80 for SPEC updates. Estimated effort: 1-2 days of focused work plus the standard review pipeline.
 
 **v1 exclusion source:** `src/partition/helpers.rs::build_subnet` (dense-index allocation), SPEC-04 Section 4.5 (subnet construction), and the frozen v0.9 spec baseline.
+
+### 2.21 WAN / Internet Deployment
+
+**Scope.** Lift the "same-LAN" assumption of v1 so that Relativist workers can join a coordinator across the public Internet, over typical home/office NATs, with realistic security, connection stability, and performance guarantees. This is the feature that turns Relativist from a "LAN-bound distributed reducer" into an actual *grid computing* system in the volunteer-computing sense (e.g., BOINC-style), which is the underlying motivation of the TCC.
+
+**v1 limitation.** v1 assumes a flat, cooperative LAN:
+- Coordinator and workers must be mutually reachable by static IP / hostname (SPEC-09 R27: "TCP over LAN"; SPEC-07 §5.5: "manual discovery sufficient for 8 machines on LAN").
+- `--coordinator HOST:PORT` is configured by hand (SPEC-07 R12; no discovery service).
+- Authentication is a single shared token over unencrypted TCP (SPEC-10); no TLS, no identity, no revocation.
+- There is no reconnect, no resume, no heartbeat timeout tuning for high-RTT links — a dropped connection mid-round is fatal to that round.
+- The Phase 3 subtraction `t_network = t_lan − t_localhost` (USAGE_GUIDE §11.3.6) assumes stable, symmetric RTT and bandwidth, which WAN links do not provide.
+
+Running v1 across the Internet is possible only with external scaffolding (VPN, SSH reverse tunnel, port forwarding), and even then the lack of reconnection and TLS makes it unsuitable for real deployment.
+
+**v2 design — required pieces:**
+
+1. **NAT traversal.** Workers behind home/office NATs cannot accept inbound TCP. The v2 design MUST invert the connection model so that the worker *dials out* to a stable endpoint, not the other way around. Two viable paths:
+   - *(a) Rendezvous/relay server.* A small always-on service with a public IP and domain name that the coordinator and all workers connect to. Messages are relayed through it. Simplest to implement, highest latency overhead, single point of failure. Compatible with any NAT.
+   - *(b) Hole-punching (STUN/TURN-style).* Coordinator and worker register with a signaling server, exchange candidate addresses, and establish a direct peer connection using UDP hole punching or TCP simultaneous open. Lower latency in the common case, falls back to relay when punching fails. Significantly more complex.
+   - v1-v2 transition: start with (a) for simplicity, add (b) as an optimization once metrics prove the relay is the bottleneck.
+
+2. **TLS everywhere.** The public Internet is hostile. All transport MUST be TLS 1.3 (rustls). The coordinator presents a certificate (self-signed trust-on-first-use, or Let's Encrypt if it has a DNS name). Workers verify the coordinator's certificate fingerprint on connect. Supersedes the plaintext TCP assumption of SPEC-06 and SPEC-10 R3.
+
+3. **Strong authentication.** The shared-token scheme in SPEC-10 is insufficient for Internet deployment:
+   - Tokens leak through process listings, shell history, and logs.
+   - There is no way to revoke a compromised token without restarting the coordinator.
+   - There is no per-worker identity, so abuse cannot be traced or rate-limited.
+   - v2 MUST replace it with either (i) mTLS where every worker holds a per-identity certificate signed by the coordinator's CA, or (ii) short-lived bearer tokens issued by an OAuth2/OIDC flow against the TCC's institutional identity provider. Revocation and rotation become first-class.
+
+4. **Persistent reconnection and resume.** A worker whose TCP connection drops mid-round MUST be able to reconnect within a configurable window (default: 60 s) and resume without losing its current partition assignment. This requires:
+   - Session IDs that survive TCP connection loss (carried in the first frame of the reconnect).
+   - Idempotent `AssignPartition` and `PartitionResult` messages (the coordinator tolerates a duplicate result for a known session).
+   - Coordinator-side state that tracks "partition P is out to session S, not yet returned" and only reassigns after a timeout.
+   - This is the natural extension of ROADMAP 2.3 (Dynamic Worker Departure) to the common WAN failure mode of flaky connections rather than clean exits.
+
+5. **High-RTT tolerance.** WAN RTT is 20-300 ms vs. LAN 0.1-1 ms. The BSP grid loop already amortizes latency per round, but three tunables MUST become WAN-aware:
+   - `worker_connect_timeout`: raise default from 120 s (fine for LAN) and make it explicit that WAN workers may take longer to handshake through a relay.
+   - `distribute_timeout` / `collect_timeout`: make per-round deadlines adaptive to observed RTT rather than fixed constants (SPEC-06 R30).
+   - BSP strict mode (SPEC-05 R30a): the per-round RTT cost is *exactly* the metric Phase 3 measures, so nothing to change there — but the Phase 3 subtraction methodology needs a WAN variant where `t_wan − t_lan − t_localhost` is the additional per-hop internet cost. This would be Phase 4, not Phase 3.
+
+6. **Automatic discovery for Internet peers.** ROADMAP 2.8 lists LAN-scoped discovery (multicast, DNS-SD, Consul). v2 Internet deployment needs either a well-known rendezvous URL (the relay server) or a bootstrap list baked into config. This is a strict superset of 2.8, not a replacement: LAN discovery and WAN rendezvous can coexist.
+
+7. **Abuse mitigation.** Any Internet-facing coordinator is a target for resource exhaustion attacks:
+   - Unauthenticated peers MUST be dropped at the TLS handshake (not inside the protocol FSM).
+   - Partition assignment MUST rate-limit per worker identity.
+   - Result frames MUST honor the R9 `max_payload_size` cap (SPEC-06) before any deserialization work.
+   - The coordinator MUST log auth failures and unusual frame sizes (SPEC-11) so that operators can spot probing.
+
+**Relationship to other roadmap items.**
+- **2.2 Dynamic Worker Joining** — prerequisite pattern. v2 Internet deployment is 2.2 extended with NAT traversal, TLS, auth, and reconnect.
+- **2.3 Dynamic Worker Departure** — prerequisite pattern. Reconnect-with-resume (point 4 above) is a specific form of 2.3 where departure is unplanned and the partition re-dispatch window is bounded.
+- **2.8 Automatic Node Discovery** — complementary. LAN discovery stays as-is for intranet clusters; WAN discovery uses rendezvous URLs.
+- **2.9 Fault Tolerance** — complementary. Checkpointing (2.9) is orthogonal: reconnect-with-resume handles short drops; checkpointing handles long outages and process restarts.
+
+**Why v1 did not do this.** The TCC's scientific question — "does the IC confluence guarantee hold when reduction is distributed?" — is answered by any deterministic distributed baseline, including LAN. Adding NAT traversal, TLS, and Internet-grade auth would have quintupled the implementation surface area and shifted the bottleneck from the IC model to the network engineering, at the cost of the central experiment. v1 therefore scopes down to the cleanest possible distributed setting (SPEC-09 R27: TCP over LAN) and leaves the generalization to Internet deployment for v2.
+
+**Why v2 should do this.** Grid computing in the real sense — the title of the TCC — is about aggregating *heterogeneous, geographically distributed, opportunistically available* compute. A LAN-bound reducer demonstrates the theoretical claim but does not realize the vision. v2 Internet deployment is what makes Relativist deployable as a volunteer-computing platform, which is the long-term direction stated in the TCC's motivation. It is also the minimum prerequisite for any cross-institution collaboration that would extend the work beyond a single lab.
+
+**Limitation (does NOT solve).** Byzantine fault tolerance (malicious workers returning fabricated results) is still out of scope and belongs with 2.9 fault tolerance. WAN deployment closes the *connectivity* gap, not the *trust* gap. Production volunteer computing systems (BOINC, Folding@home) layer redundant execution + result voting on top; that layer would be a separate v3 item.
+
+**Complexity.** High. Rough breakdown: ~600 lines for TLS and certificate handling (rustls integration in SPEC-06), ~400 lines for the rendezvous/relay server (a new crate, `relativist-relay`), ~300 lines for session-aware reconnect in coordinator and worker FSMs, ~200 lines for mTLS or OAuth2 auth, ~150 lines for adaptive timeouts, ~200 lines of tests, plus 4-5 SPEC rewrites (SPEC-06, SPEC-07, SPEC-10, SPEC-11 metrics) and one new SPEC (SPEC-16: WAN Deployment). Estimated effort: 3-4 weeks of focused work plus the standard spec/debate review pipeline. Not a weekend project.
+
+**v1 exclusion source:** SPEC-07 §5.5 (LAN-only discovery), SPEC-09 R27 ("TCP over LAN"), SPEC-10 R3 (plaintext token auth), SPEC-06 (no TLS, no reconnect), OBJETIVO_TCC.md (scope bounded to distributed baseline on LAN).
 
 ---
 
