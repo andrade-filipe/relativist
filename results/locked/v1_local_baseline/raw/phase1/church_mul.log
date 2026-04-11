@@ -1,0 +1,46 @@
+[2m2026-04-11T14:55:29.977018Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  church_mul
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+church_mul      4       0   0.000001     11.0   1.0000     1.0000
+  WARNING: high variance (CV=75.53%) for church_mul size=4 workers=0
+church_mul      4       1   0.000001      7.6   0.7642     0.7642
+church_mul      4       2   0.001033      0.0   0.0007     0.0003
+church_mul      4       4   0.003525      0.0   0.0002     0.0000
+church_mul      4       8   0.007924      0.0   0.0001     0.0000
+church_mul      9       0   0.000001     13.2   1.0000     1.0000
+  WARNING: high variance (CV=27.62%) for church_mul size=9 workers=0
+church_mul      9       1   0.000001     10.2   0.6783     0.6783
+church_mul      9       2   0.000990      0.0   0.0006     0.0003
+church_mul      9       4   0.003412      0.0   0.0002     0.0000
+church_mul      9       8   0.007723      0.0   0.0001     0.0000
+church_mul     16       0   0.000001     14.2   1.0000     1.0000
+  WARNING: high variance (CV=33.77%) for church_mul size=16 workers=0
+church_mul     16       1   0.000001     10.9   0.7405     0.7405
+church_mul     16       2   0.001017      0.0   0.0007     0.0004
+church_mul     16       4   0.003573      0.0   0.0002     0.0001
+church_mul     16       8   0.008045      0.0   0.0001     0.0000
+church_mul     25       0   0.000001     15.5   1.0000     1.0000
+  WARNING: high variance (CV=25.01%) for church_mul size=25 workers=0
+church_mul     25       1   0.000001     11.5   0.7534     0.7534
+church_mul     25       2   0.001029      0.0   0.0008     0.0004
+church_mul     25       4   0.003418      0.0   0.0002     0.0001
+church_mul     25       8   0.007842      0.0   0.0001     0.0000
+church_mul    100       0   0.000001     18.2   1.0000     1.0000
+  WARNING: high variance (CV=72.90%) for church_mul size=100 workers=0
+church_mul    100       1   0.000002     15.5   0.7735     0.7735
+church_mul    100       2   0.000981      0.0   0.0012     0.0006
+church_mul    100       4   0.003406      0.0   0.0003     0.0001
+church_mul    100       8   0.007721      0.0   0.0001     0.0000
+
+Total datapoints: 250  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/church_mul_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/church_mul_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/church_mul_summary.csv

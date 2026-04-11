@@ -1,0 +1,46 @@
+[2m2026-04-11T14:55:30.928245Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  cascade_cross
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+cascade_cross     10       0   0.000001      9.4   1.0000     1.0000
+  WARNING: high variance (CV=48.59%) for cascade_cross size=10 workers=0
+cascade_cross     10       1   0.000001      7.0   0.7342     0.7342
+cascade_cross     10       2   0.000006      1.6   0.1634     0.0817
+cascade_cross     10       4   0.000008      1.3   0.1356     0.0339
+cascade_cross     10       8   0.000010      1.0   0.0998     0.0125
+cascade_cross     50       0   0.000004     13.1   1.0000     1.0000
+cascade_cross     50       1   0.000004     12.3   0.9234     0.9234
+cascade_cross     50       2   0.000017      3.0   0.2268     0.1134
+cascade_cross     50       4   0.000019      2.6   0.1979     0.0495
+cascade_cross     50       8   0.000024      2.0   0.1505     0.0188
+  WARNING: high variance (CV=11.72%) for cascade_cross size=50 workers=8
+cascade_cross    100       0   0.000007     14.3   1.0000     1.0000
+cascade_cross    100       1   0.000009     11.0   0.7652     0.7652
+cascade_cross    100       2   0.000027      3.7   0.2553     0.1276
+cascade_cross    100       4   0.000032      3.1   0.2155     0.0539
+cascade_cross    100       8   0.000038      2.5   0.1766     0.0221
+  WARNING: high variance (CV=10.66%) for cascade_cross size=100 workers=8
+cascade_cross    500       0   0.000047     10.9   1.0000     1.0000
+cascade_cross    500       1   0.000037     13.1   1.2290     1.2290
+  WARNING: high variance (CV=10.27%) for cascade_cross size=500 workers=1
+cascade_cross    500       2   0.000137      3.6   0.3405     0.1702
+cascade_cross    500       4   0.000157      3.1   0.2912     0.0728
+cascade_cross    500       8   0.000190      2.5   0.2359     0.0295
+cascade_cross   1000       0   0.000082     11.9   1.0000     1.0000
+cascade_cross   1000       1   0.000094     10.3   0.8423     0.8423
+  WARNING: high variance (CV=10.87%) for cascade_cross size=1000 workers=1
+cascade_cross   1000       2   0.000314      3.1   0.2585     0.1292
+cascade_cross   1000       4   0.000335      3.0   0.2457     0.0614
+cascade_cross   1000       8   0.000400      2.5   0.2050     0.0256
+
+Total datapoints: 250  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/cascade_cross_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/cascade_cross_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/cascade_cross_summary.csv

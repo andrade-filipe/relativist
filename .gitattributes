@@ -1,0 +1,7 @@
+# Frozen baseline snapshots must keep LF line endings so their sha256
+# checksums (recorded in manifest.md) remain valid on checkout across
+# platforms. Without this, core.autocrlf=true on Windows would rewrite
+# these files on checkout and break reproducibility.
+results/locked/** text eol=lf
+results/locked/**/*.json binary
+results/locked/**/*.bin binary

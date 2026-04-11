@@ -1,0 +1,54 @@
+[2m2026-04-11T14:45:06.059666Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  tree_sum_balanced
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+tree_sum_balanced     10       0   0.000000     24.4   1.0000     1.0000
+  WARNING: high variance (CV=122.68%) for tree_sum_balanced size=10 workers=0
+tree_sum_balanced     10       1   0.000001     10.8   0.3600     0.3600
+tree_sum_balanced     10       2   0.000008      0.7   0.0236     0.0118
+tree_sum_balanced     10       4   0.000013      0.5   0.0157     0.0039
+tree_sum_balanced     10       8   0.000016      0.4   0.0127     0.0016
+tree_sum_balanced     50       0   0.000000     28.0   1.0000     1.0000
+  WARNING: high variance (CV=19.17%) for tree_sum_balanced size=50 workers=0
+tree_sum_balanced     50       1   0.000001     10.6   0.3533     0.3533
+tree_sum_balanced     50       2   0.000023      0.3   0.0087     0.0043
+tree_sum_balanced     50       4   0.000028      0.2   0.0070     0.0017
+tree_sum_balanced     50       8   0.000035      0.2   0.0056     0.0007
+tree_sum_balanced    100       0   0.000000     25.0   1.0000     1.0000
+  WARNING: high variance (CV=21.08%) for tree_sum_balanced size=100 workers=0
+tree_sum_balanced    100       1   0.000001      8.2   0.3423     0.3423
+  WARNING: high variance (CV=54.49%) for tree_sum_balanced size=100 workers=1
+tree_sum_balanced    100       2   0.000040      0.1   0.0060     0.0030
+  WARNING: high variance (CV=13.72%) for tree_sum_balanced size=100 workers=2
+tree_sum_balanced    100       4   0.000052      0.1   0.0048     0.0012
+tree_sum_balanced    100       8   0.000061      0.1   0.0040     0.0005
+tree_sum_balanced    500       0   0.000000     12.8   1.0000     1.0000
+  WARNING: high variance (CV=65.78%) for tree_sum_balanced size=500 workers=0
+tree_sum_balanced    500       1   0.000002      3.6   0.2687     0.2687
+  WARNING: high variance (CV=25.97%) for tree_sum_balanced size=500 workers=1
+tree_sum_balanced    500       2   0.000206      0.0   0.0022     0.0011
+  WARNING: high variance (CV=15.92%) for tree_sum_balanced size=500 workers=2
+tree_sum_balanced    500       4   0.000226      0.0   0.0019     0.0005
+  WARNING: high variance (CV=12.77%) for tree_sum_balanced size=500 workers=4
+tree_sum_balanced    500       8   0.000292      0.0   0.0015     0.0002
+  WARNING: high variance (CV=15.85%) for tree_sum_balanced size=500 workers=8
+tree_sum_balanced   1000       0   0.000001      9.0   1.0000     1.0000
+  WARNING: high variance (CV=41.78%) for tree_sum_balanced size=1000 workers=0
+tree_sum_balanced   1000       1   0.000002      2.5   0.3173     0.3173
+  WARNING: high variance (CV=20.75%) for tree_sum_balanced size=1000 workers=1
+tree_sum_balanced   1000       2   0.000471      0.0   0.0015     0.0008
+  WARNING: high variance (CV=25.66%) for tree_sum_balanced size=1000 workers=2
+tree_sum_balanced   1000       4   0.000493      0.0   0.0015     0.0004
+tree_sum_balanced   1000       8   0.000576      0.0   0.0013     0.0002
+
+Total datapoints: 250  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/tree_sum_balanced_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/tree_sum_balanced_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/tree_sum_balanced_summary.csv

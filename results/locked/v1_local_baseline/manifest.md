@@ -1,9 +1,9 @@
 # v1_local_baseline — Campaign Manifest
 
-**Status:** PARTIAL — hardware, toolchain and provenance fields are
-populated from the operator's machine inventory. Timestamps, checksums
-and row counts remain `<FILL>` until the campaign finishes; commit this
-file together with the frozen CSVs in a single atomic commit after that.
+**Status:** COMPLETE — Phase 1 and Phase 2 campaigns finished
+successfully on 2026-04-11 on the hardware described below. All
+timestamps, checksums and row counts are filled. This manifest is
+committed together with the frozen CSVs as a single atomic snapshot.
 
 ## Provenance
 
@@ -15,8 +15,10 @@ file together with the frozen CSVs in a single atomic commit after that.
 | Build profile | `release` (`cargo build --release`) |
 | Rust toolchain | `rustc 1.94.1 (e408947bf 2026-03-25)` / `cargo 1.94.1 (29ea6fb6a 2026-03-24)` |
 | Operator | Filipe Andrade Nascimento |
-| Start date | `<FILL: YYYY-MM-DD HH:MM -03:00>` |
-| End date | `<FILL: YYYY-MM-DD HH:MM -03:00>` |
+| Phase 1 start | `2026-04-11 11:44:55 -0300` |
+| Phase 1 end | `2026-04-11 11:56:34 -0300` (wall clock: **11 min 39 s**) |
+| Phase 2 start | `2026-04-11 12:22:37 -0300` |
+| Phase 2 end | `2026-04-11 13:06:19 -0300` (wall clock: **43 min 42 s**) |
 
 ## Hardware & environment
 
@@ -128,18 +130,18 @@ See `specs/SPEC-05-*.md` §Lenient-vs-Strict for the formal definition and
 
 ## Checksums (sha256)
 
-Computed over the final concatenated CSVs. Fill after the campaign ends:
+Computed over the final concatenated CSVs.
 
 ```
-<FILL: sha256sum phase1_lenient_detail.csv>
-<FILL: sha256sum phase1_lenient_rounds.csv>
-<FILL: sha256sum phase1_lenient_summary.csv>
-<FILL: sha256sum phase1_strict_detail.csv>
-<FILL: sha256sum phase1_strict_rounds.csv>
-<FILL: sha256sum phase1_strict_summary.csv>
-<FILL: sha256sum phase2_detail.csv>
-<FILL: sha256sum phase2_rounds.csv>
-<FILL: sha256sum phase2_summary.csv>
+26e33178446bd58df8ccc14187c0a8a8f2666e5c844186df4f6d0dcc86646fb5  phase1_lenient_detail.csv
+32e6f07fd820171d689c5484f416234593e76b97fc75af65cecce8ad2c356d85  phase1_lenient_rounds.csv
+9bd9056c19f9a1c15393a6853fe150b2132c4a31cc1700cf4d34db931ad44bfe  phase1_lenient_summary.csv
+749d0c86d51ee69a49a65d722d60296f4369656f1f10df2f5bf018749374444d  phase1_strict_detail.csv
+f685c3d22a7e91369a88cb441f7374eb334c9b9604ab0f29a6b528d454ba474c  phase1_strict_rounds.csv
+001f5a5cdb4c5a4d5ca6f3c460322092c14c7fd75319fd9052c6788643139265  phase1_strict_summary.csv
+174fd2fca5dd1deda420d545ebe43e7d587fa13dac16c60569cf752d6d02acee  phase2_detail.csv
+6948cd3f36825cec30fdc13c4a9bf4f61e49fdeab70c78906f9f1ec6179092b8  phase2_rounds.csv
+de07fc8c357f39202008fd4d92e0644ec317b15b831fbb5df7f456824b93e218  phase2_summary.csv
 ```
 
 Regenerate on a reproduction machine and compare row counts and
@@ -147,16 +149,75 @@ correctness columns — wall-clock columns will differ by hardware.
 
 ## Row counts (sanity check)
 
-Fill after the campaign ends. Expected (approximate):
-
-| File | Expected rows | Actual |
+| File | Expected | Actual |
 |---|---|---|
-| `phase1_lenient_detail.csv` | ~12 benchmarks × default_sizes × {seq+1+2+4+8} × 10 reps + header | `<FILL: wc -l>` |
-| `phase1_strict_detail.csv` | (cascade_cross 5 sizes + dual_tree 3 sizes) × 5 workers × 10 reps + header | `<FILL: wc -l>` |
-| `phase2_detail.csv` | 8 sequential + (8 × 4 workers × 10 reps) = 328 + header = 329 | `<FILL: wc -l>` |
-| `phase2_summary.csv` | 8 sequential + 32 Docker + header = 41 | `<FILL: wc -l>` |
+| `phase1_lenient_detail.csv`  | 12 benchmarks × default_sizes × {seq+1+2+4+8} × 10 reps + header | **3401** |
+| `phase1_lenient_rounds.csv`  | one per grid round (lenient = 1 round per run) + header | **2721** |
+| `phase1_lenient_summary.csv` | one per (bench, size, mode, workers) + header | **341** |
+| `phase1_strict_detail.csv`   | (5 cascade_cross + 3 dual_tree) sizes × 5 workers × 10 reps + header | **401** |
+| `phase1_strict_rounds.csv`   | one per strict round (empirically `rounds = N` for cascade_cross, `rounds = d` for dual_tree) + header | **50781** |
+| `phase1_strict_summary.csv`  | one per (bench, size, workers) + header | **41** |
+| `phase2_detail.csv`          | 8 bench×size × 5 worker configs × 10 reps = 400 + header | **401** |
+| `phase2_rounds.csv`          | 32 Docker configs × 10 reps = 320 + header (sequential emits no grid round) | **321** |
+| `phase2_summary.csv`         | 8 sequential + 32 Docker + header = 41 | **41** |
 
-`awk -F, 'NR>1 && $6=="false"'` on any `*_detail.csv` must return zero
-lines: every repetition must pass the configured correctness check.
-Any `correct=false` row invalidates the snapshot and must be
-investigated before the manifest is signed off.
+`awk -F, 'NR>1 && $6=="false"'` on any `*_detail.csv` returns zero lines
+for both phases (0 of 3800 Phase 1 measurements and 0 of 400 Phase 2
+measurements failed G1 / weak-check / structural equality). Any
+`correct=false` row would invalidate the snapshot.
+
+## Phase 1 results summary
+
+- **Wall clock:** 11 min 39 s total (much faster than the 4-6 h
+  planning estimate, because the U-series sustained-load concern was
+  mostly offset by DDR5-5200 memory bandwidth and because the
+  `--skip-g1` weak check on `condup_expansion` 10k/50k eliminates the
+  O(N!) verification cost that dominates worst-case runs).
+- **Correctness:** 0 of 3800 measurement repetitions failed G1 /
+  weak-check. All 12 Phase 1 benchmarks (lenient) and both strict
+  benchmarks (cascade_cross, dual_tree) produced stable, reduced nets.
+- **Strict BSP validation (SPEC-09 theoretical predictions confirmed):**
+  empirical `rounds` exactly matches the theoretical expectation in
+  every config — `cascade_cross(N)` terminates in `N` rounds with
+  `workers ≥ 2`, and `dual_tree(d)` terminates in `d` rounds with
+  `workers ≥ 2`. L2 (BSP loop collapse) is resolved in data, not just
+  in code.
+- **CV triage:** 62 of 340 lenient summary rows flagged with
+  `cv > 0.15`. `scripts/cv_triage.py` classified **all 62 as `keep`
+  (0 rerun, 0 exclude)**: 58 are sub-millisecond timer noise, and 4
+  are genuine P/E core scheduling variance in the 0.155 – 0.193 range
+  (well below the 0.30 rerun threshold). These 4 will be footnoted in
+  the article — see `cv_triage.md` for the list.
+- **`raw/phase1/`:** per-benchmark stdout + raw detail/rounds/summary
+  CSVs preserved for forensic review.
+
+## Phase 2 results summary
+
+- **Wall clock:** 43 min 42 s total (`12:22:37` → `13:06:19`). Much
+  faster than the 1.5 – 3 h planning estimate because the Docker
+  per-run overhead (compose up / coordinator hand-off / compose down)
+  is roughly constant ~3 – 5 s regardless of benchmark size, and the
+  ThinkPad's NVMe SSD kept container image start-up cheap. The
+  `dual_tree=22` and `ep_annihilation_con=5M` configs accounted for
+  most of the wall-clock weight (8 – 10 s per rep at `workers=8`).
+- **Correctness:** 0 of 400 measurement repetitions failed the
+  structural check (`relativist inspect`-based agent + redex count
+  equality to sequential reference output). All 8 benchmark × size
+  combos and all 4 Docker worker counts (1, 2, 4, 8) produced nets
+  indistinguishable from the sequential baseline.
+- **Rounds:** every Docker run terminated in exactly 1 round, as
+  expected under the lenient BSP mode that Phase 2 uses by design.
+  Phase 2 is deliberately *not* a strict-BSP campaign — its purpose
+  is to characterize the distributed-local baseline on the same
+  hardware that Phase 3 LAN will subtract, not to count rounds.
+  Strict-BSP data lives in the Phase 1 `phase1_strict_*.csv` files
+  instead.
+- **CV triage (Phase 2):** 1 of 40 Docker summary rows flagged with
+  `cv > 0.15` — `condup_expansion, size=1000, workers=1` with
+  CV = 0.172 at a 1.99 ms mean wall-clock. Automatic disposition:
+  `keep` (timer noise at sub-5 ms scale, not genuine variance).
+  Combined Phase 1 + Phase 2 CV triage now reports **63 flagged /
+  63 keep / 0 rerun / 0 exclude** — see `cv_triage.md`.
+- **`raw/phase2/`:** 320 per-repetition `metrics_*.json` files (one
+  per Docker run, not produced by the sequential baselines) preserved
+  for forensic review.

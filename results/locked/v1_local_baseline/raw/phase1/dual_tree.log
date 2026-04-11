@@ -1,0 +1,53 @@
+[2m2026-04-11T14:45:04.662070Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  dual_tree
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+dual_tree      4       0   0.000001     10.7   1.0000     1.0000
+  WARNING: high variance (CV=37.78%) for dual_tree size=4 workers=0
+dual_tree      4       1   0.000002      8.1   0.7264     0.7264
+  WARNING: high variance (CV=21.79%) for dual_tree size=4 workers=1
+dual_tree      4       2   0.000007      2.2   0.1980     0.0990
+  WARNING: high variance (CV=13.67%) for dual_tree size=4 workers=2
+dual_tree      4       4   0.000009      1.6   0.1436     0.0359
+dual_tree      4       8   0.000012      1.2   0.1086     0.0136
+dual_tree      6       0   0.000004     14.6   1.0000     1.0000
+dual_tree      6       1   0.000004     13.7   0.9030     0.9030
+dual_tree      6       2   0.000017      3.5   0.2283     0.1142
+  WARNING: high variance (CV=14.43%) for dual_tree size=6 workers=2
+dual_tree      6       4   0.000020      3.1   0.2034     0.0509
+dual_tree      6       8   0.000023      2.7   0.1788     0.0223
+dual_tree      8       0   0.000019     13.4   1.0000     1.0000
+  WARNING: high variance (CV=10.10%) for dual_tree size=8 workers=0
+dual_tree      8       1   0.000016     15.7   1.1802     1.1802
+dual_tree      8       2   0.000061      4.2   0.3169     0.1585
+  WARNING: high variance (CV=12.42%) for dual_tree size=8 workers=2
+dual_tree      8       4   0.000062      4.0   0.3026     0.0757
+dual_tree      8       8   0.000087      2.9   0.2186     0.0273
+dual_tree     10       0   0.000083     12.3   1.0000     1.0000
+dual_tree     10       1   0.000073     13.5   1.0974     1.0974
+  WARNING: high variance (CV=12.12%) for dual_tree size=10 workers=1
+dual_tree     10       2   0.000277      3.7   0.2997     0.1499
+dual_tree     10       4   0.000270      3.7   0.3019     0.0755
+dual_tree     10       8   0.000354      2.9   0.2386     0.0298
+dual_tree     12       0   0.000331     12.1   1.0000     1.0000
+dual_tree     12       1   0.000319     12.6   1.0230     1.0230
+dual_tree     12       2   0.001053      3.8   0.3109     0.1554
+dual_tree     12       4   0.001127      3.6   0.2894     0.0723
+dual_tree     12       8   0.001307      3.1   0.2476     0.0310
+dual_tree     14       0   0.001314     12.3   1.0000     1.0000
+dual_tree     14       1   0.001364     11.9   0.9539     0.9539
+dual_tree     14       2   0.004558      3.5   0.2846     0.1423
+dual_tree     14       4   0.004901      3.3   0.2644     0.0661
+dual_tree     14       8   0.005600      2.9   0.2322     0.0290
+
+Total datapoints: 300  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/dual_tree_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/dual_tree_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/dual_tree_summary.csv

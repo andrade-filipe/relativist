@@ -1,0 +1,32 @@
+[2m2026-04-11T14:56:30.654833Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  dual_tree
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+dual_tree      6       0   0.000005     11.2   1.0000     1.0000
+  WARNING: high variance (CV=25.26%) for dual_tree size=6 workers=0
+dual_tree      6       1   0.000006     10.9   0.8978     0.8978
+dual_tree      6       2   0.000108      0.6   0.0483     0.0241
+dual_tree      6       4   0.000117      0.5   0.0441     0.0110
+dual_tree      6       8   0.000146      0.4   0.0351     0.0044
+dual_tree     10       0   0.000092     11.2   1.0000     1.0000
+dual_tree     10       1   0.000095     10.7   0.9642     0.9642
+dual_tree     10       2   0.002494      0.4   0.0371     0.0185
+dual_tree     10       4   0.002825      0.4   0.0327     0.0082
+dual_tree     10       8   0.003373      0.3   0.0273     0.0034
+dual_tree     14       0   0.001602     10.2   1.0000     1.0000
+dual_tree     14       1   0.001600     10.3   1.0080     1.0080
+dual_tree     14       2   0.054448      0.3   0.0297     0.0149
+dual_tree     14       4   0.049865      0.3   0.0319     0.0080
+dual_tree     14       8   0.058241      0.3   0.0276     0.0034
+
+Total datapoints: 150  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/dual_tree_strict_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/dual_tree_strict_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/dual_tree_strict_summary.csv

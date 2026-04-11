@@ -1,0 +1,58 @@
+[2m2026-04-11T14:44:56.316284Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  ep_annihilation
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+ep_annihilation    100       0   0.000001    134.8   1.0000     1.0000
+  WARNING: high variance (CV=68.77%) for ep_annihilation size=100 workers=0
+ep_annihilation    100       1   0.000002     55.8   0.3907     0.3907
+ep_annihilation    100       2   0.000013      7.7   0.0537     0.0268
+ep_annihilation    100       4   0.000016      6.1   0.0425     0.0106
+ep_annihilation    100       8   0.000030      3.3   0.0234     0.0029
+ep_annihilation    500       0   0.000003    153.0   1.0000     1.0000
+ep_annihilation    500       1   0.000006     87.6   0.5781     0.5781
+ep_annihilation    500       2   0.000059      8.3   0.0548     0.0274
+ep_annihilation    500       4   0.000083      5.8   0.0384     0.0096
+  WARNING: high variance (CV=10.08%) for ep_annihilation size=500 workers=4
+ep_annihilation    500       8   0.000144      3.5   0.0229     0.0029
+ep_annihilation   1000       0   0.000006    160.0   1.0000     1.0000
+ep_annihilation   1000       1   0.000011     88.1   0.5505     0.5505
+  WARNING: high variance (CV=15.14%) for ep_annihilation size=1000 workers=1
+ep_annihilation   1000       2   0.000124      8.1   0.0506     0.0253
+ep_annihilation   1000       4   0.000175      5.5   0.0346     0.0087
+  WARNING: high variance (CV=30.79%) for ep_annihilation size=1000 workers=4
+ep_annihilation   1000       8   0.000251      3.9   0.0246     0.0031
+ep_annihilation   5000       0   0.000032    153.3   1.0000     1.0000
+ep_annihilation   5000       1   0.000052     95.1   0.6184     0.6184
+ep_annihilation   5000       2   0.000726      6.8   0.0443     0.0222
+ep_annihilation   5000       4   0.000850      5.8   0.0379     0.0095
+ep_annihilation   5000       8   0.001210      4.1   0.0270     0.0034
+ep_annihilation  10000       0   0.000066    143.9   1.0000     1.0000
+  WARNING: high variance (CV=24.27%) for ep_annihilation size=10000 workers=0
+ep_annihilation  10000       1   0.000122     80.9   0.5367     0.5367
+ep_annihilation  10000       2   0.001528      6.5   0.0431     0.0216
+ep_annihilation  10000       4   0.001815      5.5   0.0362     0.0091
+ep_annihilation  10000       8   0.002369      4.2   0.0279     0.0035
+ep_annihilation  50000       0   0.000391    122.9   1.0000     1.0000
+ep_annihilation  50000       1   0.000760     65.4   0.5117     0.5117
+  WARNING: high variance (CV=11.67%) for ep_annihilation size=50000 workers=1
+ep_annihilation  50000       2   0.007856      6.2   0.0482     0.0241
+ep_annihilation  50000       4   0.009755      5.1   0.0400     0.0100
+ep_annihilation  50000       8   0.013399      3.7   0.0289     0.0036
+ep_annihilation 100000       0   0.000840    118.9   1.0000     1.0000
+ep_annihilation 100000       1   0.001509     66.4   0.5575     0.5575
+ep_annihilation 100000       2   0.020702      4.8   0.0404     0.0202
+ep_annihilation 100000       4   0.023564      4.2   0.0355     0.0089
+ep_annihilation 100000       8   0.033621      3.0   0.0249     0.0031
+  WARNING: high variance (CV=19.31%) for ep_annihilation size=100000 workers=8
+
+Total datapoints: 350  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/ep_annihilation_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/ep_annihilation_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/ep_annihilation_summary.csv

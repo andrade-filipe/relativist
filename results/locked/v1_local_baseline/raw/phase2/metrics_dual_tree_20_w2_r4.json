@@ -1,0 +1,101 @@
+{
+  "rounds": 1,
+  "total_interactions": 1048575,
+  "total_interactions_by_rule": [
+    1048575,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "local_interactions_per_round": [
+    0
+  ],
+  "border_interactions_per_round": [
+    1048575
+  ],
+  "border_redexes_per_round": [
+    1
+  ],
+  "agents_per_round": [
+    2097150
+  ],
+  "partition_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 497664278
+    }
+  ],
+  "compute_time_per_round": [],
+  "merge_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 172107765
+    }
+  ],
+  "border_reduce_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 128914099
+    }
+  ],
+  "index_rebuild_time_per_round": [],
+  "bytes_sent_per_round": [
+    79691860
+  ],
+  "bytes_received_per_round": [
+    79692028
+  ],
+  "network_send_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 128437507
+    }
+  ],
+  "network_recv_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 241673828
+    }
+  ],
+  "total_time": {
+    "secs": 1,
+    "nanos": 41264581
+  },
+  "converged": true,
+  "worker_stats_per_round": [
+    [
+      {
+        "worker_id": 0,
+        "agents_before": 1048575,
+        "agents_after": 1048575,
+        "local_redexes": 0,
+        "reduce_duration_secs": 3.11e-7,
+        "interactions_by_rule": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 1,
+        "agents_before": 1048575,
+        "agents_after": 1048575,
+        "local_redexes": 0,
+        "reduce_duration_secs": 3.25e-7,
+        "interactions_by_rule": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ]
+  ]
+}

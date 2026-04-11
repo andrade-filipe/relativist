@@ -1,0 +1,56 @@
+[2m2026-04-11T14:45:05.520832Z[0m [32m INFO[0m ThreadId(01) [2mrelativist::observability::tracing_init[0m[2m:[0m observability initialized [3mlog_format[0m[2m=[0mText [3mrole[0m[2m=[0mLocal [3mfilter_source[0m[2m=[0m"defaults" [3mdefault_filter[0m[2m=[0m"relativist::coordinator=info,relativist::worker=info,relativist::reduction=warn,relativist::protocol=warn,relativist::partition=info,relativist::net=warn,relativist::observability=info,relativist::security=info,warn" [3mmetrics_enabled[0m[2m=[0mfalse [3motel_enabled[0m[2m=[0mfalse
+=== Relativist Benchmark Suite ===
+Benchmarks:  tree_sum
+Mode:        local
+Workers:     [1, 2, 4, 8]
+Warmup:      2
+Repetitions: 10
+
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+tree_sum     10       0   0.000000     22.4   1.0000     1.0000
+  WARNING: high variance (CV=114.87%) for tree_sum size=10 workers=0
+tree_sum     10       1   0.000000     11.1   0.5529     0.5529
+  WARNING: high variance (CV=12.86%) for tree_sum size=10 workers=1
+tree_sum     10       2   0.000008      0.7   0.0359     0.0180
+tree_sum     10       4   0.000012      0.5   0.0241     0.0060
+tree_sum     10       8   0.000015      0.4   0.0192     0.0024
+  WARNING: high variance (CV=22.74%) for tree_sum size=10 workers=8
+tree_sum     50       0   0.000000     24.0   1.0000     1.0000
+  WARNING: high variance (CV=19.86%) for tree_sum size=50 workers=0
+tree_sum     50       1   0.000000     11.8   0.5900     0.5900
+tree_sum     50       2   0.000022      0.3   0.0133     0.0067
+tree_sum     50       4   0.000027      0.2   0.0107     0.0027
+tree_sum     50       8   0.000035      0.2   0.0087     0.0011
+tree_sum    100       0   0.000000     28.0   1.0000     1.0000
+  WARNING: high variance (CV=19.17%) for tree_sum size=100 workers=0
+tree_sum    100       1   0.000001      9.6   0.3210     0.3210
+  WARNING: high variance (CV=10.71%) for tree_sum size=100 workers=1
+tree_sum    100       2   0.000039      0.1   0.0049     0.0025
+  WARNING: high variance (CV=30.12%) for tree_sum size=100 workers=2
+tree_sum    100       4   0.000049      0.1   0.0037     0.0009
+  WARNING: high variance (CV=70.92%) for tree_sum size=100 workers=4
+tree_sum    100       8   0.000061      0.1   0.0031     0.0004
+  WARNING: high variance (CV=15.20%) for tree_sum size=100 workers=8
+tree_sum    500       0   0.000000     14.4   1.0000     1.0000
+  WARNING: high variance (CV=49.19%) for tree_sum size=500 workers=0
+tree_sum    500       1   0.000002      3.9   0.2627     0.2627
+  WARNING: high variance (CV=16.61%) for tree_sum size=500 workers=1
+tree_sum    500       2   0.000209      0.0   0.0019     0.0009
+tree_sum    500       4   0.000235      0.0   0.0017     0.0004
+tree_sum    500       8   0.000293      0.0   0.0014     0.0002
+tree_sum   1000       0   0.000002      6.3   1.0000     1.0000
+  WARNING: high variance (CV=42.95%) for tree_sum size=1000 workers=0
+tree_sum   1000       1   0.000004      1.9   0.5254     0.5254
+  WARNING: high variance (CV=25.18%) for tree_sum size=1000 workers=1
+tree_sum   1000       2   0.000462      0.0   0.0035     0.0018
+tree_sum   1000       4   0.000470      0.0   0.0034     0.0009
+  WARNING: high variance (CV=10.71%) for tree_sum size=1000 workers=4
+tree_sum   1000       8   0.000563      0.0   0.0027     0.0003
+  WARNING: high variance (CV=28.90%) for tree_sum size=1000 workers=8
+
+Total datapoints: 250  |  All correct: true
+Detail CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/tree_sum_detail.csv
+Rounds CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/tree_sum_rounds.csv
+Summary CSV written to: C:/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/locked/v1_local_baseline/raw/phase1/tree_sum_summary.csv
