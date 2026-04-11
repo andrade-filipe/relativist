@@ -1208,6 +1208,321 @@ Nota: `--repetitions 1` e deliberado. A abordagem A roda 10 repeticoes
 porque o objetivo la e estatistica de wall-clock (mean, std, CV); a
 abordagem B e uma prova topologica unica, nao uma medicao temporal.
 
+### 11.6 Tutorial: Reproduzir `v1_local_baseline` (campanha travada)
+
+Esta subsecao e o passo-a-passo operacional para rodar a campanha
+unificada Phase 1 + Phase 2 que gera o snapshot congelado
+`results/locked/v1_local_baseline/`. E a referencia que a Phase 3 LAN
+vai subtrair para isolar o custo de rede, entao a qualidade dos dados
+aqui determina a validade de toda conclusao downstream.
+
+**Quem deve rodar:** o proprio autor (Filipe), em maquina unica, sem
+carga de fundo. Qualquer outra pessoa que queira reproduzir em outra
+maquina deve usar `scripts/reproduce_local_baseline.sh` — veja
+subsecao 11.6.4.
+
+**Tempo total estimado:** 6-9 horas unattended (Phase 1 ~4-6h + Phase 2
+~1.5-3h). Planeje rodar durante a noite ou durante um dia em que a
+maquina possa ficar dedicada.
+
+#### 11.6.1 Pre-flight checklist
+
+Antes de comecar, confira item por item — cada item e uma condicao
+necessaria para a reproducibilidade do snapshot.
+
+**1. Estado do repositorio**
+
+```bash
+cd codigo/relativist
+
+# Tag correta e HEAD limpo
+git describe --tags --exact-match         # Deve imprimir: v0.10.0-bench
+git status --short                        # Deve ser vazio (working copy limpo)
+git log -1 --oneline                      # Anote o SHA completo
+```
+
+Se `git describe` imprime outra coisa, faca `git checkout v0.10.0-bench`
+primeiro. Se `git status` lista arquivos modificados, faca stash ou
+commit antes — nao rode a campanha com working copy sujo.
+
+**2. Build release warning-free**
+
+```bash
+cargo build --release 2>&1 | tee /tmp/build.log
+grep -i warning /tmp/build.log            # Deve ser vazio
+ls -lh target/release/relativist.exe      # (Windows) ou target/release/relativist
+```
+
+Se aparecer qualquer warning, **pare** e corrija antes de rodar. Um
+binario com warnings indica codigo que pode mudar silenciosamente em
+atualizacoes futuras e contamina a rastreabilidade do snapshot.
+
+**3. Toolchain e versoes**
+
+```bash
+rustc --version                           # Anote para o manifest
+cargo --version
+docker --version                          # Necessario para Phase 2
+docker info | grep -i "memory\|cpus"      # Anote limites do engine
+```
+
+**4. Ambiente da maquina (Windows 11)**
+
+| Item | Como configurar | Por que |
+|---|---|---|
+| Power plan | Control Panel -> Power Options -> **High performance** | Evita throttling por tempo ocioso |
+| Windows Update | `Settings -> Windows Update -> Pause updates for 1 week` | Evita reboot inesperado + downloads no meio |
+| Antivirus scan | Pausar scan agendado durante a janela da campanha | Scans saturam I/O e distorcem wall-clock |
+| Browsers | Fechar Chrome, Firefox, Edge — todos | Cada aba e um processo V8 com GC aleatorio |
+| IDE | Fechar VS Code/IntelliJ se aberto em outros repos | `rust-analyzer` em background reindexa |
+| Sleep/hibernacao | `Settings -> System -> Power -> Screen and sleep -> Never` durante a janela | Suspensao aborta a campanha |
+| Notificacoes | `Focus assist -> Alarms only` | Reduz ruido sistemico |
+
+**5. Diretorio de destino**
+
+```bash
+# A campanha escreve em results/locked/v1_local_baseline/
+# Confira que apenas README.md e manifest.md (templates) estao la:
+ls results/locked/v1_local_baseline/
+# Esperado: README.md manifest.md
+# Se houver phase1_*.csv ou raw/ de runs anteriores, mova para backup:
+#   mv results/locked/v1_local_baseline/phase1_* /tmp/old_snapshot/
+```
+
+#### 11.6.2 Executar Phase 1 (4-6 horas unattended)
+
+Phase 1 roda os 12 benchmarks em modo `local` (in-process, sem Docker)
+a 10 repeticoes cada, mais o pass strict-BSP para `cascade_cross` e
+`dual_tree`. A saida final vai para `results/locked/v1_local_baseline/
+phase1_{lenient,strict}_{detail,rounds,summary}.csv` e logs raw em
+`raw/phase1/`.
+
+**Comando (rode em um shell que possa ficar aberto):**
+
+```bash
+cd codigo/relativist
+
+# Anote o inicio da campanha no manifest
+echo "Phase 1 start: $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
+
+# Rode o driver. Ele e idempotente sobre os raw/*.log individuais,
+# mas NAO sobre os CSV agregados finais (que sao reescritos ao fim).
+bash scripts/bench_phase1_locked.sh 2>&1 | tee -a /tmp/v1_baseline.log
+
+echo "Phase 1 end:   $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
+```
+
+O driver imprime uma linha por benchmark no formato
+`[HH:MM:SS] LENIENT ep_annihilation (workers=1,2,4,8 reps=10)`. Ao
+terminar ele concatena os CSVs individuais e imprime as contagens de
+linhas finais.
+
+**Validacao imediata (obrigatoria antes de passar para Phase 2):**
+
+```bash
+cd codigo/relativist
+
+# (a) Nenhuma row com correct=false
+awk -F, 'NR>1 && $6=="false"' \
+    results/locked/v1_local_baseline/phase1_lenient_detail.csv | wc -l
+awk -F, 'NR>1 && $6=="false"' \
+    results/locked/v1_local_baseline/phase1_strict_detail.csv | wc -l
+# Ambos DEVEM imprimir 0. Se nao, pare e investigue.
+
+# (b) Contagem de linhas bate com o esperado
+wc -l results/locked/v1_local_baseline/phase1_lenient_detail.csv
+wc -l results/locked/v1_local_baseline/phase1_strict_detail.csv
+wc -l results/locked/v1_local_baseline/phase1_lenient_summary.csv
+wc -l results/locked/v1_local_baseline/phase1_strict_summary.csv
+
+# (c) Nenhum benchmark ficou faltando no summary
+awk -F, 'NR>1 {print $1}' \
+    results/locked/v1_local_baseline/phase1_lenient_summary.csv \
+    | sort -u
+# Deve listar: cascade_cross, church_add, church_mul, condup_expansion,
+# dual_tree, ep_annihilation, ep_annihilation_con, ep_annihilation_dup,
+# erasure_propagation, mixed_net, tree_sum, tree_sum_balanced
+```
+
+Se qualquer validacao falhar, **nao prossiga para Phase 2**. Investigue
+o `raw/phase1/*.log` do benchmark afetado, corrija e re-rode Phase 1
+inteira. E mais barato descartar 4-6 horas agora do que contaminar o
+snapshot.
+
+#### 11.6.3 Executar Phase 2 (1.5-3 horas unattended)
+
+Phase 2 roda as 8 combinacoes (benchmark × tamanho) sobre TCP-localhost
+via Docker Compose, com 10 repeticoes × 4 contagens de workers + 8
+baselines sequenciais nativos. Total: 40 datapoints.
+
+**Pre-flight Docker:**
+
+```bash
+# Docker Desktop precisa estar rodando e ocioso
+docker info | head                        # Deve imprimir info sem erro
+docker ps                                 # Nao deve listar containers relativist-*
+docker system prune -f                    # Limpa imagens/layers pendurados
+
+# Cache de imagem (opcional, acelera o primeiro run)
+docker compose build worker coordinator
+```
+
+**Comando:**
+
+```bash
+cd codigo/relativist
+
+echo "Phase 2 start: $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
+
+bash scripts/bench_phase2_locked.sh 2>&1 | tee -a /tmp/v1_baseline.log
+
+echo "Phase 2 end:   $(date '+%Y-%m-%d %H:%M:%S %z')" | tee -a /tmp/v1_baseline.log
+```
+
+O driver usa a mesma ortografia de orquestracao que `bench_docker.sh`:
+`docker compose up -d` -> `docker wait coordinator` -> parse
+`metrics.json` -> proxima repeticao. Voce vera uma linha por
+repeticao no log.
+
+**Validacao imediata:**
+
+```bash
+cd codigo/relativist
+
+# (a) Zero rows incorretas
+awk -F, 'NR>1 && $6=="false"' \
+    results/locked/v1_local_baseline/phase2_detail.csv | wc -l
+# DEVE imprimir 0
+
+# (b) Contagens
+wc -l results/locked/v1_local_baseline/phase2_detail.csv
+# Esperado: 329 (8 sequencial + 8*4*10 Docker + 1 header)
+wc -l results/locked/v1_local_baseline/phase2_summary.csv
+# Esperado: 41 (8 sequencial + 32 Docker + 1 header)
+
+# (c) Todas as 8 combinacoes bench*size aparecem
+awk -F, 'NR>1 {print $1 "_" $2}' \
+    results/locked/v1_local_baseline/phase2_summary.csv \
+    | sort -u | wc -l
+# Esperado: 8
+```
+
+Se qualquer config travar (timeout de 1800s) ou Docker Desktop ficar
+instavel, o driver para imediatamente (set -e). Nesse caso, o raw
+`raw/phase2/metrics_<bench>_<size>_w<w>_r<rep>.json` do config
+ofensor fica no disco para forensica. Re-rodar apenas o config
+faltante exige adaptar o driver manualmente (ou rodar Phase 2 inteira
+de novo se faltar tempo pra editar o script).
+
+#### 11.6.4 Pos-campanha: preencher manifest, triagem CV, congelar
+
+**1. Preencher `results/locked/v1_local_baseline/manifest.md`:**
+
+O template tem placeholders `<FILL>` para ~15 campos. Preencha todos:
+
+```bash
+cd codigo/relativist
+
+# Provenance
+git rev-parse v0.10.0-bench                                  # Commit SHA
+rustc --version                                              # Toolchain
+# Start/end: extraia de /tmp/v1_baseline.log as linhas "Phase 1 start", etc.
+
+# Hardware (Windows 11)
+systeminfo | grep -E "OS Name|OS Version|System Model"
+wmic cpu get name                                            # CPU model
+wmic cpu get NumberOfCores,NumberOfLogicalProcessors
+wmic memorychip get capacity                                 # RAM
+docker --version
+
+# Checksums
+sha256sum results/locked/v1_local_baseline/phase1_lenient_detail.csv
+sha256sum results/locked/v1_local_baseline/phase1_lenient_rounds.csv
+sha256sum results/locked/v1_local_baseline/phase1_lenient_summary.csv
+sha256sum results/locked/v1_local_baseline/phase1_strict_detail.csv
+sha256sum results/locked/v1_local_baseline/phase1_strict_rounds.csv
+sha256sum results/locked/v1_local_baseline/phase1_strict_summary.csv
+sha256sum results/locked/v1_local_baseline/phase2_detail.csv
+sha256sum results/locked/v1_local_baseline/phase2_rounds.csv
+sha256sum results/locked/v1_local_baseline/phase2_summary.csv
+
+# Row counts
+for f in results/locked/v1_local_baseline/phase{1,2}_*_detail.csv \
+         results/locked/v1_local_baseline/phase2_detail.csv \
+         results/locked/v1_local_baseline/phase{1,2}_*_summary.csv \
+         results/locked/v1_local_baseline/phase2_summary.csv; do
+    printf "%-60s %s\n" "$(basename "$f")" "$(wc -l < "$f")"
+done
+```
+
+Edite `manifest.md` substituindo cada `<FILL>` pelo valor coletado.
+
+**2. Rodar a triagem CV:**
+
+```bash
+python3 scripts/cv_triage.py
+# Gera results/locked/v1_local_baseline/cv_triage.md com as rows
+# CV > 0.15 flagadas com disposition (keep/rerun/exclude).
+# Abra o arquivo e revise manualmente; mude dispositions se precisar.
+```
+
+**3. Commit atomico do snapshot:**
+
+```bash
+cd codigo/relativist
+
+# Todos os arquivos do snapshot em um commit so
+git add results/locked/v1_local_baseline/
+
+git commit -m "data: freeze v1_local_baseline snapshot
+
+Phase 1: <N> rows lenient + <M> rows strict, 0 correct=false.
+Phase 2: 329 rows detail (40 configs * 10 reps + 8 sequencial), 0 correct=false.
+Binary: tag v0.10.0-bench (commit <SHA>).
+Hardware: <MODEL>, <CORES>c/<THREADS>t, <RAM>GB, Windows 11.
+Campaign window: <START> .. <END>.
+sha256 checksums in manifest.md."
+
+git push origin main
+```
+
+**4. Bump do submodule no top-level do TCC:**
+
+```bash
+cd ..                                     # Sai do submodule
+git add codigo/relativist
+git commit -m "Sync Relativist submodule: v1_local_baseline snapshot frozen"
+git push origin main
+```
+
+**5. (Opcional) Reproduzir em outra maquina**
+
+Se tiver acesso a uma segunda maquina (ex: notebook), rode:
+
+```bash
+cd codigo/relativist
+git fetch origin && git checkout v0.10.0-bench
+cargo build --release
+bash scripts/reproduce_local_baseline.sh
+```
+
+O script roda Phase 1 + Phase 2 em `results/reproduction/<data>/` e
+gera `comparison.md` comparando row counts e contagens de
+`correct=true` contra a referencia. Wall-clock deve divergir (hardware
+diferente), mas colunas estruturais DEVEM casar exatamente.
+
+#### 11.6.5 Troubleshooting
+
+| Sintoma | Diagnostico | Acao |
+|---|---|---|
+| Phase 1 loga `correct=false` em algum benchmark | Bug de correctness (SPEC-01 G1 falhou) | Pare, abra issue no repo, nao prossiga. Cheque `raw/phase1/<bench>.log`. |
+| Phase 2 trava em um config | Timeout de 1800s ou Docker Desktop travou | Verifique `docker ps`. Se tem container zumbi, `docker compose down --remove-orphans` e re-rode Phase 2 inteira. |
+| `docker wait` retorna exit code != 0 | Coordinator crashou ou saiu por erro | Veja `raw/phase2/metrics_*.json`. Se `metrics.json` nao existe, foi crash; se existe mas `correct=false`, e bug de redex. |
+| CV > 0.30 em varios configs | Maquina tinha carga de fundo | Rode Phase 1 inteira de novo em maquina mais limpa. Marcar individualmente com `keep` no triage **nao** resolve se o padrao e sistemico. |
+| wall-clock muito diferente do esperado (2x, 3x) | Power plan voltou para "Balanced" ou CPU throttling por calor | Confira `Control Panel -> Power Options`. Se a maquina esta quente, aguarde esfriar e re-rode. |
+| Phase 1 leva > 8h | `condup_expansion` em 50k com G1 full por engano | Confirme que o driver usa `--skip-g1` nos tamanhos 10k/50k. Esta no script por padrao. |
+| manifest.md perdido ou mal preenchido | Voce editou e perdeu os valores | O template esta versionado; `git checkout results/locked/v1_local_baseline/manifest.md` recupera. |
+
 ---
 
 ## 12. Pipeline Completa
