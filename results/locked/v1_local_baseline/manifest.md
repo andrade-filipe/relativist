@@ -33,7 +33,7 @@ file together with the frozen CSVs in a single atomic commit after that.
 | Docker Desktop version | 29.3.1 (build c2be9cc), engine kernel `6.6.87.2-microsoft-standard-WSL2` |
 | Docker engine resources | 12 CPUs, 15.45 GiB RAM allocated to the WSL2 VM |
 | Power source | AC (plugged in, battery at 98 %) |
-| Power plan / mode | Windows "Equilibrado" (Balanced) scheme with the `Power mode` slider set to **Best performance** in Settings → System → Power & battery |
+| Power plan / mode | Windows **"Desempenho Máximo"** (Ultimate Performance) scheme, activated via `powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 && powercfg /setactive <new GUID>`. The Settings → Power & battery UI was non-functional (error `0x80040905` from `ms-settings:powersleep`, a known Windows 11 preview-build Settings app bug), so the scheme was unhidden and activated via CLI instead. Hardware PL1 of 15 W is unchanged (firmware limit, not software). |
 | Background load posture | Browsers closed, Windows Update paused, no IDE running; only a bash terminal foreground. Docker Desktop closed during Phase 1 and restarted immediately before Phase 2. |
 
 ### Hardware constraints (disclosure)
