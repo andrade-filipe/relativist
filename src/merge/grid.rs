@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use crate::net::{Net, PortRef};
+use crate::net::Net;
+#[cfg(debug_assertions)]
+use crate::net::PortRef;
 use crate::partition::{split, PartitionStrategy};
 use crate::reduction::{reduce_all, reduce_border_once, ReductionStats};
 
