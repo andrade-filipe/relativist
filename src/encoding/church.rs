@@ -10,7 +10,7 @@
 use crate::net::{AgentId, Net, PortRef, Symbol, DISCONNECTED};
 
 /// Maximum supported Church numeral value (SPEC-14 R4).
-const MAX_CHURCH: u64 = 10_000;
+const MAX_CHURCH: u64 = 1_000_000;
 
 /// Encode a natural number as a Church numeral IC net (SPEC-14 R4).
 ///
@@ -19,7 +19,7 @@ const MAX_CHURCH: u64 = 10_000;
 /// (`build_add`, `build_mul`, `build_exp`) which introduce redexes.
 ///
 /// # Panics
-/// Panics if `n > 10_000`.
+/// Panics if `n > 1_000_000`.
 pub fn encode_nat(n: u64) -> Net {
     assert!(
         n <= MAX_CHURCH,
@@ -42,7 +42,7 @@ pub fn encode_nat(n: u64) -> Net {
 /// the returned agent's principal port into the surrounding net.
 ///
 /// # Panics
-/// Panics if `n > 10_000`.
+/// Panics if `n > 1_000_000`.
 pub fn encode_church_into(net: &mut Net, n: u64) -> AgentId {
     assert!(
         n <= MAX_CHURCH,
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds maximum")]
     fn test_encode_nat_exceeds_max() {
-        encode_nat(10_001);
+        encode_nat(1_000_001);
     }
 
     // Verify port connections for Church(0) match SPEC-14 Section 4.2

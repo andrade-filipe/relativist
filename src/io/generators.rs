@@ -24,6 +24,8 @@ pub enum ExampleNet {
     ErasurePropagation,
     /// N items summed via Church add in a left-fold chain. SPEC-09 R14.
     TreeSum,
+    /// Sum of squares 1^2 + 2^2 + ... + N^2 via Church add chain. SPEC-09 R17d.
+    SumOfSquares,
 }
 
 /// Generate the specified example net with the given size parameter.
@@ -37,6 +39,7 @@ pub fn generate(example: ExampleNet, size: u32) -> Net {
         ExampleNet::MixedRules => mixed_rules(size),
         ExampleNet::ErasurePropagation => erasure_propagation(size),
         ExampleNet::TreeSum => tree_sum(size),
+        ExampleNet::SumOfSquares => crate::encoding::build_sum_of_squares(size as u64),
     }
 }
 

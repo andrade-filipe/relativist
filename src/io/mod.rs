@@ -202,6 +202,16 @@ pub fn print_summary(net: &Net, metrics: &GridMetrics) {
     println!("  DUP: {}", count_agents_by_symbol(net, Symbol::Dup));
     println!("  ERA: {}", count_agents_by_symbol(net, Symbol::Era));
 
+    if let Some(value) = crate::encoding::decode_nat_or_shared(net) {
+        println!("Decoded result:     {}", value);
+    } else {
+        let con = count_agents_by_symbol(net, Symbol::Con);
+        let era = count_agents_by_symbol(net, Symbol::Era);
+        if con >= 2 && era == 0 {
+            println!("Decoded result:     {} (from agent counts)", con - 2);
+        }
+    }
+
     if metrics.rounds > 0 {
         let avg_round = metrics.total_time.as_secs_f64() / metrics.rounds as f64;
         let total_local: u64 = metrics.local_interactions_per_round.iter().sum();

@@ -19,8 +19,9 @@ pub fn run_local_command(args: LocalArgs) -> Result<(), RelativistError> {
     let strategy = parse_strategy(&args.strategy)?;
 
     let net = load_net_from_file(&args.input)?;
-    let (reduced_net, metrics) = run_grid(net, &grid_config, &*strategy);
+    let (mut reduced_net, metrics) = run_grid(net, &grid_config, &*strategy);
 
+    crate::encoding::discover_root(&mut reduced_net);
     print_summary(&reduced_net, &metrics);
 
     if let Some(ref path) = args.output {
@@ -140,7 +141,7 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| RelativistError::Config(format!("tokio runtime: {}", e)))?;
 
-    let (reduced_net, metrics) = rt
+    let (mut reduced_net, metrics) = rt
         .block_on(run_coordinator(
             net,
             &node_config,
@@ -151,6 +152,7 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
         .map_err(crate::error::CoordinatorError::from)
         .map_err(RelativistError::from)?;
 
+    crate::encoding::discover_root(&mut reduced_net);
     print_summary(&reduced_net, &metrics);
 
     if let Some(ref path) = args.output {

@@ -367,6 +367,8 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             );
             let seq_net = seq_reference_net.unwrap();
 
+            println!("  {} — {}", bench_id, bench.describe(size));
+
             // Add sequential results to output
             all_results.extend(seq_results.iter().cloned());
             all_summaries.push(aggregate(&seq_results));
