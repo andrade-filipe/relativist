@@ -324,6 +324,7 @@ pub fn build_mul(a: u64, b: u64) -> Net {
 ///   - The grid still reduces the full `add`-chain, which for `N` terms grows
 ///     the final agent count cubically (`~2*N(N+1)(2N+1)/6`).
 ///   - Profile B (expansion-dominant) behavior is preserved via the add chain.
+///
 /// The encoding of the squares is a local pre-processing step; the distributed
 /// work is the reduction of the chain itself. See SPEC-09 R17d and USAGE_GUIDE.md
 /// Section 11.8 for the narrative framing.
@@ -347,11 +348,7 @@ pub fn build_sum_of_squares(n: u64) -> Net {
     // Fold right: add(Ch(i^2), acc) for i = n-1, n-2, ..., 1.
     for i in (1..n).rev() {
         let term_root = encode_church_into(&mut net, i * i);
-        let app_out = wire_add_into(
-            &mut net,
-            PortRef::AgentPort(term_root, 0),
-            acc_port,
-        );
+        let app_out = wire_add_into(&mut net, PortRef::AgentPort(term_root, 0), acc_port);
         acc_port = PortRef::AgentPort(app_out, 1);
     }
 
@@ -778,10 +775,7 @@ mod tests {
             PortRef::AgentPort(add_a, 1),
             PortRef::AgentPort(add_b, 1),
         );
-        net.connect(
-            PortRef::AgentPort(add_out, 1),
-            PortRef::FreePort(0),
-        );
+        net.connect(PortRef::AgentPort(add_out, 1), PortRef::FreePort(0));
         net.root = None;
         assert_eq!(reduce_and_decode(net), Some(10));
     }
