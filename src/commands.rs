@@ -235,6 +235,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
                 "church_add" => BenchmarkId::ChurchAdd,
                 "church_mul" => BenchmarkId::ChurchMul,
                 "cascade_cross" => BenchmarkId::CascadeCross,
+                "church_sum_of_squares" => BenchmarkId::ChurchSumOfSquares,
                 "all" => {
                     ids = vec![
                         BenchmarkId::EPAnnihilation,
@@ -249,6 +250,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
                         BenchmarkId::ChurchAdd,
                         BenchmarkId::ChurchMul,
                         BenchmarkId::CascadeCross,
+                        BenchmarkId::ChurchSumOfSquares,
                     ];
                     break;
                 }
@@ -277,6 +279,7 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
             BenchmarkId::ChurchAdd,
             BenchmarkId::ChurchMul,
             BenchmarkId::CascadeCross,
+            BenchmarkId::ChurchSumOfSquares,
         ]
     };
 

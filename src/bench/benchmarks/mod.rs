@@ -3,6 +3,7 @@
 pub mod cascade_cross;
 pub mod church_add;
 pub mod church_mul;
+pub mod church_sum_of_squares;
 pub mod condup_expansion;
 pub mod dual_tree;
 pub mod ep_annihilation;

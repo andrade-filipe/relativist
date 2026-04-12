@@ -32,6 +32,9 @@ pub enum BenchmarkId {
     ChurchAdd,
     ChurchMul,
     CascadeCross,
+    /// SPEC-09 R17d: demonstrative sum-of-squares via composed mul/add.
+    /// NOT part of frozen performance campaigns.
+    ChurchSumOfSquares,
 }
 
 impl std::fmt::Display for BenchmarkId {
@@ -49,6 +52,7 @@ impl std::fmt::Display for BenchmarkId {
             Self::ChurchAdd => write!(f, "church_add"),
             Self::ChurchMul => write!(f, "church_mul"),
             Self::CascadeCross => write!(f, "cascade_cross"),
+            Self::ChurchSumOfSquares => write!(f, "church_sum_of_squares"),
         }
     }
 }
@@ -259,6 +263,10 @@ mod tests {
         assert_eq!(BenchmarkId::ChurchAdd.to_string(), "church_add");
         assert_eq!(BenchmarkId::ChurchMul.to_string(), "church_mul");
         assert_eq!(BenchmarkId::CascadeCross.to_string(), "cascade_cross");
+        assert_eq!(
+            BenchmarkId::ChurchSumOfSquares.to_string(),
+            "church_sum_of_squares"
+        );
     }
 
     // --- T2: Mode Display ---
@@ -287,7 +295,7 @@ mod tests {
         assert_eq!(original, deserialized);
     }
 
-    // --- T5: BenchmarkId variant count (R8: at least 10) ---
+    // --- T5: BenchmarkId variant count (R8: at least 12) ---
     #[test]
     fn test_benchmark_id_variant_count() {
         let all = [
@@ -303,8 +311,9 @@ mod tests {
             BenchmarkId::ChurchAdd,
             BenchmarkId::ChurchMul,
             BenchmarkId::CascadeCross,
+            BenchmarkId::ChurchSumOfSquares,
         ];
-        assert_eq!(all.len(), 12);
+        assert_eq!(all.len(), 13);
     }
 
     // --- Edge case: Display != Debug ---

@@ -15,6 +15,7 @@ use crate::bench::benchmarks::{
     cascade_cross::CascadeCross,
     church_add::ChurchAdd,
     church_mul::ChurchMul,
+    church_sum_of_squares::ChurchSumOfSquares,
     condup_expansion::ConDupExpansion,
     dual_tree::DualTree,
     ep_annihilation::{EPAnnihilation, EPAnnihilationCon, EPAnnihilationDup},
@@ -49,6 +50,7 @@ pub fn get_benchmark(id: BenchmarkId) -> Box<dyn Benchmark> {
         BenchmarkId::ChurchAdd => Box::new(ChurchAdd),
         BenchmarkId::ChurchMul => Box::new(ChurchMul),
         BenchmarkId::CascadeCross => Box::new(CascadeCross),
+        BenchmarkId::ChurchSumOfSquares => Box::new(ChurchSumOfSquares),
     }
 }
 
@@ -449,6 +451,8 @@ mod tests {
             BenchmarkId::ErasurePropagation,
             BenchmarkId::ChurchAdd,
             BenchmarkId::ChurchMul,
+            BenchmarkId::CascadeCross,
+            BenchmarkId::ChurchSumOfSquares,
         ];
         for id in ids {
             let bench = get_benchmark(id);
