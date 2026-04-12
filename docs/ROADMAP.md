@@ -365,6 +365,220 @@ Running v1 across the Internet is possible only with external scaffolding (VPN, 
 
 ---
 
+## v2 — Network Overhead Reduction (items 2.22-2.26)
+
+The v1 local baseline (`v0.10.0-bench`) and the 2026-04-11 stress smoke test on `ep_annihilation_con` at 20 M agents exposed a scaling asymmetry: the tcp_localhost mode runs 2-3x slower than the in-process sequential baseline, and the ratio *worsens* with input size (2.02x at 5 M agents, 3.48x at 20 M). This is not a theoretical inevitability — it is the sum of several concrete, addressable sources of overhead in the current transport layer. Items 2.22-2.26 are the five-front attack plan on that overhead. They stack: applied together, the conservative estimate is that the tcp_localhost / sequential ratio drops from 2-3.5x to <1.2x on the same workload, which is the minimum necessary for the Phase 3 LAN subtraction (`t_network = t_lan − t_localhost`) to isolate genuine RTT cost rather than transport-layer waste.
+
+Each item below is written so it can be shipped independently. The ordering below reflects increasing implementation cost, so 2.22 and 2.23 are the quick-wins to pursue first.
+
+### 2.22 TCP Transport Tuning
+
+**Scope.** Apply the well-known TCP socket options that v1 left at OS defaults. This is the cheapest item in the group and should be the first step on any overhead-reduction campaign.
+
+**v1 limitation.** `src/protocol/coordinator.rs` and `src/protocol/worker.rs` create `tokio::net::TcpStream` connections with no explicit socket tuning. In particular:
+- `TCP_NODELAY` is **not** set. Nagle's algorithm is on by default, which batches small writes for up to 40 ms. This does not matter for the big `AssignPartition` frame (a single `write_all` of ~1 GB is not a small write), but it *does* matter for the Register/RegisterAck handshake, for any small control message, and for the final `flush()` call that waits on the kernel to push the last TCP segment.
+- `SO_SNDBUF` / `SO_RCVBUF` are left at the Linux defaults (typically ~208 KB). For frames that reach the 1 GiB cap (already observed in v1 L6 and confirmed in the 20 M stress smoke), the kernel forces thousands of context switches and `writev`/`readv` cycles during a single `write_all`. Raising the buffers to 2-8 MB amortises this dramatically without costing memory in the common case.
+- There is no `SO_KEEPALIVE`, `TCP_KEEPIDLE` / `TCP_KEEPINTVL` / `TCP_KEEPCNT` configuration, so a stalled connection takes the full Linux default (~2h) to surface as an error. For Phase 3 LAN this is already inadequate; for 2.21 WAN deployment it is actively dangerous.
+
+**v2 change:** In `src/protocol/config.rs` add a new `TransportTuning` struct with fields `nodelay: bool` (default true), `send_buffer_bytes: Option<usize>` (default 4 MiB), `recv_buffer_bytes: Option<usize>` (default 4 MiB), `keepalive: Option<Duration>` (default 30 s). Apply the tuning inside `accept_workers()` and `connect_to_coordinator()` via `TcpSocket::set_nodelay()`, `TcpSocket::set_send_buffer_size()`, `TcpSocket::set_recv_buffer_size()`, and `socket2::SockRef::set_tcp_keepalive()` where `tokio::TcpSocket` does not expose the option directly. Expose the struct in `NodeConfig` so it is configurable via CLI flags and persisted in `manifest.md` for reproducibility.
+
+Test plan: a pair of integration tests in `src/protocol/frame.rs` tests that spin up a listener and a connector, assert `tcp_stream.nodelay()` returns `true`, and assert `recv_buffer_size()` matches the configured value (subject to the kernel's doubling behaviour, which should be documented in the test assertion).
+
+**Why v1 did not do this.** SPEC-06 treats the TCP layer as "plain TCP" without tuning, which is the minimum viable baseline. The L6 fix (`CompactSubnet` + 1 GiB cap) was what unblocked the failing benchmarks; Transport Tuning was not on the critical path for correctness and was deferred to the post-v1 overhead analysis.
+
+**Why v2 should do this.** It is the lowest-cost item in the overhead roadmap and provides measurable gains with zero correctness risk. The observable effect is a reduction in `distribute_time + collect_time` per round at large frame sizes, which is exactly the slowest phase measured in `phase2_rounds.csv`. Expected impact: 5-15 % wall-clock reduction on the large-frame configs (`ep_annihilation_con=5 M/20 M w=1,2`, `dual_tree=22/25 w=1`), more on LAN than on localhost.
+
+**Relationship to other items.** Independent and compatible with everything else. 2.22 should be shipped first because 2.23-2.26 build on the same socket setup code path.
+
+**Complexity.** Trivial. Approximately 100 lines of Rust (50 for the `TransportTuning` struct and application, 30 for the integration test, 20 for CLI wiring). Estimated effort: 1-2 hours.
+
+**v1 exclusion source:** SPEC-06 (plain TCP, no tuning), `src/protocol/coordinator.rs` and `src/protocol/worker.rs` (no socket options set).
+
+**References:**
+- [tokio TcpSocket docs](https://docs.rs/tokio/latest/tokio/net/struct.TcpSocket.html) — exposes `set_nodelay`, `set_send_buffer_size`, `set_recv_buffer_size`.
+- [Red Hat RT tuning guide, TCP_NODELAY section](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux_for_real_time/7/html/tuning_guide/tcp_nodelay_and_small_buffer_writes) — canonical description of Nagle's algorithm and when to disable it.
+- [Linux cyberciti TCP tuning](https://www.cyberciti.biz/faq/linux-tcp-tuning/) — send/recv buffer sizing on Linux.
+- Hacker News discussion [*It's always TCP_NODELAY*](https://news.ycombinator.com/item?id=40310896) — operational stories on forgetting to set this option.
+
+### 2.23 Wire Format Compaction (bincode v2 varint + enum shrink + optional LZ4)
+
+**Scope.** Shrink the *number of bytes* that cross the wire per partition, without changing the protocol semantics. Three independent techniques stacked together: migrate bincode v1 → v2 with varint int encoding, replace the enum discriminant encoding of `PortRef` with a 1-byte tag, and add an opt-in LZ4 compression wrapper on payloads above a configurable threshold.
+
+**v1 limitation.** `Cargo.toml` pins `bincode = "1"`, and every `Serialize`/`Deserialize` in `src/net/types.rs`, `src/partition/compact.rs`, and `src/protocol/types.rs` goes through bincode v1. v1 uses **fixed-int encoding** for every integer and **4-byte u32 discriminants** for every enum variant. The cost is visible in `PortRef`:
+- `AgentPort(AgentId, PortId)` is a `u32` + `u8`. Under bincode v1 this serialises as `4 (enum tag) + 4 (AgentId) + 1 (PortId) = 9 bytes`. Under bincode v2 varint with a u8 enum repr, the same value encodes as `1 (tag) + 1-2 (AgentId varint) + 1 (PortId) = 3-4 bytes` for typical agent IDs below 2^14.
+- `FreePort(u32)` is `4 + 4 = 8 bytes` in v1, `1 + 1-5 bytes` in v2 depending on the value. The special `DISCONNECTED = FreePort(u32::MAX)` sentinel unfortunately encodes large in varint (5 bytes for the value), but that is still 6 bytes total instead of 8.
+- `CompactSubnet::live` stores `Vec<(AgentId, Agent, [PortRef; 3])>`. With three port entries per live agent under v1, the port array alone is ~25 bytes per live agent; under v2 it drops to ~9-12 bytes per live agent. Over 40 M live agents (the 20 M `ep_annihilation_con` case) that is a ~500 MB saving on the wire, well above the difference between a 1 GiB cap hit and a comfortably-sized frame.
+
+On top of the encoding cost, there is a *redundancy* cost: IC nets are full of repeated patterns — `DISCONNECTED` sentinels, entire auxiliary-port triples of the same shape, long runs of identical `Symbol` tags. Generic compression algorithms extract this redundancy cheaply. v1 does not compress the wire at all.
+
+**v2 change:**
+
+1. **bincode v2 migration.** Bump the dependency in `Cargo.toml` to `bincode = "2"`, switch to the new `bincode::serde::encode_to_vec`/`decode_from_slice` API with a `Configuration` whose `IntEncoding = Varint`. Bincode v2 with varint is the default, so the only additional work is reviewing every call site for the new signature. No wire format can be read by v1 readers after this change, so bump the `PROTOCOL_VERSION` constant in `src/protocol/coordinator.rs` from 1 to 2 and update the Register handshake rejection message.
+
+2. **Custom `PortRef` serde impl.** Bincode v2's default enum discriminant is a single `u32` varint, which already collapses to 1 byte for `PortRef`. But we can do better by writing a manual `Serialize`/`Deserialize` impl that uses a 2-bit tag packed into the first byte plus the payload in the remaining 6 bits (for small agent IDs) or spilled into a varint tail (for larger ones). Concretely, reserve `tag = 0b00` for `AgentPort`, `0b01` for `FreePort`, `0b11` for the `DISCONNECTED` sentinel, and read the remaining 6 bits as the high bits of the payload. This pushes the common case (an `AgentPort` with an ID below 2^14 and port 0-2) to a single byte on the wire. The impl lives in `src/net/types.rs` behind `#[serde(with = "portref_compact")]`.
+
+3. **Optional LZ4 compression wrapper.** Add a new `CompressedFrame` type alongside the existing frame in `src/protocol/frame.rs`:
+   ```
+   fn send_frame_compressed(w, msg, threshold, algo) -> Result<usize, ProtocolError>
+   ```
+   `threshold` is a per-config byte cut-off (default 1 MiB): below the threshold the frame is sent uncompressed, above it the payload is LZ4-compressed first and the frame header is marked with a single bit in the CRC field (or, cleaner, a new one-byte header field). On receive, `recv_frame_compressed` checks the flag and LZ4-decompresses before passing to bincode. LZ4 sustains ~500-3500 MB/s on a single core, so for a 1 GB frame the CPU cost is <500 ms and typical ratios on IC nets (lots of `DISCONNECTED` runs, repeated ports) are 3-10x. This alone dwarfs the bincode-level savings.
+
+4. **Tests:** roundtrip each encoding independently (bincode v2, manual `PortRef`, LZ4 wrapper), roundtrip the full stack against a realistic `Partition` built from `build_partition_for_tests()`, measure serialised size before/after on the L6 test cases and assert the improvement.
+
+5. **SPEC-06 update:** record the new wire version, the optional compression flag, and the compatibility matrix against old clients.
+
+**Why v1 did not do this.** SPEC-06 R5 explicitly requires bincode v1 discriminant stability — appending new `Message` variants must not break existing serialised data. The v1 authors pinned the bincode major version deliberately, and wire compaction was correctly categorised as an optimisation that the scientific question did not hinge on. The three L6 benchmarks that failed at the 256 MiB cap were addressed by raising the cap to 1 GiB (item 2.20), not by shrinking the payload.
+
+**Why v2 should do this.** Wire compaction is pure upside on the Phase 3 LAN path: every byte saved is a real latency reduction on a 1 Gbps link (roughly 8 ns/byte). On localhost it saves bincode CPU time (the encoding/decoding is a big chunk of the current ~25 % TCP/seq overhead that has nothing to do with the network itself). Combined with 2.22, 2.23 should take the tcp_localhost / sequential ratio from 3.48x (20 M smoke) down into the 1.5-2.0x range even before considering the more invasive items 2.24-2.26.
+
+**Relationship to other items.** Stacks cleanly with 2.22, 2.24, 2.25, 2.26. Supersedes the archived 2.19 chunking idea (if the wire is small enough, chunking becomes unnecessary even for larger nets). Orthogonal to 2.20 (`CompactSubnet` already addresses the *structural* padding; 2.23 addresses the *encoding* padding).
+
+**Complexity.** Medium. Rough breakdown: 80 lines for the bincode v2 migration (mostly signature updates), 120 lines for the manual `PortRef` compact impl + tests, 150 lines for the LZ4 wrapper + tests, 50 lines for `TransportTuning` / compression config wiring, 100 lines of SPEC-06 updates. Estimated effort: 1-2 days plus the standard spec/debate review pipeline.
+
+**v1 exclusion source:** `Cargo.toml` (`bincode = "1"`), SPEC-06 R5 (discriminant stability), `src/net/types.rs` (derived `serde::Serialize` on `PortRef`), `src/protocol/frame.rs` (no compression layer).
+
+**References:**
+- [bincode v2 spec](https://docs.rs/bincode/latest/bincode/spec/index.html) — varint encoding details.
+- [rust_serialization_benchmark on GitHub](https://github.com/djkoloski/rust_serialization_benchmark) — comparative size/speed of bincode, rkyv, postcard, flatbuffers, capnp.
+- [rkyv is faster than {bincode, ...}](https://david.kolo.ski/blog/rkyv-is-faster-than/) — concrete benchmark numbers (context for 2.24).
+- [lz4_flex crate docs](https://docs.rs/lz4_flex) — pure-Rust LZ4 with explicit block API; sustained 500 MB/s-3.5 GB/s depending on cache fit.
+- [Facebook zstd site](http://facebook.github.io/zstd/) — reference compression ratios and speeds; zstd-1 is the alternative for WAN deployments.
+
+### 2.24 Zero-Copy Archive (rkyv) on the Hot Path
+
+**Scope.** Replace bincode entirely on the `AssignPartition` / `PartitionResult` messages with [rkyv](https://rkyv.org), a zero-copy serialisation framework. The wire payload becomes a binary image of the partition that the receiver can *access directly* via safe accessors without running a `deserialize` pass at all. Frames that are 1 GB today spend hundreds of ms in bincode deserialisation alone on the receiving side; rkyv removes that cost.
+
+**v1 limitation.** `src/protocol/frame.rs::recv_frame` does `vec![0u8; header.length as usize]` (one large allocation), reads the payload into that buffer, and then calls `bincode::deserialize::<Message>(&payload)`. The deserialise step walks every byte, reconstructing a full `Partition` with new `Vec`s for agents, ports, redex queue, and border map — another full-size allocation. For a 1 GB frame this is two 1 GB allocations plus a full O(A) byte-walk per `recv`, executed on every round by both the coordinator and the workers. Empirically this is a substantial fraction of the per-round time when the frame is large.
+
+**v2 change:** Introduce an alternative wire payload format on `Partition` via rkyv archives:
+
+1. Add `rkyv = "0.7"` to `Cargo.toml`. Derive `Archive`, `Serialize`, `Deserialize` (rkyv's traits, not serde's) on `Net`, `Partition`, `Agent`, `Symbol`, `PortRef`, and `WorkerRoundStats`, alongside the existing serde derives. Bincode v2 coexists for the small control messages (`Register`, `Shutdown`, `Error`) where the cost of rkyv's alignment padding is not worth the savings.
+
+2. Add a new message variant `AssignPartitionArchived { round: u32, archive: Vec<u8> }` and the symmetric `PartitionResultArchived { round, archive, stats }`. These carry an rkyv-serialised `Partition` inside the `archive` field. The frame header already supports arbitrary byte payloads, so the framing layer does not need to change.
+
+3. In the coordinator (`src/protocol/coordinator.rs::distribute_partitions`), serialise each partition with `rkyv::to_bytes`, then wrap in the archived variant. On the worker side (`src/protocol/worker.rs`), receive the archived variant and call `rkyv::access::<ArchivedPartition>(&archive)` to obtain a `&ArchivedPartition` view into the received buffer. The reduction loop then reads from the archive directly, without materialising a full `Partition` in the old sense. When the worker finishes, it allocates a fresh buffer and serialises the result back.
+
+4. **Key trade-off:** rkyv requires alignment constraints. The `recv_frame` path must hand the worker an aligned buffer. One implementation path is to allocate the recv buffer via `aligned_vec::AVec<u8, 16>` instead of `vec![0u8; len]`. This adds one dependency and costs a handful of lines.
+
+5. **Security posture:** rkyv's `access` is safe *iff* the archive is validated first (`rkyv::access` vs `rkyv::access_unchecked`). The safe path runs a structural validation pass before returning the reference. This costs some CPU but not nearly as much as a full deserialise, and defends against malicious WAN peers in 2.21's threat model.
+
+6. **Tests:** roundtrip a realistic `Partition`, assert the archived size is within 20 % of the bincode+varint size, measure the recv-side CPU cost on a 1 GB frame and assert it is <50 ms (rkyv's structural validation).
+
+7. **SPEC-06 update:** the new message variants are appended to preserve bincode discriminant stability; SPEC-06 R5 continues to hold. Document the rkyv path in a new section on the archive format.
+
+**Why v1 did not do this.** Two reasons: (a) rkyv has stricter derive requirements than serde and does not compose with `#[serde(with = "...")]` adapters, so the existing `serialize_subnet_compact` adapter in `src/partition/compact.rs` would need to be rewritten; (b) the rkyv archive format is not human-inspectable the way bincode + varint is, which makes debugging a wire-level bug harder. v1 chose readable + debuggable over fast.
+
+**Why v2 should do this.** The `rust_serialization_benchmark` public results put rkyv at 3-10x faster than bincode on deserialise for large nested structures, and the zero-copy property is a *direct* CPU saving, not a wire saving. Phase 3 LAN will spend proportionally more time in recv (because bandwidth is the bottleneck there), so the saving is amplified. Stacks with 2.23: archived payloads can also be LZ4-compressed, though the gain is smaller because rkyv is already compact.
+
+**Relationship to other items.** Complementary to 2.23 (wire compaction) and 2.22 (TCP tuning). Superseded by 2.26 (delta protocol) on the happy path — if we only send border deltas, the per-frame cost of rkyv vs bincode is less impactful because frames are small. But 2.26 is much more invasive, so 2.24 is worth shipping first as a standalone improvement.
+
+**Complexity.** Medium-High. Approximately 600 lines: 250 for rkyv derives and the archive variant wiring, 120 for the aligned buffer in `recv_frame`, 80 for the coordinator/worker archive path, 80 for tests, 70 for SPEC-06 updates. Estimated effort: 2-3 days plus the standard review pipeline.
+
+**v1 exclusion source:** absence of rkyv derives in `src/net/types.rs` / `src/partition/types.rs`, `recv_frame` uses `vec![0u8; len]` without alignment guarantees, SPEC-06 R5.
+
+**References:**
+- [rkyv docs.rs](https://docs.rs/rkyv) — official documentation, includes zero-copy access patterns and validation APIs.
+- [rkyv: zero-copy deserialization](https://rkyv.org/zero-copy-deserialization.html) — rationale and benchmark context.
+- [rust_serialization_benchmark](https://github.com/djkoloski/rust_serialization_benchmark) — direct bincode-vs-rkyv numbers on deserialise.
+- [Manish Goregaokar, Zero-Copy All the Things](https://manishearth.github.io/blog/2022/08/03/zero-copy-2-zero-copy-all-the-things/) — tutorial on applying zero-copy techniques in Rust.
+
+### 2.25 Same-Host Fast Path (Unix Domain Sockets / Shared Memory)
+
+**Scope.** When coordinator and workers are on the same host — which is always the case in the v1 Phase 2 Docker Compose setup, and is the norm for "try it on my laptop" local mode — bypass the TCP/IP stack entirely and move data through a faster channel.
+
+**v1 limitation.** v1 uses `tokio::net::TcpStream` unconditionally. On Linux TCP loopback adds a full pass through the kernel's network stack: softirq, netfilter, routing, checksumming (even though the kernel elides the actual CRC for loopback, the code path is still walked), and at least one scheduler wake-up per packet. Published benchmarks consistently show Unix domain sockets delivering 2-3x lower latency and up to 7x higher throughput for same-host communication, and `memfd_create` + shared mmap delivering another 10-30x on top for very large buffers. The v1 Phase 2 "tcp_localhost" mode measures the cost of going through that stack on every round; that cost contaminates the Phase 3 subtraction, because the localhost reference used to subtract network cost is itself network-taxed.
+
+The `tcp_localhost` mode name is technically accurate but strategically misleading: it is not a "zero-network" reference point, it is a "loopback-network" reference point, which is slower than true in-process by a measurable and load-dependent amount.
+
+**v2 change:** Introduce a transport abstraction over the existing `TcpStream` path:
+
+1. Add an enum `TransportBackend { Tcp, UnixSocket, SharedMemory }` in `src/protocol/config.rs`. Each variant carries its own config struct (bind address for TCP, socket path for UDS, shm segment name + size for SHM).
+
+2. Introduce a `Transport` trait with `accept` / `connect` methods returning a `Pin<Box<dyn AsyncRead + AsyncWrite + Unpin + Send>>`. Implement it for TCP (wraps the existing logic), Unix sockets (`tokio::net::UnixListener` / `UnixStream`), and shared memory (a ring-buffer over `memfd_create` with futex-based wakeups, or the `raw-sync` / `shared_memory` crate for a ready-made primitive).
+
+3. The protocol layer (`frame.rs`, `coordinator.rs`, `worker.rs`) stays unchanged — it is already generic over `AsyncRead + AsyncWrite`. Only the *connection setup* in `accept_workers` and `connect_to_coordinator` switches on `TransportBackend`.
+
+4. **Auto-selection heuristic:** if `config.bind` is `127.0.0.1:*` or the coordinator and worker are in the same network namespace (Docker Compose bridge detection), log a warning and recommend switching to UDS. An explicit CLI flag `--transport={tcp,unix,shm}` keeps it manual for now.
+
+5. **Shared memory option (advanced):** for the same-host case with 1 GB frames, mmap a ring buffer once at startup and exchange only offsets/lengths through a small Unix socket. This eliminates every kernel-side memory copy: the coordinator writes the serialised partition into the shared buffer, sends the offset, the worker reads from the shared buffer into its local `Partition`, and the inverse on the return path. Requires careful synchronisation but, once it works, approaches the theoretical minimum of "the memcpy plus the wake-up latency".
+
+6. **Docker Compose wiring:** replace the TCP port publish with a bind mount `./run:/run` and switch to `--transport=unix --socket-path=/run/relativist.sock`. The docker-compose.yml becomes slightly more complex but the coordinator and workers see each other with zero TCP overhead.
+
+7. **Tests:** protocol integration tests run against all three transports in CI, and the test helpers gain a `with_transport(backend)` combinator.
+
+8. **SPEC-06 + SPEC-07 updates:** describe the transport abstraction and the auto-selection heuristic, while keeping SPEC-06 R5 discriminant stability intact.
+
+**Why v1 did not do this.** The TCC's research question is about the *distributed* case, and TCP is the transport used in Phase 3 LAN. Switching to UDS / SHM for Phase 2 would have made the cross-phase comparison ambiguous: Phase 2 would measure "same-host optimal transport", Phase 3 would measure "LAN TCP", and the subtraction would conflate the transport switch with the network switch. v1 chose to pay the tcp_localhost tax uniformly so that Phase 3 subtraction has one well-defined term.
+
+**Why v2 should do this.** The Phase 3 subtraction methodology can be updated to compare (a) same-host optimal (UDS or SHM) vs (b) LAN TCP — this gives a much cleaner isolation of the "going over a network" cost than the current (a) same-host TCP vs (b) LAN TCP. And for ordinary users running Relativist on a laptop or a single Docker host, the overhead drop is substantial (often 3-10x on IO-bound phases). This item is also the prerequisite for a "volunteer-on-a-laptop" UX that does not require opening TCP ports.
+
+**Relationship to other items.** Stacks with 2.22, 2.23, 2.24. Orthogonal to 2.26. Makes 2.21 slightly harder (the transport abstraction must handle TLS for the TCP path but not for UDS/SHM, which is fine — UDS/SHM do not need application-level encryption on the same host).
+
+**Complexity.** Medium. Approximately 500 lines: 150 for the `Transport` trait and TCP/UDS backends, 200 for the SHM ring-buffer backend (the complex one), 80 for the transport config and CLI flag, 70 for tests. Estimated effort: 3-5 days plus the review pipeline. SHM can be deferred to a later pass; the TCP + UDS step is a few hours of work.
+
+**v1 exclusion source:** `src/protocol/coordinator.rs` and `src/protocol/worker.rs` hardcode `TcpListener`/`TcpStream`, no `Transport` trait exists, SPEC-06 §4.2 treats the socket as "a TCP stream".
+
+**References:**
+- [IPC performance comparison (Baeldung)](https://www.baeldung.com/linux/ipc-performance-comparison) — latency/throughput numbers for named pipes, UDS, TCP loopback, and SHM.
+- [Yanxu Rui: benchmark TCP/UDS/named pipe](https://www.yanxurui.cc/posts/server/2023-11-28-benchmark-tcp-uds-namedpipe/) — recent reproducible Linux numbers.
+- [redhat-performance/rusty-comms](https://github.com/redhat-performance/rusty-comms) — Rust-native IPC benchmark suite that covers UDS, SHM, TCP, POSIX MQ; useful reference for the auto-selection heuristic and for the test harness design.
+- [3tilley: IPC in Rust, a ping-pong comparison](https://3tilley.github.io/posts/simple-ipc-ping-pong/) — Rust ping-pong benchmark patterns for UDS vs TCP loopback vs SHM.
+
+### 2.26 Delta-Only Protocol (Stateful Workers) **(confluence-enabled)**
+
+**Scope.** The single most impactful item in this group. Stop sending the entire partition every round and instead send only the *changes* — the new border redexes the coordinator discovered in the merge phase, and the per-worker delta (updated border ports + stats) on the return path. The partition state lives *on the worker* between rounds, not at the coordinator.
+
+This is the architectural pattern that Pregel, Giraph, and essentially every modern BSP graph processing framework uses. v1 ships the whole partition every round because the coordinator is the sole holder of the merged-net state, which simplifies the formal argument (G1: `reduce_all ≡ run_grid`) but pays an enormous wire cost that scales with *partition size* instead of with *change size*.
+
+**v1 limitation.** The current BSP loop in `src/merge/grid.rs::run_grid` is stateless on the worker side. Every round:
+1. The coordinator calls `split` to produce K partitions, each containing the full live agents of that worker's ID range.
+2. The coordinator sends `AssignPartition { round, partition }` to each worker. For 20 M `ep_annihilation_con` at `w=2`, each partition is ~750 MB of `CompactSubnet` under bincode v1 — and even after 2.20 (`CompactSubnet`) and 2.23 (varint + LZ4), that is still several hundred MB in the worst case.
+3. Each worker runs `reduce_all` on its partition, then returns `PartitionResult { round, partition, stats }` carrying the full reduced partition back.
+4. The coordinator merges the K partitions, runs the lenient `reduce_all` on border cascades, and starts the next round.
+
+Step 2 is `O(total_live_agents)` per round. Step 3 is `O(total_live_agents − local_annihilations)` per round. Over R rounds, the total wire cost is `O(R × total_live_agents × bytes_per_agent)`. For `ep_annihilation_con` this is trivially dominated by step 2 because `ep_annihilation_con` annihilates fast and the residual partitions are small — the problem is the *initial* send. For `dual_tree` and `cascade_cross` under strict BSP, each round after the first carries a partition that has *barely changed* from the previous round; 95 %+ of the bytes on the wire are retransmitted identical data.
+
+**v2 change:** Workers become stateful. The protocol carries deltas.
+
+1. **Partition lifecycle:** at the start of execution, the coordinator sends `InitialPartition { worker_id, partition }` *once* per worker. The worker stores this partition in its state and never receives a full partition again for the remainder of the run.
+
+2. **Per-round control messages:** each round the coordinator sends `RoundStart { round, new_border_redexes: Vec<(BorderId, PortRef)>, freed_border_ids: Vec<BorderId> }`. `new_border_redexes` are the principal-port pairs that landed at partition boundaries during the previous round's merge and now need to be activated in the appropriate worker. `freed_border_ids` are borders resolved at the coordinator. The payload is *tiny* — typically single-digit percent of the partition size — because most of the state did not change between rounds.
+
+3. **Per-round worker reply:** the worker runs `reduce_all` on its *stateful* partition (applying the new border redexes first), then sends `RoundResult { round, border_deltas: Vec<(BorderId, PortRef)>, interactions: u64, stats: WorkerRoundStats }`. `border_deltas` are the ports whose identities have changed on border positions during this round's reduction; the coordinator uses these to construct the next round's border redex list. The full interior of the partition is never transmitted.
+
+4. **Coordinator-side state:** the coordinator stops holding the full merged net between rounds. Instead, it holds a `BorderGraph` describing the connectivity between worker partitions at the border level, plus a per-worker checksum of the partition interior (for integrity checks). When the BSP loop converges (all workers report zero border deltas and zero pending redexes), the coordinator *requests the full state back* via `FinalStateRequest { worker_id }` and the workers reply with `FinalStateResult { worker_id, partition }`. This final exchange is the only time the full state crosses the wire after round 0. At that point the coordinator merges, writes the output, and terminates.
+
+5. **Impact on G1 (correctness).** The existing proof of `reduce_all ≡ run_grid` relies on the invariant that after every round the coordinator holds a full merged net isomorphic to some intermediate state of the sequential reduction. Under the delta protocol, the coordinator holds only the border graph; the full isomorphism invariant is *distributed* across the coordinator and the workers. The proof needs a new decomposition: "the sequential intermediate state is recoverable from the coordinator's border graph plus the union of all worker partition states". Strong confluence (ARG-001 P1) guarantees that this decomposition exists and is unique up to the confluence equivalence. G1 continues to hold in both lenient and strict BSP modes (SPEC-05 R30a), but the formal argument gets more subtle and needs a fresh pass in the specs.
+
+6. **Impact on dynamic workers (2.2, 2.3).** The delta protocol interacts with dynamic worker joining and departure. When a new worker joins mid-execution, the coordinator has to hand it an `InitialPartition` derived from the *current* merged state, which means the coordinator must be able to *request current state* from existing workers (via the same `FinalStateRequest` mechanism, but mid-run). Similarly, a departing worker's partition is effectively lost and must be re-derived by asking the coordinator to re-partition from some earlier snapshot. The delta protocol is strictly harder than v1 in this respect but still benefits from confluence — any recovery strategy is correct because any order of reductions converges to the same normal form.
+
+7. **Tests.** TDD RED-first: a test `t_delta_1` that runs a single-round net through `run_grid_delta` and asserts the final net matches `reduce_all`. A test `t_delta_multi_round` that runs `cascade_cross(10)` under strict BSP through `run_grid_delta` and asserts both `rounds == 10` and `g1_equivalence`. A test `t_delta_vs_full` that runs `dual_tree=20 w=4` through both the old and the new protocol and asserts byte-identical outputs. An integration test that measures the *wire size* per round under the delta protocol vs the current protocol on the 20 M smoke workload and asserts at least a 10x reduction.
+
+8. **SPEC updates:** SPEC-05 gets a new section on delta protocol; SPEC-06 gets the new message variants; SPEC-01 D6 gets a delta-aware formulation; a new SPEC-17 or SPEC-18 may be warranted for the border graph structure.
+
+**Why v1 did not do this.** Two reasons: (a) the stateful-worker design complicates G1 proof sketches, and the TCC's central claim is about G1, so v1 chose the simplest design that preserves the "coordinator holds merged state" invariant; (b) shipping the delta protocol before the strict-BSP mode (2026-04-11 v0.10.0-bench) would have made the multi-round question un-testable, because there was no way to force rounds > 1 to exercise the delta path. With strict BSP shipped and `cascade_cross` / `dual_tree` strict data in `v1_local_baseline`, the delta protocol now has a well-defined correctness target to aim at.
+
+**Why v2 should do this.** This is the item that makes Relativist *viable as a grid computing system* rather than a distributed reducer. The ep_con 20 M stress smoke (wall-clock 27.88 s Docker TCP w=2 vs 8.02 s sequential, 3.48x overhead) would likely drop to a 1.3-1.6x overhead range once the delta protocol is combined with 2.22 and 2.23. That is the range where Phase 3 LAN measurements genuinely reflect network RTT rather than transport-layer waste. Without 2.26, Relativist's distributed mode has a wire cost that scales with partition size regardless of how much work was actually done in the round, which is a structural limitation.
+
+The confluence-enabled tag is literal: this design is *only correct* because strong confluence guarantees that the distributed state (coordinator border graph + worker partition interiors) is a well-defined decomposition of the sequential intermediate state. A term-rewriting system without confluence could not use this pattern — it would need either consensus (to agree on what the current state "is") or a rollback protocol.
+
+**Relationship to other items.** This is the biggest and hardest item in the group, but it is also the one that would change Relativist's architecture most deeply. It should be shipped *after* 2.22, 2.23, 2.24 provide their incremental wins, so that the delta protocol can be A/B benchmarked against a well-tuned baseline. It supersedes a significant portion of 2.23 and 2.24 on steady-state wire cost (because per-round frames are small), but does not supersede them on the initial `InitialPartition` send and the `FinalStateResult` exchange, where the full partition still crosses the wire and benefits from every other wire optimisation.
+
+Complements 2.16 (streaming reduction) and 2.17 (streaming arithmetic) — a delta protocol is the natural wire-level companion to a streaming reduction loop, because both exchange partial results instead of full normal forms.
+
+**Complexity.** High. Approximately 1400-1800 lines: 400 for the `BorderGraph` and worker partition state management, 300 for the new message variants and FSM transitions, 250 for the coordinator's delta planner, 300 for the correctness proof in SPEC-01/05 + new SPEC-17/18, 250 for tests, 200-300 for migration and deprecation of the old protocol. Estimated effort: 2-4 weeks of focused work plus the standard spec/debate review pipeline. Not a weekend project; this is the centrepiece of a v2.x milestone.
+
+**v1 exclusion source:** `src/merge/grid.rs::run_grid` (full-partition ship per round), SPEC-06 R5 (message stability), SPEC-13 R2 (BSP barrier on full partitions), OBJETIVO_TCC.md (G1 proved against the simpler architecture).
+
+**References:**
+- [Pregel: A System for Large-Scale Graph Processing — the morning paper](https://blog.acolyer.org/2015/05/26/pregel-a-system-for-large-scale-graph-processing/) — Google's original BSP graph processing paper that introduces the "vertices send messages to neighbours" delta pattern.
+- [Giraph Unchained: Barrierless Asynchronous Parallel Execution in Pregel-like Graph Processing Systems](http://www.vldb.org/pvldb/vol8/p950-han.pdf) — VLDB paper on the evolution of Giraph's messaging model.
+- [Giraphx: Parallel Yet Serializable Large-Scale Graph Processing](https://www.researchgate.net/publication/262351791_Giraphx_Parallel_Yet_Serializable_Large-Scale_Graph_Processing) — introduces the border-vertex / internal-vertex split that this item adapts to interaction nets.
+- [A communication-reduced and computation-balanced framework for fast graph computation (Frontiers of Computer Science)](https://link.springer.com/article/10.1007/s11704-018-6400-1) — LCC-BSP model, directly motivates the delta approach.
+- [Round- and Message-Optimal Distributed Graph Algorithms (Haeupler et al., CMU)](https://www.cs.cmu.edu/~dwajc/pdfs/haeupler18.pdf) — theoretical bounds on how much communication can be reduced under BSP.
+
+---
+
 ## The Confluence Argument for the Paper
 
 The features in Section 2 (2.1-2.4) share a common theoretical foundation that should be presented in the TCC's Discussion section (Section 5):
