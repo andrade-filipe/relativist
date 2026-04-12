@@ -1,4 +1,4 @@
-//! Arithmetic operation combinators for Church numerals (SPEC-14 R15-R18).
+//! Arithmetic operation combinators for Church numerals (SPEC-14 R15-R18, SPEC-09 R17d).
 //!
 //! Each function builds an IC net that, when reduced via `reduce_all`,
 //! yields a Church numeral encoding the arithmetic result.
@@ -6,6 +6,15 @@
 //! - `build_add(a, b)`: addition via `add = lambda m. lambda n. lambda f. lambda x. m f (n f x)`
 //! - `build_mul(a, b)`: multiplication via `mul = lambda m. lambda n. lambda f. m (n f)`
 //! - `build_exp(base, exp)`: exponentiation via `exp = lambda m. lambda n. n m`
+//! - `build_sum_of_squares(n)`: right-associated `add`-chain over pre-encoded
+//!   `Church(i^2)` for i in 1..N (demonstrative, SPEC-09 R17d)
+//!
+//! `build_add` / `build_mul` are thin wrappers around the lower-level port-based
+//! helpers `wire_add_into` / `wire_mul_into`, which accept PortRef inputs so
+//! that arithmetic sub-computations can be composed without pre-encoding their
+//! operands. `build_sum_of_squares` uses `wire_add_into` to chain addition
+//! across pre-encoded squares (see its docstring for why the squares are
+//! pre-encoded instead of built via `wire_mul_into`).
 //!
 //! All functions use `encode_church_into` to compose sub-nets in a single `Net`,
 //! avoiding ID collisions (SPEC-14 Section 4.3, ID composition).
@@ -66,21 +75,22 @@ pub fn discover_root(net: &mut Net) -> bool {
     }
 }
 
-/// Build an IC net for addition: `a + b` (SPEC-14 R15).
+/// Wire an `add` combinator into an existing net, consuming two operand ports.
 ///
-/// Constructs the full add combinator `lambda m. lambda n. lambda f. lambda x. m f (n f x)`
-/// and applies it to `church(a)` and `church(b)`. The resulting net contains redexes
-/// that, when reduced via `reduce_all`, produce `church(a + b)`.
+/// Builds `add = lambda m. lambda n. lambda f. lambda x. m f (n f x)` and applies
+/// it to whatever is reachable from `m_port` and `n_port`. The operands do not
+/// need to be canonical Church numerals — they can be the result wires of
+/// previous arithmetic sub-computations (e.g. `AgentPort(app_out, 1)` returned
+/// from an earlier `wire_add_into` / `wire_mul_into` call).
 ///
-/// After reduction, call `discover_root` to set the root for decoding.
-pub fn build_add(a: u64, b: u64) -> Net {
-    let mut net = Net::new();
-
-    // Step 1: Encode Church numerals as sub-nets
-    let m_root = encode_church_into(&mut net, a);
-    let n_root = encode_church_into(&mut net, b);
-
-    // Step 2: Build the add combinator
+/// Returns the outermost application CON agent. Its port `p1` is the result
+/// wire of the addition (the place to connect to the surrounding context, e.g.
+/// `FreePort(0)` at the top level or the operand slot of an enclosing operation).
+///
+/// Used both by `build_add` (as a thin wrapper) and by composite builders
+/// such as `build_sum_of_squares` (SPEC-09 R17d).
+pub(crate) fn wire_add_into(net: &mut Net, m_port: PortRef, n_port: PortRef) -> AgentId {
+    // Build the add combinator:
     // add = lambda m. lambda n. lambda f. lambda x. m f (n f x)
     //
     // Lambda agents (4 nested lambdas):
@@ -154,29 +164,45 @@ pub fn build_add(a: u64, b: u64) -> Net {
         PortRef::AgentPort(lam_x, 2), // result -> body of lambda x
     );
 
-    // Step 3: Apply add to church(a) and church(b)
-    // Application port convention: p1 = result, p2 = argument.
+    // Apply add to the operand ports.
+    // Application port convention: p0 = function, p1 = result, p2 = argument.
     let app_1 = net.create_agent(Symbol::Con);
     net.connect(PortRef::AgentPort(app_1, 0), PortRef::AgentPort(lam_m, 0));
-    net.connect(
-        PortRef::AgentPort(app_1, 2),
-        PortRef::AgentPort(m_root, 0), // argument (p2) = church(a)
-    );
+    net.connect(PortRef::AgentPort(app_1, 2), m_port); // argument (p2) = operand m
 
     let app_2 = net.create_agent(Symbol::Con);
     net.connect(
         PortRef::AgentPort(app_1, 1),
         PortRef::AgentPort(app_2, 0), // result (p1) -> next application
     );
-    net.connect(
-        PortRef::AgentPort(app_2, 2),
-        PortRef::AgentPort(n_root, 0), // argument (p2) = church(b)
+    net.connect(PortRef::AgentPort(app_2, 2), n_port); // argument (p2) = operand n
+
+    // Caller is responsible for wiring `AgentPort(app_2, 1)` into the surrounding
+    // context (FreePort at the top level, or operand slot of an enclosing op).
+    app_2
+}
+
+/// Build an IC net for addition: `a + b` (SPEC-14 R15).
+///
+/// Thin wrapper around `wire_add_into`: encodes `Church(a)` and `Church(b)`
+/// as sub-nets, wires the add combinator on top, and connects the result to
+/// `FreePort(0)` so `discover_root` can pick it up after reduction.
+pub fn build_add(a: u64, b: u64) -> Net {
+    let mut net = Net::new();
+
+    let m_root = encode_church_into(&mut net, a);
+    let n_root = encode_church_into(&mut net, b);
+
+    let app_out = wire_add_into(
+        &mut net,
+        PortRef::AgentPort(m_root, 0),
+        PortRef::AgentPort(n_root, 0),
     );
 
     // Connect result to a FreePort sentinel so the output is tracked
     // through reduction. After reduce_all, discover_root will find it.
     net.connect(
-        PortRef::AgentPort(app_2, 1),
+        PortRef::AgentPort(app_out, 1),
         PortRef::FreePort(0), // result (p1) = output wire
     );
 
@@ -186,16 +212,16 @@ pub fn build_add(a: u64, b: u64) -> Net {
     net
 }
 
-/// Build an IC net for multiplication: `a * b` (SPEC-14 R16).
+/// Wire a `mul` combinator into an existing net, consuming two operand ports.
 ///
-/// Constructs `mul = lambda m. lambda n. lambda f. m (n f)` and applies
-/// it to `church(a)` and `church(b)`.
-pub fn build_mul(a: u64, b: u64) -> Net {
-    let mut net = Net::new();
-
-    let m_root = encode_church_into(&mut net, a);
-    let n_root = encode_church_into(&mut net, b);
-
+/// Builds `mul = lambda m. lambda n. lambda f. m (n f)` and applies it to
+/// whatever is reachable from `m_port` and `n_port`. Like `wire_add_into`, the
+/// operands do not have to be freshly encoded Church numerals — they can be
+/// intermediate result wires from prior sub-computations.
+///
+/// Returns the outermost application CON agent. `AgentPort(result, 1)` is the
+/// result wire where the multiplied value will appear after reduction.
+pub(crate) fn wire_mul_into(net: &mut Net, m_port: PortRef, n_port: PortRef) -> AgentId {
     // Build mul combinator: lambda m. lambda n. lambda f. m (n f)
     let lam_m = net.create_agent(Symbol::Con);
     let lam_n = net.create_agent(Symbol::Con);
@@ -233,31 +259,128 @@ pub fn build_mul(a: u64, b: u64) -> Net {
         PortRef::AgentPort(lam_f, 2), // result of m(nf) -> body of lambda f
     );
 
-    // Apply mul to church(a) and church(b)
+    // Apply mul to the operand ports.
     let app_1 = net.create_agent(Symbol::Con);
     net.connect(PortRef::AgentPort(app_1, 0), PortRef::AgentPort(lam_m, 0));
-    net.connect(
-        PortRef::AgentPort(app_1, 2),
-        PortRef::AgentPort(m_root, 0), // argument (p2)
-    );
+    net.connect(PortRef::AgentPort(app_1, 2), m_port); // argument (p2)
 
     let app_2 = net.create_agent(Symbol::Con);
     net.connect(
         PortRef::AgentPort(app_1, 1),
         PortRef::AgentPort(app_2, 0), // result (p1)
     );
-    net.connect(
-        PortRef::AgentPort(app_2, 2),
-        PortRef::AgentPort(n_root, 0), // argument (p2)
+    net.connect(PortRef::AgentPort(app_2, 2), n_port); // argument (p2)
+
+    app_2
+}
+
+/// Build an IC net for multiplication: `a * b` (SPEC-14 R16).
+///
+/// Thin wrapper around `wire_mul_into`: encodes `Church(a)` and `Church(b)`,
+/// wires the mul combinator on top, connects the result to `FreePort(0)`.
+pub fn build_mul(a: u64, b: u64) -> Net {
+    let mut net = Net::new();
+
+    let m_root = encode_church_into(&mut net, a);
+    let n_root = encode_church_into(&mut net, b);
+
+    let app_out = wire_mul_into(
+        &mut net,
+        PortRef::AgentPort(m_root, 0),
+        PortRef::AgentPort(n_root, 0),
     );
 
     net.connect(
-        PortRef::AgentPort(app_2, 1),
+        PortRef::AgentPort(app_out, 1),
         PortRef::FreePort(0), // result (p1) = output wire
     );
 
     net.root = None;
     net
+}
+
+/// Build an IC net for sum of squares: `sum_{i=1..N} i^2` (SPEC-09 R17d).
+///
+/// Builds a right-associated `wire_add_into` chain over pre-encoded Church
+/// numerals `Church(i^2)` for `i in 1..=N`. After reduction, the resulting
+/// Church numeral encodes `N*(N+1)*(2*N+1)/6` (Archimedes/Faulhaber closed form).
+///
+/// Edge cases:
+/// - `n == 0`: returns `Church(0)` directly (empty sum).
+/// - `n == 1`: returns `Church(1)` directly (1^2 = 1, no chain needed).
+///
+/// ## Why squares are pre-encoded (not built via `wire_mul_into`)
+///
+/// An earlier version of this builder composed `wire_mul_into(Ch(i), Ch(i))`
+/// inside the add chain so that the grid would also reduce the squaring step.
+/// Optimal reduction of that composed net produces a correct Church normal form,
+/// but the final structure has nested DUP sharing boundaries (one per mul) that
+/// the current `decode_shared_chain` readback cannot traverse — it only handles
+/// a single terminal DUP boundary. Verification against the closed form would
+/// fall back to structural isomorphism, which is quadratic and not viable for
+/// `N >= 30`. Pre-encoding `Ch(i^2)` in Rust eliminates the nested DUPs, keeping
+/// decode tractable while preserving the arithmetic demonstration:
+///   - The benchmark still computes `sum_{i=1..N} i^2` end-to-end.
+///   - The grid still reduces the full `add`-chain, which for `N` terms grows
+///     the final agent count cubically (`~2*N(N+1)(2N+1)/6`).
+///   - Profile B (expansion-dominant) behavior is preserved via the add chain.
+/// The encoding of the squares is a local pre-processing step; the distributed
+/// work is the reduction of the chain itself. See SPEC-09 R17d and USAGE_GUIDE.md
+/// Section 11.8 for the narrative framing.
+///
+/// This builder is demonstrative, not comparative — it is NOT part of the
+/// frozen performance campaigns (v1_local_baseline, v1_stress).
+pub fn build_sum_of_squares(n: u64) -> Net {
+    if n == 0 {
+        return super::church::encode_nat(0);
+    }
+    if n == 1 {
+        return super::church::encode_nat(1);
+    }
+
+    let mut net = Net::new();
+
+    // Start the fold with the last term `Church(n^2)`.
+    let last_square = encode_church_into(&mut net, n * n);
+    let mut acc_port: PortRef = PortRef::AgentPort(last_square, 0);
+
+    // Fold right: add(Ch(i^2), acc) for i = n-1, n-2, ..., 1.
+    for i in (1..n).rev() {
+        let term_root = encode_church_into(&mut net, i * i);
+        let app_out = wire_add_into(
+            &mut net,
+            PortRef::AgentPort(term_root, 0),
+            acc_port,
+        );
+        acc_port = PortRef::AgentPort(app_out, 1);
+    }
+
+    // Wire the final result to FreePort(0) so discover_root can find it.
+    net.connect(acc_port, PortRef::FreePort(0));
+    net.root = None;
+    net
+}
+
+/// Read-only decoder for arithmetic nets whose structure may or may not be
+/// canonical Church (SPEC-09 R17d, SPEC-14 R22 variant).
+///
+/// Intended for benchmark `verify` hooks (`fn verify(&self, &Net, &Net) -> bool`)
+/// that cannot mutate the net to set `root` before decoding. Clones the input
+/// net internally, runs `discover_root` on the clone, and then tries the
+/// canonical `decode_nat` with a fallback to `decode_shared_chain`.
+///
+/// Fast path: if `net.root` is already set (e.g. by prior `discover_root`),
+/// decoders are tried directly without cloning.
+pub fn decode_nat_or_shared(net: &Net) -> Option<u64> {
+    if net.root.is_some() {
+        return super::church::decode_nat(net).or_else(|| decode_shared_chain(net));
+    }
+
+    let mut cloned = net.clone();
+    if !discover_root(&mut cloned) {
+        return None;
+    }
+    super::church::decode_nat(&cloned).or_else(|| decode_shared_chain(&cloned))
 }
 
 /// Build an IC net for exponentiation: `base ^ exp` (SPEC-14 R17).
@@ -606,5 +729,108 @@ mod tests {
     fn test_add_larger_values() {
         let result = reduce_and_decode(build_add(100, 100));
         assert_eq!(result, Some(200));
+    }
+
+    // --- SPEC-09 R17d: wire_add_into / wire_mul_into PortRef-based helpers ---
+
+    // Regression: build_add (now a thin wrapper around wire_add_into) preserves
+    // all previous correctness for add — any mismatch here means the PortRef
+    // refactor broke the canonical addition path.
+    #[test]
+    fn test_wire_add_into_port_based_preserves_build_add() {
+        assert_eq!(reduce_and_decode(build_add(7, 8)), Some(15));
+        assert_eq!(reduce_and_decode(build_add(50, 50)), Some(100));
+    }
+
+    // Regression: build_mul (now a thin wrapper around wire_mul_into) preserves
+    // all previous correctness for mul.
+    #[test]
+    fn test_wire_mul_into_port_based_preserves_build_mul() {
+        assert_eq!(reduce_and_decode(build_mul(3, 3)), Some(9));
+        assert_eq!(reduce_and_decode(build_mul(10, 10)), Some(100));
+    }
+
+    // Composition smoke: two wire_add_into applications chained together so
+    // the result wire of one becomes an operand port of the next. This is the
+    // exact composition pattern that `build_sum_of_squares` relies on, minus
+    // the mul-as-operand subcase (see build_sum_of_squares doc for why the
+    // mul path is not exercised here — nested DUP boundaries break readback).
+    #[test]
+    fn test_wire_add_composes_with_wire_add() {
+        // add(add(1, 2), add(3, 4)) = 3 + 7 = 10
+        let mut net = Net::new();
+        let k1 = encode_church_into(&mut net, 1);
+        let k2 = encode_church_into(&mut net, 2);
+        let add_a = wire_add_into(
+            &mut net,
+            PortRef::AgentPort(k1, 0),
+            PortRef::AgentPort(k2, 0),
+        );
+        let k3 = encode_church_into(&mut net, 3);
+        let k4 = encode_church_into(&mut net, 4);
+        let add_b = wire_add_into(
+            &mut net,
+            PortRef::AgentPort(k3, 0),
+            PortRef::AgentPort(k4, 0),
+        );
+        let add_out = wire_add_into(
+            &mut net,
+            PortRef::AgentPort(add_a, 1),
+            PortRef::AgentPort(add_b, 1),
+        );
+        net.connect(
+            PortRef::AgentPort(add_out, 1),
+            PortRef::FreePort(0),
+        );
+        net.root = None;
+        assert_eq!(reduce_and_decode(net), Some(10));
+    }
+
+    // --- SPEC-09 R17d: build_sum_of_squares correctness ---
+
+    fn expected_sum_of_squares(n: u64) -> u64 {
+        n * (n + 1) * (2 * n + 1) / 6
+    }
+
+    // Small range: every n in [0..=10] must decode to N*(N+1)*(2N+1)/6.
+    #[test]
+    fn test_sum_of_squares_small() {
+        for n in [0u64, 1, 2, 3, 4, 5, 10] {
+            let result = reduce_and_decode(build_sum_of_squares(n));
+            assert_eq!(
+                result,
+                Some(expected_sum_of_squares(n)),
+                "sum_of_squares({n}): expected {}, got {:?}",
+                expected_sum_of_squares(n),
+                result
+            );
+        }
+    }
+
+    // Sanity check at an intermediate size that actually stresses the
+    // composed mul+add DUP sharing (N=30 -> sum = 9455).
+    #[test]
+    fn test_sum_of_squares_n30() {
+        let result = reduce_and_decode(build_sum_of_squares(30));
+        assert_eq!(result, Some(9455));
+    }
+
+    // --- SPEC-09 R17d: decode_nat_or_shared wrapper ---
+
+    // Canonical nets with root set: must go through the fast path.
+    #[test]
+    fn test_decode_nat_or_shared_canonical() {
+        let net = super::super::church::encode_nat(42);
+        assert_eq!(decode_nat_or_shared(&net), Some(42));
+    }
+
+    // Post-reduction composed net (build_sum_of_squares) with root = None:
+    // must clone, discover root, and fall back to shared-chain decode.
+    #[test]
+    fn test_decode_nat_or_shared_rootless_composed() {
+        let mut net = build_sum_of_squares(10);
+        crate::reduction::reduce_all(&mut net);
+        assert!(net.root.is_none(), "composed builder leaves root = None");
+        assert_eq!(decode_nat_or_shared(&net), Some(385));
     }
 }

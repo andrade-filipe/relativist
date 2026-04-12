@@ -11,5 +11,8 @@
 pub mod arithmetic;
 pub mod church;
 
-pub use arithmetic::{build_add, build_exp, build_mul, compute_arithmetic, discover_root};
+pub use arithmetic::{
+    build_add, build_exp, build_mul, build_sum_of_squares, compute_arithmetic,
+    decode_nat_or_shared, discover_root,
+};
 pub use church::{decode_nat, encode_church_into, encode_nat};
