@@ -1,0 +1,131 @@
+{
+  "rounds": 1,
+  "total_interactions": 50000000,
+  "total_interactions_by_rule": [
+    50000000,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "local_interactions_per_round": [
+    50000000
+  ],
+  "border_interactions_per_round": [
+    0
+  ],
+  "border_redexes_per_round": [
+    0
+  ],
+  "agents_per_round": [
+    100000000
+  ],
+  "partition_time_per_round": [
+    {
+      "secs": 52,
+      "nanos": 760584249
+    }
+  ],
+  "compute_time_per_round": [],
+  "merge_time_per_round": [
+    {
+      "secs": 1,
+      "nanos": 249416254
+    }
+  ],
+  "border_reduce_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 370
+    }
+  ],
+  "index_rebuild_time_per_round": [],
+  "bytes_sent_per_round": [
+    4100000276
+  ],
+  "bytes_received_per_round": [
+    612
+  ],
+  "network_send_time_per_round": [
+    {
+      "secs": 8,
+      "nanos": 775268819
+    }
+  ],
+  "network_recv_time_per_round": [
+    {
+      "secs": 16,
+      "nanos": 285019779
+    }
+  ],
+  "total_time": {
+    "secs": 79,
+    "nanos": 413668749
+  },
+  "converged": true,
+  "worker_stats_per_round": [
+    [
+      {
+        "worker_id": 0,
+        "agents_before": 25000000,
+        "agents_after": 0,
+        "local_redexes": 12500000,
+        "reduce_duration_secs": 10.503029659,
+        "interactions_by_rule": [
+          12500000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 1,
+        "agents_before": 25000000,
+        "agents_after": 0,
+        "local_redexes": 12500000,
+        "reduce_duration_secs": 9.975307703,
+        "interactions_by_rule": [
+          12500000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 2,
+        "agents_before": 25000000,
+        "agents_after": 0,
+        "local_redexes": 12500000,
+        "reduce_duration_secs": 10.007564482,
+        "interactions_by_rule": [
+          12500000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 3,
+        "agents_before": 25000000,
+        "agents_after": 0,
+        "local_redexes": 12500000,
+        "reduce_duration_secs": 10.214710932,
+        "interactions_by_rule": [
+          12500000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ]
+  ]
+}

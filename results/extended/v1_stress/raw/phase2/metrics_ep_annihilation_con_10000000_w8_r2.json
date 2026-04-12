@@ -1,0 +1,191 @@
+{
+  "rounds": 1,
+  "total_interactions": 10000000,
+  "total_interactions_by_rule": [
+    10000000,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "local_interactions_per_round": [
+    10000000
+  ],
+  "border_interactions_per_round": [
+    0
+  ],
+  "border_redexes_per_round": [
+    0
+  ],
+  "agents_per_round": [
+    20000000
+  ],
+  "partition_time_per_round": [
+    {
+      "secs": 11,
+      "nanos": 980431917
+    }
+  ],
+  "compute_time_per_round": [],
+  "merge_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 317004133
+    }
+  ],
+  "border_reduce_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 404
+    }
+  ],
+  "index_rebuild_time_per_round": [],
+  "bytes_sent_per_round": [
+    820000552
+  ],
+  "bytes_received_per_round": [
+    1224
+  ],
+  "network_send_time_per_round": [
+    {
+      "secs": 1,
+      "nanos": 302905867
+    }
+  ],
+  "network_recv_time_per_round": [
+    {
+      "secs": 2,
+      "nanos": 52850275
+    }
+  ],
+  "total_time": {
+    "secs": 15,
+    "nanos": 724246480
+  },
+  "converged": true,
+  "worker_stats_per_round": [
+    [
+      {
+        "worker_id": 0,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 0.949933364,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 1,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 0.916305262,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 2,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 0.993576025,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 3,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 1.020159023,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 4,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 1.040837362,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 5,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 0.999312764,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 6,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 0.955841303,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "worker_id": 7,
+        "agents_before": 2500000,
+        "agents_after": 0,
+        "local_redexes": 1250000,
+        "reduce_duration_secs": 1.003716227,
+        "interactions_by_rule": [
+          1250000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ]
+  ]
+}

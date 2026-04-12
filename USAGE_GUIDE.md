@@ -2290,6 +2290,255 @@ diferente), mas colunas estruturais DEVEM casar exatamente.
 | Phase 1 leva > 8h | `condup_expansion` em 50k com G1 full por engano | Confirme que o driver usa `--skip-g1` nos tamanhos 10k/50k. Esta no script por padrao. |
 | manifest.md perdido ou mal preenchido | Voce editou e perdeu os valores | O template esta versionado; `git checkout results/locked/v1_local_baseline/manifest.md` recupera. |
 
+### 11.7 Tutorial: Rodar a campanha de stress `v1_stress`
+
+Esta subsecao e o passo-a-passo para rodar a campanha de stress que
+estende `v1_local_baseline` para sizes maiores (`ep_annihilation_con` ate
+50 M, `dual_tree` ate `d=25`). O objetivo e produzir o dado "antes" dos
+itens 2.22-2.26 do ROADMAP (otimizacoes de overhead de rede): a mesma
+maquina, o mesmo binario `v0.10.0-bench`, apenas sizes maiores.
+
+**Quem deve rodar:** o proprio autor, apos terminar uma reproducao
+limpa de `v1_local_baseline` e antes de implementar qualquer item
+2.22-2.26. As medicoes "antes / depois" so sao comparaveis se forem
+na **mesma maquina** e sob a **mesma hygiene** de ambiente.
+
+**Por que stress e uma campanha separada de `v1_local_baseline`:**
+
+1. `v1_local_baseline` e um snapshot congelado versionado como referencia
+   cientifica da Phase 3 LAN. Nao pode crescer ou mudar depois de
+   congelado — se precisasse incluir sizes maiores, seria uma v2.
+2. A campanha de stress explora regimes onde a heuristica de hardware
+   comeca a quebrar (U-series throttling, 1 GiB frame cap, Docker
+   WSL2 memory pressure). Alguns configs **podem falhar** — isso e
+   esperado e documentado, nao e um bug. Congelar falhas dentro da
+   baseline principal contaminaria os dados de Phase 3.
+3. A campanha de stress usa 5 repeticoes (nao 10), porque o custo
+   por repeticao e maior; usar 10 empurraria o wall-clock da campanha
+   para 8-12 h, o que nao e economico dado o proposito "dado antes de
+   otimizacao".
+
+**Layout da campanha:**
+
+| Fase | Benchmarks × sizes | Workers | Reps | Observacao |
+|---|---|---|---|---|
+| Phase 1 stress (in-process) | `ep_annihilation_con × {10M,20M,50M}`, `dual_tree × {23,24,25}` | seq + local {1,2,4,8} | 5 | Sem Docker. |
+| Phase 2 stress (Docker) | `ep_annihilation_con × {10M,20M}`, `dual_tree × {23,24,25}` | {1,2,4,8} | 5 | Completo. |
+| Phase 2 stress (Docker) | `ep_annihilation_con × {50M}` | {4,8} apenas | 5 | w=1 e w=2 sao puladas: a particao excede o 1 GiB frame cap sob bincode v1 + CompactSubnet. Documentado como limitacao no ROADMAP 2.23. |
+
+**Tempo total estimado:** 4-6 h unattended (Phase 1 ~1-2h + Phase 2 ~3-4h).
+Planeje rodar durante a noite ou durante um dia dedicado.
+
+**Diferencas de implementacao vs. `bench_phase2_locked.sh`:**
+
+O script `bench_phase2_stress_locked.sh` corrige um bug de shutdown do
+Docker Compose observado no smoke test de 20 M em 2026-04-11:
+
+- `bench_phase2_locked.sh` usa `docker compose up
+  --abort-on-container-exit --exit-code-from coordinator`. Em sizes de
+  stress o coordinator demora mais para flushar `metrics.json` do que
+  os workers demoram para sair, entao o `--abort-on-container-exit`
+  SIGKILLa o coordinator no meio do flush e `metrics.json` nunca chega
+  ao disco.
+- `bench_phase2_stress_locked.sh` usa `docker compose up -d` +
+  `docker wait <coordinator_id>` + `docker compose down`, deixando o
+  coordinator sair naturalmente e flushar `metrics.json` antes do
+  teardown.
+
+#### 11.7.1 Pre-flight checklist
+
+Antes de comecar, confira cada item. Os itens sao identicos a
+`v1_local_baseline` (11.6.1) com duas excecoes: Phase 1 stress **nao**
+precisa de Docker (mas Phase 2 stress precisa), e a campanha roda em
+`results/extended/v1_stress/` (nao em `results/locked/`).
+
+**1. Estado do repositorio**
+
+```bash
+cd codigo/relativist
+
+git describe --tags --exact-match         # Deve imprimir: v0.10.0-bench
+git status --short                        # Deve ser vazio
+git log -1 --oneline                      # Anote o SHA
+```
+
+Se HEAD nao estiver em `v0.10.0-bench`, faca `git checkout v0.10.0-bench`.
+A campanha de stress **tem** que rodar contra a mesma tag que
+`v1_local_baseline`, senao as comparacoes "stress vs baseline" misturam
+binarios diferentes.
+
+**2. Environment hygiene (obrigatorio para dados congelados)**
+
+```bash
+# Power plan deve ser Ultimate Performance (mesmo que v1_local_baseline).
+powercfg /getactivescheme
+# Output esperado contem: (Desempenho Maximo) ou (Ultimate Performance)
+
+# Se estiver em Balanced, ative o Ultimate Performance:
+powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61
+powercfg /setactive <GUID_novo_da_linha_anterior>
+powercfg /getactivescheme   # confira que trocou
+```
+
+Fechar antes de kickar a campanha:
+- IDE (VS Code, JetBrains, Zed, etc.)
+- Browsers (Chrome, Firefox, Edge)
+- Qualquer aplicacao com tray icon que sincroniza com a nuvem (Dropbox,
+  OneDrive, Google Drive)
+
+Pausar Windows Update ate o fim da campanha.
+
+**3. Build release**
+
+```bash
+cargo build --release
+ls -la target/release/relativist.exe    # deve existir
+```
+
+**4. Docker Desktop (so para Phase 2 stress)**
+
+```bash
+docker compose ps               # deve imprimir header + linhas vazias
+docker compose build            # pre-build pra nao contar no wall-clock
+```
+
+Se voce nao vai rodar Phase 2 stress, pode pular esta etapa.
+
+**5. Espaco em disco**
+
+```bash
+df -h .     # precisa de ~3-5 GB livres para raw/phase2/metrics_*.json
+```
+
+#### 11.7.2 Executar Phase 1 stress (1-2 horas unattended)
+
+```bash
+cd codigo/relativist
+./scripts/bench_phase1_stress_locked.sh
+```
+
+O script vai:
+
+1. Detectar o binario em `target/release/relativist.exe`.
+2. Criar `results/extended/v1_stress/` e `raw/phase1/`.
+3. Rodar `ep_annihilation_con` nos sizes `10M,20M,50M` com workers `1,2,4,8`
+   (mais sequential auto-adicionado pela suite).
+4. Rodar `dual_tree` nos sizes `23,24,25` com workers `1,2,4,8`.
+5. Concatenar os CSVs raw em `phase1_stress_detail.csv`,
+   `phase1_stress_rounds.csv` e `phase1_stress_summary.csv`.
+
+Saida esperada ao final:
+
+```
+[HH:MM:SS] === Phase 1 Stress Campaign complete ===
+[HH:MM:SS] Detail:  N rows -> .../phase1_stress_detail.csv
+[HH:MM:SS] Rounds:  M rows -> .../phase1_stress_rounds.csv
+[HH:MM:SS] Summary: K rows -> .../phase1_stress_summary.csv
+```
+
+Valide rapido:
+
+```bash
+# Nenhum correct=false
+awk -F, 'NR>1 && $6=="false"' results/extended/v1_stress/phase1_stress_detail.csv
+# (output vazio)
+
+# Contagem esperada do summary: 2 benches * 3 sizes * 5 modos (seq + 1,2,4,8) = 30 linhas + header
+wc -l results/extended/v1_stress/phase1_stress_summary.csv
+```
+
+#### 11.7.3 Executar Phase 2 stress (3-4 horas unattended)
+
+Com Docker Desktop rodando:
+
+```bash
+cd codigo/relativist
+./scripts/bench_phase2_stress_locked.sh
+```
+
+O script vai:
+
+1. Rodar `docker compose build` (a menos que voce use `--skip-build`).
+2. Gerar baselines sequenciais nativos (fora do Docker) para cada
+   `bench × size` distinto — usados para calcular speedup vs
+   sequential nas linhas do Docker.
+3. Para cada `bench × size × workers`:
+   - Copiar o input para `data/input.bin`.
+   - Fazer `docker compose up -d --scale worker=W`.
+   - Chamar `docker wait coordinator` (ate o container sair
+     naturalmente e flushar `metrics.json`).
+   - Ler `data/metrics.json`, validar G1 com `inspect`.
+   - `docker compose down --remove-orphans`.
+4. Escrever `phase2_stress_detail.csv`, `phase2_stress_rounds.csv` e
+   `phase2_stress_summary.csv`.
+
+Saida esperada:
+
+```
+[HH:MM:SS] ==========================================
+[HH:MM:SS]   Phase 2 Stress Campaign Complete
+[HH:MM:SS] ==========================================
+[HH:MM:SS] Start: 2026-04-11 HH:MM:SS -0300
+[HH:MM:SS] End:   2026-04-11 HH:MM:SS -0300
+[HH:MM:SS] Output files:
+[HH:MM:SS]   .../phase2_stress_detail.csv  (N rows)
+[HH:MM:SS]   .../phase2_stress_summary.csv (M rows)
+[HH:MM:SS]   .../phase2_stress_rounds.csv  (K rows)
+```
+
+**Configs esperados:** 6 `bench × size` com 4 workers + 1 `bench × size`
+(ep_con=50M) com 2 workers = 24 + 2 = **26 configs Docker**. Mais 7
+baselines sequenciais. Total: **33 linhas de summary + header = 34**.
+
+Validacao:
+
+```bash
+# Se houver correct=false, investigue antes de prosseguir
+awk -F, 'NR>1 && $6=="false"' results/extended/v1_stress/phase2_stress_detail.csv
+
+# Configs que pularam (exit_code != 0) apareceram como all_correct=false
+# no summary. Espera-se zero falhas sob o binario v0.10.0-bench, mas se
+# alguma aparecer, cheque o log raw de Docker Compose do ultimo run.
+
+# Row count esperado do detail: 26 configs * 5 reps + 7 seq * 5 reps + header = 166
+wc -l results/extended/v1_stress/phase2_stress_detail.csv
+```
+
+#### 11.7.4 Pos-campanha: preencher manifest
+
+Copie o template do `v1_local_baseline` e atualize:
+
+```bash
+cp results/locked/v1_local_baseline/manifest.md \
+   results/extended/v1_stress/manifest.md
+```
+
+Edite `results/extended/v1_stress/manifest.md` para refletir a
+campanha de stress:
+
+- Status: COMPLETE ou documentar quais configs falharam
+- Campaign knobs: 5 reps (nao 10), sizes diferentes
+- Adicione uma secao "Differences from v1_local_baseline" explicando
+  (a) sizes maiores, (b) 5 reps, (c) o shutdown fix do Docker, (d) que
+  esta e a medicao "antes" dos itens ROADMAP 2.22-2.26
+- Checksums: gere sha256 dos CSVs novos
+
+```bash
+cd results/extended/v1_stress
+sha256sum phase1_stress_*.csv phase2_stress_*.csv > checksums.sha256
+cat checksums.sha256
+```
+
+#### 11.7.5 Troubleshooting
+
+| Sintoma | Diagnostico | Acao |
+|---|---|---|
+| `ep_annihilation_con=50M w=4` ou `w=8` falha no Docker com `metrics.json` ausente | Coordinator SIGKILL por OOM (WSL2 VM com 15 GiB, 50 M agentes sob bincode v1 usa ~3-4 GB so de particao serializada) | Documente no manifest como limitacao conhecida. Mostre que com 2.23 (wire compaction) o footprint cai abaixo de 1 GB. |
+| `dual_tree=25 w=1` falha por frame cap | Particao > 1 GiB sob bincode v1 | Esperado — w=1 concentra tudo em uma particao. Documente. |
+| `docker wait` trava | Coordinator nao esta saindo — provavel deadlock do protocolo | Cheque `docker compose logs coordinator` na outra shell; se o coordinator esta preso em `reduce_all` ou `collect`, aguarde ou interrompa com Ctrl+C. |
+| Wall-clock de Phase 1 stress explode para >4 h | CPU throttling por calor | Interrompa, deixe a maquina esfriar 30 min, re-rode do zero. |
+| Phase 1 stress `correct=false` | Bug novo de correctness no v0.10.0-bench em sizes grandes | **Pare e investigue**. Se reproducivel, e um L-item critico: a baseline local nao esta mais valida nessa faixa de sizes. |
+
 ---
 
 ## 12. Pipeline Completa
