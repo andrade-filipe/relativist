@@ -1,13 +1,13 @@
 # SPEC-09: Benchmark Suite
 
-**Status:** Revised v3.1 — per-benchmark round columns split into lenient/strict, and cascade_cross benchmark added (plano curious-sleeping-patterson)
+**Status:** Revised v3.1.1 — per-benchmark round columns split into lenient/strict, cascade_cross benchmark added, and R17d (ChurchSumOfSquares) aligned with implementation (pre-encoded Church squares folded by `wire_add_into`)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-12 (User I/O -- canonical generators), SPEC-14 (Arithmetic Encoding -- Church numeral benchmarks)
 **Gray zones resolved:** Z4 (communication overhead vs. parallelism benefit), Z6 (scalability transfer from shared to distributed memory), Z7 (work granularity)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-007 (Casanova 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015), REF-017 (Foster, Kesselman, Tuecke 2001)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, P1-P5), DISC-006 v2 (overhead anatomy, break-even analysis, workload profiles), DISC-008 v2 (shared-to-distributed transition, 6 operational dimensions)
 **Arguments consumed:** ARG-001 (central argument, P1-P6, fundamental property), ARG-004 (practical viability and limits, workload classification A/B/C, break-even, granularity thresholds)
 **Code analyses consumed:** AC-005 (Haskell benchmark framework, 5 benchmarks, 9 CSVs, ~110 datapoints, 8 limitations, experimental results), AC-014 (HigherOrderCO bench methodology, wall-clock sampling, 29 benchmarks, gaps identified)
-**Revision history:** v3.1 (2026-04-10): the `Rounds (grid)` property row of every benchmark table has been split into `Rounds (grid, lenient)` and `Rounds (grid, strict, expected)` to make the distinction introduced by SPEC-05 R30a explicit in the benchmark contract. A new benchmark `cascade_cross` (R18) is introduced as the primary validation vehicle for strict-mode multi-round behavior. No existing benchmarks are removed and no metric fields of `BenchmarkResult` are changed. Source: plano curious-sleeping-patterson, Fase 1.
+**Revision history:** v3.1 (2026-04-10): the `Rounds (grid)` property row of every benchmark table has been split into `Rounds (grid, lenient)` and `Rounds (grid, strict, expected)` to make the distinction introduced by SPEC-05 R30a explicit in the benchmark contract. A new benchmark `cascade_cross` (R18) is introduced as the primary validation vehicle for strict-mode multi-round behavior. No existing benchmarks are removed and no metric fields of `BenchmarkResult` are changed. Source: plano curious-sleeping-patterson, Fase 1. v3.1.1 (2026-04-11): R17d (ChurchSumOfSquares) updated to match the actual implementation in `src/encoding/arithmetic.rs`. The benchmark pre-encodes each square `i^2` as a canonical Church numeral via `encode_church_into` and folds the chain with `wire_add_into`, instead of composing `wire_mul_into` inside `wire_add_into` as originally specified. Rationale: composing `wire_mul_into` inside an add chain produces reduced nets with nested DUP sharing boundaries mid-chain that the current `decode_shared_chain` cannot traverse (it only handles a single terminal DUP boundary produced by `mul(a,b)` alone), making value-based verification impossible without a decoder refactor that is out of scope for a demonstrative benchmark. The PortRef helpers `wire_add_into` and `wire_mul_into` still exist and `build_add` / `build_mul` remain thin wrappers over them; `wire_mul_into` is simply not called from the sum-of-squares path. No other benchmarks are affected. Source: plano curious-sleeping-patterson Risk #1.
 
 ---
 
@@ -88,7 +88,7 @@ pub trait Benchmark {
 
 ### 3.2 Mandatory Benchmarks
 
-**R8.** Relativist MUST implement at least 11 benchmarks organized by overhead profile (10 general-purpose benchmarks plus `cascade_cross` as the strict-mode validation benchmark, R17c). **(MUST)**
+**R8.** Relativist MUST implement at least 12 benchmarks organized by overhead profile (10 general-purpose benchmarks plus `cascade_cross` as the strict-mode validation benchmark (R17c) plus `church_sum_of_squares` as the demonstrative arithmetic benchmark (R17d, SHOULD)). **(MUST)**
 
 #### 3.2.1 Profile A -- Embarrassingly Parallel
 
@@ -294,6 +294,32 @@ All pairs are fully independent (unique FreePort IDs per SPEC-12 R41), so post-C
 **Correctness:** The cascade_cross verifier MUST compare sequential and distributed results by full graph isomorphism (`nets_isomorphic`), the same as MixedNet and ErasurePropagation. The default sizes are deliberately kept small (maximum 1_000) so that the isomorphism check remains tractable regardless of the strict-mode round count.
 
 **Benchmark matrix note:** cascade_cross MUST be executed in BOTH lenient and strict modes for the same configurations. The strict-mode run is the one that produces non-trivial `rounds > 1` data; the lenient-mode run serves as the non-regression baseline (proving that strict mode did not accidentally become the default for other benchmarks and confirming that the two modes reach the same Normal Form via G1 verification on every repetition).
+
+#### 3.2.8 Demonstrative Arithmetic Benchmark
+
+**R17d.** The **ChurchSumOfSquares** benchmark SHOULD generate a net encoding the sum of squares `sum_{i=1..N} i^2` by (a) pre-encoding each square `i^2` as a canonical Church numeral directly in Rust via `encode_church_into(net, i * i)` and (b) folding the resulting Church numerals right-to-left with `wire_add_into` across `i in (1..=N).rev()`, where N is the size parameter. The result MUST decode (via `decode_nat_or_shared`) to `N*(N+1)*(2*N+1)/6` AND the distributed result MUST equal the sequential result by value (with graph isomorphism as a fallback). NOTE: `wire_mul_into` is deliberately NOT used inside the fold even though it exists and is exercised by standalone `build_mul` tests. Composing `wire_mul_into` inside `wire_add_into` produces reduced nets whose inner `mul` DUP sharing boundaries end up mid-chain in the outer `add` result, which the current `decode_shared_chain` cannot traverse — it only handles a single terminal DUP boundary. A decoder extension for nested DUP boundaries is out of scope for this demonstrative benchmark. **(SHOULD)**
+
+| Property | Value |
+|----------|-------|
+| Encoding | Pre-encoded canonical Church numerals for each `i^2` (via `encode_church_into`), folded right-to-left by a chain of `wire_add_into` calls |
+| Problem | sum_{i=1..N} i^2 |
+| Closed form | N*(N+1)*(2*N+1)/6 |
+| Initial agents | `sum_{i=1..N}(2*i^2 + 1) + O(N)` = `N(N+1)(2N+1)/3 + O(N)` (squares are pre-encoded, so initial agent count already scales cubically in N) |
+| Final agents | `~2 * N(N+1)(2N+1)/6 + 1` (unchanged: result is the Church numeral for the sum of squares) |
+| Initial redexes | O(N) CON-CON beta-entry points, one per `wire_add_into` splice |
+| Rounds (grid, lenient) | 1 |
+| Rounds (grid, strict, expected) | O(N) (1D dependency chain across the add fold) |
+| Rules exercised | CON-CON (beta), CON-DUP (add expansion over the pre-encoded Church operands) |
+| Profile | B (expansion driven by the add fold over growing Church operands) |
+| Default sizes | [5, 10, 30, 50, 100] |
+| Correctness | value equivalence via `decode_nat_or_shared`, with `nets_isomorphic` fallback |
+| Purpose | article/defense arithmetic demonstration (NOT part of frozen performance campaigns) |
+
+**Purpose:** ChurchSumOfSquares is the single benchmark whose purpose is **explicitly demonstrative, not comparative**. It exists so that the TCC article and defense can exhibit the Relativist grid executing a recognizable arithmetic computation from start to finish and verifying the result against a closed-form formula (Archimedes/Faulhaber: `sum_{i=1..N} i^2 = N(N+1)(2N+1)/6`). The benchmark uses the existing `build_add` infrastructure via the new PortRef-based `wire_add_into` helper to fold the chain of N additions, while each square `i^2` is pre-encoded as a canonical Church numeral directly in Rust through `encode_church_into`. The sibling `wire_mul_into` helper (and `build_mul`) remain part of the codebase and are exercised by standalone multiplication tests and the ChurchMul benchmark, but they are not composed inside the sum-of-squares fold for the decoder-compatibility reasons documented in R17d. No new combinators are introduced.
+
+**Scope boundary:** ChurchSumOfSquares MUST NOT be included in frozen performance campaigns (`v1_local_baseline`, `v1_stress`). It is exercised only via the CLI smoke tests (`relativist bench run --benchmark church_sum_of_squares`) documented in `USAGE_GUIDE.md` Section 11.8. Performance numbers reported for this benchmark are illustrative, not benchmark-grade.
+
+**Rationale:** All other arithmetic benchmarks (ChurchAdd, ChurchMul) are comparative — they contribute to the scaling curves and frozen campaigns. ChurchSumOfSquares fills a different need: a single, visual, "grid computed this number" demonstration for the written and oral defense of the TCC. Sum of squares was chosen because (a) it has a closed-form formula (`N(N+1)(2N+1)/6`) that reviewers instantly recognize, (b) it naturally chains N additions over Church numerals whose magnitudes grow quadratically in N, producing a final Church result whose agent count grows cubically in N and delivering substantial Profile B work from a compact size parameter (e.g., N=100 yields a final net of ~680k agents), and (c) the expansion profile under reduction is strictly Profile B, matching the TCC's real target. The benchmark does not artificially force any agent-type coverage (no pair/fst/K combinator gymnastics); ERA-producing rules may or may not fire incidentally during reduction.
 
 ### 3.3 Mandatory Metrics
 
@@ -512,7 +538,7 @@ For each (benchmark, size, workers, mode):
 
 **R36.** Correctness verification MUST be executed on EACH repetition of EACH datapoint, not just once per configuration. **(MUST)**
 
-**R37.** Verification MUST use the benchmark-specific verifier (`Benchmark::verify`). For benchmarks with an empty normal form (EP, DualTree), the verifier MUST check that the result net has 0 agents. For benchmarks with a non-trivial result (TreeSum, MixedNet, ErasurePropagation, ChurchAdd), the verifier MUST compare with the sequential result by graph isomorphism (SPEC-08, `nets_isomorphic`) or by a benchmark-specific metric. **(MUST)**
+**R37.** Verification MUST use the benchmark-specific verifier (`Benchmark::verify`). For benchmarks with an empty normal form (EP, DualTree), the verifier MUST check that the result net has 0 agents. For benchmarks with a non-trivial result (TreeSum, MixedNet, ErasurePropagation, ChurchAdd), the verifier MUST compare with the sequential result by graph isomorphism (SPEC-08, `nets_isomorphic`) or by a benchmark-specific metric. For the demonstrative ChurchSumOfSquares benchmark (R17d), the verifier MUST first decode the result via `decode_nat_or_shared` and compare the decoded value against the closed-form `N*(N+1)*(2*N+1)/6` and against the decoded sequential result, falling back to `nets_isomorphic` only if decoding fails. **(MUST)**
 
 **R37a.** Graph isomorphism for correctness verification MAY use a lightweight check when performance is a concern: (a) same agent count per symbol, (b) same wire count, (c) same free port count, (d) same redex count (must be 0 for normal form). Full structural isomorphism (canonical graph comparison via `nets_isomorphic`) SHOULD be used when the lightweight check passes and the result is small (< 1000 agents). For empty-result benchmarks (EP, DualTree), the verifier SHOULD simply check `agent_count == 0`. **(MAY for lightweight; SHOULD for full isomorphism on small nets)**
 
@@ -632,6 +658,8 @@ pub enum BenchmarkId {
     ChurchMul,
     /// R17c: strict-mode multi-round validation benchmark.
     CascadeCross,
+    /// R17d: demonstrative sum-of-squares benchmark (non-comparative, not in frozen campaigns).
+    ChurchSumOfSquares,
 }
 
 /// Execution mode.
@@ -948,6 +976,7 @@ codigo/relativist/
       church_add.rs          # ChurchAdd (SPEC-14)
       church_mul.rs          # ChurchMul (SPEC-14, SHOULD)
       cascade_cross.rs       # CascadeCross (R17c, strict-mode validation)
+      church_sum_of_squares.rs # ChurchSumOfSquares (R17d, demonstrative, SHOULD)
     io/
       examples.rs        # Canonical net generator functions (SPEC-12 R35-R42a)
   src/bin/
@@ -976,6 +1005,7 @@ The table below summarizes the complete experimental plan. The total number of d
 | ChurchAdd | B | 4 | 13 | 5 | 260 |
 | ChurchMul (SHOULD) | B | 4 | 13 | 5 | 260 |
 | CascadeCross (strict + lenient) | B | 5 | 13 x 2 modes | 5 | 650 |
+| ChurchSumOfSquares (demonstrative, not in frozen campaigns) | B | 5 | n/a (smoke only) | n/a | n/a |
 | **Total** | | | | | **~4810** |
 
 **Note on config count:** Each benchmark has 13 configurations per size: 1 sequential baseline (mode=Sequential, workers=0) + 4 worker counts (1,2,4,8) x 3 distributed modes (Local, TcpLocalhost, TcpNetwork) = 13. The Sequential mode (R26) is the baseline; it does not combine with non-zero worker counts.
@@ -1076,6 +1106,7 @@ The TCC's research question (OBJETIVO_TCC.md) asks whether IC properties "allow 
 | (does not exist) | ChurchAdd | New. SPEC-14. Arithmetic computation via Church encoding. Profile B. |
 | (does not exist) | ChurchMul (SHOULD) | New. SPEC-14. Multiplication with O(a*b) interactions. Profile B. |
 | (does not exist) | CascadeCross | New. R17c. Synthetic multi-round BSP stress test. The only benchmark whose strict-mode round count measurably differs from lenient-mode (`rounds == 1`). Primary validation vehicle for SPEC-05 R30a and SPEC-01 D6 v3.1. Profile B. |
+| (does not exist) | ChurchSumOfSquares | New. SPEC-09 R17d. Demonstrative sum-of-squares: squares pre-encoded as canonical Church numerals, chained by `wire_add_into` fold. Profile B. Not part of frozen campaigns. |
 
 ### 6.2 Metrics: prototype vs. Relativist
 
