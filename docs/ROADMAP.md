@@ -579,6 +579,366 @@ Complements 2.16 (streaming reduction) and 2.17 (streaming arithmetic) — a del
 
 ---
 
+## v2 — Memory-Bounded Distributed Reduction (items 2.27–2.36) **(confluence-enabled)**
+
+The v1 architecture is completely eager: `bench.make_net(size)` constructs ALL agents in coordinator memory, `split(net, num_workers, strategy)` requires the FULL net to compute the allocation function σ, the coordinator holds the full net plus all K partitions during dispatch, and after each BSP round `merge()` reconstructs the full net on the coordinator. Memory per agent is ~64 bytes (8 bytes `Agent` + 3 × ~8 bytes `PortRef` indexed + padding). A 100 M agent net ≈ 6.4 GB. A 1 B agent net ≈ 64 GB — exceeding the RAM of any single node in a realistic volunteer grid.
+
+The coordinator should be capable of GENERATING the net and DISTRIBUTING work simultaneously. Instead of build-all-then-split, the coordinator should pipeline generation with partitioning and dispatch. The net should never need to fully exist in memory at once.
+
+**Theoretical foundation.** Strong confluence (Lafont 1997, Property P1 in ARG-001) guarantees that the result of reduction is identical regardless of who reduces what and in what order. This means partial nets can be dispatched safely: if worker W receives agents A1..A500 and worker V receives agents A501..A1000, the union of their reductions converges to the same normal form as reducing the full net sequentially. Mackie and Sato (REF-015) demonstrated that streaming operations enable dramatically more parallelism than batch — the same principle applies to net generation and dispatch, not just reduction.
+
+**The four memory peaks in v1.** Each is a separate bottleneck requiring a different technique:
+
+1. **Generation peak:** `make_net(size)` allocates the full `Net` (in `src/io/generators.rs`, `src/encoding/church.rs`). **Addressed by 2.27, 2.29, 2.36.**
+2. **Partitioning peak:** `split()` in `src/partition/split.rs` requires the full net to compute σ via `strategy.allocate(&net, num_workers)`, classify all wires, and build all K subnets simultaneously. **Addressed by 2.28, 2.30.**
+3. **Dispatch peak:** The coordinator holds the full net AND all K partitions between `split()` return and the last `AssignPartition` send. **Addressed by 2.27, 2.30.**
+4. **Merge peak:** `merge()` in `src/merge/core.rs` allocates a result `Net` sized to `max_agents_len` and copies all partition data into it. **Addressed by 2.33, 2.34, 2.35.** (Also partially by 2.26 Delta-Only Protocol.)
+
+### 2.27 Streaming Net Generation (Producer-Consumer Pipeline)
+
+Replace the `Benchmark::make_net(&self, size: u32) -> Net` signature with a streaming variant that emits agents in bounded batches instead of constructing the full net upfront.
+
+**How it would work in Relativist.**
+
+1. Add a new trait method to `Benchmark` (in `src/bench/mod.rs`):
+   ```rust
+   fn make_net_stream(&self, size: u32) -> Box<dyn Iterator<Item = AgentBatch>>
+   ```
+   where `AgentBatch` contains a `Vec<(AgentId, Symbol, Vec<(PortId, PortRef)>)>` — a batch of agents with their connections. The batch size is configurable (default: 10,000 agents), bounding memory to `batch_size × 64 bytes` per batch in flight.
+
+2. The existing `make_net()` becomes a convenience wrapper: `fn make_net(&self, size: u32) -> Net { collect_stream(self.make_net_stream(size)) }`. Backward compatibility preserved for callers that need the full net (sequential baseline, verification).
+
+3. Each generator in `src/io/generators.rs` gains a streaming variant. For `ep_annihilation`, the stream emits batches of ERA-ERA pairs — trivial because pairs are independent. For `dual_tree`, the stream emits tree layers bottom-up, which is more complex because parent nodes need to reference child ports from previous batches.
+
+4. The coordinator's BSP loop (`src/merge/grid.rs`) gains a new entry point `run_grid_streaming()` that reads batches from the stream, assigns each batch to a worker via the partitioning strategy, and dispatches immediately. The coordinator never holds more than one batch in memory plus the border tracking structure.
+
+5. **Channel-based backpressure.** When integrated with tokio (Phase 3), the stream becomes an async `Stream` over a bounded `tokio::sync::mpsc` channel. If the coordinator cannot dispatch fast enough, the channel fills up and the generator blocks — natural bounded memory.
+
+**Challenge: cross-batch wires.** When an agent in batch B1 has a port connected to an agent in batch B2 (not yet emitted), the connection target does not exist at emission time. Two resolution strategies:
+
+- **(a) Forward references.** The batch carries `PendingConnection(source_agent_id, source_port, target_agent_id, target_port)` entries. The coordinator (or the receiving worker) buffers these and resolves them when the target agent arrives. This is how `dual_tree` would work: leaf-to-parent connections are forward references resolved when the parent batch arrives.
+- **(b) Two-pass emission.** The generator emits all agents in pass 1 (DISCONNECTED ports), then all connections in pass 2. Simpler but wastes the opportunity to dispatch agents while connections are still being computed.
+
+Strategy (a) is preferred because it allows pipelining.
+
+**What it solves.** Eliminates memory peak #1 (generation) and #3 (dispatch, when combined with 2.30). Coordinator peak memory drops from `O(total_agents)` to `O(batch_size + border_tracking_state)`.
+
+**What it does NOT solve.** Partitioning peak (#2) — requires a streaming partitioning strategy (2.28). Merge peak (#4). Does not help with the sequential baseline, which still needs the full net for `reduce_all`.
+
+**Complexity:** Medium. ~500 lines: 80 for `AgentBatch` type and trait extension, 200 for streaming generator variants, 150 for `run_grid_streaming()` skeleton, 70 for tests.
+
+**Dependencies:** 2.28 (streaming partitioning) for full benefit. Can be implemented independently but only useful if the partitioning strategy can also operate on batches.
+
+### 2.28 Online/Streaming Graph Partitioning
+
+Replace `ContiguousIdStrategy` (which requires a full scan of all live agents in `src/partition/strategy.rs`) with partitioning strategies that can assign agents to workers on-the-fly, one batch at a time, without a global view of the net.
+
+**How it would work in Relativist.**
+
+1. Add a new trait alongside `PartitionStrategy`:
+   ```rust
+   trait StreamingPartitionStrategy {
+       fn allocate_batch(&mut self, batch: &AgentBatch, num_workers: u32) -> Vec<(AgentId, WorkerId)>;
+       fn finalize(&self) -> StreamingPartitionStats;
+   }
+   ```
+   The strategy is stateful (`&mut self`) because it may track per-worker load for balancing.
+
+2. **Hash-based strategy (simplest, stateless):**
+   ```rust
+   fn allocate_batch(&mut self, batch, num_workers) -> ... {
+       batch.agents.iter().map(|(id, ..)| (*id, id % num_workers)).collect()
+   }
+   ```
+   No global view needed. O(1) per agent. Partition quality is poor — hash assignment ignores topology entirely. But it *works* and requires zero memory beyond the current batch.
+
+3. **FENNEL/LDG streaming partitioning (better quality):** The FENNEL algorithm (Tsourakakis et al., KDD 2014) and LDG (Stanton & Kliot, 2012) maintain per-worker degree counters and assign each vertex to the worker where it has the most existing neighbors, with a capacity penalty. For Relativist: the strategy tracks `worker_degree[w]` (total agents assigned to w) and `worker_neighbors[w]` (connections from the current agent to agents already assigned to w). The state is O(num_workers) per agent — tiny. When assigning agent A, look at its ports; for each port connected to an already-assigned agent B, increment `worker_neighbors[σ(B)]`. Assign A to `argmax(neighbors[w] - α × degree[w])`. This requires a lookup table `sigma_cache: HashMap<AgentId, WorkerId>` that grows to O(total_agents) — but only the ID-to-worker mapping (~8 bytes per agent vs. ~64 bytes per agent for the full net). For 100 M agents: ~800 MB vs. ~6.4 GB — an 8× reduction.
+
+4. **Round-robin strategy (middle ground):** Assign agents `agent_index % num_workers`. Same partition quality as `ContiguousIdStrategy` for sequential generators. O(1) per agent, no state. Likely the default for v2 because it preserves existing partition quality while enabling streaming.
+
+**What it solves.** Eliminates memory peak #2 (partitioning). The partitioner processes one batch at a time.
+
+**What it does NOT solve.** Wire classification in `src/partition/helpers.rs::classify_wires` currently scans all agents to identify border wires. Under streaming partitioning, border wires are discovered incrementally — a wire becomes a border when its endpoints land on different workers. The border map must be built as an accumulator, changing the `WireClassification` return type.
+
+**Trade-off: partition quality vs. memory.** `ContiguousIdStrategy` produces near-optimal quality for the TCC benchmark suite because agent IDs correlate with topology. Hash/round-robin strategies lose this correlation. The trade-off is acceptable: for nets too large to fit in memory, ANY partitioning that *works* is infinitely better than one that requires the full net.
+
+**Complexity:** Medium. ~400 lines: 60 for the trait, 80 for hash/round-robin strategies, 150 for FENNEL adaptation, 110 for tests.
+
+**Dependencies:** 2.27 (streaming generation) provides the batches. Can be tested independently with a synthetic batch iterator.
+
+**References:**
+
+- [FENNEL: Streaming Graph Partitioning for Massive Scale Graphs (Tsourakakis et al., KDD 2014)](https://doi.org/10.1145/2556195.2556213) — the balanced streaming partitioner that trades global optimality for single-pass, bounded-memory operation.
+- [Streaming Graph Partitioning for Large Distributed Graphs (Stanton & Kliot, KDD 2012)](https://doi.org/10.1145/2339530.2339722) — LDG heuristic, predecessor to FENNEL.
+
+### 2.29 Distributed/Parallel Net Generation (Recipe-Based)
+
+The most memory-efficient approach: the coordinator never holds the net at all. Instead of generating the net centrally and distributing partitions, the coordinator sends a *generation recipe* to each worker. Each worker generates its own portion of the net deterministically, skipping the coordinator entirely.
+
+**How it would work in Relativist.**
+
+1. Add a `GenerationRecipe` struct (in `src/bench/mod.rs` or a new `src/generation/mod.rs`):
+   ```rust
+   struct GenerationRecipe {
+       benchmark_id: BenchmarkId,
+       size: u32,
+       worker_id: WorkerId,
+       num_workers: u32,
+       id_range: IdRange,
+   }
+   ```
+
+2. Add a new method to `Benchmark`:
+   ```rust
+   fn make_local_partition(&self, recipe: &GenerationRecipe) -> Partition
+   ```
+   The worker calls this to generate only its portion. For `ep_annihilation(N)` with K workers: worker `w` generates pairs `w*chunk..min((w+1)*chunk, N)` where `chunk = ceil(N/K)`. Each worker creates agents with IDs in its assigned `id_range`, ensuring disjoint ID spaces without coordinator involvement.
+
+3. The coordinator FSM gains a new dispatch path: instead of `SplitComplete(Vec<Partition>)` followed by `AssignPartition`, the coordinator sends `AssignRecipe { recipe }`. The worker generates its partition locally and immediately begins reduction.
+
+4. **Border wire handling.** For `ep_annihilation_con` (independent pairs), no cross-pair wires → no borders between workers (assuming each worker generates complete pairs). For `dual_tree(D)` with a single root wire connecting two mirrored trees, the recipe must specify border endpoints: `borders: Vec<(PortRef, borderId)>`. The coordinator computes this small border specification (O(borders), not O(agents)) and includes it in the recipe.
+
+5. **Deterministic generation.** Each worker must produce exactly the same net fragment that centralized generation + partitioning would yield. Generators accept an `id_range` parameter for agent ID allocation. Currently `Net::create_agent` uses `next_id` and increments; with recipe-based generation, the worker pre-sets `next_id = recipe.id_range.start` and IDs fall naturally into the assigned range. The `IdRange` infrastructure already exists in `src/partition/helpers.rs::compute_id_ranges`.
+
+**What it solves.** Eliminates ALL four memory peaks on the coordinator side. Coordinator memory is O(K × recipe_size) — typically a few hundred bytes. Workers each hold only their local partition — O(total_agents / K) per worker. This is the theoretical minimum.
+
+**What it does NOT solve.** Not all topologies can be generated distributedly. Church encoding (`encode_church_into` in `src/encoding/church.rs`) builds a DUP chain that must be contiguous. For the TCC benchmark suite, all generators except `tree_sum` and `church_*` are parallelizable. Church numeral generation is inherently sequential because the DUP-chain structure does not decompose cleanly across workers.
+
+**Complexity:** Medium-High. ~700 lines: 80 for `GenerationRecipe` and protocol, 400 for distributed generator variants (one per benchmark), 120 for border specification logic, 100 for tests.
+
+**Dependencies:** None (fully independent of 2.27 and 2.28). Can coexist: use recipe-based generation for simple benchmarks and streaming generation for complex ones.
+
+### 2.30 Chunked Generation with Incremental Partitioning
+
+A hybrid of 2.27 and 2.28: generate the net in chunks of C agents, partition each chunk independently using a streaming strategy, and dispatch chunks to workers as they are generated.
+
+**How it would work in Relativist.**
+
+1. A new function `generate_and_dispatch_chunked()` in `src/merge/grid.rs`:
+   ```rust
+   fn generate_and_dispatch_chunked(
+       bench: &dyn Benchmark,
+       size: u32,
+       chunk_size: usize,
+       num_workers: u32,
+       strategy: &mut dyn StreamingPartitionStrategy,
+   ) -> Vec<Partition>
+   ```
+   Internally: generate `chunk_size` agents, assign each to a worker via `strategy.allocate_batch()`, append agents/ports to per-worker `Partition` accumulators, repeat until all agents generated.
+
+2. **Cross-chunk connections.** When agent A (chunk C1, worker W1) connects to agent B (chunk C2, worker W2 ≠ W1), this wire becomes a border. The border map accumulates incrementally. When A connects to B but B has not been assigned yet, the connection is stored as a *pending border* and resolved when B's chunk is processed.
+
+3. **Memory profile.** At any point, the coordinator holds: (a) current chunk (~64C bytes), (b) per-worker partition accumulators (growing, but each sized to local max_id, not global), (c) border map + pending-border buffer. Peak memory is O(total_agents) in the worst case (agents live in accumulators), but with an important improvement: accumulators use dense `Net` layout sized to `max_agent_id_in_this_worker` rather than `max_agent_id_globally`.
+
+4. **Early dispatch.** If workers support receiving multiple partial partitions (cf. 2.19 chunking on the protocol level), the coordinator can dispatch partial partitions as soon as a chunk is partitioned. Workers accumulate locally. This pipeline keeps coordinator peak memory at `O(chunk_size + border_map_size)` instead of `O(total_agents)`.
+
+**What it solves.** Reduces peaks #1 (generation — one chunk at a time), #2 (partitioning — incremental), and #3 (dispatch — if early dispatch enabled).
+
+**What it does NOT solve.** Merge peak (#4). Sequential baseline. Workers accumulate the full local partition before reduction begins (unless combined with 2.36).
+
+**Complexity:** Medium. ~600 lines: 150 for chunked generation loop, 100 for partition accumulator logic, 80 for pending-border resolution, 120 for early dispatch protocol changes, 150 for tests.
+
+**Dependencies:** 2.28 (streaming partitioning strategy) for chunk assignment. Can use simple round-robin without 2.28.
+
+### 2.31 Memory-Mapped / Out-of-Core Net Representation
+
+Replace the in-memory `Vec<Option<Agent>>` and `Vec<PortRef>` backing the `Net` struct with memory-mapped file-backed storage. The OS virtual memory manager handles paging — only active pages reside in physical RAM.
+
+**How it would work in Relativist.**
+
+1. Add a new `MmapNet` type (in `src/net/mmap.rs`) that mirrors the `Net` API but backs `agents` and `ports` with an mmap-ed anonymous file (Linux: `memfd_create` + `mmap`; Windows: `CreateFileMapping` + `MapViewOfFile`). The `memmap2` crate provides a cross-platform abstraction.
+
+2. `MmapNet::create_agent()`, `connect()`, `get_target()` work through raw pointer arithmetic into the mapped region, with the same `agent_id * PORTS_PER_SLOT + port_id` indexing. The OS pages in/out 4 KB pages as needed.
+
+3. The reduction engine in `src/reduction/engine.rs` would need to be made generic over a `NetStorage` trait (or `MmapNet` would implement `Deref` to slice types that the engine already consumes).
+
+4. **Arena size.** For 100 M agents: `agents` = 800 MB, `ports` = 2.4 GB. Total mapped: ~3.2 GB. On a 4 GB RAM machine, the OS pages most to disk, with only actively-accessed pages in memory.
+
+**What it solves.** Allows any single node to handle nets larger than physical RAM, transparently. Existing code barely changes.
+
+**What it does NOT solve.** I/O latency. Disk-backed pages are ~1000× slower than RAM. The reduction hot path (`reduce_step` in `src/reduction/engine.rs`) indexes into the port array on every interaction — if the accessed page is on disk, that interaction takes ~0.1 ms instead of ~1 ns. This makes mmap impractical for the reduction loop itself; it is only viable for the generation and partitioning phases where sequential access patterns allow prefetching.
+
+**Platform differences.** Windows and Linux have different mmap semantics, page sizes, and eviction policies. The `memmap2` crate abstracts the API but not the performance characteristics.
+
+**Complexity:** Medium-High. ~500 lines: 200 for `MmapNet` and storage abstraction, 100 for platform-specific setup, 100 for integration with generation path, 100 for tests. Reduction engine generification may require 300+ additional lines.
+
+**Dependencies:** None. Fully independent. Most useful as a stopgap before the more invasive streaming approaches.
+
+### 2.32 Sparse Net Representation
+
+Replace the dense `Vec<Option<Agent>>` with `HashMap<AgentId, Agent>` and the flat `Vec<PortRef>` with `HashMap<(AgentId, PortId), PortRef>`. Memory becomes proportional to live agents only, with no tombstone slots or padding.
+
+**How it would work in Relativist.**
+
+1. Add a `SparseNet` type (in `src/net/sparse.rs`):
+   ```rust
+   struct SparseNet {
+       agents: HashMap<AgentId, Agent>,
+       ports: HashMap<(AgentId, PortId), PortRef>,
+       redex_queue: VecDeque<(AgentId, AgentId)>,
+       next_id: AgentId,
+       root: Option<PortRef>,
+   }
+   ```
+
+2. `build_subnet()` in `src/partition/helpers.rs` currently allocates `vec![None; max_id + 1]` — under `ContiguousIdStrategy`, the last worker's subnet has `max_id = total_agents - 1`. With `SparseNet`, the subnet contains only the worker's actual agents. For `ep_annihilation_con=10M w=4`: each worker owns 2.5 M agents ≈ 160 MB sparse, vs. ~640 MB for the last worker's dense arena.
+
+3. **Hybrid approach.** Use `SparseNet` for construction and partitioning (where proportionality matters), then convert to dense `Net` before the reduction loop (where O(1) indexed access matters). `reduce_step()` in `src/reduction/engine.rs` accesses `net.agents[id]` and `net.ports[id * 3 + port]` — O(1) lookups that would become O(1) amortized but with 5-10× worse constant factor due to hashing and cache misses. The hybrid avoids this: `SparseNet::to_dense() -> Net` is O(live_agents) and runs once per partition.
+
+**What it solves.** Reduces memory for construction and partitioning phases (#1, #2). Effective when the dense arena has high tombstone ratios.
+
+**What it does NOT solve.** Reduction hot path (dense indexing is fundamental). Converting sparse-to-dense before reduction means peak memory during reduction is unchanged. Merge peak (#4) unchanged.
+
+**Complexity:** Medium. ~600 lines: 200 for `SparseNet` struct and API, 100 for hybrid conversion, 150 for integration with `build_subnet()`, 150 for tests.
+
+**Dependencies:** None. Can be applied independently as an optimization to `build_subnet()`.
+
+### 2.33 Arena Recycling / GC During Reduction
+
+Add periodic compaction to the `Net` struct: copy live agents to a new, smaller arena, reclaiming tombstoned slots. This bounds memory for workloads where agents are created then destroyed.
+
+**How it would work in Relativist.**
+
+1. Add a `Net::compact()` method (in `src/net/core.rs`):
+   - Allocate new `agents` and `ports` Vecs sized to `live_count + headroom`.
+   - Build a remapping table `old_id → new_id` for live agents.
+   - Copy agents with new IDs; update all `PortRef::AgentPort(old_id, port)` references.
+   - Update `redex_queue`, `root`, `freeport_redirects`.
+
+2. Trigger compaction in `reduce_all` (or `reduce_n`) when tombstone ratio exceeds a threshold: `tombstones / arena_len > 0.5` and `arena_len > 100_000`. Amortizes the O(live_agents) copy cost.
+
+3. **ID renumbering is the hard part.** Every `PortRef::AgentPort(id, port)` in the port array, redex queue, `freeport_redirects`, and `root` must be updated. If any external reference to old IDs exists (e.g., the border map in a partition), compaction invalidates it. Compaction must be restricted to contexts with no external references: during `reduce_all` on a standalone net or after all external structures are internalized.
+
+4. **Alternative: free-list recycling without renumbering.** Maintain a free list of tombstoned slots and reuse them for new agents. `create_agent()` pops from the free list instead of incrementing `next_id`. Avoids renumbering entirely but does not shrink the arena — only prevents growth when new agents replace destroyed ones. For `con_dup_expansion`: significant benefit (each commutation destroys 2 and creates 4 — the 2 destroyed slots are immediately reused).
+
+**What it solves.** Bounds memory growth for workloads with high agent turnover. After compaction, memory proportional to live agents, not high-water mark.
+
+**What it does NOT solve.** Generation peak (#1), partitioning peak (#2), merge peak (#4). Only helps during reduction.
+
+**Complexity:** High (full compaction with renumbering) / Low (free-list only). Full: ~700 lines. Free-list: ~150 lines (strictly local change to `Net`).
+
+**Dependencies:** None. Independent of all other items.
+
+### 2.34 Coordinator-Free Round (Merge Avoidance) **(confluence-enabled)**
+
+In strict BSP mode, when a worker's partition has no border redexes after local reduction, the worker can proceed to the next round without returning to the coordinator. The coordinator only involves when border redexes require resolution.
+
+**How it would work in Relativist.**
+
+1. After `reduce_all` (or `reduce_n`), each worker inspects its `free_port_index` to determine whether any border ports are involved in active pairs. If no border agent's principal port is connected to another agent's principal port → partition is "internally stable."
+
+2. The worker reports `RoundResult { has_border_redexes: false, stats }` — a lightweight message without the full partition payload.
+
+3. The coordinator tracks per-worker border status. When ALL workers report `has_border_redexes: false`, the net is in Normal Form (internal redexes resolved by each worker, no border redexes). The coordinator requests final state and terminates.
+
+4. When SOME workers report border redexes, the coordinator merges only partitions with border involvement. Workers without border redexes skip the merge entirely and retain their partition state.
+
+**What it solves.** Reduces coordinator memory peaks during rounds where no merge is needed. Reduces network traffic. Effective for `ep_annihilation` workloads where most agents annihilate internally.
+
+**What it does NOT solve.** Initial generation/partitioning/dispatch peaks.
+
+**Complexity:** Low-Medium. ~300 lines: 100 for border-redex detection on worker side, 80 for coordinator per-worker tracking, 70 for skip-merge logic, 50 for tests.
+
+**Dependencies:** Benefits from 2.26 (Delta Protocol) but can be implemented independently. Requires strict BSP mode (already shipped in v0.10.0-bench).
+
+### 2.35 Delta-Based Merge (Lightweight Border Resolution) **(confluence-enabled)**
+
+Replace the full-net reconstruction in `merge()` with a protocol where the coordinator holds only the border graph and applies delta updates from workers. The full net is never reconstructed until final output.
+
+**How it would work in Relativist.**
+
+1. Add a `BorderGraph` struct (in `src/merge/types.rs`):
+   ```rust
+   struct BorderGraph {
+       borders: HashMap<u32, BorderState>,   // borderId → current state
+       worker_borders: Vec<Vec<u32>>,        // per-worker list of borderIds
+   }
+   ```
+   where `BorderState` stores the two endpoints and whether they form an active pair.
+
+2. After each round, workers send only border port changes: `Vec<(borderId, PortRef)>` — a list of border ports whose targets changed during local reduction. Coordinator updates `BorderGraph`.
+
+3. When a border becomes an active pair (both endpoints are principal ports), the coordinator resolves it. Two options:
+   - **(a)** Coordinator requests the two involved agents from respective workers, performs the interaction locally, sends results back as deltas. Stays within the star topology.
+   - **(b)** Coordinator sends `ResolveBorder` to one worker, which fetches remote agent data from the other worker (peer-to-peer). Requires worker-to-worker communication.
+
+   Option (a) is simpler and compatible with v1's star topology.
+
+4. **Convergence check.** The BSP loop converges when all workers report zero local redexes AND `BorderGraph` has zero active pairs. The coordinator requests full partitions from workers for final output.
+
+**What it solves.** Eliminates memory peak #4 (merge). Coordinator steady-state memory: `O(num_borders × const)` instead of `O(total_agents)`. For `ep_annihilation_con=10M w=4`: borders ≈ 1.25 M, `BorderGraph` ≈ 10 MB vs. ~640 MB for the full merged net.
+
+**What it does NOT solve.** Generation and partitioning peaks (#1, #2). Final output still requires collecting full state.
+
+**Relationship to 2.26.** This is the merge-side counterpart of 2.26's dispatch-side delta protocol. They share the `BorderGraph` concept and should be designed together.
+
+**Complexity:** High. ~800 lines: 200 for `BorderGraph`, 150 for delta application, 150 for border resolution (option a), 100 for convergence check, 200 for tests.
+
+**Dependencies:** Benefits greatly from 2.26 and 2.34. Can be implemented independently.
+
+### 2.36 Lazy / Demand-Driven Generation (Pull Model)
+
+Workers request work when idle (pull model) instead of the coordinator pushing partitions (push model). The coordinator generates the next portion of the net on-demand. Natural backpressure: slow workers do not accumulate unbounded work.
+
+**How it would work in Relativist.**
+
+1. Add new protocol messages: `RequestWork { worker_id }` and `WorkAssignment { agents: AgentBatch, borders: Vec<BorderEntry> }` (or `NoMoreWork` when generation is complete).
+
+2. The coordinator maintains a lazy generator (an `Iterator<Item = AgentBatch>` from 2.27) and a streaming partitioner (from 2.28). When a worker sends `RequestWork`, the coordinator advances the generator by one batch, partitions it, and sends the worker's portion. Peak memory bounded by the number of in-flight batches — at most K batches (one per worker).
+
+3. **Scheduling fairness.** If all workers request simultaneously, the coordinator generates K batches in succession. With a bounded channel (from 2.27), this is naturally rate-limited.
+
+4. **End-of-generation signal.** When the generator is exhausted, coordinator sends `NoMoreWork`. Workers that have received all portions begin reduction.
+
+**What it solves.** Natural backpressure and bounded memory without pre-planning the generation schedule. Particularly useful for heterogeneous grids (WAN deployment per 2.21) where worker speeds vary.
+
+**What it does NOT solve.** Merge phase. Generation order may not be arbitrary: `dual_tree` requires children before parents, `church_add` requires numerals before the combinator. The generator must produce agents in valid topological order, limiting pull flexibility.
+
+**Complexity:** Low-Medium. ~350 lines: 80 for protocol messages, 100 for on-demand dispatch loop, 80 for worker pull logic, 90 for tests.
+
+**Dependencies:** 2.27 (streaming generation) and 2.28 (streaming partitioning). The pull model is an orchestration layer on top of these.
+
+### Recommended Implementation Order
+
+The techniques form a dependency graph with clear critical paths:
+
+**Phase A — Quick wins, independent (1–2 weeks each)**
+
+1. **2.33 Arena Recycling (free-list variant only)** — No renumbering, no dependencies, reduces memory during reduction. ~150 lines. Ship independently.
+2. **2.34 Coordinator-Free Round** — Low complexity, direct benefit for strict BSP mode. ~300 lines. Ship independently.
+
+**Phase B — Streaming foundation (3–4 weeks together)**
+
+3. **2.28 Online/Streaming Graph Partitioning** — Implement hash-based and round-robin strategies first. Prerequisite for every streaming approach.
+4. **2.27 Streaming Net Generation** — Implement streaming variants for `ep_annihilation`, `ep_annihilation_con`, `con_dup_expansion` (independent-pair generators). Skip tree/Church in first pass.
+5. **2.30 Chunked Generation with Incremental Partitioning** — Combine 2.27 and 2.28 into the first working streaming pipeline.
+
+**Phase C — Full coordinator memory elimination (4–6 weeks)**
+
+6. **2.35 Delta-Based Merge** — Eliminate merge peak. Design together with 2.26.
+7. **2.29 Distributed/Parallel Net Generation** — For benchmarks with independent-pair structure. Highest impact for practical deployment.
+8. **2.36 Lazy/Demand-Driven Generation** — Orchestration layer on top of 2.27 + 2.28.
+
+**Phase D — Supplementary (optional, independent)**
+
+9. **2.32 Sparse Net Representation** — Optimization for `build_subnet()`. Useful but not on the critical path.
+10. **2.31 Memory-Mapped Net** — Stopgap for single-node scenarios. Platform-specific complexity may not justify the effort if streaming approaches are available.
+
+### Minimum Viable Pipeline (MVP)
+
+The smallest set of changes that would let the coordinator handle nets larger than available RAM:
+
+1. **2.28 (round-robin streaming partitioner)** — ~80 lines. A trivial `agent_id % num_workers` strategy.
+2. **2.27 (streaming generator for `ep_annihilation_con`)** — ~100 lines for one benchmark. Simplest generator (independent pairs).
+3. **2.30 (chunked generation loop)** — ~150 lines. Wire generator to partitioner and dispatch chunks.
+4. **2.35 (lightweight border-only merge)** — ~200 lines for the minimal version tracking only border state.
+
+**Total: ~530 lines of new code.** This pipeline would allow `ep_annihilation_con=100M` to run on a coordinator with 1 GB RAM and 4 workers each with 2 GB RAM. Coordinator peak memory drops from ~12.8 GB (100 M agents × 2 × 64 bytes) to ~10 MB (batch buffer + border map). Each worker holds ~25 M agents × 64 bytes ≈ 1.6 GB.
+
+The MVP targets `ep_annihilation_con` because it has the simplest topology (independent pairs, trivial borders). Extending to `dual_tree` and `church_*` requires the forward-reference mechanism (2.27) and the border specification (2.29), which are Phase C items.
+
+---
+
 ## The Confluence Argument for the Paper
 
 The features in Section 2 (2.1-2.4) share a common theoretical foundation that should be presented in the TCC's Discussion section (Section 5):
