@@ -422,7 +422,9 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
 /// Build NodeConfig for coordinator mode (SPEC-07 R11-R12).
 ///
 /// Resolves the bind address, supporting "tailscale[:PORT]" shorthand.
-pub fn build_node_config_coordinator(args: &CoordinatorArgs) -> Result<NodeConfig, RelativistError> {
+pub fn build_node_config_coordinator(
+    args: &CoordinatorArgs,
+) -> Result<NodeConfig, RelativistError> {
     let bind = resolve_bind_address(&args.bind)?;
     Ok(NodeConfig {
         bind,
@@ -467,9 +469,9 @@ pub fn build_node_config_worker(args: &WorkerArgs) -> Result<NodeConfig, Relativ
 pub fn resolve_bind_address(bind: &str) -> Result<SocketAddr, RelativistError> {
     // Check for "tailscale:PORT" prefix
     if let Some(port_str) = bind.strip_prefix("tailscale:") {
-        let port: u16 = port_str.parse().map_err(|e| {
-            RelativistError::Config(format!("invalid port in '{}': {}", bind, e))
-        })?;
+        let port: u16 = port_str
+            .parse()
+            .map_err(|e| RelativistError::Config(format!("invalid port in '{}': {}", bind, e)))?;
         let ip = query_tailscale_ip()?;
         return Ok(SocketAddr::new(ip, port));
     }
@@ -480,14 +482,14 @@ pub fn resolve_bind_address(bind: &str) -> Result<SocketAddr, RelativistError> {
     }
 
     // Standard: try SocketAddr parse, then DNS resolution
-    bind.parse().or_else(|_| {
-        use std::net::ToSocketAddrs;
-        bind.to_socket_addrs()
-            .map_err(|e| e.to_string())
-            .and_then(|mut a| a.next().ok_or_else(|| "no addresses found".into()))
-    }).map_err(|e| {
-        RelativistError::Config(format!("invalid bind address '{}': {}", bind, e))
-    })
+    bind.parse()
+        .or_else(|_| {
+            use std::net::ToSocketAddrs;
+            bind.to_socket_addrs()
+                .map_err(|e| e.to_string())
+                .and_then(|mut a| a.next().ok_or_else(|| "no addresses found".into()))
+        })
+        .map_err(|e| RelativistError::Config(format!("invalid bind address '{}': {}", bind, e)))
 }
 
 /// Query the Tailscale daemon for this machine's IPv4 address.
@@ -495,13 +497,17 @@ fn query_tailscale_ip() -> Result<std::net::IpAddr, RelativistError> {
     let output = std::process::Command::new("tailscale")
         .args(["ip", "-4"])
         .output()
-        .map_err(|e| RelativistError::Config(format!(
-            "failed to run 'tailscale ip -4': {}. Is Tailscale installed?", e
-        )))?;
+        .map_err(|e| {
+            RelativistError::Config(format!(
+                "failed to run 'tailscale ip -4': {}. Is Tailscale installed?",
+                e
+            ))
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(RelativistError::Config(format!(
-            "'tailscale ip -4' failed: {}. Is Tailscale running?", stderr.trim()
+            "'tailscale ip -4' failed: {}. Is Tailscale running?",
+            stderr.trim()
         )));
     }
     let ip_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
