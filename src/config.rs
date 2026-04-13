@@ -792,8 +792,8 @@ mod tests {
         let result = resolve_bind_address("tailscale:9000");
         // We can't assert success (depends on environment), but we CAN assert
         // that it doesn't panic and returns a meaningful error if Tailscale is absent.
-        if result.is_err() {
-            let err = result.unwrap_err().to_string();
+        if let Err(e) = result {
+            let err = e.to_string();
             assert!(err.contains("tailscale") || err.contains("Tailscale"));
         }
     }
