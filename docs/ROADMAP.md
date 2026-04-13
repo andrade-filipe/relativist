@@ -939,6 +939,240 @@ The MVP targets `ep_annihilation_con` because it has the simplest topology (inde
 
 ---
 
+## v2 — User Experience and Deployment (items 2.37–2.39)
+
+The v1 architecture validates the core hypothesis (correct distributed IC reduction) but the user experience of installing, configuring, and running Relativist is rough. SmartScreen warns that the binary is dangerous, there is no installer, PATH must be set manually, connecting machines requires firewall configuration, and the only interface is a CLI with 40+ flags. These barriers prevent adoption beyond the author's own machines and make demonstrations (TCC defense, university labs) unnecessarily difficult.
+
+This section documents three complementary improvements: mesh VPN for effortless networking (2.37), streamlined installation and distribution (2.38), and a graphical user interface (2.39). Together, they transform Relativist from a research prototype into a tool that anyone can install and use — mirroring the CLI + GUI + networking model that makes Docker Desktop one of the most accessible developer tools.
+
+### 2.37 Tailscale Mesh VPN Integration
+
+Use Tailscale (a WireGuard-based mesh VPN) as a recommended companion tool for Relativist networking. Instead of requiring users to configure firewalls, set up port forwarding, or manage VPNs, Relativist would detect and leverage an existing Tailscale installation to connect coordinator and workers across any network.
+
+**v1 limitation.** The coordinator binds to a `SocketAddr` (default `127.0.0.1:9000`, per SPEC-10 R5). Workers connect via `--coordinator HOST:PORT`. Both machines must be on the same network with no firewall blocking port 9000. NAT, corporate VPNs, and Wi-Fi client isolation all prevent connection. Even on a home LAN, the user must configure Windows Firewall rules manually. At a university lab, firewall changes may be prohibited entirely.
+
+**Why NOT embed Tailscale.** Tailscale's core is a Go userspace networking stack (`tsnet`). There is no official Rust binding. Embedding would require either (a) calling the Tailscale daemon via its local API, which requires the user to have Tailscale installed anyway, or (b) linking a Go library via CGO/FFI, which adds massive build complexity and defeats the single-binary Rust philosophy. The `tsconnect` library is WASM-targeted and not suitable for CLI embedding. Conclusion: recommend Tailscale as a companion, do not embed it.
+
+**v2 change — Tailscale as companion with thin CLI wrappers.**
+
+1. **Auto-detect Tailscale interface.** Add a `--bind tailscale` shorthand to the coordinator CLI. When specified, Relativist calls `tailscale ip -4` (or reads the `tailscale0`/`utun` interface) to discover the machine's Tailscale IP and binds to it. No manual IP entry needed.
+
+2. **Coordinator DNS advertisement.** Add `--advertise-dns <name>` to the coordinator. When specified, Relativist calls `tailscale set --hostname <name>` or writes a MagicDNS record so that workers can connect by name (e.g., `relativist worker --coordinator my-coordinator:9000`) instead of IP address. This subsumes ROADMAP item 2.8 (Automatic Node Discovery) for Tailscale-connected machines.
+
+3. **Worker auto-discovery.** Add `--discover tailscale` to the worker CLI. When specified, Relativist calls `tailscale status --json`, parses the peer list, and looks for peers with a Relativist-specific tag or DNS name. If exactly one coordinator is found, the worker connects automatically. If multiple are found, it lists them and asks the user to choose.
+
+4. **Documentation.** Add a "Quick Start: Connecting Two Machines" section to USAGE_GUIDE.md that recommends installing Tailscale on both machines, joining the same tailnet, and running `relativist coordinator --bind tailscale` / `relativist worker --coordinator <tailscale-name>:9000`. This replaces the current multi-step firewall+IP setup.
+
+**Benefits for Relativist.**
+
+- **NAT traversal.** Every device on a tailnet is reachable regardless of NAT, firewall, or network topology. No port forwarding needed.
+- **Encryption.** WireGuard encryption is built into every Tailscale connection. For intra-tailnet traffic, this replaces the need for the `tls` feature gate (`rustls`, `tokio-rustls`). The existing TLS feature remains available for non-Tailscale deployments.
+- **Stable addresses.** Tailscale assigns stable IPs (100.x.x.x) that don't change with DHCP leases or network switches. A coordinator's address stays constant across sessions.
+- **ACL-based auth.** Tailscale ACLs can restrict which devices can connect to the coordinator, replacing or supplementing the token-based authentication in SPEC-10.
+- **Zero infrastructure.** No relay server, no VPN server, no certificate authority. Just install Tailscale, join the tailnet, done.
+
+**For the TCC.** Tailscale demonstrates that Relativist can operate as a practical grid computing tool across heterogeneous networks (home, office, university) without infrastructure complexity. This is closer to the BOINC-style volunteer computing vision than a LAN-only deployment. Document in the TCC as a deployment strategy with a single line in the manifest: "transport: Tailscale WireGuard mesh, overhead ≈ 1-2 ms RTT over direct link."
+
+**Relationship to other items.**
+
+- **2.21 (WAN Deployment):** Tailscale is the fastest path to achieving 2.21's goals. 2.21 builds a custom WAN stack (NAT traversal, TLS, relay); 2.37 delegates to a battle-tested existing stack. Complementary: 2.37 for practical deployment now, 2.21 for eventual self-contained operation.
+- **2.8 (Automatic Node Discovery):** Tailscale MagicDNS subsumes 2.8 for tailnet-connected machines.
+- **2.39 (GUI):** The Network screen in the GUI would surface Tailscale status and peer discovery.
+
+**Complexity:** Low for documentation + `--bind tailscale` shorthand (~100 lines). Medium for auto-discovery (~200 lines + `tailscale status` JSON parsing). Total: ~300 lines plus documentation.
+
+**Dependencies:** Tailscale must be installed on the host (free, cross-platform). No changes to Relativist's protocol layer.
+
+### 2.38 Installation and Distribution UX
+
+Streamline the first-time installation experience across all platforms. The current state: Linux has an install script, Windows has a bare `.exe` that triggers SmartScreen with no installer or PATH setup, and macOS has no pre-built binary at all.
+
+**v1 limitation.** Users who download `relativist.exe` from GitHub Releases face: (1) SmartScreen warning ("Windows protected your PC"), requiring right-click → Properties → Unblock or "More info" → "Run anyway"; (2) no automatic installation — the user must create a directory, move the binary, and add it to PATH manually; (3) no Start Menu entry, no uninstall option, no integration with Windows Add/Remove Programs. On macOS, no pre-built binary exists — users must compile from source.
+
+**v2 change — four improvements.**
+
+**1. Code signing (Windows SmartScreen).**
+
+Apply to **SignPath Foundation** (signpath.org), which provides free Authenticode code signing certificates for open-source projects with OSI-approved licenses. Relativist qualifies (MIT license, public GitHub repository).
+
+Process:
+1. Apply at signpath.org with the GitHub repository URL.
+2. Enable MFA on the GitHub account (required).
+3. Approval takes days to weeks.
+4. Once approved, add a signing step to `.github/workflows/release.yml` using the SignPath GitHub Action, after `cargo build --release` for the Windows target.
+5. The signed `.exe` and `.msi` suppress SmartScreen on first run.
+
+Alternative: SmartScreen reputation builds over time with enough downloads, but this is unreliable and provides no guarantee. Not recommended as the primary strategy.
+
+Interim measure (already mandated by SPEC-15 R16): document the bypass in USAGE_GUIDE.md and README.md.
+
+**2. Windows installer (MSI).**
+
+Generate a proper MSI installer using **`cargo-wix`** (WiX Toolset v4 integration for Cargo):
+
+1. `cargo install cargo-wix && cargo wix init` generates WiX manifests in the repo.
+2. `cargo wix` produces a `.msi` file.
+3. Add to `release.yml`: after cross-compilation for Windows, run `cargo wix` and upload the `.msi` as a release artifact alongside the bare `.exe` and `.zip`.
+
+The MSI should:
+- Install to `%LOCALAPPDATA%\relativist\bin\relativist.exe`.
+- Add the install directory to the user's PATH (no admin required for per-user install).
+- Create a Start Menu entry ("Relativist" → opens a terminal with `relativist --help`, or the GUI once 2.39 ships).
+- Support silent install via `msiexec /i relativist.msi /quiet`.
+- Register in Add/Remove Programs for clean uninstallation.
+
+Alternative: If 2.39 (GUI via Tauri) is pursued, the Tauri bundler generates MSI automatically as part of the GUI build. The `cargo-wix` approach covers the CLI-only distribution path that remains important for servers, Docker, CI, and headless environments.
+
+**3. Package manager submissions.**
+
+| Package Manager | Platform | Effort | User command |
+|---|---|---|---|
+| **winget** | Windows | Low — submit YAML manifest to `microsoft/winget-pkgs` repo. Automate with `winget-releaser` GitHub Action. | `winget install relativist` |
+| **Homebrew** | macOS | Low — create a Formula in a tap repo (`homebrew-relativist`). Requires adding macOS targets (`x86_64-apple-darwin`, `aarch64-apple-darwin`) to `release.yml`. | `brew install andrade-filipe/tap/relativist` |
+| **AUR** | Arch Linux | Low — PKGBUILD that downloads the release tarball. | `yay -S relativist` |
+| **chocolatey** | Windows | Medium — `.nuspec` package, moderated submission. | `choco install relativist` |
+| **cargo install** | Any | Already works | `cargo install --git https://github.com/andrade-filipe/relativist` |
+
+Priority: winget (Windows is the primary pain point), then Homebrew (macOS has no binary), then AUR.
+
+**4. Expanded build matrix.**
+
+Add to `release.yml`:
+- `aarch64-unknown-linux-gnu` — ARM Linux (Raspberry Pi, cloud ARM instances)
+- `x86_64-apple-darwin` — macOS Intel
+- `aarch64-apple-darwin` — macOS Apple Silicon
+
+This unblocks Homebrew and ARM deployments. Cross-compilation via the `cross` tool or GitHub's macOS runners.
+
+**5. First-run experience.**
+
+When `relativist` is invoked with no subcommand, currently clap prints a generic "missing subcommand" error. Change to: print a welcome message with version, a 3-line quick start, and a pointer to `relativist --help` and USAGE_GUIDE.md. Detect first run by checking for the absence of a config/state file.
+
+**Complexity:** Low-Medium per item. SignPath application is a process, not code. MSI via cargo-wix is ~50 lines of CI config plus WiX manifests. Package manager submissions are per-platform maintenance (~1 hour each). Build matrix expansion is ~30 lines in `release.yml`.
+
+**Dependencies:** SignPath requires MFA on the GitHub account. Homebrew requires macOS release targets. winget requires the repo to be public (it is).
+
+**Relationship to 2.39:** Tauri's bundler solves installer + signing + auto-update for the GUI binary. 2.38 covers the CLI-only distribution path that remains critical for servers, Docker, and CI.
+
+### 2.39 Graphical User Interface (Tauri v2)
+
+Build a native desktop application using **Tauri v2** (Rust backend + system webview frontend) that exposes all Relativist CLI functionality through a clean, minimalist GUI. Inspired by Docker Desktop: the CLI remains the primary interface for power users and automation, while the GUI provides an accessible entry point for everyone else.
+
+**v1 limitation.** Relativist is CLI-only. All 11 commands and 40+ flags must be memorized or looked up. Connecting a coordinator and worker requires typing IP addresses, tokens, and port numbers correctly in two separate terminals. Benchmark results are CSV files that require external tools to visualize. There is no visual feedback during reduction — just log lines scrolling in a terminal. For a TCC defense demo, the presenter must switch between terminal windows while explaining what each command does.
+
+**Why Tauri v2.**
+
+Four approaches were evaluated:
+
+| Approach | Binary size | Rust integration | Installer | Code signing | Verdict |
+|---|---|---|---|---|---|
+| **A: Tauri v2** | 5-15 MB | Native (import crate) | MSI, .dmg, .deb, AppImage | Built-in | **Recommended** |
+| B: Web UI (axum) | 0 (uses browser) | Native | None | N/A | Good complement, not primary |
+| C: egui | ~10 MB | Native | Manual | Manual | Hard to make beautiful |
+| D: Electron | 150+ MB | FFI/IPC bridge | Yes | Yes | Wrong for Rust project |
+
+Tauri v2 is the clear winner because it solves problems across all three sections simultaneously:
+- **GUI** — web frontend with React/Svelte/Vue for beautiful, responsive UI
+- **Installer** — Tauri bundler generates MSI (Windows), .dmg (macOS), .deb and AppImage (Linux) automatically
+- **Code signing** — supports Windows Authenticode and macOS notarization in the build pipeline
+- **Auto-update** — built-in updater replaces the current `relativist update` command for GUI users
+- **System tray** — coordinator and worker can run as background processes with tray icon status
+- **Small binary** — uses the system webview (WebView2 on Windows, WebKit on macOS/Linux), not bundled Chromium
+
+**Architecture.**
+
+```
+┌──────────────────────────────────────────────┐
+│                  Tauri App                    │
+│  ┌────────────────┐  ┌────────────────────┐  │
+│  │  Web Frontend   │  │   Rust Backend     │  │
+│  │  (Svelte)       │←→│  (Tauri Commands)  │  │
+│  │                 │  │        ↓            │  │
+│  │  - Dashboard    │  │  relativist crate  │  │
+│  │  - Generate     │  │  (existing code)   │  │
+│  │  - Reduce       │  │        ↓            │  │
+│  │  - Grid         │  │  - net/core.rs     │  │
+│  │  - Coordinator  │  │  - reduction/      │  │
+│  │  - Worker       │  │  - partition/      │  │
+│  │  - Bench        │  │  - protocol/       │  │
+│  │  - Calculator   │  │  - commands.rs     │  │
+│  │  - Network      │  │  - bench/suite.rs  │  │
+│  │  - Settings     │  │                    │  │
+│  └────────────────┘  └────────────────────┘  │
+└──────────────────────────────────────────────┘
+```
+
+The Tauri backend imports the existing `relativist` crate as a library dependency and exposes `#[tauri::command]` functions that wrap the existing command handlers. The web frontend calls these via Tauri's IPC bridge. No code duplication — the GUI and CLI share the same core logic.
+
+Key architectural decision: the project becomes a **Cargo workspace**:
+- `relativist-core` — the library crate (renamed from the current single crate), all existing functionality
+- `relativist-cli` — thin binary, does what `src/main.rs` does today, depends on `relativist-core`
+- `relativist-gui` — Tauri app, depends on `relativist-core`, contains `src-tauri/` (Rust) and `ui/` (web frontend)
+
+**Tauri command layer.**
+
+```rust
+#[tauri::command]
+async fn generate_net(example: String, size: u32, output: PathBuf) -> Result<NetSummary, String> {
+    // Construct GenerateArgs, call the same logic as run_generate_command()
+}
+
+#[tauri::command]
+async fn start_coordinator(config: CoordinatorConfig) -> Result<CoordinatorHandle, String> {
+    // Spawn coordinator as background tokio task, return handle for status polling
+}
+
+#[tauri::command]
+async fn run_benchmarks(config: BenchConfig) -> Result<BenchResults, String> {
+    // Call run_benchmark_suite(), emit progress events via tauri::Emitter
+}
+```
+
+Progress reporting uses Tauri's event system: the backend emits events (`tauri::Emitter::emit`) for round completion, worker status changes, and benchmark progress. The frontend subscribes via `listen()` and updates in real-time.
+
+**GUI screen map.**
+
+| CLI Command | GUI Screen | Key UI Elements |
+|---|---|---|
+| — | **Dashboard** | Overview cards (version, recent runs), quick actions (generate, reduce, connect) |
+| `generate` | **Generate** | Net type dropdown, size slider/input, output path picker, preview of agent/redex count |
+| `inspect` | **Inspect** | Drag-and-drop .bin file, stats cards (agents, redexes, normal form), symbol breakdown |
+| `reduce` | **Reduce** | Input file picker, progress indicator, before/after comparison |
+| `local` | **Local Grid** | Workers slider (1-16), input picker, round-by-round progress table, speedup chart |
+| `coordinator` | **Coordinator** | Bind address, worker count, token display/copy, real-time connected workers panel |
+| `worker` | **Worker** | Coordinator address input (or Tailscale auto-discover), connection status, reduction progress |
+| `compute` | **Calculator** | Operation picker (add/mul/exp), number inputs, animated reduction, result display |
+| `bench` | **Benchmarks** | Config panel (select benchmarks, sizes, workers), live progress bars, results table, charts, CSV export |
+| — | **Network** | Tailscale status, connected peers, coordinator discovery (integrates with 2.37) |
+| `update` | **Settings** | Current/latest version, one-click update, paths config, log level, TLS toggle |
+
+**Frontend framework recommendation: Svelte.**
+- Smallest bundle size among major frameworks (~5 KB vs React's ~40 KB)
+- No virtual DOM — direct DOM manipulation, faster rendering
+- Simple component model — `.svelte` files with HTML/CSS/JS in one file
+- Growing ecosystem with excellent Tauri integration (official template exists)
+- Alternative: React if the team prefers a larger ecosystem. Both work well with Tauri.
+
+**Implementation phases.**
+
+- **Phase 1 — Skeleton (1-2 weeks):** Cargo workspace restructure, Tauri project scaffold, Dashboard + Generate + Inspect + Reduce screens. Proves the architecture.
+- **Phase 2 — Grid (2-3 weeks):** Local Grid + Coordinator + Worker screens with real-time status via Tauri events. System tray for background coordinator.
+- **Phase 3 — Benchmarks (1-2 weeks):** Benchmark suite UI with chart library (Chart.js or Recharts), CSV export, results comparison.
+- **Phase 4 — Network (1 week):** Tailscale status screen, peer discovery, coordinator auto-detect.
+- **Phase 5 — Polish (2-3 weeks):** Installer generation (MSI/.dmg/.deb), code signing integration, auto-updater, theming, accessibility.
+
+**Complexity:** High overall. Workspace restructure: Medium (~1-2 days). Tauri scaffold: Low (~1 day). Each GUI screen: Low-Medium (~1-2 days). Total for functional MVP (Phase 1-2): 3-5 weeks. Total for all phases: 8-12 weeks.
+
+**Dependencies:** Tauri v2 (stable, released). Node.js toolchain for frontend build. Web framework (Svelte recommended). `relativist-core` library extraction.
+
+**Relationship to other items.**
+
+- **2.37 (Tailscale):** The Network screen surfaces Tailscale status and peer discovery.
+- **2.38 (Distribution):** Tauri bundler generates MSI/dmg/deb installers. Tauri's code signing integration solves SmartScreen. Tauri's auto-updater replaces `relativist update` for GUI users. The CLI distribution path (cargo-wix, winget, homebrew) remains independent for headless environments.
+- **Approach B complement:** The existing axum HTTP server (`src/observability/http.rs`) can serve a lightweight web dashboard for monitoring coordinator status remotely, independent of the Tauri app. This is a natural complement, not a replacement.
+
+---
+
 ## The Confluence Argument for the Paper
 
 The features in Section 2 (2.1-2.4) share a common theoretical foundation that should be presented in the TCC's Discussion section (Section 5):
