@@ -108,7 +108,7 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
     use crate::security::{build_security_config, check_bind_warnings, write_token_file};
 
     let grid_config = build_grid_config(&args);
-    let node_config = build_node_config_coordinator(&args);
+    let node_config = build_node_config_coordinator(&args)?;
     let strategy = parse_strategy(&args.strategy)?;
     let net = load_net_from_file(&args.input)?;
 
@@ -135,6 +135,18 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
     println!("Agents:   {}", net.count_live_agents());
     println!("Redexes:  {}", net.redex_queue.len());
     println!("Security: {:?}", security.tier);
+
+    // Print copiable worker connect command
+    if let Some(ref token) = security.token {
+        println!();
+        println!("Workers connect with:");
+        println!(
+            "  relativist worker --coordinator {}:{} --token \"{}\"",
+            node_config.bind.ip(),
+            node_config.bind.port(),
+            token.to_base64()
+        );
+    }
     println!();
 
     // Run the async coordinator

@@ -93,9 +93,10 @@ pub struct CoordinatorArgs {
     pub workers: u32,
 
     /// Socket address to bind to.
-    /// Default: 127.0.0.1:9000 (SPEC-10 R5: localhost-only for safety).
+    /// Accepts IP:PORT, HOST:PORT, or "tailscale[:PORT]" to auto-resolve
+    /// the Tailscale IPv4 address. Default: 127.0.0.1:9000 (SPEC-10 R5).
     #[arg(short = 'b', long, default_value = "127.0.0.1:9000")]
-    pub bind: SocketAddr,
+    pub bind: String,
 
     /// Path to the input network file (.bin, bincode-serialized Net).
     #[arg(short = 'i', long)]
@@ -419,12 +420,15 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
 }
 
 /// Build NodeConfig for coordinator mode (SPEC-07 R11-R12).
-pub fn build_node_config_coordinator(args: &CoordinatorArgs) -> NodeConfig {
-    NodeConfig {
-        bind: args.bind,
+///
+/// Resolves the bind address, supporting "tailscale[:PORT]" shorthand.
+pub fn build_node_config_coordinator(args: &CoordinatorArgs) -> Result<NodeConfig, RelativistError> {
+    let bind = resolve_bind_address(&args.bind)?;
+    Ok(NodeConfig {
+        bind,
         num_workers: args.workers,
         ..NodeConfig::default()
-    }
+    })
 }
 
 /// Build NodeConfig for worker mode, parsing the coordinator address.
@@ -453,6 +457,56 @@ pub fn build_node_config_worker(args: &WorkerArgs) -> Result<NodeConfig, Relativ
         bind: addr,
         num_workers: 0,
         ..NodeConfig::default()
+    })
+}
+
+/// Resolve the bind address, supporting "tailscale[:PORT]" shorthand.
+///
+/// When the host part is "tailscale", queries the Tailscale daemon for
+/// the machine's IPv4 address via `tailscale ip -4`.
+pub fn resolve_bind_address(bind: &str) -> Result<SocketAddr, RelativistError> {
+    // Check for "tailscale:PORT" prefix
+    if let Some(port_str) = bind.strip_prefix("tailscale:") {
+        let port: u16 = port_str.parse().map_err(|e| {
+            RelativistError::Config(format!("invalid port in '{}': {}", bind, e))
+        })?;
+        let ip = query_tailscale_ip()?;
+        return Ok(SocketAddr::new(ip, port));
+    }
+    // Check for bare "tailscale" (default port 9000)
+    if bind == "tailscale" {
+        let ip = query_tailscale_ip()?;
+        return Ok(SocketAddr::new(ip, 9000));
+    }
+
+    // Standard: try SocketAddr parse, then DNS resolution
+    bind.parse().or_else(|_| {
+        use std::net::ToSocketAddrs;
+        bind.to_socket_addrs()
+            .map_err(|e| e.to_string())
+            .and_then(|mut a| a.next().ok_or_else(|| "no addresses found".into()))
+    }).map_err(|e| {
+        RelativistError::Config(format!("invalid bind address '{}': {}", bind, e))
+    })
+}
+
+/// Query the Tailscale daemon for this machine's IPv4 address.
+fn query_tailscale_ip() -> Result<std::net::IpAddr, RelativistError> {
+    let output = std::process::Command::new("tailscale")
+        .args(["ip", "-4"])
+        .output()
+        .map_err(|e| RelativistError::Config(format!(
+            "failed to run 'tailscale ip -4': {}. Is Tailscale installed?", e
+        )))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(RelativistError::Config(format!(
+            "'tailscale ip -4' failed: {}. Is Tailscale running?", stderr.trim()
+        )));
+    }
+    let ip_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    ip_str.parse().map_err(|e| {
+        RelativistError::Config(format!("invalid IP from Tailscale '{}': {}", ip_str, e))
     })
 }
 
@@ -491,7 +545,7 @@ mod tests {
         match cli.command {
             Command::Coordinator(args) => {
                 assert_eq!(args.workers, 4);
-                assert_eq!(args.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
+                assert_eq!(args.bind, "127.0.0.1:9000");
                 assert_eq!(args.input, PathBuf::from("input.bin"));
                 assert_eq!(args.max_rounds, None);
                 assert_eq!(args.strategy, "round-robin");
@@ -515,7 +569,7 @@ mod tests {
         .unwrap();
         match cli.command {
             Command::Coordinator(args) => {
-                assert_eq!(args.bind, "0.0.0.0:8080".parse::<SocketAddr>().unwrap());
+                assert_eq!(args.bind, "0.0.0.0:8080");
             }
             _ => panic!("expected Coordinator"),
         }
@@ -635,7 +689,7 @@ mod tests {
     fn make_coordinator_args(workers: u32, max_rounds: Option<u32>) -> CoordinatorArgs {
         CoordinatorArgs {
             workers,
-            bind: "127.0.0.1:9000".parse().unwrap(),
+            bind: "127.0.0.1:9000".to_string(),
             input: PathBuf::from("test.bin"),
             max_rounds,
             strict_bsp: false,
@@ -675,7 +729,7 @@ mod tests {
     #[test]
     fn test_build_node_config_coordinator() {
         let args = make_coordinator_args(8, None);
-        let config = build_node_config_coordinator(&args);
+        let config = build_node_config_coordinator(&args).unwrap();
         assert_eq!(config.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
         assert_eq!(config.num_workers, 8);
         assert_eq!(
@@ -709,5 +763,47 @@ mod tests {
     fn test_parse_strategy_unknown() {
         let strategy = parse_strategy("unknown-strategy");
         assert!(strategy.is_err());
+    }
+
+    // === resolve_bind_address tests ===
+
+    #[test]
+    fn test_resolve_bind_standard_ip() {
+        let addr = resolve_bind_address("0.0.0.0:9000").unwrap();
+        assert_eq!(addr, "0.0.0.0:9000".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_bind_localhost_default() {
+        let addr = resolve_bind_address("127.0.0.1:9000").unwrap();
+        assert_eq!(addr, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_bind_tailscale_no_daemon() {
+        // If Tailscale is not installed, should return a clear error.
+        // This test passes in CI where Tailscale is not available.
+        let result = resolve_bind_address("tailscale:9000");
+        // We can't assert success (depends on environment), but we CAN assert
+        // that it doesn't panic and returns a meaningful error if Tailscale is absent.
+        if result.is_err() {
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("tailscale") || err.contains("Tailscale"));
+        }
+    }
+
+    #[test]
+    fn test_resolve_bind_tailscale_default_port() {
+        let result = resolve_bind_address("tailscale");
+        if let Ok(addr) = result {
+            assert_eq!(addr.port(), 9000);
+        }
+        // If Tailscale not installed, error is acceptable
+    }
+
+    #[test]
+    fn test_resolve_bind_invalid() {
+        let result = resolve_bind_address("not-a-valid-address");
+        assert!(result.is_err());
     }
 }
