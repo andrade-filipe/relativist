@@ -60,6 +60,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 - `--log-format <FORMAT>` (optional, default: TTY-dependent): `text` or `json` (SPEC-11 R3).
 
 > **Supersession note (v3):** Security flags (`--token`, `--tls-ca`) are defined in SPEC-10 Section 4.5 and are part of the worker's full flag set.
+
+- `--daemon` (optional, default: false): run in daemon mode, reconnecting to the coordinator after each job (SPEC-16 R1).
 **(MUST)**
 
 **R5.** The `local` subcommand MUST accept the following arguments:

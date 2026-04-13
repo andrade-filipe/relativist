@@ -17,52 +17,121 @@ use crate::merge::{rebuild_free_port_index, WorkerRoundStats};
 use crate::reduction::reduce_all;
 use crate::security::AuthToken;
 
-/// Maximum number of connection attempts before giving up.
+/// Maximum number of connection attempts before giving up (single-shot mode).
 const MAX_ATTEMPTS: u32 = 10;
 /// Initial retry delay (exponential backoff starts here).
 const INITIAL_DELAY: Duration = Duration::from_secs(1);
 /// Maximum retry delay (backoff caps here).
 const MAX_DELAY: Duration = Duration::from_secs(16);
+/// Delay after a successful job in daemon mode (SPEC-16 R5).
+const DAEMON_SUCCESS_DELAY: Duration = Duration::from_secs(2);
+/// Delay after a failed job in daemon mode (SPEC-16 R6).
+const DAEMON_FAILURE_DELAY: Duration = Duration::from_secs(5);
 
-/// Connects to the coordinator with exponential backoff.
+/// Connects to the coordinator with exponential backoff (SPEC-06 R23, SPEC-16 R4).
 ///
-/// Backoff: 1s, 2s, 4s, 8s, 16s, 16s, 16s, 16s, 16s, 16s (10 attempts).
-/// Identical to connectWithRetry in the Haskell prototype (AC-003).
+/// Backoff: 1s, 2s, 4s, 8s, 16s, 16s, ... (capped at 16s).
 ///
-/// Returns: connected TcpStream, or ProtocolError after 10 attempts.
-pub async fn connect_with_retry(addr: std::net::SocketAddr) -> Result<TcpStream, ProtocolError> {
+/// `max_attempts`: `Some(n)` limits to n attempts (default single-shot behavior).
+/// `None` retries indefinitely (daemon mode, SPEC-16 R4).
+pub async fn connect_with_retry(
+    addr: std::net::SocketAddr,
+    max_attempts: Option<u32>,
+) -> Result<TcpStream, ProtocolError> {
     let mut delay = INITIAL_DELAY;
+    let mut attempt: u32 = 0;
 
-    for attempt in 1..=MAX_ATTEMPTS {
+    loop {
+        attempt += 1;
+
         match TcpStream::connect(addr).await {
             Ok(stream) => {
                 tracing::info!("Connected to coordinator on attempt {}", attempt);
                 return Ok(stream);
             }
             Err(e) => {
-                if attempt == MAX_ATTEMPTS {
-                    return Err(ProtocolError::ConnectionLost(std::io::Error::new(
-                        std::io::ErrorKind::ConnectionRefused,
-                        format!("failed to connect after {} attempts: {}", MAX_ATTEMPTS, e),
-                    )));
+                if let Some(max) = max_attempts {
+                    if attempt >= max {
+                        return Err(ProtocolError::ConnectionLost(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            format!("failed to connect after {} attempts: {}", max, e),
+                        )));
+                    }
+                    tracing::warn!(
+                        "Attempt {}/{} failed: {}. Retrying in {:?}",
+                        attempt,
+                        max,
+                        e,
+                        delay
+                    );
+                } else {
+                    tracing::warn!("Attempt {} failed: {}. Retrying in {:?}", attempt, e, delay);
                 }
-                tracing::warn!(
-                    "Attempt {}/{} failed: {}. Retrying in {:?}",
-                    attempt,
-                    MAX_ATTEMPTS,
-                    e,
-                    delay
-                );
                 tokio::time::sleep(delay).await;
                 delay = min(delay * 2, MAX_DELAY);
             }
         }
     }
-
-    unreachable!()
 }
 
-/// Runs the worker loop: connect, register, receive partitions, reduce, send results.
+/// Runs the worker loop (single-shot): connect, register, reduce, exit.
+///
+/// This is the public API; internal logic is in `run_worker_inner`.
+/// Preserves backward compatibility: max 10 connection attempts.
+pub async fn run_worker(
+    config: &NodeConfig,
+    token: Option<&AuthToken>,
+) -> Result<(), ProtocolError> {
+    run_worker_inner(config, token, Some(MAX_ATTEMPTS)).await
+}
+
+/// Runs the worker in daemon mode: reconnects after each job (SPEC-16 R3).
+///
+/// Loops forever (until Ctrl+C) calling `run_worker_inner` with infinite
+/// retries. After each job, waits a brief delay before reconnecting.
+pub async fn run_worker_daemon(
+    config: &NodeConfig,
+    token: Option<&AuthToken>,
+) -> Result<(), ProtocolError> {
+    let mut job_number: u64 = 0;
+
+    loop {
+        job_number += 1;
+        tracing::info!("Daemon job #{}: connecting to coordinator...", job_number);
+
+        tokio::select! {
+            result = run_worker_inner(config, token, None) => {
+                match result {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Daemon job #{}: complete. Reconnecting in {:?}...",
+                            job_number, DAEMON_SUCCESS_DELAY
+                        );
+                        tokio::time::sleep(DAEMON_SUCCESS_DELAY).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Daemon job #{}: failed: {}. Reconnecting in {:?}...",
+                            job_number, e, DAEMON_FAILURE_DELAY
+                        );
+                        tokio::time::sleep(DAEMON_FAILURE_DELAY).await;
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!(
+                    "Ctrl+C received. Shutting down daemon after {} job(s).",
+                    job_number - 1
+                );
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Internal worker loop with configurable connection attempts (SPEC-16).
 ///
 /// Implements the worker FSM (SPEC-13 R24):
 /// Init -> Idle -> Reducing -> Returning -> Idle -> ... -> Done.
@@ -70,11 +139,12 @@ pub async fn connect_with_retry(addr: std::net::SocketAddr) -> Result<TcpStream,
 /// After connecting, sends a Register message (SPEC-10 R14). If auth
 /// is required, includes the token bytes. Waits for RegisterAck before
 /// entering the main loop.
-pub async fn run_worker(
+async fn run_worker_inner(
     config: &NodeConfig,
     token: Option<&AuthToken>,
+    max_connect_attempts: Option<u32>,
 ) -> Result<(), ProtocolError> {
-    let mut stream = connect_with_retry(config.bind).await?;
+    let mut stream = connect_with_retry(config.bind, max_connect_attempts).await?;
 
     // Send Register (SPEC-10 R14)
     let register = Message::Register(RegisterPayload {
@@ -195,7 +265,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let connect_handle = tokio::spawn(async move { connect_with_retry(addr).await });
+        let connect_handle = tokio::spawn(async move { connect_with_retry(addr, Some(10)).await });
 
         // Accept the connection
         let (_stream, _addr) = listener.accept().await.unwrap();
@@ -422,5 +492,107 @@ mod tests {
 
         let result = worker_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::AuthFailed)));
+    }
+
+    // T7: connect_with_retry with max_attempts=Some(1) fails after one attempt (SPEC-16 T1)
+    #[tokio::test]
+    async fn test_connect_with_retry_max_one() {
+        // Connect to a port where nothing is listening
+        let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let result = connect_with_retry(addr, Some(1)).await;
+        assert!(result.is_err());
+        match result {
+            Err(ProtocolError::ConnectionLost(_)) => {} // expected
+            other => panic!("expected ConnectionLost, got {:?}", other),
+        }
+    }
+
+    // T8: connect_with_retry with None succeeds when listener appears after delay (SPEC-16 T2)
+    #[tokio::test]
+    async fn test_connect_with_retry_infinite_succeeds() {
+        // Bind to get a port, then drop the listener to make it initially unavailable
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        // Spawn connector with infinite retries
+        let connect_handle = tokio::spawn(async move { connect_with_retry(addr, None).await });
+
+        // Wait a bit, then start listening again
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+        let (_stream, _) = listener.accept().await.unwrap();
+
+        let result = connect_handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    // T9: daemon completes 2 sequential jobs (SPEC-16 T3)
+    #[tokio::test]
+    async fn test_daemon_two_sequential_jobs() {
+        use crate::net::Net;
+        use crate::partition::{IdRange, Partition};
+        use std::collections::HashMap;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let config = NodeConfig {
+            bind: addr,
+            ..NodeConfig::default()
+        };
+
+        // Spawn daemon worker (will be cancelled after 2 jobs)
+        let daemon_handle = tokio::spawn(async move {
+            // Use run_worker_inner directly to avoid ctrl_c signal complexity in tests
+            for _ in 0..2 {
+                run_worker_inner(&config, None, Some(MAX_ATTEMPTS))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        for job in 0..2u32 {
+            // Accept connection
+            let (mut stream, _) = listener.accept().await.unwrap();
+
+            // Handshake
+            coordinator_handshake(&mut stream, job).await;
+
+            // Send one empty partition + shutdown
+            let partition = Partition {
+                subnet: Net::new(),
+                worker_id: job,
+                free_port_index: HashMap::new(),
+                id_range: IdRange {
+                    start: 0,
+                    end: 100_000,
+                },
+                border_id_start: 0,
+                border_id_end: 0,
+            };
+            send_frame(
+                &mut stream,
+                &Message::AssignPartition {
+                    round: 0,
+                    partition,
+                },
+            )
+            .await
+            .unwrap();
+
+            // Receive result
+            let (response, _) = recv_frame(&mut stream, NodeConfig::default().max_payload_size)
+                .await
+                .unwrap();
+            assert!(matches!(response, Message::PartitionResult { .. }));
+
+            // Shutdown
+            send_frame(&mut stream, &Message::Shutdown).await.unwrap();
+        }
+
+        // Daemon should complete both jobs and exit
+        let result = daemon_handle.await;
+        assert!(result.is_ok());
     }
 }

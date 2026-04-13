@@ -177,12 +177,12 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
     Ok(())
 }
 
-/// Execute worker mode: connect to coordinator, reduce partitions (SPEC-07 R16).
+/// Execute worker mode: connect to coordinator, reduce partitions (SPEC-07 R16, SPEC-16).
 ///
-/// Creates a tokio runtime and runs the async worker protocol
-/// (connect with retry, register, receive/reduce/return partitions).
+/// Creates a tokio runtime and runs the async worker protocol.
+/// In daemon mode (SPEC-16), the worker reconnects after each job.
 pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
-    use crate::protocol::worker::run_worker;
+    use crate::protocol::worker::{run_worker, run_worker_daemon};
     use crate::security::build_security_config;
 
     let node_config = build_node_config_worker(&args)?;
@@ -198,17 +198,26 @@ pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
     println!("=== Relativist Worker ===");
     println!("Coordinator: {}", args.coordinator);
     println!("Security:    {:?}", security.tier);
+    if args.daemon {
+        println!("Mode:        daemon (reconnecting)");
+    }
     println!();
 
     // Run the async worker
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| RelativistError::Config(format!("tokio runtime: {}", e)))?;
 
-    rt.block_on(run_worker(&node_config, security.token.as_ref()))
-        .map_err(crate::error::WorkerError::from)
-        .map_err(RelativistError::from)?;
+    if args.daemon {
+        rt.block_on(run_worker_daemon(&node_config, security.token.as_ref()))
+            .map_err(crate::error::WorkerError::from)
+            .map_err(RelativistError::from)?;
+    } else {
+        rt.block_on(run_worker(&node_config, security.token.as_ref()))
+            .map_err(crate::error::WorkerError::from)
+            .map_err(RelativistError::from)?;
+        println!("Worker finished successfully.");
+    }
 
-    println!("Worker finished successfully.");
     Ok(())
 }
 

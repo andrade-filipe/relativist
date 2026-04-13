@@ -105,6 +105,8 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R23.** Each worker MUST implement retry with exponential backoff to connect to the coordinator. The backoff MUST start at 1 second and double at each attempt, up to a maximum of 16 seconds, with at most 10 attempts. This behavior is identical to `connectWithRetry` in the Haskell prototype (AC-003, lines 331-352). **(MUST)**
 
+> **Note (SPEC-16):** In daemon mode (SPEC-16 R4), `connect_with_retry` retries indefinitely (no maximum attempts). The exponential backoff and 16-second cap still apply.
+
 **R24.** The coordinator MUST wait for all `num_workers` workers to connect (and complete the registration handshake per R2a, if authentication is enabled) before starting the first round of the grid loop. A configurable timeout (default: 120 seconds) MUST abort execution if not all workers have registered in time. **(MUST)**
 
 **R25.** If a connection with a worker is lost during execution, the coordinator MUST abort the grid loop and return an error. Fault tolerance is out of scope (OBJETIVO_TCC.md, Z5). On connection loss, the coordinator MUST: (a) transition to the Error state (SPEC-13 R21), (b) send `Shutdown` to all remaining connected workers (best-effort, errors ignored), and (c) return `ProtocolError::ConnectionLost` wrapping the underlying I/O error. **(MUST)**

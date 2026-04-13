@@ -166,6 +166,10 @@ pub struct WorkerArgs {
     #[arg(long)]
     pub token: Option<String>,
 
+    /// Run in daemon mode: reconnect to coordinator after each job (SPEC-16 R1).
+    #[arg(long, default_value_t = false)]
+    pub daemon: bool,
+
     /// TLS CA certificate file (PEM) for verifying coordinator (SPEC-10 R26).
     #[cfg(feature = "tls")]
     #[arg(long)]
@@ -605,6 +609,29 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_worker_daemon() {
+        let cli = Cli::try_parse_from(["relativist", "worker", "-c", "127.0.0.1:9000", "--daemon"])
+            .unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert!(args.daemon);
+            }
+            _ => panic!("expected Worker"),
+        }
+    }
+
+    #[test]
+    fn test_parse_worker_no_daemon() {
+        let cli = Cli::try_parse_from(["relativist", "worker", "-c", "127.0.0.1:9000"]).unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert!(!args.daemon);
+            }
+            _ => panic!("expected Worker"),
+        }
+    }
+
+    #[test]
     fn test_parse_local_defaults() {
         let cli = Cli::try_parse_from([
             "relativist",
@@ -717,6 +744,7 @@ mod tests {
             coordinator: coordinator.to_string(),
             log_format: None,
             token: None,
+            daemon: false,
             #[cfg(feature = "tls")]
             tls_ca: None,
         }
