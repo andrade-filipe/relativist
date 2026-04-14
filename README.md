@@ -9,7 +9,7 @@ Relativist is a Rust implementation of [Lafont's Interaction Combinators](https:
 - **Deterministic distributed reduction** — Strong confluence ensures the result is identical whether computed on 1 machine or 8
 - **Zero coordination overhead for correctness** — Workers reduce independently; only boundary redexes require cross-node resolution
 - **Formally specified** — Every module has a detailed spec with invariants, requirements, and Rust type signatures
-- **TDD from specs** — 103 tests specified before a single line of implementation code
+- **TDD from specs** — 676+ tests, 11 benchmarks across 3 workload profiles
 
 ## Architecture
 
@@ -103,6 +103,52 @@ All design decisions are documented in formal specifications:
 | [SPEC-13](specs/SPEC-13-system-architecture.md) | System Architecture | 52 reqs |
 | [SPEC-14](specs/SPEC-14-encoding.md) | Arithmetic Encoding | 27 reqs |
 | [SPEC-15](specs/SPEC-15-distribution.md) | Distribution & Packaging | 20 reqs |
+| [SPEC-16](specs/SPEC-16-worker-daemon.md) | Worker Daemon Mode | 13 reqs |
+
+## Benchmark Results
+
+**Zero correctness failures in 4,200 benchmark executions.**
+
+| Campaign | Reps | Wall Clock | Correctness | Mode |
+|----------|------|------------|-------------|------|
+| Phase 1 (in-process) | 3,800 | 11 min 39 s | 0 failures | Local shared-memory |
+| Phase 2 (Docker/TCP) | 400 | 43 min 42 s | 0 failures | TCP localhost containers |
+
+Every single data point is verified by the fundamental property:
+
+```
+reduce_all(net) ≅ run_grid(net, n)
+```
+
+where ≅ denotes graph isomorphism (structural equality modulo ID renaming).
+
+**Strict BSP validation** confirms theoretical predictions exactly:
+- `cascade_cross(N)` terminates in N rounds (workers ≥ 2)
+- `dual_tree(d)` terminates in d rounds (workers ≥ 2)
+
+Full data: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baseline/) — frozen with SHA-256 checksums and provenance manifest.
+
+## Known Limitations
+
+1. **No break-even on local shared memory** — Distribution overhead exceeds parallel gain for all tested configurations in-process. Break-even is expected on network-separated machines (Phase 3 LAN).
+2. **Round-robin partitioning only** — No topology-aware partitioning (planned for v2).
+3. **Single coordinator, star topology** — Scalability limited by coordinator merge bandwidth.
+4. **Terminating nets only** — Non-terminating nets are out of scope (qualified by premise P6).
+5. **Exponential readback** — Church exponential results cannot be decoded back to integers (DUP cycle limitation).
+
+## Who Is This For
+
+- **Researchers** studying Interaction Combinators, Interaction Nets, or distributed graph rewriting
+- **Grid computing practitioners** exploring deterministic distributed computation models
+- **Students** learning Spec-Driven Development, TDD from specs, or distributed systems
+- **HVM/Bend community** curious about distributed IC reduction beyond shared memory
+
+## Documentation
+
+- [**USAGE_GUIDE.md**](USAGE_GUIDE.md) — Complete command reference (every subcommand, every flag, end-to-end pipelines, known limitations L1-L7)
+- [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development guidelines
+- [**docs/INDEX.md**](docs/INDEX.md) — Full documentation index (542 documents organized by topic)
+- [**specs/**](specs/) — 17 formal specifications
 
 ## Research Context
 

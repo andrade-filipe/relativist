@@ -24,7 +24,10 @@ Thank you for your interest in contributing to Relativist! This document provide
 4. Ensure all tests pass: `cargo test`
 5. Ensure code is formatted: `cargo fmt`
 6. Ensure no lint warnings: `cargo clippy`
-7. Commit with clear messages following conventional commits
+7. Commit with clear messages following [conventional commits](https://www.conventionalcommits.org/):
+   - Format: `type(scope): description` (e.g., `feat(partition): add topology-aware strategy`)
+   - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `perf`, `ci`
+   - Scopes: module names (`net`, `reduction`, `partition`, `merge`, `protocol`, `bench`, etc.)
 8. Open a Pull Request against `main`
 
 ## Development Setup
@@ -76,6 +79,17 @@ Relativist follows a **Spec Driven Development** approach. Before writing code, 
 - No `unsafe` without explicit justification and review
 - All public APIs must have doc comments
 - Prefer explicitness over cleverness
+
+## Performance Expectations
+
+Changes to core modules (`net`, `reduction`, `partition`, `merge`) must not regress benchmark performance by more than 5%. Run `cargo run --release -- bench` before and after your changes to verify.
+
+## Review Process
+
+- Bug fixes: response within 48 hours
+- Features: response within 1 week
+- All PRs require passing CI (`cargo test`, `cargo clippy`, `cargo fmt --check`)
+- Changes to specs require adversarial review (see [SPEC-REVIEW-PIPELINE.md](docs/SPEC-REVIEW-PIPELINE.md))
 
 ## Specs and Invariants
 
