@@ -227,15 +227,13 @@ below is the deeper asynchronous streaming redesign, orthogonal to strict BSP.
 
 **v1 exclusion source:** SPEC-14 Open Question 0, DISC-009 Section 4.
 
-### 2.18 Native Numeric Types (HVM2-style)
+### 2.18 Native Numeric Types (HVM2-style) — ARCHIVED
 
-**v1 limitation:** Arithmetic uses Church numerals (unary encoding): church(n) requires O(n) agents. Multiplication requires O(a*b) interactions. This is theoretically correct but practically inefficient for large numbers.
+**Status:** ARCHIVED. Relativist's purpose is net partitioning and distributed reduction — it is a general-purpose IC reducer, not a computation engine like HVM2. Domain-specific operations (arithmetic, logic, etc.) are defined by the encoder/decoder layer, not by native agent types in the network. Church encoding validates the theoretical contribution (universality); practical encoding is the encoder's responsibility.
 
-**v2 change:** Add native agent types for numbers and operations, following HVM2's approach (REF-003): NUM (numeric literal), OPE (binary operator), SWI (conditional switch). These bypass Church encoding entirely, reducing `mul(1000, 1000)` from ~1M interactions to O(1).
+**Original proposal:** Add native agent types (NUM, OPE, SWI) following HVM2's approach (REF-003) to bypass Church encoding. This would reduce `mul(1000, 1000)` from ~1M interactions to O(1).
 
-**Why this is separate from universality:** Lafont's universality (REF-002, Theorem 1) guarantees that Church encoding works. Native types are a performance optimization that does not affect the theoretical contribution. The TCC validates the formal property with pure ICs; native types would be an engineering improvement for post-TCC practical use.
-
-**Complexity:** Medium. Requires extending the Symbol enum, adding reduction rules for native types, and updating serialization and partitioning to handle new agent kinds.
+**Why archived:** Different goal from HVM. HVM2 is a computation engine that needs efficient arithmetic; Relativist is a distributed reduction engine that needs efficient partitioning, transport, and merge. The encoder/decoder pattern (SPEC-14) already separates "what problem to solve" from "how to reduce the net."
 
 **v1 exclusion source:** SPEC-14 Section 5.1 (Church encoding chosen for simplicity and theoretical alignment).
 
@@ -362,6 +360,32 @@ Running v1 across the Internet is possible only with external scaffolding (VPN, 
 **Complexity.** High. Rough breakdown: ~600 lines for TLS and certificate handling (rustls integration in SPEC-06), ~400 lines for the rendezvous/relay server (a new crate, `relativist-relay`), ~300 lines for session-aware reconnect in coordinator and worker FSMs, ~200 lines for mTLS or OAuth2 auth, ~150 lines for adaptive timeouts, ~200 lines of tests, plus 4-5 SPEC rewrites (SPEC-06, SPEC-07, SPEC-10, SPEC-11 metrics) and one new SPEC (SPEC-16: WAN Deployment). Estimated effort: 3-4 weeks of focused work plus the standard spec/debate review pipeline. Not a weekend project.
 
 **v1 exclusion source:** SPEC-07 §5.5 (LAN-only discovery), SPEC-09 R27 ("TCP over LAN"), SPEC-10 R3 (plaintext token auth), SPEC-06 (no TLS, no reconnect), OBJETIVO_TCC.md (scope bounded to distributed baseline on LAN).
+
+### 2.21.1 End-to-End Security Analysis
+
+**Scope.** A systematic security analysis of the entire Relativist system when exposed to the public Internet via WAN deployment (2.21). This is not a code feature but a formal deliverable: a threat model document, attack surface enumeration, and mitigation mapping that validates the security design of SPEC-24 before implementation begins.
+
+**Motivation.** WAN deployment (2.21) introduces 7 sub-components (NAT traversal, TLS, strong auth, reconnect, adaptive timeouts, discovery, abuse mitigation), each with its own attack surface. Without a structured threat analysis, security decisions are ad-hoc and gaps are discovered in production. The TCC's claim that IC reduction can be distributed over a grid is only credible if the grid is deployable — and deployability over the Internet requires a defensible security posture, not just TLS.
+
+**Deliverables:**
+
+1. **Threat model.** STRIDE-based analysis of the coordinator, worker, and relay components. Enumerate: spoofing (identity), tampering (results, partitions), repudiation (who did what), information disclosure (net contents in transit/at rest), denial of service (resource exhaustion), elevation of privilege (worker→coordinator). Map each threat to the specific SPEC-24 requirement that mitigates it.
+
+2. **Attack surface enumeration.** Catalog every network-facing endpoint, protocol message, and trust boundary. For each: what input does it accept, what validation does it perform, what happens if validation is bypassed. Cover at minimum: TLS handshake, mTLS certificate validation, session token issuance/refresh, relay message forwarding, coordinator FSM transitions triggered by network input, worker result frame acceptance.
+
+3. **Mitigation mapping.** For each identified threat: (a) which SPEC-24 requirement addresses it, (b) the specific code-level mechanism (e.g., "rustls rejects non-TLS 1.3 handshakes at R-SEC-03"), (c) residual risk after mitigation. Flag any threats where SPEC-24 has no corresponding requirement — these become spec amendments.
+
+4. **Trust boundary diagram.** Visual (TikZ) diagram of the system's trust boundaries in WAN mode, showing: Internet ↔ relay ↔ coordinator ↔ worker, with annotations for each security control at each boundary crossing.
+
+5. **Residual risk register.** Explicit list of what is NOT mitigated by v2 (e.g., Byzantine workers, result integrity without redundant execution, relay compromise). Each entry states why it is deferred and what future work (v3+) would address it.
+
+**Relationship to 2.21.** This is a sub-item of WAN deployment, not a standalone feature. It runs in parallel with SPEC-24 creation and should be completed before SPEC-24 implementation begins. Any gaps found in the security analysis feed back as SPEC-24 amendments.
+
+**Relationship to SPEC-10 (Security).** SPEC-10 defines v1 security (shared token, plaintext TCP). The security analysis evaluates the delta between SPEC-10 and SPEC-24, ensuring that every v1 security assumption that is broken by WAN exposure is explicitly replaced by a stronger mechanism.
+
+**Complexity.** Medium. ~300 lines of analysis document (Markdown + TikZ diagram). No code changes, but may generate 5-10 SPEC-24 requirement amendments. Estimated effort: 1-2 weeks, primarily research and writing. Requires familiarity with STRIDE, TLS 1.3, mTLS, and common distributed system attack patterns.
+
+**Prerequisites.** SPEC-24 draft must exist (at least the requirements section) so that the analysis can map threats to specific requirements. If SPEC-24 is incomplete, the analysis flags unmapped threats as "spec gap — amendment required."
 
 ---
 

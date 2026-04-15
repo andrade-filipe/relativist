@@ -2,7 +2,7 @@
 
 **Status:** Draft
 **Depends on:** SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-13 (System Architecture)
-**ROADMAP items:** 2.27 (Streaming Net Generation), 2.28 (Online/Streaming Graph Partitioning), 2.30 (Chunked Generation with Incremental Partitioning)
+**ROADMAP items:** 2.27 (Streaming Net Generation), 2.28 (Online/Streaming Graph Partitioning), 2.30 (Chunked Generation with Incremental Partitioning), 2.36 (Lazy/Demand-Driven Generation)
 **References consumed:** REF-001 (Lafont 1990, p.96: locality), REF-002 (Lafont 1997, p.70-73: net structure, strong confluence), REF-005 (Mackie & Pinto 2002), REF-015 (Mackie & Sato 2015: batch vs streaming)
 **Arguments consumed:** ARG-001 (central argument, P1-P6), ARG-002 (partitioning preserves structure, C1-C3)
 **Briefings consumed:** BRIEF-20260415-v2-codebase-assessment (Section 4.3: partition module), BRIEF-20260415-v2-fundamentacao-teorica (Tier 3 Memory, locality principle, streaming partitioning)
@@ -156,6 +156,54 @@ fn generate_and_partition_chunked(
 **R28.** In debug mode (`#[cfg(debug_assertions)]`), the finalized output MUST pass the same C1-C3 assertions defined in SPEC-04, Section 4.8 (`assert_coverage_and_disjunction`, `assert_border_consistency`). The assertions operate on the finalized `Vec<Partition>`, not on intermediate states. **(MUST)**
 
 **R29.** ID ranges (SPEC-04, R16-R18) MUST be computed identically to SPEC-04: `chunk_size_id = u32::MAX / num_workers`, worker `i` receives `[i * chunk_size_id, (i+1) * chunk_size_id)`. ID ranges do not depend on the partitioning mode (streaming vs. batch) and MUST be identical in both modes. **(MUST)**
+
+### 3.6 Lazy/Demand-Driven Generation (ROADMAP 2.36) — Amendment
+
+This section is an amendment to SPEC-21, adding a pull-based orchestration layer on top of the streaming pipeline defined in Sections 3.1-3.5. In the push model (Sections 3.1-3.3), the coordinator generates chunks eagerly and dispatches them to workers. In the pull model (this section), workers request work on demand, and the coordinator generates and dispatches chunks only when requested.
+
+**Motivation:** The push model requires the coordinator to predict how many chunks each worker needs. If workers have heterogeneous performance (different hardware, variable load), some workers finish early while others are still receiving chunks. The pull model naturally load-balances: fast workers request more chunks, slow workers request fewer.
+
+**R30.** The coordinator MUST support a pull-based dispatch mode where workers request chunks via a `RequestWork` message. The coordinator generates and dispatches chunks on demand rather than eagerly. **(MUST)**
+
+**R31.** The `Message` enum (SPEC-06) MUST gain two new variants for pull-based dispatch:
+```rust
+RequestWork { worker_id: WorkerId },
+NoMoreWork,
+```
+`RequestWork` is sent by the worker to request a new chunk. `NoMoreWork` is sent by the coordinator when the generator stream is exhausted.
+**(MUST)**
+
+**R32.** The pull-based dispatch loop MUST follow this protocol:
+1. Coordinator sends `AssignPartition` with the first chunk to each worker (cold start).
+2. Worker reduces its chunk and sends `PartitionResult`.
+3. Worker sends `RequestWork` to indicate readiness for more work.
+4. Coordinator generates the next chunk (via `make_net_stream`), partitions it (via `StreamingPartitionStrategy`), and sends `AssignPartition` with the new chunk to the requesting worker.
+5. When the stream is exhausted, coordinator responds to `RequestWork` with `NoMoreWork`.
+6. Worker enters final reduction phase upon receiving `NoMoreWork`.
+7. Coordinator collects final results and merges.
+**(MUST)**
+
+**R33.** The pull model MUST maintain the same invariants as the push model (R27-R29). Specifically:
+- C1: Every agent generated across all chunks MUST be assigned to exactly one worker.
+- D1 (extended): The merged result MUST be isomorphic to the sequential baseline.
+- D5 (Exclusive Ownership): Each chunk MUST be dispatched to exactly one worker. The coordinator MUST track chunk-to-worker assignments. If a worker disconnects, the chunk MUST be re-dispatched (same pattern as SPEC-20 dynamic departure).
+**(MUST)**
+
+**R34.** The `GridConfig` struct MUST be extended with:
+```rust
+pub enum DispatchMode {
+    Push,   // Eager: coordinator dispatches all chunks upfront
+    Pull,   // Lazy: workers request chunks on demand
+    Auto,   // Push for num_workers <= 2, Pull for num_workers > 2
+}
+```
+The default MUST be `Auto`. **(MUST)**
+
+**R35.** The pull model MUST handle the edge case where the generator stream is very short (fewer chunks than workers). In this case, some workers receive `NoMoreWork` immediately after their first chunk, and only a subset of workers participates. This is correct because P1 (confluence) guarantees the result is independent of how many workers reduce. **(MUST)**
+
+**R36.** The pull model MUST be compatible with the delta protocol (SPEC-19): if delta mode is active, workers accumulate chunks into their persistent partition state. `RequestWork` requests a new chunk to append, not a replacement partition. The coordinator's border tracking (SPEC-19 `BorderGraph`) must account for borders discovered in each new chunk. **(SHOULD, as delta+lazy is an advanced combination)**
+
+**R37.** Performance metric: the pull model SHOULD reduce idle time for heterogeneous workers. In benchmarks with 4 workers where one worker is 2x slower, the pull model SHOULD achieve higher throughput than the push model because fast workers process more chunks. **(SHOULD)**
 
 ---
 
@@ -748,6 +796,28 @@ let plan = if config.streaming {
 **T10. Peak memory measurement.**
 - Instrument the pipeline to track peak allocation size.
 - Verify that peak memory during streaming is bounded by O(chunk_size + accumulator_sizes) and does not scale with total net size (beyond accumulator growth).
+
+### 7.5 Lazy/Demand-Driven Generation Tests (Amendment)
+
+**T11. Pull-based dispatch protocol.**
+- Run `run_grid` with `DispatchMode::Pull` for `ep_annihilation_con(100)`, K=2.
+- Verify workers send `RequestWork` and receive chunks.
+- Verify G1: result matches sequential baseline.
+
+**T12. Pull vs. push equivalence.**
+- For `ep_annihilation_con(100)`, K=4, chunk_size=20:
+  Run with `DispatchMode::Push` and `DispatchMode::Pull`.
+  Verify merged results are isomorphic and interaction counts are identical.
+
+**T13. Short stream (fewer chunks than workers).**
+- For `ep_annihilation(10)`, K=4, chunk_size=100:
+  Only 1 chunk total (20 agents < 100). Verify only 1 worker receives work, others get `NoMoreWork`.
+  Verify result is correct.
+
+**T14. Heterogeneous worker simulation.**
+- Simulate 4 workers where worker 0 reduces 2x faster (by using smaller chunks or injecting artificial delay).
+  Run with `DispatchMode::Pull`. Verify worker 0 processes more chunks than worker 3.
+  Verify result correctness (all workers' contributions merge correctly).
 
 ---
 

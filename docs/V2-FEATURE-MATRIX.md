@@ -1,8 +1,8 @@
 # v2 Feature Matrix
 
-**Last updated:** 2026-04-15
+**Last updated:** 2026-04-15 (rev2)
 **Purpose:** Consolidated inventory of all v2 features with priority, complexity, estimates, and dependencies.
-**Source:** `docs/ROADMAP.md` (items 2.1–2.39, excluding 2.19 ARCHIVED and 2.20 DONE)
+**Source:** `docs/ROADMAP.md` (items 2.1–2.39 + 2.21.1, excluding 2.18/2.19 ARCHIVED and 2.20 DONE)
 
 ---
 
@@ -95,11 +95,33 @@ Improve user experience without affecting performance or correctness.
 | 2.7 | Intra-Worker Parallelism (rayon) | PLANNED | — | Medium | ~400 | 3–5d | None |
 | 2.11 | Intelligent Partitioning (redex-aware) | PLANNED | — | Medium | ~400 | 3–5d | None |
 | 2.17 | Streaming Arithmetic Encoding | PLANNED | — | Low-Medium | ~200 | 2–3d | None |
-| 2.18 | Native Numeric Types (HVM2-style NUM/OPE/SWI) | PLANNED | — | Medium | ~500 | 1w | None |
 
 ---
 
-## Tier 5 — FUTURE: Research / v3+
+## Tier 5 — COMPLEX: Advanced Features for v2
+
+Complex features that require significant effort but are important for v2's value proposition. These extend Relativist beyond LAN-only academic benchmarks into a production-capable distributed IC reducer.
+
+| ID | Feature | Status | Spec | Complexity | Est. LoC | Est. Time | Prerequisites |
+|----|---------|--------|------|------------|----------|-----------|---------------|
+| 2.15 | Compact Memory Representation (u64 encoding) | PLANNED | SPEC-23 | Medium | ~400 | 2–3w | None (amends SPEC-02 net/ types) |
+| 2.29 | Recipe-Based Distributed Generation | PLANNED | SPEC-25 | Medium-High | ~700 | 2–3w | None (independent of 2.27/2.28) |
+| 2.36 | Lazy/Demand-Driven Generation (pull model) | PLANNED | SPEC-21 amend | Low-Medium | ~350 | 1w | 2.27, 2.28 (orchestration layer) |
+| 2.21 | WAN/Internet Deployment (NAT, TLS, auth, reconnect) | PLANNED | SPEC-24 | High | ~1850 | 3–4w | 2.25 (Transport trait via SPEC-17) |
+| 2.21.1 | End-to-End Security Analysis and Hardening | PLANNED | SPEC-24 | Medium | ~300 | 1–2w | 2.21 (security builds on WAN infra) |
+| 2.39 | GUI Desktop Application (Tauri v2) | PLANNED | SPEC-26 | High | ~3000+ | 3–5w MVP | None (workspace restructure needed) |
+
+**Implementation order:** 2.15 → 2.29 → 2.36 (memory/gen track) | 2.21 → 2.21.1 (WAN track) | 2.39 (GUI track, independent)
+
+**Key dependencies:**
+- 2.21 requires SPEC-17 Transport trait (M1) to be complete — WAN builds on the transport abstraction
+- 2.36 requires 2.27+2.28 (M5) — pull model is orchestration on top of streaming generation
+- 2.29 is fully independent — recipe-based gen coexists with streaming gen
+- 2.39 requires workspace restructure (`relativist-core` library extraction)
+
+---
+
+## Tier 6 — FUTURE: Research / v3+
 
 Features that are research projects in their own right or require months of work. Documented in the TCC as "future work."
 
@@ -113,13 +135,8 @@ Features that are research projects in their own right or require months of work
 | 2.12 | GPU Workers (HVM2-style) | FUTURE | Very High | 3+ months | Heterogeneous compute, CUDA/OpenCL |
 | 2.13 | Visualization (Graphviz, live dashboard) | FUTURE | Medium | 2–3w | Nice-to-have, not correctness/performance |
 | 2.14 | WASM Target (browser-based IC reduction) | FUTURE | Medium | 2–3w | Educational, not critical for TCC |
-| 2.15 | Compact Memory (HVM2-style u64 encoding) | FUTURE | Medium | 2–3w | Requires rewrite of net/ module internals |
 | 2.16 | Streaming Reduction Mode (async, no barriers) | FUTURE | Very High | 2–3 months | Requires rewrite of G1 formal argument |
-| 2.21 | WAN/Internet Deployment (NAT, TLS, auth, reconnect) | FUTURE | High | 1–2 months | 7 sub-components, 3-4 spec rewrites |
-| 2.29 | Distributed/Parallel Net Generation (recipe-based) | FUTURE | Medium-High | 2–3w | Depends on stable 2.27+2.28 |
 | 2.31 | Memory-Mapped Net (mmap, out-of-core) | FUTURE | Medium-High | 2–3w | Platform-specific complexity |
-| 2.36 | Lazy/Demand-Driven Generation (pull model) | FUTURE | Low-Medium | 1w | Orchestration layer on top of 2.27+2.28 |
-| 2.39 | GUI (Tauri v2 desktop app) | FUTURE | High | 2–3 months | Separate project, workspace restructure needed |
 
 ---
 
@@ -127,6 +144,7 @@ Features that are research projects in their own right or require months of work
 
 | ID | Feature | Status | Notes |
 |----|---------|--------|-------|
+| 2.18 | Native Numeric Types (NUM/OPE/SWI) | ARCHIVED | Different goal from HVM. Relativist focuses on net partitioning/reduction; domain-specific operations are defined by encoders/decoders, not native agent types. |
 | 2.19 | Protocol Payload Chunking | ARCHIVED | Superseded by 2.20 (CompactSubnet) + 1 GiB cap raise |
 | 2.20 | Compact Subnet Encoding | DONE | Shipped as `CompactSubnet` in `src/partition/compact.rs` |
 
@@ -134,25 +152,32 @@ Features that are research projects in their own right or require months of work
 
 ## Spec Mapping
 
-### New Specs (to be created)
+### New Specs
 
-| Spec | Title | Features | Tier | Milestone |
-|------|-------|----------|------|-----------|
-| SPEC-17 | Transport Abstraction & Tuning | 2.22, 2.25 | 1 | M1 |
-| SPEC-18 | Wire Format v2 | 2.23, 2.24 | 1 | M1 |
-| SPEC-19 | Delta Protocol & Stateful Workers | 2.26, 2.34, 2.35 | 1 | M3, M4 |
-| SPEC-20 | Elastic Grid | 2.1, 2.2, 2.3 | 2 | M2 |
-| SPEC-21 | Streaming Generation & Partitioning | 2.27, 2.28, 2.30 | 3 | M5 |
-| SPEC-22 | Arena Management & Memory Efficiency | 2.33, 2.32 | 3 | M5 |
+| Spec | Title | Features | Tier | Milestone | Status |
+|------|-------|----------|------|-----------|--------|
+| SPEC-17 | Transport Abstraction & Tuning | 2.22, 2.25 | 1 | M1 | Created |
+| SPEC-18 | Wire Format v2 | 2.23, 2.24 | 1 | M1 | Created |
+| SPEC-19 | Delta Protocol & Stateful Workers | 2.26, 2.34, 2.35 | 1 | M3, M4 | Created |
+| SPEC-20 | Elastic Grid | 2.1, 2.2, 2.3 | 2 | M2 | Created |
+| SPEC-21 | Streaming Generation & Partitioning | 2.27, 2.28, 2.30, 2.36 | 3, 5 | M5, M7 | Created (2.36 amend done) |
+| SPEC-22 | Arena Management & Memory Efficiency | 2.33, 2.32 | 3 | M5 | Created |
+| SPEC-23 | Compact Memory Representation | 2.15 | 5 | M7 | Created |
+| SPEC-24 | WAN Deployment and Security | 2.21, 2.21.1 | 5 | M8 | Created |
+| SPEC-25 | Recipe-Based Distributed Generation | 2.29 | 5 | M7 | Created |
+| SPEC-26 | GUI Application | 2.39 | 5 | M9 | Created |
 
 ### Existing Spec Amendments
 
 | Spec | Amendment | Reason |
 |------|-----------|--------|
 | SPEC-01 | New invariants for delta protocol | G1 delta-aware decomposition |
+| SPEC-02 | Compact memory types | u64 Agent, u32 PortRef (SPEC-23) |
 | SPEC-04 | Streaming partitioning API | New `StreamingPartitionStrategy` trait |
 | SPEC-05 | Delta merge, coordinator-free rounds | BorderGraph, convergence check |
 | SPEC-06 | Wire format v2, new message variants | bincode v2, rkyv archive variants |
+| SPEC-07 | WAN deployment config | NAT, TLS, discovery (SPEC-24) |
+| SPEC-10 | Strong authentication | mTLS/OAuth2, replaces plaintext tokens (SPEC-24) |
 | SPEC-13 | Transport trait, module boundaries v2 | New abstraction layer |
 
 ---
@@ -167,22 +192,30 @@ Features that are research projects in their own right or require months of work
 | **M4** Full Delta Protocol | SPEC-19 complete | 2.26 | 3–5w | `ep_con 5M w=2` speedup > 1.0 (BREAK-EVEN) |
 | **M5** Memory Efficiency | SPEC-21, SPEC-22 | 2.33 → 2.28 → 2.27 → 2.30 | 2–3w | `ep_con 100M` runs on 2GB coordinator |
 | **M6** Complementary | — | 2.37, 2.38, 2.7, ... | as time allows | UX improvements shipped |
+| **M7** Advanced Memory & Generation | SPEC-23, SPEC-25, SPEC-21 amend | 2.15 → 2.29 → 2.36 | 4–6w | Compact memory reduces footprint 30%+; recipe gen for `ep_annihilation` works |
+| **M8** WAN Deployment & Security | SPEC-24 | 2.21 → 2.21.1 | 4–6w | Workers connect via WAN with TLS; threat model documented |
+| **M9** GUI Application | SPEC-26 | 2.39 | 5–8w | Tauri MVP: Dashboard + Generate + Reduce + Grid screens |
 
 ---
 
-## Dependency Graph (Tiers 1–3)
+## Dependency Graph (Tiers 1–5)
 
 ```
-Independent          Sequential chains          Cross-tier
-─────────────       ──────────────────          ──────────
-2.22 (TCP tune)     2.23 → 2.24 (wire)         2.34 ─┐
-2.34 (no-merge)     2.1 → 2.2 → 2.3 (elastic)  2.35 ─┼→ 2.26 (delta)
-2.25 (UDS/SHM)      2.28 → 2.27 → 2.30 (stream) └────┘
+Tier 1–3 (unchanged)         Tier 5 additions              Cross-tier deps
+─────────────────────       ──────────────────              ───────────────
+2.22 (TCP tune)             2.15 (compact mem)  independent  M1 ──→ 2.21 (WAN needs transport)
+2.34 (no-merge) ─┐         2.29 (recipe gen)   independent  M5 ──→ 2.36 (lazy needs streaming)
+2.35 (delta)  ───┼→ 2.26   2.39 (GUI)          independent  SPEC-22 ──→ SPEC-23 (net/ types)
+2.25 (UDS/SHM)   ┘
+2.23 → 2.24 (wire)         2.21 → 2.21.1 (WAN → security)
+2.1 → 2.2 → 2.3 (elastic)  2.27+2.28 → 2.36 (lazy gen)
+2.28 → 2.27 → 2.30 (stream)
 2.33 (free-list)
 2.32 (sparse)
 ```
 
 **Critical path to break-even:** 2.22 → 2.23 → 2.34 → 2.35 → 2.26
+**Critical path to WAN:** M1 (SPEC-17 transport) → 2.21 → 2.21.1
 
 ---
 
