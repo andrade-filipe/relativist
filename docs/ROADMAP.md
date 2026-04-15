@@ -1173,6 +1173,76 @@ Progress reporting uses Tauri's event system: the backend emits events (`tauri::
 
 ---
 
+## v2 — Theoretical Break-Even Analysis (items 2.40)
+
+The v1 benchmark campaigns (4490 executions, 0 correctness failures) revealed a structural performance limitation: **no configuration with workers >= 2 achieved speedup > 1.0**. This section derives the theoretical break-even model from v1 empirical data and quantifies the overhead reduction required for v2.
+
+### 2.40 Break-Even Model and Required Overhead Reduction
+
+**The model.** For workloads where both reduction and partition/merge are O(N) in the number of agents:
+
+```
+T_seq(N)    = c_r × N                     (sequential reduction)
+T_dist(N,w) = c_o × N + c_r × N / w       (partition + merge + parallel reduction)
+Speedup     = 1 / (c_o/c_r + 1/w)
+```
+
+where `c_r` is the per-agent reduction cost and `c_o = c_partition + c_merge` is the per-agent overhead cost. **N cancels in the speedup formula** — speedup is structurally constant, independent of problem size.
+
+**Empirical calibration.** From `ep_annihilation_con` (Phase 1 local, w=2) across 4 orders of magnitude:
+
+| N (agents) | c_r (µs/agent) | c_o (µs/agent) | c_o/c_r | S_max (w→∞) |
+|------------|---------------:|---------------:|--------:|------------:|
+| 1,000      | 0.137          | 0.202          | 1.47    | 0.68        |
+| 10,000     | 0.126          | 0.225          | 1.79    | 0.56        |
+| 100,000    | 0.128          | 0.278          | 2.17    | 0.46        |
+| 10,000,000 | 0.347          | 0.791          | 2.28    | 0.44        |
+| 50,000,000 | 0.409          | 0.885          | 2.17    | 0.46        |
+
+The overhead per agent is **2.0–2.3× the reduction cost per agent** at large scales. Even with infinite workers, the theoretical maximum speedup is 0.44–0.46. The ratio worsens at scale due to cache effects (larger nets exceed L3 cache).
+
+**Why no break-even exists in v1.** The condition for speedup > 1 with w workers is:
+
+```
+c_o/c_r < (w-1)/w
+```
+
+| Workers | Required c_o/c_r | Current c_o/c_r | Overhead reduction needed |
+|--------:|-----------------:|----------------:|--------------------------:|
+| 2       | < 0.50           | 2.2             | 77%                       |
+| 4       | < 0.75           | 2.2             | 66%                       |
+| 8       | < 0.88           | 2.2             | 60%                       |
+
+The root cause is **architectural**: the coordinator rebuilds the entire net every BSP round (`split` + `merge` are O(N)), and the reduction itself is also O(N) with very small constant factors (IC interactions are fast pointer swaps). Scaling N does not help because both overhead and computation grow linearly.
+
+**Overhead decomposition (Phase 1 vs Phase 2).** Paired measurements at identical scales isolate the two overhead components:
+
+| Component | Factor (ep_con, w=2) | Source |
+|-----------|---------------------:|--------|
+| Distribution (partition+merge) | 2.78–2.80× | Phase 1 local / sequential |
+| Transport (serde+TCP) | 1.16–1.20× | Phase 2 TCP / Phase 1 local |
+| **Total** | **3.22–3.35×** | Phase 2 TCP / sequential |
+
+Distribution is responsible for ~80% of total overhead. TCP transport adds only ~20%. **Optimizing the wire protocol alone cannot achieve break-even**; the partition/merge architecture must change.
+
+**Break-even under v2 optimizations.** Projected speedups for v2 items that reduce `c_o`:
+
+| Scenario | c_o/c_r | w=2 | w=4 | w=8 | Key items |
+|----------|--------:|----:|----:|----:|-----------|
+| **v1 current** | 2.20 | 0.37 | 0.41 | 0.43 | — |
+| Delta partition 50% | 1.10 | 0.63 | 0.74 | 0.82 | 2.26 partial |
+| Delta partition 90% | 0.22 | **1.39** | **2.13** | **2.90** | 2.26 + 2.35 |
+| Stateful workers | 0.10 | **1.67** | **2.86** | **4.44** | 2.26 + 2.34 + 2.35 |
+| Break-even threshold | 0.49 | **1.01** | **1.35** | **1.63** | minimum viable |
+
+The **minimum viable change** for break-even requires reducing `c_o` by 77% (to c_o/c_r < 0.50). This maps directly to item 2.26 (Delta-Only Protocol): if workers retain partition state and the coordinator sends only border deltas, the per-round overhead drops from O(N) to O(border_changes), which for EP workloads (zero border changes per round) approaches zero.
+
+**Note on SPEC-16 (Worker Daemon Mode).** SPEC-16 (implemented in v0.11.0) keeps workers alive **between jobs** (between coordinator invocations) for operational convenience during benchmark campaigns. It does NOT keep worker state **between BSP rounds within a single job** — each round still receives a full `AssignPartition`. SPEC-16 addresses a different problem (campaign automation) than the break-even gap (per-round overhead). The break-even gap requires item 2.26.
+
+**Implication for the TCC.** This analysis produces a **clean negative result**: the v1 architecture validates correctness (0 failures in 4490 executions) but demonstrates that the O(N) partition/merge cost structurally exceeds the O(N) reduction cost, making speedup impossible at any scale. The negative result is scientifically valuable because it (a) identifies the exact bottleneck (c_o/c_r = 2.2, needing < 0.5), (b) proves the bottleneck is architectural rather than scale-dependent (N cancels), and (c) quantifies the engineering target for v2 (77% overhead reduction via 2.26 + 2.34 + 2.35).
+
+---
+
 ## The Confluence Argument for the Paper
 
 The features in Section 2 (2.1-2.4) share a common theoretical foundation that should be presented in the TCC's Discussion section (Section 5):
