@@ -1,41 +1,51 @@
 # Relativist — Development Pipeline
 
-**Last updated:** 2026-03-26
-**Status:** Approved — apply to every spec implementation phase
+**Last updated:** 2026-04-15
+**Status:** Approved v2 — apply to every spec implementation phase
+**Orchestrator:** `sdd-pipeline` agent tracks state in `docs/pipeline-state.md`
 
 ---
 
 ## Overview
 
-Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec (SPEC-02 through SPEC-15) goes through the same 7-stage pipeline. No stage can be skipped. The pipeline ensures clean context, precise tasks, comprehensive tests, and multi-perspective code review.
+Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec goes through the same **6-stage pipeline**. No stage can be skipped. The pipeline ensures clean context, precise tasks, comprehensive tests, and unified code review.
+
+The `sdd-pipeline` orchestrator agent tracks the current state in `docs/pipeline-state.md` and tells you exactly which agent to invoke next. **Always invoke `sdd-pipeline` first** to know where you are and what to do.
 
 ---
 
 ## Pipeline Stages
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    PER-SPEC IMPLEMENTATION CYCLE                    │
-│                                                                     │
-│   Stage 1          Stage 2          Stage 3          Stage 4        │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐     │
-│  │   TASK   │───▶│   TEST   │───▶│   DEV    │───▶│  CLEAN   │     │
-│  │ SPLITTER │    │GENERATOR │    │(TDD impl)│    │  CODE    │     │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘     │
-│                                                       │             │
-│   Stage 7          Stage 6          Stage 5           │             │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐        │             │
-│  │   DEV    │◀───│    QA    │◀───│  ARCH    │◀───────┘             │
-│  │(refactor)│    │(bug hunt)│    │ REVIEW   │                      │
-│  └──────────┘    └──────────┘    └──────────┘                      │
-│       │                                                             │
-│       ▼                                                             │
-│  ┌──────────┐                                                       │
-│  │  TESTS   │ ── All green? ── YES ──▶ DONE ✓                     │
-│  │  PASS?   │                                                       │
-│  └──────────┘ ── NO ──▶ Fix and re-run                             │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                   PER-SPEC IMPLEMENTATION CYCLE                   │
+│                                                                    │
+│  Stage 1          Stage 2          Stage 3          Stage 4       │
+│ ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    │
+│ │   TASK   │───▶│   TEST   │───▶│   DEV    │───▶│ REVIEWER │    │
+│ │ SPLITTER │    │GENERATOR │    │(TDD impl)│    │(quality +│    │
+│ └──────────┘    └──────────┘    └──────────┘    │  arch)   │    │
+│                                                  └──────────┘    │
+│                                                       │           │
+│  Stage 6                           Stage 5            │           │
+│ ┌──────────┐                     ┌──────────┐         │           │
+│ │   DEV    │◀────────────────────│    QA    │◀────────┘           │
+│ │(refactor)│                     │(bug hunt)│                     │
+│ └──────────┘                     └──────────┘                     │
+│      │                                                            │
+│      ▼                                                            │
+│ ┌──────────┐                                                      │
+│ │  TESTS   │ ── All green? ── YES ──▶ DONE ✓                    │
+│ │  PASS?   │                                                      │
+│ └──────────┘ ── NO ──▶ Fix and re-run                            │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+### Skip Rules (v2)
+
+- If REVIEW produces **0 Must-Fix** and architecture verdict is ALIGNED → auto-advance to QA
+- If QA returns **CLEAN** (0 CRITICAL, 0 HIGH) → skip REFACTOR, go directly to DONE
+- Tasks classified as **S** (small, <50 LoC) → reviewer uses single-pass lighter review
 
 ---
 
@@ -103,49 +113,42 @@ Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec
 
 ---
 
-### Stage 4: Code Cleaner Review
+### Stage 4: Unified Review (Code Quality + Architecture)
 
-**Agent:** `code-cleaner`
+**Agent:** `reviewer`
 **Input:** Code produced in Stage 3
-**Output:** Structured review (MF/SF/NTH issues with before/after examples)
+**Output:** Structured review with two sections (MF/SF/NTH issues with before/after examples)
 
 **What happens:**
+
+*Part A — Code Quality:*
 1. Reviews code for Clean Code principles (naming, function size, abstraction levels)
 2. Reviews for SOLID principles (SRP, OCP, DIP especially)
 3. Reviews for Rust idioms (ownership, iterators, error handling)
-4. Classifies issues as Must-Fix, Should-Fix, or Nice-to-Have
-5. Provides concrete before/after refactoring examples
+4. Reviews documentation (pub items have doc comments, WHY not WHAT)
+
+*Part B — Architecture:*
+5. Verifies module boundaries match SPEC-13
+6. Verifies dependency direction (core → infra, never reverse)
+7. Verifies design patterns (FSM, Transport trait, newtypes, error enums)
+8. Checks spec compliance: every MUST requirement implemented correctly
+9. Flags anti-patterns (god struct, primitive obsession, leaky abstraction)
+
+*Classification:*
+10. Classifies all issues as Must-Fix, Should-Fix, or Nice-to-Have
+11. Provides concrete before/after refactoring examples for every Must-Fix
 
 **Exit criteria:**
-- Review document produced with categorized issues
+- Review document produced with both verdicts (code quality + architecture)
 - All Must-Fix issues have concrete fix examples
-
----
-
-### Stage 5: Architecture Review
-
-**Agent:** `code-reviewer`
-**Input:** Code from Stage 3 + code-cleaner review
-**Output:** Structured architecture review (AI/PR/SN issues)
-
-**What happens:**
-1. Verifies module boundaries match SPEC-13
-2. Verifies dependency direction (core → infra, never reverse)
-3. Verifies design patterns (FSM, Transport trait, newtypes, error enums)
-4. Checks spec compliance: every MUST requirement implemented correctly
-5. Flags anti-patterns (god struct, primitive obsession, leaky abstraction)
-
-**Exit criteria:**
-- Architecture review document produced
 - Spec compliance matrix completed
-- All Architectural Issues have concrete fix examples
 
 ---
 
-### Stage 6: QA Review (Bug Hunt)
+### Stage 5: QA Review (Bug Hunt)
 
 **Agent:** `qa`
-**Input:** Code from Stage 3 + previous reviews
+**Input:** Code from Stage 3 + reviewer output from Stage 4
 **Output:** Bug reports, edge case catalog, test coverage gaps
 
 **What happens:**
@@ -162,14 +165,14 @@ Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec
 
 ---
 
-### Stage 7: Developer Refactoring
+### Stage 6: Developer Refactoring
 
 **Agent:** `developer`
-**Input:** All reviews from Stages 4, 5, 6
+**Input:** Review from Stage 4 + QA report from Stage 5
 **Output:** Refactored code with all tests still passing
 
 **What happens:**
-1. Reads ALL reviews (code-cleaner, code-reviewer, QA)
+1. Reads reviewer output and QA bug report
 2. Addresses all Must-Fix issues first
 3. Addresses Should-Fix issues
 4. Adds tests for edge cases identified by QA
@@ -177,7 +180,7 @@ Relativist follows a strict **Spec-Driven, TDD** development pipeline. Each spec
 6. Runs `cargo clippy -- -D warnings` → CLEAN
 
 **Exit criteria:**
-- All Must-Fix issues from all reviewers addressed
+- All Must-Fix issues from reviewer and QA addressed
 - All new edge case tests passing
 - No regressions (all previously passing tests still pass)
 - `cargo test && cargo clippy -- -D warnings && cargo fmt --check` all green
@@ -190,14 +193,14 @@ The pipeline runs **per task**, not per spec:
 
 ```
 SPEC-02 decomposed into:
-  TASK-0001 → Stages 1-7 → DONE
-  TASK-0002 → Stages 1-7 → DONE
-  TASK-0003 → Stages 1-7 → DONE
+  TASK-0001 → Stages 1-6 → DONE
+  TASK-0002 → Stages 1-6 → DONE
+  TASK-0003 → Stages 1-6 → DONE
   ...
 SPEC-02 COMPLETE
 ```
 
-However, Stage 1 (task splitting) runs once per spec, producing all tasks upfront. Stages 2-7 run per task sequentially.
+However, Stage 1 (task splitting) runs once per spec, producing all tasks upfront. Stages 2-6 run per task sequentially.
 
 ---
 
@@ -205,18 +208,20 @@ However, Stage 1 (task splitting) runs once per spec, producing all tasks upfron
 
 | Agent | Stage | Role | Writes Code? |
 |-------|-------|------|-------------|
+| `sdd-pipeline` | — | **Orchestrator:** tracks state, enforces stage order | No (state file only) |
 | `task-splitter` | 1 | Break specs into atomic tasks | No (docs only) |
 | `test-generator` | 2 | Specify tests for TDD | No (docs only) |
-| `developer` | 3, 7 | Write production + test code | **Yes (only agent)** |
-| `code-cleaner` | 4 | Review: Clean Code, SOLID, Rust idioms | No (review only) |
-| `code-reviewer` | 5 | Review: Architecture, patterns, spec compliance | No (review only) |
-| `qa` | 6 | Review: Bugs, edge cases, adversarial testing | No (review only) |
+| `developer` | 3, 6 | Write production + test code | **Yes (only agent)** |
+| `reviewer` | 4 | Review: code quality + architecture (unified) | No (review only) |
+| `qa` | 5 | Review: Bugs, edge cases, adversarial testing | No (review only) |
 
 Support agents (not in the per-task pipeline):
 | Agent | Role |
 |-------|------|
 | `cicd` | GitHub Actions, Docker, CI pipeline |
 | `opensource` | README, LICENCE, CONTRIBUTING, templates |
+| `spec-critic` | Adversarial spec review (before implementation) |
+| `task-updater` | Align tasks after spec revision |
 
 ---
 
@@ -261,10 +266,11 @@ Estimated total: ~90-100 tasks.
 
 ## Rules
 
-1. **No task is implemented without a test spec.** (Stage 2 before Stage 3)
-2. **No code merges without all three reviews.** (Stages 4, 5, 6 before Stage 7)
-3. **Tests never decrease.** Refactoring cannot remove tests without replacing them.
-4. **One task at a time.** Developer works on ONE task. Clean context, focused work.
-5. **Specs are truth.** If code and spec disagree, the spec wins. Propose a spec change, don't silently deviate.
-6. **Only the developer writes code.** All other agents produce documents/reviews.
-7. **Reviews are actionable.** Every issue has a concrete example. No vague "could be better."
+1. **Always invoke `sdd-pipeline` first.** It knows the current state and tells you what to do next.
+2. **No task is implemented without a test spec.** (Stage 2 before Stage 3)
+3. **No code merges without review and QA.** (Stages 4, 5 before Stage 6)
+4. **Tests never decrease.** v1 baseline is 690 tests. This number must never go down.
+5. **One task at a time.** Developer works on ONE task. Clean context, focused work.
+6. **Specs are truth.** If code and spec disagree, the spec wins. Propose a spec change, don't silently deviate.
+7. **Only the developer writes code.** All other agents produce documents/reviews.
+8. **Reviews are actionable.** Every issue has a concrete example. No vague "could be better."
