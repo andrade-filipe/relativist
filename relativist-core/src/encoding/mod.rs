@@ -11,6 +11,9 @@
 pub mod arithmetic;
 pub mod church;
 pub mod codec_church;
+pub mod codec_lambda;
+pub mod recipe;
+pub mod registry;
 pub mod traits;
 
 pub use arithmetic::{
@@ -19,4 +22,7 @@ pub use arithmetic::{
 };
 pub use church::{decode_nat, encode_church_into, encode_nat};
 pub use codec_church::{ChurchArithmeticCodec, ChurchOp};
+pub use codec_lambda::{LambdaCodec, Term};
+pub use recipe::{MinimalRecipe, MinimalRecipeEncoder, RecipeEncoder};
+pub use registry::{default_registry, EncoderRegistry, RegistryError};
 pub use traits::{validate_encoded_net, Codec, DecodeError, Decoder, EncodeError, Encoder};

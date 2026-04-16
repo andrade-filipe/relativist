@@ -168,7 +168,7 @@ Features that are research projects in their own right or require months of work
 | SPEC-24 | WAN Deployment and Security | 2.21, 2.21.1 | 5 | M8 | Created |
 | SPEC-25 | Recipe-Based Distributed Generation | 2.29 | 5 | M7 | Created |
 | SPEC-26 | GUI Application | 2.39 | 5 | M9 | Created |
-| SPEC-27 | Encoder/Decoder Trait API | 2.41 | 5 | M10 | Created |
+| SPEC-27 | Encoder/Decoder Trait API | 2.41 | 5 | M10 | Phases 1-5 DONE, Phase 6 partial (R24+R25 only; R26-R28 deferred to M7, see DEFERRED-WORK.md D-001) |
 
 ### Existing Spec Amendments
 
@@ -198,7 +198,7 @@ Features that are research projects in their own right or require months of work
 | **M7** Advanced Memory & Generation | SPEC-23, SPEC-25, SPEC-21 amend | 2.15 → 2.29 → 2.36 | 4–6w | Compact memory reduces footprint 30%+; recipe gen for `ep_annihilation` works |
 | **M8** WAN Deployment & Security | SPEC-24 | 2.21 → 2.21.1 | 4–6w | Workers connect via WAN with TLS; threat model documented |
 | **M9** GUI Application | SPEC-26 | 2.39 | 5–8w | Tauri MVP: Dashboard + Generate + Reduce + Grid screens |
-| **M10** Encoder/Decoder API | SPEC-27 | 2.41 | 2–3w | LambdaEncoder end-to-end, registry with 5 codecs, RecipeEncoder generalized |
+| **M10** Encoder/Decoder API | SPEC-27 | 2.41 | 2–3w | LambdaEncoder end-to-end, registry with 5 codecs, RecipeEncoder generalized — **NOTE:** RecipeEncoder full generalization (R26-R28) is held until M7 ships SPEC-25; M10 itself shipped only R24+R25. See DEFERRED-WORK.md D-001. |
 
 ---
 

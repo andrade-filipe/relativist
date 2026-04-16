@@ -64,6 +64,7 @@ fn main() {
         Command::Validate(args) => commands::run_validate_command(args),
         Command::Update(args) => commands::run_update_command(args),
         Command::Completions(args) => commands::run_completions_command(args),
+        Command::Encoders(args) => commands::run_encoders_command(args),
     };
 
     if let Err(e) = result {

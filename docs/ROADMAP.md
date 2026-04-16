@@ -1290,6 +1290,14 @@ The **minimum viable change** for break-even requires reducing `c_o` by 77% (to 
 - Protocol: `AssignRecipe` message variant accepts recipes from any encoder in the registry.
 - Coordinator sends compact recipe (bytes to kilobytes); each worker materializes its partition locally.
 
+**Status (2026-04-16):** Layer 3 is **partially shipped**. R24+R25 (trait
+definition + non-coupling guarantee with the `Codec` registry) landed via
+TASK-0340 in Phase 6 mínimo. R26 (refactor SPEC-25 `GenerationRecipe`),
+R27 (generalize `AssignRecipe` wire message), and R28 (worker-side registry
+dispatch) are **deferred until SPEC-25 itself is implemented** (item 2.29,
+milestone M7). See `docs/DEFERRED-WORK.md` row D-001 for the unblock
+checklist and the files to revisit when M7 starts.
+
 **What stays out of scope (v2.x/v3).**
 - REST API (Layer 4 of DISC-012): ~800-1000 LoC, deferred.
 - FFI/Python bindings (PyO3): ~800 LoC, deferred.

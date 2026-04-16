@@ -64,6 +64,8 @@ Organized in 7 categories in [`pesquisa/`](pesquisa/). See [`pesquisa/INDICE.md`
 |----------|-------------|
 | [progress.md](progress.md) | Current implementation state and phase summary |
 | [ROADMAP.md](ROADMAP.md) | v2+ roadmap (confluence-enabled features) |
+| [V2-FEATURE-MATRIX.md](V2-FEATURE-MATRIX.md) | Consolidated v2 feature inventory with milestones M1-M10 |
+| [DEFERRED-WORK.md](DEFERRED-WORK.md) | **Tracker of partially-shipped specs awaiting an unblocker** — check before closing any milestone |
 
 ## Internal (Historical)
 

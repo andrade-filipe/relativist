@@ -298,17 +298,19 @@
 |----|-------|----------|--------|---------|------------|
 | TASK-0330 | Phase 1 — Define Encoder/Decoder/Codec traits + error types — R1-R4 | P0 | **DONE** | 0323 | S |
 | TASK-0331 | Phase 1 — Implement encode-contract validator (E1, E2) — R5, R6 | P0 | **DONE** | 0330 | S |
-| TASK-0332 | Phase 2 — Refactor Church arithmetic to implement Codec — R7-R9 | P0 | TODO | 0331 | S |
-| TASK-0333 | Phase 3 — LambdaCodec encoder (REF-005 mapping) — R10-R13 | P0 | TODO | 0331 | M |
-| TASK-0334 | Phase 3 — LambdaCodec decoder (port-directed readback) — R14-R15 | P0 | TODO | 0333 | M |
-| TASK-0335 | Phase 3 — LambdaCodec edge cases (identity, beta, erasure, dup) — R16, T5-T9 | P0 | TODO | 0334 | M |
-| TASK-0336 | Phase 4 — EncoderRegistry struct + ops — R17, R18, R20 | P0 | TODO | 0332, 0335 | S |
-| TASK-0337 | Phase 4 — default_registry() with 5 codecs — R19 | P0 | TODO | 0336 | S |
+| TASK-0332 | Phase 2 — Refactor Church arithmetic to implement Codec — R7-R9 | P0 | **DONE** | 0331 | S |
+| TASK-0333 | Phase 3 — LambdaCodec encoder (REF-005 mapping) — R10-R13 | P0 | **DONE** | 0331 | M |
+| TASK-0334 | Phase 3 — LambdaCodec decoder (port-directed readback) — R14-R15 | P0 | **DONE** | 0333 | M |
+| TASK-0335 | Phase 3 — LambdaCodec edge cases (identity, beta, erasure, dup) — R16, T5-T9 | P0 | **DONE** | 0334 | M |
+| TASK-0336 | Phase 4 — EncoderRegistry struct + ops — R17, R18, R20 | P0 | **DONE** | 0332, 0335 | S |
+| TASK-0337 | Phase 4 — default_registry() with 5 codecs — R19 | P0 | **DONE** | 0336 | S |
+| TASK-0338 | Phase 5 — compute --encoder dispatch — R21, R23 | P0 | **DONE** | 0337 | S |
+| TASK-0339 | Phase 5 — encoders list subcommand — R22 | P0 | **DONE** | 0337 | S |
 | TASK-0338 | Phase 5 — CLI `compute --encoder` flag (backward-compatible) — R21, R23 | P0 | TODO | 0337 | S |
 | TASK-0339 | Phase 5 — CLI `encoders list` subcommand — R22 | P0 | TODO | 0337 | S |
-| TASK-0340 | Phase 6 — RecipeEncoder trait — R24, R25 | P1 | TODO | 0337 | S |
-| TASK-0341 | Phase 6 — Refactor SPEC-25 generators to RecipeEncoder — R26 | P1 | TODO | 0340 | M |
-| TASK-0342 | Phase 6 — Generalize AssignRecipe to carry encoder name — R27, R28 | P1 | TODO | 0341 | M |
+| TASK-0340 | Phase 6 — RecipeEncoder trait — R24, R25 (R26-R28 deferred → DEFERRED-WORK.md D-001) | P1 | **DONE** | 0337 | S |
+| TASK-0341 | Phase 6 — Refactor SPEC-25 generators to RecipeEncoder — R26 | P1 | BLOCKED on M7 (SPEC-25) — see DEFERRED-WORK.md D-001 | 0340 | M |
+| TASK-0342 | Phase 6 — Generalize AssignRecipe to carry encoder name — R27, R28 | P1 | BLOCKED on M7 (SPEC-25) — see DEFERRED-WORK.md D-001 | 0341 | M |
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

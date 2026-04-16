@@ -186,8 +186,38 @@ pub fn interact_comm(net: &mut Net, con_id: AgentId, dup_id: AgentId) {
     let b1 = net.get_target(PortRef::AgentPort(dup_id, 1));
     let b2 = net.get_target(PortRef::AgentPort(dup_id, 2));
 
+    // Self-loop detection (mirrors interact_anni / interact_eras).
+    // A self-loop on the CON side means it encodes the identity `λx. x`:
+    // duplicating identity yields two copies of identity. A self-loop on
+    // the DUP side means it short-circuits its two outputs into one wire,
+    // so commuting it through the CON yields two short-circuited DUPs.
+    let con_self_loop = a1 == PortRef::AgentPort(con_id, 2) && a2 == PortRef::AgentPort(con_id, 1);
+    let dup_self_loop = b1 == PortRef::AgentPort(dup_id, 2) && b2 == PortRef::AgentPort(dup_id, 1);
+
     net.remove_agent(con_id);
     net.remove_agent(dup_id);
+
+    if con_self_loop && dup_self_loop {
+        return;
+    } else if con_self_loop {
+        // CON was identity — reproduce it on each DUP-output wire.
+        let r = net.create_agent(Symbol::Con);
+        let s = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(r, 1), PortRef::AgentPort(r, 2));
+        net.connect(PortRef::AgentPort(s, 1), PortRef::AgentPort(s, 2));
+        link(net, PortRef::AgentPort(r, 0), b1);
+        link(net, PortRef::AgentPort(s, 0), b2);
+        return;
+    } else if dup_self_loop {
+        // DUP was a short-circuit — reproduce it on each CON-output wire.
+        let p = net.create_agent(Symbol::Dup);
+        let q = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(p, 1), PortRef::AgentPort(p, 2));
+        net.connect(PortRef::AgentPort(q, 1), PortRef::AgentPort(q, 2));
+        link(net, PortRef::AgentPort(p, 0), a1);
+        link(net, PortRef::AgentPort(q, 0), a2);
+        return;
+    }
 
     // Create 4 new agents: 2 DUP + 2 CON
     let p = net.create_agent(Symbol::Dup); // DUP: inherits side of con.1

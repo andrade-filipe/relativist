@@ -6,7 +6,8 @@
 use crate::config::{
     build_grid_config, build_grid_config_from_local, build_node_config_coordinator,
     build_node_config_worker, parse_strategy, BenchArgs, CompletionsArgs, CoordinatorArgs,
-    GenerateArgs, InspectArgs, LocalArgs, ReduceArgs, UpdateArgs, ValidateArgs, WorkerArgs,
+    EncodersAction, EncodersArgs, GenerateArgs, InspectArgs, LocalArgs, ReduceArgs, UpdateArgs,
+    ValidateArgs, WorkerArgs,
 };
 use crate::error::RelativistError;
 use crate::io::{load_net_from_file, print_summary, save_net_to_file, write_metrics};
@@ -453,29 +454,56 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
     Ok(())
 }
 
-/// Execute compute mode: encode arithmetic, reduce, decode result (SPEC-14 R22-R25).
+/// Execute compute mode: encode arithmetic, reduce, decode result
+/// (SPEC-14 R22-R25; SPEC-27 R21, R23).
+///
+/// Two paths:
+/// - **Registry (SPEC-27 R21, R23):** when `--encoder` is set, runs the
+///   `encode → validate → reduce_all → decode → print JSON` pipeline.
+/// - **Legacy (SPEC-14):** positional `<op> <a> <b>` Church arithmetic.
 pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), RelativistError> {
     use crate::config::ArithmeticOp;
     use crate::encoding::{build_add, build_exp, build_mul, decode_nat, discover_root};
 
-    let op_name = match args.operation {
+    // SPEC-27 R21, R23: registry path.
+    if let Some(name) = args.encoder.as_deref() {
+        let input = args.input.as_ref().ok_or_else(|| {
+            RelativistError::Config("--input is required when --encoder is set".to_string())
+        })?;
+        return run_compute_with_encoder(name, input.as_bytes());
+    }
+
+    // Legacy SPEC-14 path: positional operation/a/b are required.
+    let operation = args.operation.ok_or_else(|| {
+        RelativistError::Config(
+            "compute requires either positional <op> <a> <b> or --encoder/--input".to_string(),
+        )
+    })?;
+    let a = args.a.ok_or_else(|| {
+        RelativistError::Config("compute legacy mode requires positional <a>".to_string())
+    })?;
+    let b = args.b.ok_or_else(|| {
+        RelativistError::Config("compute legacy mode requires positional <b>".to_string())
+    })?;
+
+    let op_name = match operation {
         ArithmeticOp::Add => "add",
         ArithmeticOp::Mul => "mul",
         ArithmeticOp::Exp => "exp",
     };
 
     // Build the arithmetic net
-    let mut net = match args.operation {
-        ArithmeticOp::Add => build_add(args.a, args.b),
-        ArithmeticOp::Mul => build_mul(args.a, args.b),
-        ArithmeticOp::Exp => build_exp(args.a, args.b),
+    let mut net = match operation {
+        ArithmeticOp::Add => build_add(a, b),
+        ArithmeticOp::Mul => build_mul(a, b),
+        ArithmeticOp::Exp => build_exp(a, b),
     };
 
     let initial_agents = net.count_live_agents();
     let initial_redexes = net.redex_queue.len();
 
     println!("=== Relativist Compute ===");
-    println!("Expression:  {}({}, {})", op_name, args.a, args.b);
+    println!("Expression:  {}({}, {})", op_name, a, b);
     println!(
         "Encoding:    {} agents, {} redexes",
         initial_agents, initial_redexes
@@ -550,6 +578,61 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
         save_net_to_file(&net, path)?;
     }
 
+    Ok(())
+}
+
+/// SPEC-27 R21, R23: registry-driven compute path.
+///
+/// Pipeline: `encode → validate (E1+E2) → reduce_all → decode → print JSON`.
+fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistError> {
+    let registry = crate::encoding::default_registry();
+
+    println!("=== Relativist Compute (encoder: {}) ===", name);
+
+    let mut net = registry.encode_and_validate(name, input)?;
+    let initial_agents = net.count_live_agents();
+    let initial_redexes = net.redex_queue.len();
+    println!(
+        "Encoding:    {} agents, {} redexes",
+        initial_agents, initial_redexes
+    );
+
+    let start = std::time::Instant::now();
+    let stats = reduce_all(&mut net);
+    let elapsed = start.elapsed();
+    let mips = if elapsed.as_secs_f64() > 0.0 {
+        stats.total_interactions as f64 / elapsed.as_secs_f64() / 1_000_000.0
+    } else {
+        0.0
+    };
+    println!(
+        "Reduction:   {} interactions in {:.2}s ({:.2} MIPS)",
+        stats.total_interactions,
+        elapsed.as_secs_f64(),
+        mips
+    );
+
+    let json_out = registry.decode(name, &net)?;
+    let pretty = serde_json::to_string_pretty(&json_out)
+        .map_err(|e| RelativistError::Encoding(format!("serialize result: {}", e)))?;
+    println!("Result:      {}", pretty);
+
+    Ok(())
+}
+
+/// SPEC-27 R22: list registered encoders with descriptions.
+pub fn run_encoders_command(args: EncodersArgs) -> Result<(), RelativistError> {
+    match args.action {
+        EncodersAction::List => {
+            let r = crate::encoding::default_registry();
+            let pairs = r.list();
+            let max_name = pairs.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+            println!("Available encoders:");
+            for (name, desc) in pairs {
+                println!("  {:<width$}  {}", name, desc, width = max_name);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -991,4 +1074,81 @@ pub fn run_completions_command(args: CompletionsArgs) -> Result<(), RelativistEr
     let mut cmd = Cli::command();
     generate(shell, &mut cmd, "relativist", &mut std::io::stdout());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ArithmeticOp, ComputeArgs};
+
+    fn empty_compute_args() -> ComputeArgs {
+        ComputeArgs {
+            operation: None,
+            a: None,
+            b: None,
+            encoder: None,
+            input: None,
+            workers: None,
+            output: None,
+            metrics: None,
+        }
+    }
+
+    // SPEC-27 R21: legacy mode with no positional args → Config error.
+    #[test]
+    fn run_compute_legacy_missing_operation_errors() {
+        let args = empty_compute_args();
+        let err = run_compute_command(args).unwrap_err();
+        assert!(matches!(err, RelativistError::Config(_)));
+    }
+
+    // SPEC-27 R21: --encoder set but --input missing → Config error.
+    #[test]
+    fn run_compute_encoder_without_input_errors() {
+        let mut args = empty_compute_args();
+        args.encoder = Some("lambda".to_string());
+        let err = run_compute_command(args).unwrap_err();
+        match err {
+            RelativistError::Config(msg) => assert!(msg.contains("--input")),
+            other => panic!("expected Config, got {:?}", other),
+        }
+    }
+
+    // SPEC-27 R21: legacy mode with operation but missing operand → Config error.
+    #[test]
+    fn run_compute_legacy_missing_b_errors() {
+        let mut args = empty_compute_args();
+        args.operation = Some(ArithmeticOp::Add);
+        args.a = Some(3);
+        // b missing
+        let err = run_compute_command(args).unwrap_err();
+        assert!(matches!(err, RelativistError::Config(_)));
+    }
+
+    // SPEC-27 R21: unknown encoder bubbles up as Encoding error.
+    #[test]
+    fn run_compute_unknown_encoder_errors() {
+        let err = run_compute_with_encoder("nope_does_not_exist", b"{}").unwrap_err();
+        match err {
+            RelativistError::Encoding(msg) => assert!(msg.contains("not found")),
+            other => panic!("expected Encoding, got {:?}", other),
+        }
+    }
+
+    // SPEC-27 R23: invalid JSON for a real encoder → Encoding error
+    // (propagated from the codec via RegistryError::Encode).
+    #[test]
+    fn run_compute_with_encoder_invalid_input_errors() {
+        let err = run_compute_with_encoder("lambda", b"{not json}").unwrap_err();
+        assert!(matches!(err, RelativistError::Encoding(_)));
+    }
+
+    // SPEC-27 R22: encoders list returns Ok and prints (smoke).
+    #[test]
+    fn run_encoders_list_succeeds() {
+        let args = EncodersArgs {
+            action: EncodersAction::List,
+        };
+        assert!(run_encoders_command(args).is_ok());
+    }
 }

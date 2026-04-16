@@ -66,6 +66,23 @@ pub enum Command {
 
     /// Generate shell completion scripts (SPEC-15 R20).
     Completions(CompletionsArgs),
+
+    /// List or inspect registered encoders (SPEC-27 R22).
+    Encoders(EncodersArgs),
+}
+
+/// Arguments for the `encoders` subcommand (SPEC-27 R22).
+#[derive(clap::Args, Debug)]
+pub struct EncodersArgs {
+    #[command(subcommand)]
+    pub action: EncodersAction,
+}
+
+/// Actions under `encoders` (SPEC-27 R22).
+#[derive(clap::Subcommand, Debug)]
+pub enum EncodersAction {
+    /// List all registered encoders with their descriptions.
+    List,
 }
 
 // ---------------------------------------------------------------------------
@@ -315,18 +332,33 @@ pub enum ArithmeticOp {
     Exp,
 }
 
-/// Arguments for the `compute` subcommand (SPEC-14 R22-R25).
+/// Arguments for the `compute` subcommand (SPEC-14 R22-R25, SPEC-27 R21).
+///
+/// Two mutually-exclusive invocation modes:
+/// - **Legacy:** positional `<op> <a> <b>` (Church arithmetic, SPEC-14).
+/// - **Registry:** `--encoder <name> --input <json>` (SPEC-27 R21).
+///
+/// Exactly one mode must be used; this is enforced at runtime in
+/// `run_compute_command`.
 #[derive(clap::Args, Debug)]
 pub struct ComputeArgs {
-    /// Arithmetic operation to perform.
+    /// Arithmetic operation (legacy SPEC-14 path). Required when --encoder is omitted.
     #[arg(value_enum)]
-    pub operation: ArithmeticOp,
+    pub operation: Option<ArithmeticOp>,
 
-    /// First operand (natural number).
-    pub a: u64,
+    /// First operand (legacy SPEC-14 path).
+    pub a: Option<u64>,
 
-    /// Second operand (natural number).
-    pub b: u64,
+    /// Second operand (legacy SPEC-14 path).
+    pub b: Option<u64>,
+
+    /// Encoder name from the registry (e.g., "lambda", "church_add"). SPEC-27 R21.
+    #[arg(long)]
+    pub encoder: Option<String>,
+
+    /// Encoder input as a JSON string. Required when --encoder is set. SPEC-27 R21.
+    #[arg(long, requires = "encoder")]
+    pub input: Option<String>,
 
     /// Number of workers for distributed reduction (must be >= 1 if specified).
     /// If omitted, reduces locally via reduce_all.
@@ -820,9 +852,90 @@ mod tests {
         let cli = Cli::try_parse_from(["relativist", "compute", "add", "3", "5"]).unwrap();
         match cli.command {
             Command::Compute(args) => {
-                assert!(matches!(args.operation, ArithmeticOp::Add));
-                assert_eq!(args.a, 3);
-                assert_eq!(args.b, 5);
+                assert!(matches!(args.operation, Some(ArithmeticOp::Add)));
+                assert_eq!(args.a, Some(3));
+                assert_eq!(args.b, Some(5));
+                assert!(args.encoder.is_none());
+                assert!(args.input.is_none());
+            }
+            _ => panic!("expected Compute"),
+        }
+    }
+
+    // SPEC-27 R21: --encoder + --input parses without positional args.
+    #[test]
+    fn test_parse_compute_encoder_flag() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--encoder",
+            "lambda",
+            "--input",
+            r#"{"term":"λx. x"}"#,
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Compute(args) => {
+                assert_eq!(args.encoder.as_deref(), Some("lambda"));
+                assert!(args.input.is_some());
+                assert!(args.operation.is_none());
+                assert!(args.a.is_none());
+                assert!(args.b.is_none());
+            }
+            _ => panic!("expected Compute"),
+        }
+    }
+
+    // SPEC-27 R21: --input without --encoder rejected by clap (requires).
+    #[test]
+    fn test_parse_compute_input_without_encoder_rejected() {
+        let res = Cli::try_parse_from(["relativist", "compute", "--input", "{}"]);
+        assert!(res.is_err());
+    }
+
+    // SPEC-27 R22: encoders list parses.
+    #[test]
+    fn test_parse_encoders_list() {
+        let cli = Cli::try_parse_from(["relativist", "encoders", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Encoders(EncodersArgs {
+                action: EncodersAction::List
+            })
+        ));
+    }
+
+    // SPEC-27 R22: encoders without action fails (clap requires subcommand).
+    #[test]
+    fn test_parse_encoders_no_action_fails() {
+        let res = Cli::try_parse_from(["relativist", "encoders"]);
+        assert!(res.is_err());
+    }
+
+    // QA: --encoder without --input parses (clap doesn't enforce the reverse
+    // direction); runtime check in run_compute_command must catch this.
+    #[test]
+    fn test_parse_compute_encoder_without_input_parses() {
+        let cli = Cli::try_parse_from(["relativist", "compute", "--encoder", "lambda"]).unwrap();
+        match cli.command {
+            Command::Compute(args) => {
+                assert_eq!(args.encoder.as_deref(), Some("lambda"));
+                assert!(args.input.is_none());
+            }
+            _ => panic!("expected Compute"),
+        }
+    }
+
+    // QA: empty positional/flags is rejected at parse time (no defaults).
+    #[test]
+    fn test_parse_compute_no_args_parses_but_runtime_rejects() {
+        // Note: clap accepts zero args because all are Optional; runtime
+        // dispatch (run_compute_command) is responsible for rejecting.
+        let cli = Cli::try_parse_from(["relativist", "compute"]).unwrap();
+        match cli.command {
+            Command::Compute(args) => {
+                assert!(args.operation.is_none());
+                assert!(args.encoder.is_none());
             }
             _ => panic!("expected Compute"),
         }

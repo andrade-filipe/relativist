@@ -123,6 +123,15 @@ pub enum RelativistError {
 
     #[error("configuration error: {0}")]
     Config(String),
+
+    #[error("encoding error: {0}")]
+    Encoding(String),
+}
+
+impl From<crate::encoding::RegistryError> for RelativistError {
+    fn from(err: crate::encoding::RegistryError) -> Self {
+        RelativistError::Encoding(err.to_string())
+    }
 }
 
 impl RelativistError {
