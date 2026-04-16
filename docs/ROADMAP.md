@@ -1265,6 +1265,65 @@ The **minimum viable change** for break-even requires reducing `c_o` by 77% (to 
 
 **Implication for the TCC.** This analysis produces a **clean negative result**: the v1 architecture validates correctness (0 failures in 4490 executions) but demonstrates that the O(N) partition/merge cost structurally exceeds the O(N) reduction cost, making speedup impossible at any scale. The negative result is scientifically valuable because it (a) identifies the exact bottleneck (c_o/c_r = 2.2, needing < 0.5), (b) proves the bottleneck is architectural rather than scale-dependent (N cancels), and (c) quantifies the engineering target for v2 (77% overhead reduction via 2.26 + 2.34 + 2.35).
 
+### 2.41 Encoder/Decoder API and Problem Registry
+
+**Motivation.** The only end-to-end encode→reduce→decode pipeline in v1 is Church numeral arithmetic (`relativist compute add 3 5`). Any other problem requires forking the codebase and writing Rust. This makes the Relativist a demonstration prototype, not an extensible library. DISC-012 (v2) analyzed this gap systematically and recommended a 4-layer approach.
+
+**Scope (Layers 1-3 of DISC-012).** Layer 0 (workspace restructure) is covered by SPEC-26 R1-R7.
+
+**Layer 1 — Traits + LambdaEncoder (~400 LoC).**
+- Define `Encoder` and `Decoder` traits (or unified `Codec`) in `relativist-core::encoding`.
+- Refactor existing Church numeral code to implement the trait.
+- Implement `LambdaEncoder`: encode/decode pure lambda-calculus terms via the Mackie/Pinto pipeline (REF-005, Theorems 5.2 and 6.2). Subconjunto: Lambda, Application, Variable, Erasure (no numerals, no types).
+- Decode via port-directed readback (simplified from Bend's `net_to_term`, documented in AC-013).
+- CLI integration: `relativist compute --encoder lambda --input '<term>'`.
+
+**Layer 2 — Encoder Registry (~300 LoC).**
+- `EncoderRegistry`: HashMap of named encoders, discoverable at runtime.
+- CLI: `relativist encoders list` to show available encoders.
+- CLI: `relativist compute --encoder <name> --input '<json>'` (generic dispatch).
+- Validation: every encoder output is checked against invariants T1-T7 (SPEC-01) before reduction.
+
+**Layer 3 — RecipeEncoder Generalization (~200 LoC).**
+- `RecipeEncoder` trait extending `Encoder` with `make_recipe()` and `generate_partition()`.
+- Generalizes SPEC-25 (Recipe-Based Generation) beyond the 9 built-in generators to any registered encoder.
+- Protocol: `AssignRecipe` message variant accepts recipes from any encoder in the registry.
+- Coordinator sends compact recipe (bytes to kilobytes); each worker materializes its partition locally.
+
+**What stays out of scope (v2.x/v3).**
+- REST API (Layer 4 of DISC-012): ~800-1000 LoC, deferred.
+- FFI/Python bindings (PyO3): ~800 LoC, deferred.
+- WASM plugins: ~1500 LoC, deferred.
+- HVM/Bend compatibility (label support): ~1000+ LoC + formal revision, deferred. See 2.42.
+- DSL: descartada (reinvents Bend).
+
+**Estimated total:** ~900 LoC (Layers 1-3, excluding Layer 0 which is SPEC-26).
+
+**Depends on:** SPEC-26 R1-R7 (workspace restructure), SPEC-25 (recipe generation), SPEC-06 (wire protocol for AssignRecipe).
+
+**DISC reference:** DISC-012 v2 (Job Submission, Encoding, and Decoding), Sections 2, 6, 7, 11, 12.
+
+### 2.42 Label Support for Extended Interaction Combinators (Decision Pending)
+
+**Motivation.** HVM2/Bend uses labels (u16) to differentiate CON/DUP agents of different "scopes". Without labels, CON+CON is always annihilation in the Relativist; with labels, same-label pairs annihilate while different-label pairs commute. This is required for correct reduction of any non-trivial Bend program.
+
+**This is a fundamental architectural decision, not an incremental feature.** It changes:
+- Symbol representation (~30 LoC)
+- All 6 interaction rules (conditional on label match) (~200 LoC)
+- Redex identification (T3 invariant changes)
+- Wire protocol frame format (~150 LoC)
+- Serialization formats (binary, IC text, JSON) (~150 LoC)
+- Tests (690 existing need review + new label-specific tests) (~400 LoC)
+- Formal argument ARG-001 (must cite confluence for IC with labels, e.g., Mazza 2006)
+
+**Estimated effort:** ~1000+ LoC + formal invariant revision.
+
+**Status:** Decision pending. If HVM/Bend compatibility is strategically prioritized, labels enable the `LambdaEncoder` to work correctly for non-trivial programs. If the Relativist remains pure Lafont IC (3 symbols, no labels), this item is not needed but the HVM bridge is limited to a narrow subset.
+
+**Depends on:** Architectural decision on IC puro vs IC estendido.
+
+**DISC reference:** DISC-012 v2, Section 8 (HVM as Encoder), R-C5 corrected estimate.
+
 ---
 
 ## The Confluence Argument for the Paper

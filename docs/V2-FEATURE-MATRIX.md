@@ -1,8 +1,8 @@
 # v2 Feature Matrix
 
-**Last updated:** 2026-04-15 (rev2)
+**Last updated:** 2026-04-15 (rev3)
 **Purpose:** Consolidated inventory of all v2 features with priority, complexity, estimates, and dependencies.
-**Source:** `docs/ROADMAP.md` (items 2.1–2.39 + 2.21.1, excluding 2.18/2.19 ARCHIVED and 2.20 DONE)
+**Source:** `docs/ROADMAP.md` (items 2.1–2.42, excluding 2.18/2.19 ARCHIVED and 2.20 DONE)
 
 ---
 
@@ -110,8 +110,10 @@ Complex features that require significant effort but are important for v2's valu
 | 2.21 | WAN/Internet Deployment (NAT, TLS, auth, reconnect) | PLANNED | SPEC-24 | High | ~1850 | 3–4w | 2.25 (Transport trait via SPEC-17) |
 | 2.21.1 | End-to-End Security Analysis and Hardening | PLANNED | SPEC-24 | Medium | ~300 | 1–2w | 2.21 (security builds on WAN infra) |
 | 2.39 | GUI Desktop Application (Tauri v2) | PLANNED | SPEC-26 | High | ~3000+ | 3–5w MVP | None (workspace restructure needed) |
+| 2.41 | Encoder/Decoder API and Registry | PLANNED | SPEC-27 | Medium | ~900 | 2–3w | SPEC-26 R1-R7 (workspace restructure) |
+| 2.42 | Label Support for Extended ICs | DECISION PENDING | — | High | ~1000+ | 2–3w | Architectural decision (IC puro vs estendido) |
 
-**Implementation order:** 2.15 → 2.29 → 2.36 (memory/gen track) | 2.21 → 2.21.1 (WAN track) | 2.39 (GUI track, independent)
+**Implementation order:** 2.15 → 2.29 → 2.36 (memory/gen track) | 2.21 → 2.21.1 (WAN track) | 2.39 (GUI track) | 2.41 (encoder track, needs SPEC-26 R1-R7 first) | 2.42 (pending decision)
 
 **Key dependencies:**
 - 2.21 requires SPEC-17 Transport trait (M1) to be complete — WAN builds on the transport abstraction
@@ -166,6 +168,7 @@ Features that are research projects in their own right or require months of work
 | SPEC-24 | WAN Deployment and Security | 2.21, 2.21.1 | 5 | M8 | Created |
 | SPEC-25 | Recipe-Based Distributed Generation | 2.29 | 5 | M7 | Created |
 | SPEC-26 | GUI Application | 2.39 | 5 | M9 | Created |
+| SPEC-27 | Encoder/Decoder Trait API | 2.41 | 5 | M10 | Created |
 
 ### Existing Spec Amendments
 
@@ -195,6 +198,7 @@ Features that are research projects in their own right or require months of work
 | **M7** Advanced Memory & Generation | SPEC-23, SPEC-25, SPEC-21 amend | 2.15 → 2.29 → 2.36 | 4–6w | Compact memory reduces footprint 30%+; recipe gen for `ep_annihilation` works |
 | **M8** WAN Deployment & Security | SPEC-24 | 2.21 → 2.21.1 | 4–6w | Workers connect via WAN with TLS; threat model documented |
 | **M9** GUI Application | SPEC-26 | 2.39 | 5–8w | Tauri MVP: Dashboard + Generate + Reduce + Grid screens |
+| **M10** Encoder/Decoder API | SPEC-27 | 2.41 | 2–3w | LambdaEncoder end-to-end, registry with 5 codecs, RecipeEncoder generalized |
 
 ---
 
