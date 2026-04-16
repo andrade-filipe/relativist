@@ -1,61 +1,56 @@
 # Pipeline State
 
-**Last updated:** 2026-04-15
+**Last updated:** 2026-04-16
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
 
 ## Current Work
 
-**Current spec:** SPEC-17 (Transport Abstraction and Tuning) — **COMPLETE**
-**Current stage:** DONE (all 6 stages passed)
+**Current spec:** SPEC-26 §3.1 (Cargo Workspace Restructure — Layer 0) — **COMPLETE**
+**Current stage:** DONE (mechanical refactor, no functional changes)
 **v2 branch:** v2-development
 **v1 tests baseline:** 690 passing
-**Final test count:** 716 (712 unit + 4 integration)
-**Clippy status:** clean (0 warnings)
+**Final test count:** 716 (712 unit + 4 integration) — unchanged
+**Clippy status:** clean (0 warnings, including --all-targets)
 **Formatting:** clean (cargo fmt --check passes)
 
-## Stage History (SPEC-17)
+## Stage History (SPEC-26 §3.1)
 
-- [x] SPLITTING: 2026-04-15 (task-splitter) — 12 tasks: TASK-0300 to TASK-0311
-- [x] TESTS: 2026-04-15 (test-generator) — tests written inline with TDD
-- [x] DEV: 2026-04-15 (developer) — all 12 tasks implemented, 716 tests passing
-- [x] REVIEW: 2026-04-15 (reviewer) — all 44 requirements (R1-R44) verified, no defects
-- [x] QA: 2026-04-15 (qa) — formatting inconsistency found and fixed, no functional bugs
-- [x] REFACTOR: 2026-04-15 (developer) — no refactoring needed (QA clean)
+- [x] SPLITTING: 2026-04-16 — 5 atomic tasks (workspace skeleton, move src/, thin CLI, verify, docs)
+- [x] DEV: 2026-04-16 — workspace created (relativist-core + relativist-cli), src/tests/benches moved via git mv
+- [x] VERIFY: 2026-04-16 — 716 tests pass, clippy --workspace --all-targets clean, fmt clean, release binary at target/release/relativist.exe (scripts + Dockerfile path preserved)
+- [x] REVIEW: 2026-04-16 — refactor-only change, all 7 requirements (R1-R7) satisfied
+- [x] QA: 2026-04-16 — smoke test `compute add 3 5 = 8` passes
+- [x] REFACTOR: 2026-04-16 — fixed pre-existing clippy warning in protocol/config.rs (bool_assert_comparison)
 
-## Task Execution Order (SPEC-17)
+## Layer 0 Verification (SPEC-26 R1-R7)
 
-DAG-resolved implementation order:
+| Req | Status | Evidence |
+|-----|--------|----------|
+| R1 | ✅ | Layout: relativist/{Cargo.toml, relativist-core/, relativist-cli/} |
+| R2 | ✅ | Workspace manifest with members + resolver = "2" |
+| R3 | ✅ | All src/ files moved verbatim to relativist-core/src/ via git mv |
+| R4 | ✅ | All deps + features (tls, metrics, otel, full) preserved in relativist-core/Cargo.toml |
+| R5 | ✅ | relativist-cli/src/main.rs delegates to relativist_core::commands; binary name "relativist" preserved |
+| R6 | ✅ | 716 tests pass in relativist-core; [[bench]] section in relativist-core/Cargo.toml |
+| R7 | ✅ | `cargo test --workspace` runs all tests across both crates |
 
-```
-TASK-0300 (deps)           ─┬─→ TASK-0301 (config types) ─→ TASK-0302 (NodeConfig) ─→ TASK-0310 (CLI)
-                            └─→ TASK-0303 (trait)          ─┬─→ TASK-0304 (TCP)     ─┐
-                                                            ├─→ TASK-0305 (Unix)    ─┤
-                                                            └─→ TASK-0306 (Channel) ─┤
-                                                                                     └─→ TASK-0307 (factory)
-TASK-0302 + TASK-0304 + TASK-0306 + TASK-0307 ─→ TASK-0308 (coordinator refactor)
-TASK-0302 + TASK-0303 + TASK-0307              ─→ TASK-0309 (worker refactor)
-TASK-0308 + TASK-0309 + TASK-0310              ─→ TASK-0311 (integration wiring)
-```
+## Backward Compatibility
 
-## Completed Tasks (v2)
-
-| Task | Title | Tests Added |
-|------|-------|-------------|
-| TASK-0300 | Add transport dependencies (socket2, async-trait) | 0 |
-| TASK-0301 | TransportBackend + TransportConfig types | 5 (UT1-UT3, debug, clone) |
-| TASK-0302 | Add transport field to NodeConfig | 1 (UT3) |
-| TASK-0303 | Transport trait + TransportStream type | 4 (TS1, TS3, TS4, compat) |
-| TASK-0304 | TcpTransport with TCP tuning | 7 (TT1-TT5, TR1, obj-safe) |
-| TASK-0305 | UnixTransport (cfg(unix)) | 0 (platform-gated) |
-| TASK-0306 | ChannelTransport | 4 (CH1-CH4) |
-| TASK-0307 | create_transport factory | 0 (covered by TS1/TS3/TS4) |
-| TASK-0308 | Refactor coordinator.rs | 0 net new (rewrote existing) |
-| TASK-0309 | Refactor worker.rs | 0 net new (rewrote existing) |
-| TASK-0310 | CLI transport flags | 8 (CL1, CL3, CL5 + 5 config) |
-| TASK-0311 | Same-host detection + integration | 0 (advisory only) |
+- Binary path unchanged: `target/release/relativist.exe`
+- All 6 bench scripts (`scripts/bench_*.sh`) work without modification
+- Dockerfile `COPY` line works unchanged
+- CLI flags and subcommands identical to pre-restructure
 
 ## Next Spec
 
-Ready for next spec implementation. Check `docs/ROADMAP.md` and `docs/backlog/BACKLOG.md` for the next priority.
+**SPEC-27** (Encoder/Decoder Trait API and Problem Registry) — Layers 1-3 of DISC-012.
+- Phase 1: Traits (~100 LoC) — `Encoder`, `Decoder`, `Codec` in `relativist_core::encoding::traits`
+- Phase 2: Church refactoring (~100 LoC)
+- Phase 3: LambdaCodec (~250 LoC) — REF-005 Mackie/Pinto
+- Phase 4: Registry (~200 LoC)
+- Phase 5: CLI integration (~100 LoC)
+- Phase 6: RecipeEncoder generalization (~150 LoC)
+
+Total: ~900 LoC across ~12-15 atomic tasks.

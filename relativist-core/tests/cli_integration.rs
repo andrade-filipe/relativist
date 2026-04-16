@@ -5,10 +5,10 @@
 
 use std::path::PathBuf;
 
-use relativist::commands::run_local_command;
-use relativist::config::LocalArgs;
-use relativist::io::{load_net_from_file, save_net_to_file};
-use relativist::net::{Net, PortRef, Symbol};
+use relativist_core::commands::run_local_command;
+use relativist_core::config::LocalArgs;
+use relativist_core::io::{load_net_from_file, save_net_to_file};
+use relativist_core::net::{Net, PortRef, Symbol};
 
 fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("relativist_test_{}", name))

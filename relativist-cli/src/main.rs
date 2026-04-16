@@ -5,9 +5,9 @@
 //! Exit codes follow SPEC-13 R17: 0=success, 1=config, 2=comms, 3=internal.
 
 use clap::Parser;
-use relativist::commands;
-use relativist::config::{Cli, Command, LogFormat};
-use relativist::observability::{
+use relativist_core::commands;
+use relativist_core::config::{Cli, Command, LogFormat};
+use relativist_core::observability::{
     init_tracing, LogFormat as ObsLogFormat, ObservabilityConfig, ProcessRole,
 };
 

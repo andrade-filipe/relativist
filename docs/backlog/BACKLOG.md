@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-15
-**Total tasks:** 219 (152 done, 0 in progress, 66 todo, 1 obsoleted)
+**Last updated:** 2026-04-16
+**Total tasks:** 223 (156 done, 0 in progress, 66 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -282,6 +282,15 @@
 | TASK-0309 | Refactor worker.rs to use Transport trait | P0 | **DONE** | 0302, 0303, 0307 | S |
 | TASK-0310 | Add CLI transport flags | P0 | **DONE** | 0301, 0302 | S |
 | TASK-0311 | Same-host detection heuristic and integration wiring | P1 | **DONE** | 0308, 0309, 0310 | S |
+
+## v2 Phase 13: Cargo Workspace Restructure (SPEC-26 §3.1, Layer 0)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0320 | Create workspace skeleton (root Cargo.toml, relativist-core/, relativist-cli/) — R1, R2 | P0 | **DONE** | none | S |
+| TASK-0321 | Move src/, tests/, benches/ to relativist-core/ via git mv — R3, R4, R6 | P0 | **DONE** | 0320 | S |
+| TASK-0322 | Create relativist-cli thin binary (delegates to relativist_core) — R5 | P0 | **DONE** | 0321 | S |
+| TASK-0323 | Verify workspace tests pass + lint clean — R6, R7 | P0 | **DONE** | 0322 | S |
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

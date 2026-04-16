@@ -1233,7 +1233,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "relativist"
+name = "relativist-cli"
+version = "0.11.0"
+dependencies = [
+ "clap",
+ "relativist-core",
+]
+
+[[package]]
+name = "relativist-core"
 version = "0.11.0"
 dependencies = [
  "async-trait",

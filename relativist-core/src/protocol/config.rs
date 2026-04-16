@@ -258,6 +258,6 @@ mod tests {
 
         let cloned = config.clone();
         assert_eq!(cloned.backend, TransportBackend::Tcp);
-        assert_eq!(cloned.tcp_nodelay, true);
+        assert!(cloned.tcp_nodelay);
     }
 }
