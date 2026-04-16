@@ -6,12 +6,11 @@
 use std::cmp::min;
 use std::time::{Duration, Instant};
 
-use tokio::net::TcpStream;
-
 use super::config::NodeConfig;
 use super::coordinator::PROTOCOL_VERSION;
 use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
+use super::transport::{Transport, TransportStream};
 use super::types::{Message, RegisterPayload};
 use crate::merge::{rebuild_free_port_index, WorkerRoundStats};
 use crate::reduction::reduce_all;
@@ -28,23 +27,23 @@ const DAEMON_SUCCESS_DELAY: Duration = Duration::from_secs(2);
 /// Delay after a failed job in daemon mode (SPEC-16 R6).
 const DAEMON_FAILURE_DELAY: Duration = Duration::from_secs(5);
 
-/// Connects to the coordinator with exponential backoff (SPEC-06 R23, SPEC-16 R4).
+/// Connects to the coordinator with exponential backoff (SPEC-06 R23, SPEC-16 R4, SPEC-17 R36).
 ///
 /// Backoff: 1s, 2s, 4s, 8s, 16s, 16s, ... (capped at 16s).
 ///
 /// `max_attempts`: `Some(n)` limits to n attempts (default single-shot behavior).
 /// `None` retries indefinitely (daemon mode, SPEC-16 R4).
 pub async fn connect_with_retry(
-    addr: std::net::SocketAddr,
+    transport: &mut dyn Transport,
     max_attempts: Option<u32>,
-) -> Result<TcpStream, ProtocolError> {
+) -> Result<TransportStream, ProtocolError> {
     let mut delay = INITIAL_DELAY;
     let mut attempt: u32 = 0;
 
     loop {
         attempt += 1;
 
-        match TcpStream::connect(addr).await {
+        match transport.connect().await {
             Ok(stream) => {
                 tracing::info!("Connected to coordinator on attempt {}", attempt);
                 return Ok(stream);
@@ -81,8 +80,9 @@ pub async fn connect_with_retry(
 pub async fn run_worker(
     config: &NodeConfig,
     token: Option<&AuthToken>,
+    transport: &mut dyn Transport,
 ) -> Result<(), ProtocolError> {
-    run_worker_inner(config, token, Some(MAX_ATTEMPTS)).await
+    run_worker_inner(config, token, Some(MAX_ATTEMPTS), transport).await
 }
 
 /// Runs the worker in daemon mode: reconnects after each job (SPEC-16 R3).
@@ -92,6 +92,7 @@ pub async fn run_worker(
 pub async fn run_worker_daemon(
     config: &NodeConfig,
     token: Option<&AuthToken>,
+    transport: &mut dyn Transport,
 ) -> Result<(), ProtocolError> {
     let mut job_number: u64 = 0;
 
@@ -100,7 +101,7 @@ pub async fn run_worker_daemon(
         tracing::info!("Daemon job #{}: connecting to coordinator...", job_number);
 
         tokio::select! {
-            result = run_worker_inner(config, token, None) => {
+            result = run_worker_inner(config, token, None, transport) => {
                 match result {
                     Ok(()) => {
                         tracing::info!(
@@ -143,8 +144,9 @@ async fn run_worker_inner(
     config: &NodeConfig,
     token: Option<&AuthToken>,
     max_connect_attempts: Option<u32>,
+    transport: &mut dyn Transport,
 ) -> Result<(), ProtocolError> {
-    let mut stream = connect_with_retry(config.bind, max_connect_attempts).await?;
+    let mut stream = connect_with_retry(transport, max_connect_attempts).await?;
 
     // Send Register (SPEC-10 R14)
     let register = Message::Register(RegisterPayload {
@@ -246,7 +248,11 @@ async fn run_worker_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::channel::ChannelTransport;
+    use crate::protocol::config::TransportConfig;
+    use crate::protocol::tcp::TcpTransport;
     use crate::protocol::types::{RegisterAckPayload, RegisterNackPayload};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // T1: Backoff sequence is correct
     #[test]
@@ -259,23 +265,19 @@ mod tests {
         }
     }
 
-    // T2: connect_with_retry succeeds on first attempt with a real listener
+    // T2: connect_with_retry succeeds on first attempt (ChannelTransport)
     #[tokio::test]
     async fn test_connect_with_retry_immediate_success() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let connect_handle = tokio::spawn(async move { connect_with_retry(addr, Some(10)).await });
-
-        // Accept the connection
-        let (_stream, _addr) = listener.accept().await.unwrap();
-
-        let result = connect_handle.await.unwrap();
+        let (_server, mut client) = ChannelTransport::pair(1, 65536);
+        let result = connect_with_retry(&mut client, Some(10)).await;
         assert!(result.is_ok());
     }
 
     /// Simulate coordinator handshake: receive Register, send RegisterAck.
-    async fn coordinator_handshake(stream: &mut TcpStream, worker_id: u32) {
+    async fn coordinator_handshake<S: AsyncReadExt + AsyncWriteExt + Unpin>(
+        stream: &mut S,
+        worker_id: u32,
+    ) {
         let max = NodeConfig::default().max_payload_size;
         let (msg, _) = recv_frame(stream, max).await.unwrap();
         assert!(matches!(msg, Message::Register(_)));
@@ -283,27 +285,23 @@ mod tests {
         send_frame(stream, &ack).await.unwrap();
     }
 
-    // T3: run_worker processes AssignPartition + Shutdown
+    // T3: run_worker processes AssignPartition + Shutdown (ChannelTransport)
     #[tokio::test]
     async fn test_run_worker_single_round() {
         use crate::net::{Net, PortRef, Symbol};
         use crate::partition::{IdRange, Partition};
         use std::collections::HashMap;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
         let max_payload = NodeConfig::default().max_payload_size;
-        let config = NodeConfig {
-            bind: addr,
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig::default();
 
         // Spawn the worker (Tier 1, no token)
-        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
 
         // Accept connection as "coordinator"
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut stream = server.accept().await.unwrap();
 
         // Complete registration handshake
         coordinator_handshake(&mut stream, 0).await;
@@ -361,23 +359,19 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // T4: run_worker handles multiple rounds
+    // T4: run_worker handles multiple rounds (ChannelTransport)
     #[tokio::test]
     async fn test_run_worker_multiple_rounds() {
         use crate::net::Net;
         use crate::partition::{IdRange, Partition};
         use std::collections::HashMap;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig::default();
 
-        let config = NodeConfig {
-            bind: addr,
-            ..NodeConfig::default()
-        };
-
-        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
+        let mut stream = server.accept().await.unwrap();
 
         // Complete registration handshake
         coordinator_handshake(&mut stream, 0).await;
@@ -412,29 +406,25 @@ mod tests {
         assert!(worker_handle.await.unwrap().is_ok());
     }
 
-    // T5: run_worker returns UnexpectedMessage for wrong message type after handshake
+    // T5: run_worker returns UnexpectedMessage for wrong message type (ChannelTransport)
     #[tokio::test]
     async fn test_run_worker_unexpected_message() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        use crate::net::Net;
+        use crate::partition::{IdRange, Partition};
+        use std::collections::HashMap;
 
-        let config = NodeConfig {
-            bind: addr,
-            ..NodeConfig::default()
-        };
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig::default();
 
-        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
+        let mut stream = server.accept().await.unwrap();
 
         // Complete registration handshake
         coordinator_handshake(&mut stream, 0).await;
 
         // Send a PartitionResult (wrong direction — coordinator->worker should
         // only send AssignPartition or Shutdown)
-        use crate::net::Net;
-        use crate::partition::{IdRange, Partition};
-        use std::collections::HashMap;
-
         let bad_msg = Message::PartitionResult {
             round: 0,
             partition: Partition {
@@ -466,19 +456,15 @@ mod tests {
         ));
     }
 
-    // T6: run_worker receives RegisterNack and returns AuthFailed
+    // T6: run_worker receives RegisterNack and returns AuthFailed (ChannelTransport)
     #[tokio::test]
     async fn test_run_worker_auth_rejected() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig::default();
 
-        let config = NodeConfig {
-            bind: addr,
-            ..NodeConfig::default()
-        };
-
-        let worker_handle = tokio::spawn(async move { run_worker(&config, None).await });
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
+        let mut stream = server.accept().await.unwrap();
 
         // Read Register, then send RegisterNack
         let max = NodeConfig::default().max_payload_size;
@@ -494,20 +480,22 @@ mod tests {
         assert!(matches!(result, Err(ProtocolError::AuthFailed)));
     }
 
-    // T7: connect_with_retry with max_attempts=Some(1) fails after one attempt (SPEC-16 T1)
+    // T7: connect_with_retry with max_attempts=Some(1) fails (TcpTransport — needs real failure)
     #[tokio::test]
     async fn test_connect_with_retry_max_one() {
         // Connect to a port where nothing is listening
         let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let result = connect_with_retry(addr, Some(1)).await;
+        let mut transport = TcpTransport::new(addr, TransportConfig::default());
+        let result = connect_with_retry(&mut transport, Some(1)).await;
         assert!(result.is_err());
         match result {
             Err(ProtocolError::ConnectionLost(_)) => {} // expected
-            other => panic!("expected ConnectionLost, got {:?}", other),
+            Ok(_) => panic!("expected ConnectionLost, got Ok"),
+            Err(e) => panic!("expected ConnectionLost, got {:?}", e),
         }
     }
 
-    // T8: connect_with_retry with None succeeds when listener appears after delay (SPEC-16 T2)
+    // T8: connect_with_retry with None succeeds when listener appears (TcpTransport)
     #[tokio::test]
     async fn test_connect_with_retry_infinite_succeeds() {
         // Bind to get a port, then drop the listener to make it initially unavailable
@@ -516,7 +504,9 @@ mod tests {
         drop(listener);
 
         // Spawn connector with infinite retries
-        let connect_handle = tokio::spawn(async move { connect_with_retry(addr, None).await });
+        let mut transport = TcpTransport::new(addr, TransportConfig::default());
+        let connect_handle =
+            tokio::spawn(async move { connect_with_retry(&mut transport, None).await });
 
         // Wait a bit, then start listening again
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -527,26 +517,20 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // T9: daemon completes 2 sequential jobs (SPEC-16 T3)
+    // T9: daemon completes 2 sequential jobs (ChannelTransport)
     #[tokio::test]
     async fn test_daemon_two_sequential_jobs() {
         use crate::net::Net;
         use crate::partition::{IdRange, Partition};
         use std::collections::HashMap;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let (mut server, mut client) = ChannelTransport::pair(2, 65536);
+        let config = NodeConfig::default();
 
-        let config = NodeConfig {
-            bind: addr,
-            ..NodeConfig::default()
-        };
-
-        // Spawn daemon worker (will be cancelled after 2 jobs)
+        // Spawn daemon worker (2 jobs via run_worker_inner to avoid ctrl_c complexity)
         let daemon_handle = tokio::spawn(async move {
-            // Use run_worker_inner directly to avoid ctrl_c signal complexity in tests
             for _ in 0..2 {
-                run_worker_inner(&config, None, Some(MAX_ATTEMPTS))
+                run_worker_inner(&config, None, Some(MAX_ATTEMPTS), &mut client)
                     .await
                     .unwrap();
             }
@@ -554,7 +538,7 @@ mod tests {
 
         for job in 0..2u32 {
             // Accept connection
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut stream = server.accept().await.unwrap();
 
             // Handshake
             coordinator_handshake(&mut stream, job).await;

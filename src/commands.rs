@@ -11,7 +11,22 @@ use crate::config::{
 use crate::error::RelativistError;
 use crate::io::{load_net_from_file, print_summary, save_net_to_file, write_metrics};
 use crate::merge::run_grid;
+use crate::protocol::config::{TransportBackend, TransportConfig};
 use crate::reduction::reduce_all;
+
+/// Log an advisory when TCP is used on a loopback address (SPEC-17 R33).
+///
+/// Suggests `--transport=unix` for same-host deployments where Unix domain
+/// sockets would avoid TCP overhead. MUST NOT auto-switch (R34).
+fn log_loopback_advisory(bind: std::net::SocketAddr, config: &TransportConfig) {
+    if config.backend == TransportBackend::Tcp && bind.ip().is_loopback() {
+        tracing::info!(
+            addr = %bind,
+            "Same-host detected (loopback address with TCP backend). \
+             Consider --transport=unix for lower overhead on same-host deployments."
+        );
+    }
+}
 
 /// Execute local mode: grid loop in-process, no TCP (SPEC-07 R18).
 pub fn run_local_command(args: LocalArgs) -> Result<(), RelativistError> {
@@ -105,6 +120,7 @@ pub fn run_generate_command(args: GenerateArgs) -> Result<(), RelativistError> {
 /// (accept workers, distribute partitions, collect results, merge).
 pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistError> {
     use crate::protocol::coordinator::run_coordinator;
+    use crate::protocol::transport::create_transport;
     use crate::security::{build_security_config, check_bind_warnings, write_token_file};
 
     let grid_config = build_grid_config(&args);
@@ -153,6 +169,14 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| RelativistError::Config(format!("tokio runtime: {}", e)))?;
 
+    let mut transport = create_transport(node_config.bind, &node_config.transport)
+        .map_err(crate::error::CoordinatorError::from)
+        .map_err(RelativistError::from)?;
+
+    // R33: Advisory when using TCP on loopback — suggest --transport=unix.
+    // MUST NOT auto-switch (R34).
+    log_loopback_advisory(node_config.bind, &node_config.transport);
+
     let (mut reduced_net, metrics) = rt
         .block_on(run_coordinator(
             net,
@@ -160,6 +184,7 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
             &grid_config,
             &*strategy,
             security.token.as_ref(),
+            &mut *transport,
         ))
         .map_err(crate::error::CoordinatorError::from)
         .map_err(RelativistError::from)?;
@@ -182,6 +207,7 @@ pub fn run_coordinator_command(args: CoordinatorArgs) -> Result<(), RelativistEr
 /// Creates a tokio runtime and runs the async worker protocol.
 /// In daemon mode (SPEC-16), the worker reconnects after each job.
 pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
+    use crate::protocol::transport::create_transport;
     use crate::protocol::worker::{run_worker, run_worker_daemon};
     use crate::security::build_security_config;
 
@@ -207,14 +233,29 @@ pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| RelativistError::Config(format!("tokio runtime: {}", e)))?;
 
+    let mut transport = create_transport(node_config.bind, &node_config.transport)
+        .map_err(crate::error::WorkerError::from)
+        .map_err(RelativistError::from)?;
+
+    // R33: Advisory when using TCP on loopback — suggest --transport=unix.
+    log_loopback_advisory(node_config.bind, &node_config.transport);
+
     if args.daemon {
-        rt.block_on(run_worker_daemon(&node_config, security.token.as_ref()))
-            .map_err(crate::error::WorkerError::from)
-            .map_err(RelativistError::from)?;
+        rt.block_on(run_worker_daemon(
+            &node_config,
+            security.token.as_ref(),
+            &mut *transport,
+        ))
+        .map_err(crate::error::WorkerError::from)
+        .map_err(RelativistError::from)?;
     } else {
-        rt.block_on(run_worker(&node_config, security.token.as_ref()))
-            .map_err(crate::error::WorkerError::from)
-            .map_err(RelativistError::from)?;
+        rt.block_on(run_worker(
+            &node_config,
+            security.token.as_ref(),
+            &mut *transport,
+        ))
+        .map_err(crate::error::WorkerError::from)
+        .map_err(RelativistError::from)?;
         println!("Worker finished successfully.");
     }
 

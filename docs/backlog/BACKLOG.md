@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-07
-**Total tasks:** 207 (140 done, 0 in progress, 66 todo, 1 obsoleted)
+**Last updated:** 2026-04-15
+**Total tasks:** 219 (152 done, 0 in progress, 66 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -265,6 +265,23 @@
 | TASK-0209 | Implement distributed correctness test (ET-11) | P1 | TODO | 0204, 0203, Phase 4 | M |
 | TASK-0210 | Implement compute CLI subcommand | P0 | TODO | 0200, 0204-0206, 0203, Phase 2, 0100 | M |
 | TASK-0211 | Implement arithmetic benchmark scenarios (ARITH-*) | P1 | TODO | 0204-0206, 0203, 0182, Phase 2, Phase 4 | L |
+
+## v2 Phase 12: Transport Abstraction (SPEC-17)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0300 | Add transport dependencies (socket2, async-trait) | P0 | **DONE** | none | S |
+| TASK-0301 | Define TransportBackend enum and TransportConfig struct | P0 | **DONE** | 0300 | S |
+| TASK-0302 | Add transport field to NodeConfig | P0 | **DONE** | 0301 | S |
+| TASK-0303 | Define Transport trait and TransportStream type | P0 | **DONE** | 0300 | S |
+| TASK-0304 | Implement TcpTransport with TCP tuning | P0 | **DONE** | 0300, 0301, 0303 | M |
+| TASK-0305 | Implement UnixTransport (cfg(unix) only) | P0 | **DONE** | 0303 | S |
+| TASK-0306 | Implement ChannelTransport | P0 | **DONE** | 0303 | S |
+| TASK-0307 | Implement create_transport factory function | P0 | **DONE** | 0304, 0305, 0306 | S |
+| TASK-0308 | Refactor coordinator.rs to use Transport trait | P0 | **DONE** | 0302, 0303, 0304, 0306, 0307 | M |
+| TASK-0309 | Refactor worker.rs to use Transport trait | P0 | **DONE** | 0302, 0303, 0307 | S |
+| TASK-0310 | Add CLI transport flags | P0 | **DONE** | 0301, 0302 | S |
+| TASK-0311 | Same-host detection heuristic and integration wiring | P1 | **DONE** | 0308, 0309, 0310 | S |
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

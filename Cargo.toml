@@ -36,6 +36,12 @@ crc32fast = "1"
 # Async utilities (SPEC-06 R21 — concurrent partition sends)
 futures = "0.3"
 
+# Async trait object safety (SPEC-17 R4 — Transport trait requires dyn dispatch)
+async-trait = "0.1"
+
+# Socket tuning (SPEC-17 R21 — TCP keepalive, buffer sizes via SockRef)
+socket2 = "0.5"
+
 # Local parallelism (SPEC-07 R20 — rayon for fair comparison)
 rayon = "1"
 

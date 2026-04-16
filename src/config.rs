@@ -138,6 +138,30 @@ pub struct CoordinatorArgs {
     #[arg(long, default_value = "./relativist-token")]
     pub token_file: std::path::PathBuf,
 
+    /// Transport backend: "tcp" or "unix" (SPEC-17 R29).
+    #[arg(long, default_value = "tcp")]
+    pub transport: String,
+
+    /// Unix domain socket path (only with --transport=unix) (SPEC-17 R30).
+    #[arg(long)]
+    pub socket_path: Option<PathBuf>,
+
+    /// Disable TCP_NODELAY (enables Nagle's algorithm). TCP_NODELAY is on by default (SPEC-17 R30).
+    #[arg(long)]
+    pub no_tcp_nodelay: bool,
+
+    /// TCP send buffer size in bytes (SO_SNDBUF) (SPEC-17 R30).
+    #[arg(long, default_value_t = 4_194_304)]
+    pub send_buffer: usize,
+
+    /// TCP receive buffer size in bytes (SO_RCVBUF) (SPEC-17 R30).
+    #[arg(long, default_value_t = 4_194_304)]
+    pub recv_buffer: usize,
+
+    /// TCP keepalive idle time in seconds; 0 to disable (SPEC-17 R30).
+    #[arg(long, default_value_t = 30)]
+    pub keepalive: u64,
+
     /// TLS certificate file (PEM), requires --tls-key (SPEC-10 R25).
     #[cfg(feature = "tls")]
     #[arg(long)]
@@ -169,6 +193,30 @@ pub struct WorkerArgs {
     /// Run in daemon mode: reconnect to coordinator after each job (SPEC-16 R1).
     #[arg(long, default_value_t = false)]
     pub daemon: bool,
+
+    /// Transport backend: "tcp" or "unix" (SPEC-17 R29).
+    #[arg(long, default_value = "tcp")]
+    pub transport: String,
+
+    /// Unix domain socket path (only with --transport=unix) (SPEC-17 R30).
+    #[arg(long)]
+    pub socket_path: Option<PathBuf>,
+
+    /// Disable TCP_NODELAY (enables Nagle's algorithm). TCP_NODELAY is on by default (SPEC-17 R30).
+    #[arg(long)]
+    pub no_tcp_nodelay: bool,
+
+    /// TCP send buffer size in bytes (SO_SNDBUF) (SPEC-17 R30).
+    #[arg(long, default_value_t = 4_194_304)]
+    pub send_buffer: usize,
+
+    /// TCP receive buffer size in bytes (SO_RCVBUF) (SPEC-17 R30).
+    #[arg(long, default_value_t = 4_194_304)]
+    pub recv_buffer: usize,
+
+    /// TCP keepalive idle time in seconds; 0 to disable (SPEC-17 R30).
+    #[arg(long, default_value_t = 30)]
+    pub keepalive: u64,
 
     /// TLS CA certificate file (PEM) for verifying coordinator (SPEC-10 R26).
     #[cfg(feature = "tls")]
@@ -423,6 +471,57 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
     }
 }
 
+/// Build TransportConfig from CLI transport flags (SPEC-17 R29-R32).
+fn build_transport_config(
+    backend_str: &str,
+    socket_path: Option<PathBuf>,
+    no_tcp_nodelay: bool,
+    send_buffer: usize,
+    recv_buffer: usize,
+    keepalive: u64,
+) -> Result<crate::protocol::config::TransportConfig, RelativistError> {
+    use crate::protocol::config::{TransportBackend, TransportConfig};
+
+    let backend = match backend_str {
+        "tcp" => TransportBackend::Tcp,
+        "unix" => {
+            #[cfg(not(unix))]
+            return Err(RelativistError::Config(
+                "--transport=unix is not supported on this platform (SPEC-17 R31)".to_string(),
+            ));
+            #[cfg(unix)]
+            TransportBackend::Unix
+        }
+        other => {
+            return Err(RelativistError::Config(format!(
+                "unknown transport backend '{}' (supported: tcp, unix)",
+                other
+            )));
+        }
+    };
+
+    // R32: --socket-path without --transport=unix → warning
+    if socket_path.is_some() && backend != TransportBackend::Unix {
+        tracing::warn!("--socket-path is ignored when --transport is not 'unix' (SPEC-17 R32)");
+    }
+
+    let keepalive_idle = if keepalive == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(keepalive))
+    };
+
+    Ok(TransportConfig {
+        backend,
+        tcp_nodelay: !no_tcp_nodelay,
+        send_buffer_bytes: Some(send_buffer),
+        recv_buffer_bytes: Some(recv_buffer),
+        keepalive_idle,
+        unix_socket_path: socket_path,
+        ..TransportConfig::default()
+    })
+}
+
 /// Build NodeConfig for coordinator mode (SPEC-07 R11-R12).
 ///
 /// Resolves the bind address, supporting "tailscale[:PORT]" shorthand.
@@ -430,9 +529,18 @@ pub fn build_node_config_coordinator(
     args: &CoordinatorArgs,
 ) -> Result<NodeConfig, RelativistError> {
     let bind = resolve_bind_address(&args.bind)?;
+    let transport = build_transport_config(
+        &args.transport,
+        args.socket_path.clone(),
+        args.no_tcp_nodelay,
+        args.send_buffer,
+        args.recv_buffer,
+        args.keepalive,
+    )?;
     Ok(NodeConfig {
         bind,
         num_workers: args.workers,
+        transport,
         ..NodeConfig::default()
     })
 }
@@ -459,9 +567,18 @@ pub fn build_node_config_worker(args: &WorkerArgs) -> Result<NodeConfig, Relativ
                 args.coordinator, e
             ))
         })?;
+    let transport = build_transport_config(
+        &args.transport,
+        args.socket_path.clone(),
+        args.no_tcp_nodelay,
+        args.send_buffer,
+        args.recv_buffer,
+        args.keepalive,
+    )?;
     Ok(NodeConfig {
         bind: addr,
         num_workers: 0,
+        transport,
         ..NodeConfig::default()
     })
 }
@@ -732,6 +849,12 @@ mod tests {
             log_format: None,
             token: None,
             token_file: std::path::PathBuf::from("./relativist-token"),
+            transport: "tcp".to_string(),
+            socket_path: None,
+            no_tcp_nodelay: false,
+            send_buffer: 4_194_304,
+            recv_buffer: 4_194_304,
+            keepalive: 30,
             #[cfg(feature = "tls")]
             tls_cert: None,
             #[cfg(feature = "tls")]
@@ -745,6 +868,12 @@ mod tests {
             log_format: None,
             token: None,
             daemon: false,
+            transport: "tcp".to_string(),
+            socket_path: None,
+            no_tcp_nodelay: false,
+            send_buffer: 4_194_304,
+            recv_buffer: 4_194_304,
+            keepalive: 30,
             #[cfg(feature = "tls")]
             tls_ca: None,
         }
@@ -839,5 +968,131 @@ mod tests {
     fn test_resolve_bind_invalid() {
         let result = resolve_bind_address("not-a-valid-address");
         assert!(result.is_err());
+    }
+
+    // === TASK-0310: CLI transport flag tests ===
+
+    // CL1: coordinator transport flags parse correctly
+    #[test]
+    fn test_parse_coordinator_transport_flags() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "-w",
+            "2",
+            "-i",
+            "input.bin",
+            "--transport",
+            "tcp",
+            "--send-buffer",
+            "2097152",
+            "--recv-buffer",
+            "2097152",
+            "--keepalive",
+            "60",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coordinator(args) => {
+                assert_eq!(args.transport, "tcp");
+                assert_eq!(args.send_buffer, 2_097_152);
+                assert_eq!(args.recv_buffer, 2_097_152);
+                assert_eq!(args.keepalive, 60);
+                assert!(!args.no_tcp_nodelay); // default: TCP_NODELAY on
+                assert!(args.socket_path.is_none());
+            }
+            _ => panic!("expected Coordinator"),
+        }
+    }
+
+    // CL5: worker transport flags parse correctly
+    #[test]
+    fn test_parse_worker_transport_flags() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "worker",
+            "-c",
+            "127.0.0.1:9000",
+            "--transport",
+            "tcp",
+            "--keepalive",
+            "0",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert_eq!(args.transport, "tcp");
+                assert_eq!(args.keepalive, 0);
+            }
+            _ => panic!("expected Worker"),
+        }
+    }
+
+    // CL3: --transport=unix on Windows produces config error (R31)
+    #[cfg(not(unix))]
+    #[test]
+    fn test_transport_unix_on_windows_error() {
+        let mut args = make_coordinator_args(4, None);
+        args.transport = "unix".to_string();
+        let result = build_node_config_coordinator(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not supported"));
+    }
+
+    // Transport config populated correctly from CLI
+    #[test]
+    fn test_build_node_config_coordinator_transport() {
+        let mut args = make_coordinator_args(4, None);
+        args.keepalive = 60;
+        args.send_buffer = 2_097_152;
+        let config = build_node_config_coordinator(&args).unwrap();
+        assert_eq!(
+            config.transport.keepalive_idle,
+            Some(std::time::Duration::from_secs(60))
+        );
+        assert_eq!(config.transport.send_buffer_bytes, Some(2_097_152));
+        assert!(config.transport.tcp_nodelay);
+    }
+
+    // keepalive=0 disables keepalive
+    #[test]
+    fn test_build_node_config_keepalive_disabled() {
+        let mut args = make_coordinator_args(4, None);
+        args.keepalive = 0;
+        let config = build_node_config_coordinator(&args).unwrap();
+        assert!(config.transport.keepalive_idle.is_none());
+    }
+
+    // --no-tcp-nodelay disables TCP_NODELAY
+    #[test]
+    fn test_build_node_config_no_tcp_nodelay() {
+        let mut args = make_coordinator_args(4, None);
+        args.no_tcp_nodelay = true;
+        let config = build_node_config_coordinator(&args).unwrap();
+        assert!(!config.transport.tcp_nodelay);
+    }
+
+    // Worker transport config populated correctly
+    #[test]
+    fn test_build_node_config_worker_transport() {
+        let mut args = make_worker_args("127.0.0.1:9000");
+        args.send_buffer = 1_048_576;
+        args.recv_buffer = 1_048_576;
+        let config = build_node_config_worker(&args).unwrap();
+        assert_eq!(config.transport.send_buffer_bytes, Some(1_048_576));
+        assert_eq!(config.transport.recv_buffer_bytes, Some(1_048_576));
+    }
+
+    // Unknown transport backend produces error
+    #[test]
+    fn test_build_node_config_unknown_transport() {
+        let mut args = make_coordinator_args(4, None);
+        args.transport = "quic".to_string();
+        let result = build_node_config_coordinator(&args);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown transport"));
     }
 }
