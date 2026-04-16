@@ -10,9 +10,13 @@
 
 pub mod arithmetic;
 pub mod church;
+pub mod codec_church;
+pub mod traits;
 
 pub use arithmetic::{
     build_add, build_exp, build_mul, build_sum_of_squares, compute_arithmetic,
     decode_nat_or_shared, discover_root,
 };
 pub use church::{decode_nat, encode_church_into, encode_nat};
+pub use codec_church::{ChurchArithmeticCodec, ChurchOp};
+pub use traits::{validate_encoded_net, Codec, DecodeError, Decoder, EncodeError, Encoder};

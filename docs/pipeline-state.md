@@ -43,14 +43,18 @@
 - Dockerfile `COPY` line works unchanged
 - CLI flags and subcommands identical to pre-restructure
 
-## Next Spec
+## SPEC-27 Progress
 
-**SPEC-27** (Encoder/Decoder Trait API and Problem Registry) — Layers 1-3 of DISC-012.
-- Phase 1: Traits (~100 LoC) — `Encoder`, `Decoder`, `Codec` in `relativist_core::encoding::traits`
-- Phase 2: Church refactoring (~100 LoC)
+**Phase 1: Traits — COMPLETE** (2026-04-16)
+- `relativist_core::encoding::traits` module created (~150 LoC inc. tests)
+- `Encoder`, `Decoder`, `Codec` traits + `EncodeError`, `DecodeError` types (R1-R4)
+- `validate_encoded_net()` checks E1 (T1 linearity subset) + E2 (at least one redex) (R5, R6)
+- 6 inline tests (broken symmetry, no redex, dead-agent target, valid redex, object safety, error rendering)
+- Test count: 716 → 722 (+6)
+
+**Pending phases:**
+- Phase 2: Church refactoring (~100 LoC) — implement Codec for Church arithmetic
 - Phase 3: LambdaCodec (~250 LoC) — REF-005 Mackie/Pinto
-- Phase 4: Registry (~200 LoC)
-- Phase 5: CLI integration (~100 LoC)
-- Phase 6: RecipeEncoder generalization (~150 LoC)
-
-Total: ~900 LoC across ~12-15 atomic tasks.
+- Phase 4: Registry (~200 LoC) — `EncoderRegistry`, `default_registry()`, `encoders list`
+- Phase 5: CLI integration (~100 LoC) — `compute --encoder` dispatch
+- Phase 6: RecipeEncoder generalization (~150 LoC) — generalize SPEC-25

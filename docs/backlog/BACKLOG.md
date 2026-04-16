@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-16
-**Total tasks:** 223 (156 done, 0 in progress, 66 todo, 1 obsoleted)
+**Total tasks:** 236 (158 done, 0 in progress, 77 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -291,6 +291,24 @@
 | TASK-0321 | Move src/, tests/, benches/ to relativist-core/ via git mv — R3, R4, R6 | P0 | **DONE** | 0320 | S |
 | TASK-0322 | Create relativist-cli thin binary (delegates to relativist_core) — R5 | P0 | **DONE** | 0321 | S |
 | TASK-0323 | Verify workspace tests pass + lint clean — R6, R7 | P0 | **DONE** | 0322 | S |
+
+## v2 Phase 14: Encoder/Decoder API (SPEC-27)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0330 | Phase 1 — Define Encoder/Decoder/Codec traits + error types — R1-R4 | P0 | **DONE** | 0323 | S |
+| TASK-0331 | Phase 1 — Implement encode-contract validator (E1, E2) — R5, R6 | P0 | **DONE** | 0330 | S |
+| TASK-0332 | Phase 2 — Refactor Church arithmetic to implement Codec — R7-R9 | P0 | TODO | 0331 | S |
+| TASK-0333 | Phase 3 — LambdaCodec encoder (REF-005 mapping) — R10-R13 | P0 | TODO | 0331 | M |
+| TASK-0334 | Phase 3 — LambdaCodec decoder (port-directed readback) — R14-R15 | P0 | TODO | 0333 | M |
+| TASK-0335 | Phase 3 — LambdaCodec edge cases (identity, beta, erasure, dup) — R16, T5-T9 | P0 | TODO | 0334 | M |
+| TASK-0336 | Phase 4 — EncoderRegistry struct + ops — R17, R18, R20 | P0 | TODO | 0332, 0335 | S |
+| TASK-0337 | Phase 4 — default_registry() with 5 codecs — R19 | P0 | TODO | 0336 | S |
+| TASK-0338 | Phase 5 — CLI `compute --encoder` flag (backward-compatible) — R21, R23 | P0 | TODO | 0337 | S |
+| TASK-0339 | Phase 5 — CLI `encoders list` subcommand — R22 | P0 | TODO | 0337 | S |
+| TASK-0340 | Phase 6 — RecipeEncoder trait — R24, R25 | P1 | TODO | 0337 | S |
+| TASK-0341 | Phase 6 — Refactor SPEC-25 generators to RecipeEncoder — R26 | P1 | TODO | 0340 | M |
+| TASK-0342 | Phase 6 — Generalize AssignRecipe to carry encoder name — R27, R28 | P1 | TODO | 0341 | M |
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 
