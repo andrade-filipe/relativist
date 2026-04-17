@@ -131,6 +131,8 @@ This section specifies the complete stateful worker protocol (ROADMAP 2.26).
 - `border_deltas: Vec<BorderDelta>` -- port reconnections that the worker must apply to its stored partition. Each delta is `(border_id: u32, new_target: PortRef)`, meaning "the remote side of `border_id` is now connected to `new_target`; update the local port connected to `FreePort(border_id)` accordingly." In practice, this means: if a border redex was resolved at the coordinator, the worker receives deltas reflecting the new agents/connections that replaced the consumed agents.
 - `resolved_borders: Vec<u32>` -- border IDs whose redexes have been resolved at the coordinator. The worker MUST remove the corresponding `FreePort` entries from its partition (the border wire no longer exists after resolution).
 - `new_borders: Vec<(u32, PortRef)>` -- new border entries created by CON-DUP expansion at the coordinator. The worker MUST add corresponding `FreePort` entries to its partition.
+- `local_reconnections: Vec<LocalReconnection>` -- internal port reconnections (DC-B3) that the worker must apply to its stored partition. Each entry is `(agent_id, port, new_target)`, meaning "the port `port` of agent `agent_id` is now connected to `new_target`; update the local port array accordingly." These arise when a CON-DUP border-redex resolution at the coordinator produces new agents whose auxiliary ports must be rewired to existing local agents in the worker's partition (non-border internal reconnections that neither `border_deltas`, `resolved_borders`, nor `new_borders` can express).
+- `pending_commutations: Vec<PendingCommutation>` -- AgentId allocation requests (DC-B5). Each entry is `(request_id, symbol_type, arity)`, meaning "allocate 1 new AgentId for a new `symbol_type` agent of the given `arity` and echo it back in the next `RoundResult.minted_agents` paired with this `request_id`." The worker MUST allocate from its own reserved `id_range` (SPEC-04) and MUST NOT treat the minted agents as reducible in the round in which they are created if their principal port is a `FreePort(new_bid)` (consistent with DC-B4 border pinning).
 **(MUST)**
 
 **R24.** At each delta round, the worker MUST:
@@ -148,6 +150,7 @@ This section specifies the complete stateful worker protocol (ROADMAP 2.26).
 - `border_deltas: Vec<BorderDelta>` -- the border changes detected in this round.
 - `stats: WorkerRoundStats` -- the same per-worker statistics as v1 (SPEC-05 R37).
 - `has_border_activity: bool` -- whether any border port has a principal-port endpoint (R2).
+- `minted_agents: Vec<MintedAgent>` -- fulfilled AgentId allocation responses (DC-B5). Each entry is `(request_id, minted_agent_id)`, pairing each `PendingCommutation` request received in the corresponding `RoundStart` with the `AgentId` the worker has allocated from its `id_range` for that request. The vector MUST be empty in rounds where no `pending_commutations` were received. Every `request_id` in this vector MUST correspond to a request in the prior `RoundStart.pending_commutations` for the same round; orphan or duplicate `request_id` values are a protocol violation (see R44).
 **(MUST)**
 
 **R27.** At convergence (Global Normal Form, R4), the coordinator MUST send `FinalStateRequest` to every worker. **(MUST)**
@@ -167,7 +170,7 @@ This section defines the new `Message` variants required by the delta protocol. 
 | Discriminant | Variant | Direction | Payload |
 |:---:|---------|:---------:|---------|
 | 7 | `InitialPartition` | C->W | `round: u32` (always 0), `partition: Partition` |
-| 8 | `RoundStart` | C->W | `round: u32`, `border_deltas: Vec<BorderDelta>`, `resolved_borders: Vec<u32>`, `new_borders: Vec<(u32, PortRef)>` |
+| 8 | `RoundStart` | C->W | `round: u32`, `border_deltas: Vec<BorderDelta>`, `resolved_borders: Vec<u32>`, `new_borders: Vec<(u32, PortRef)>`, `local_reconnections: Vec<LocalReconnection>` (DC-B3), `pending_commutations: Vec<PendingCommutation>` (DC-B5) |
 | 10 | `FinalStateRequest` | C->W | `round: u32` |
 
 **(MUST)**
@@ -176,7 +179,7 @@ This section defines the new `Message` variants required by the delta protocol. 
 
 | Discriminant | Variant | Direction | Payload |
 |:---:|---------|:---------:|---------|
-| 9 | `RoundResult` | W->C | `round: u32`, `border_deltas: Vec<BorderDelta>`, `stats: WorkerRoundStats`, `has_border_activity: bool` |
+| 9 | `RoundResult` | W->C | `round: u32`, `border_deltas: Vec<BorderDelta>`, `stats: WorkerRoundStats`, `has_border_activity: bool`, `minted_agents: Vec<MintedAgent>` (DC-B5) |
 | 11 | `FinalStateResult` | W->C | `round: u32`, `partition: Partition` |
 
 **(MUST)**
@@ -189,6 +192,45 @@ pub struct BorderDelta {
     pub new_target: PortRef,
 }
 ```
+
+The following additional wire types MUST be defined to support DC-B3 (local
+reconnection dispatch) and DC-B5 (2-phase AgentId allocation):
+
+```rust
+/// DC-B3: internal port reconnection dispatched from coordinator to worker
+/// after a CON-DUP border-redex resolution produces new agents whose
+/// auxiliary ports are not themselves borders.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LocalReconnection {
+    /// Agent on the worker side whose port needs rewiring.
+    pub agent_id: AgentId,
+    /// Port of that agent (0 = principal, 1..arity = aux).
+    pub port: u8,
+    /// New endpoint this port connects to.
+    pub new_target: PortRef,
+}
+
+/// DC-B5: AgentId allocation request sent from coordinator to worker via RoundStart.
+/// Workers allocate a fresh AgentId per request and echo it back in RoundResult.minted_agents.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingCommutation {
+    /// Correlation ID, unique within this round -- coordinator picks.
+    pub request_id: u32,
+    /// Symbol type for the new agent (CON, DUP, ERA).
+    pub symbol_type: Symbol,
+    /// Arity of the new agent (0 for ERA, 1 for CON/DUP principal, etc.).
+    pub arity: u8,
+}
+
+/// DC-B5: Worker's response to a PendingCommutation request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MintedAgent {
+    /// Matches the PendingCommutation.request_id from the RoundStart.
+    pub request_id: u32,
+    /// The AgentId the worker has allocated for this request.
+    pub minted_agent_id: AgentId,
+}
+```
 **(MUST)**
 
 **R34.** All new message variants MUST satisfy the same serialization requirements as existing variants: serde + bincode (SPEC-06 R4, R11), round-trip identity (SPEC-06 R14), and CRC32 integrity (SPEC-06 R6-R10). **(MUST)**
@@ -198,6 +240,12 @@ pub struct BorderDelta {
 **R36.** The `RoundStart` and `RoundResult` variants carry only border deltas and stats. These payloads are expected to be small (single-digit percent of partition size for most workloads). LZ4 compression SHOULD still be applied when the payload exceeds the compression threshold (SPEC-18 R9), but for typical delta payloads below the threshold, compression SHOULD be skipped. **(SHOULD)**
 
 **R37.** The discriminant assignments in R31 and R32 MUST be coordinated with SPEC-18. If SPEC-18 assigns different discriminants to these variants, SPEC-19 defers to the coordinated numbering. The requirement is that all delta protocol variants are appended at the end of the enum (SPEC-06 R5) and assigned stable discriminants. **(MUST)**
+
+**R48. Agent ID allocation coordination invariant (DC-B5).**
+
+The coordinator MUST allocate `request_id` values from a monotonically increasing counter scoped to the BSP run (not per-round). Each worker MUST allocate AgentId values from its own reserved AgentId range (SPEC-05 partitions the AgentId space by partition index; workers MUST NOT overlap the coordinator-reserved range `u32::MAX - 10_000 .. u32::MAX`, which is reserved for future use). The coordinator MUST treat a `MintedAgent` response whose `request_id` does not match any outstanding `PendingCommutation` as a protocol violation (nack the worker). **(MUST)**
+
+*Note on numbering: this requirement is labelled R48 because R44-R47 were already assigned to §3.6 and §3.7 at the time of the initial SPEC-19 draft. The amendment owner (DC-B5) originally named this "R44"; the binding identifier is R48. All cross-references in task bundles, reviews, and amendment memos referring to "R44 (DC-B5)" MUST be read as R48.*
 
 ### 3.5 Invariant Amendments
 
@@ -1016,3 +1064,47 @@ The interaction between `strict_bsp = true` and `delta_mode = true` needs clarif
 **OQ-6. Wire protocol version coordination with SPEC-18.**
 
 The discriminant assignments in R31-R32 must be coordinated with SPEC-18. If SPEC-18 uses discriminants 7-11 for different purposes, the numbering must be adjusted. A coordination meeting between the SPEC-18 and SPEC-19 authors is recommended before implementation.
+
+**OQ-7. 2-phase AgentId allocation latency on CON-DUP resolutions (DC-B5).**
+
+The DC-B5 design choice (R23, R26, R48, and the new `PendingCommutation` /
+`MintedAgent` wire types defined in R33) adopts Option (B) from the 2.26-B
+spec-critic verdict: workers allocate new AgentId values locally from their
+own `id_range`, and echo them back to the coordinator in the next round's
+`RoundResult.minted_agents`. This respects SPEC-04's `id_range` invariant
+(agent IDs stay within each worker's reserved range, preserving the dense
+arena layout) at the cost of **one extra BSP round of latency** per CON-DUP
+border-redex resolution: the coordinator detects the border redex at round
+N, dispatches `pending_commutations` at round N+1, and can only finalize
+the resulting border-graph entries (using the concrete agent IDs) at round
+N+2.
+
+The alternative Option (A) — coordinator-local AgentId allocation from a
+reserved high range (e.g. `u32::MAX - 10_000 ..`) — would eliminate the
+1-round latency but would break two invariants: (i) SPEC-04's `id_range`
+dense-layout requirement, creating sparse gaps in the worker's agent
+arena; and (ii) the arena-index invariant (`Net.agents` is a `Vec` indexed
+by `AgentId as usize`, so `u32::MAX - k` indices force allocation of a
+16 GB arena or a pivot to a hash-based arena). R48 reserves the
+`u32::MAX - 10_000 .. u32::MAX` range to keep Option (A) re-openable as
+a future optimization (e.g. for a streaming coordinator or hash-arena
+workers) without breaking backwards compatibility of the wire protocol.
+
+The concrete cost of the 1-round latency is bounded: CON-DUP border
+redexes are rare on the benchmark workloads of interest (Profile B
+expansion+collapse dominates CON-DUP *inside* worker partitions, not at
+borders), and the per-round coordinator wall-clock cost is already
+dominated by network I/O. Empirical validation against Option (A)
+(coordinator-local allocation, as a feature-flagged variant) is deferred
+to v2 benchmarks.
+
+**See:** `docs/spec-reviews/SPEC-19-section-3.3-2.26B-design-choices-2026-04-17.md`
+(DC-B5 section, lines 531-708) for the full design argument.
+
+---
+
+## 9. Changelog
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-04-17 | spec-critic 2.26-B + especialista-em-specs | Amended R23 (add `local_reconnections`, `pending_commutations`), R26 (add `minted_agents`), R31 row for `RoundStart` (+2 fields), R32 row for `RoundResult` (+1 field), R33 (add `LocalReconnection`, `PendingCommutation`, `MintedAgent` structs). Added R48 (Agent ID allocation coordination invariant). Added OQ-7 (2-phase echo latency tradeoff). Ratifies DC-B3 and DC-B5 from the 2.26-B spec-review verdict. |
