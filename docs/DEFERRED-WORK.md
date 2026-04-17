@@ -48,6 +48,35 @@ silently forgotten when their unblocker lands.
 
 ---
 
+### D-003 — SPEC-19 R13 / R14 / R15 parts 1-2 (coordinator-side border-redex resolution)
+
+| Field | Value |
+|-------|-------|
+| **Source spec** | SPEC-19 §3.2 (item 2.35) |
+| **Requirements deferred** | R13 (coordinator dispatches border redex via `interact_*`), R14 (coordinator uses the 6 SPEC-03 rules), R15 parts 1 and 2 (send port-update deltas to workers; update `BorderGraph` after resolution) |
+| **Shipped instead** | R8, R9, R10, R11, R12, R15 part 3 (`add_border_states` primitive), R16, R17, R18, R19 — the `BorderGraph` pure data structure itself, in `relativist-core/src/merge/border_graph.rs`. |
+| **Unblocker** | SPEC-19 §3.3 (item 2.26) — Delta-Only Protocol with Stateful Workers. The coordinator integration is the same work that stands up `run_grid_delta`, the `InitialPartition`/`RoundStart`/`RoundResult`/`FinalStateRequest`/`FinalStateResult` wire messages (R31-R36), and the `GridConfig.delta_mode` flag (R20). |
+| **Why deferred** | R13-R15 parts 1-2 describe *what the coordinator must do when a border redex is detected*. The detection primitive (`BorderGraph::detect_border_redexes`) and the state-mutation primitives (`apply_deltas`, `remove_border`, `add_border_states`) all ship now. The *caller* — the coordinator's BSP loop — does not exist yet because the wire protocol extensions (R31-R36) and the stateful-worker lifecycle (R20-R30) are both item 2.26 scope. Shipping R13-R15 parts 1-2 now would mean writing speculative coordinator glue against a delta loop that has no test harness. |
+| **What R13 needs** | Coordinator-side call path: when `border_graph.detect_border_redexes()` yields entries, dispatch each to the appropriate `interact_*` function (from `reduction/`) using agents materialized from the two workers' partitions. |
+| **What R14 needs** | Wire up the 6-rule dispatch table (CON-CON, DUP-DUP, ERA-ERA, CON-DUP, CON-ERA, DUP-ERA) on the coordinator side, mirroring `interact_*` used in `reduce_all`. |
+| **What R15 parts 1-2 needs** | After `interact_*` returns new connections, (1) package the port reconnections as `BorderDelta`s keyed to the affected workers, and (2) call `border_graph.remove_border(bid)` or `border_graph.apply_deltas(worker_id, ...)` to reflect the resolution. R15 part 3 (`add_border_states` for CON-DUP expansion) already ships — it's the *primitive*; the coordinator just needs to call it. |
+| **Estimated effort** | ~200-300 LoC of coordinator glue inside `relativist-core/src/coordinator.rs` (or a new `coordinator/delta_loop.rs` module), plus matching test fixtures. Part of the ~1600 LoC envelope already budgeted for item 2.26. |
+| **Acceptance signal** | An integration test in which a 2-worker grid converges on an input that requires at least one border-redex resolution: the coordinator detects the redex via `BorderGraph::detect_border_redexes`, invokes the right `interact_*` rule, sends `BorderDelta` patches to both workers, and the workers' next-round states reflect the resolution. The final `merge()` reconstructs the same output net that the v1 full-partition protocol produces on identical input. |
+| **Files to revisit** | `relativist-core/src/coordinator.rs`, `relativist-core/src/protocol/messages.rs` (add `InitialPartition`, `RoundStart`, `RoundResult`, `FinalStateRequest`, `FinalStateResult` per R31-R32), `relativist-core/src/protocol/frame.rs` (discriminant 7-11), `relativist-core/src/merge/grid.rs` (new `run_grid_delta`), `relativist-core/src/config.rs` (`GridConfig.delta_mode: bool` per R20). |
+| **Created** | 2026-04-17 (during Stage 6 SHIP of SPEC-19 §3.2) |
+| **Status** | OPEN — waiting on item 2.26 |
+
+**Action when item 2.26 starts:**
+1. Open `relativist-core/src/merge/border_graph.rs` — all primitives are already defined, tested, and adversarially probed.
+2. Create `TASK-04XX` (coordinator border-redex dispatch) under SPEC-19 §3.3 covering R13+R14+R15 parts 1-2 in a single ticket.
+3. Add the 5 wire variants (R31-R32) to `Message` with discriminants 7-11; wire framing unchanged (piggybacks on SPEC-18 v2 frame).
+4. Stand up `run_grid_delta` in `merge/grid.rs` gated on `GridConfig.delta_mode`.
+5. Coordinator loop calls `detect_border_redexes` → `interact_*` → patch via `apply_deltas` / `remove_border` / `add_border_states`.
+6. Add integration test demonstrating equivalence with v1 full-partition output on a workload with cross-partition redexes.
+7. Close this row after acceptance signal is met.
+
+---
+
 ## Resolved Deferrals (archive)
 
 ### D-002 — SPEC-18 R20-R27 (rkyv zero-copy archive path) — SHIPPED 2026-04-16

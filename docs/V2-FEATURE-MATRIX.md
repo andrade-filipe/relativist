@@ -40,7 +40,7 @@ These features directly attack the 80% distribution overhead and 20% transport o
 | 2.34 | Coordinator-Free Round (skip merge when no borders) | PLANNED | SPEC-19 | Low-Medium | ~300 | 2–3d | Skip rounds without border redexes | None (benefits from strict BSP, already shipped) |
 | 2.24 | Zero-Copy Archive (rkyv on hot path) | PLANNED (DEFERRED-WORK.md D-002) | SPEC-18 | Medium-High | ~600 | 3–5d | -50–80% deserialize CPU | 2.23 (wire format migration) |
 | 2.25 | Same-Host Fast Path (UDS / shared memory) | **DONE** (commit c360fe5, 2026-04-15) | SPEC-17 | Medium | ~500 | 4–6d | Eliminates TCP loopback overhead | None |
-| 2.35 | Delta-Based Merge (BorderGraph, lightweight resolution) | PLANNED | SPEC-19 | High | ~800 | 1–2w | Eliminates merge memory peak | None (design with 2.26) |
+| 2.35 | Delta-Based Merge (BorderGraph, lightweight resolution) | **DONE** (R8-R19 pure-core shipped 2026-04-17; R13-R15 coordinator dispatch + R20-R36 wire deferred to 2.26) | SPEC-19 | High | ~800 | 1–2w | Eliminates merge memory peak | None (design with 2.26) |
 | 2.26 | Delta-Only Protocol (stateful workers, border deltas) | PLANNED | SPEC-19 | Very High | ~1600 | 2–4w | -90% per-round wire cost | 2.34, 2.35 (shared BorderGraph concept) |
 
 **Implementation order:** 2.22 → 2.23 → 2.34 → 2.24 → 2.25 → 2.35 → 2.26

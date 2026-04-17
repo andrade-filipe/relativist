@@ -1,18 +1,18 @@
 # Pipeline State
 
-**Last updated:** 2026-04-16 (SPEC-18 §3.5 / item 2.24 — **all 6 stages complete; bundle shipped at 905 default / 945 zero-copy tests, 0 bugs**)
+**Last updated:** 2026-04-17 (SPEC-19 §3.2 / item 2.35 — **all 6 stages complete; bundle shipped at 968 default / 1008 zero-copy tests, 0 bugs**)
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
 
 ## Active Bundle
 
-**Bundle:** SPEC-18 §3.5 (item 2.24) — Zero-Copy Archive (rkyv on hot path)
-**Stage:** 5 of 6 — **QA COMPLETE** (verdict: 10 probes added / 10 PASS; 0 bugs). Stage 6 REFACTOR is no-op, ready to ship.
+**Bundle:** SPEC-19 §3.2 (item 2.35) — BorderGraph (coordinator-side delta-protocol connectivity tracker) — **SHIPPED**
+**Stage:** 6 of 6 — **SHIPPED.** All 6 SDD pipeline stages complete. 968 default / 1008 zero-copy tests; 0 bugs.
 **Branch:** `v2-development`
-**Test baseline:** 887 lib + 4 integration
-**Current test counts:** 905 lib default (+18) / 945 lib `--features zero-copy` (+58)
-**See:** "SPEC-18 §3.5 (item 2.24)" section below for full brief.
+**Test baseline:** 905 lib default / 945 lib `--features zero-copy` (post-SPEC-18 §3.5 ship)
+**Current test counts:** 968 lib default (+63: 50 DEV + 13 QA) / 1008 lib `--features zero-copy` (+63)
+**See:** "SPEC-19 §3.2 (item 2.35)" stage-history section below for full record.
 
 ## Stage 5 QA Summary (SPEC-18 §3.5 / item 2.24)
 
@@ -1016,3 +1016,178 @@ floor: never below 887 lib at any point during DEV.
 **Orchestrator checkpoint:** after task-splitter delivers the bundle, STOP.
 Do NOT auto-invoke test-generator — the parent orchestrator checkpoints
 between stages.
+
+---
+
+## SPEC-19 §3.2 (item 2.35) — BorderGraph — SHIPPED 2026-04-17
+
+**Started:** 2026-04-17
+**Test baseline before this work:** 905 lib default / 945 lib `--features zero-copy`
+
+**Bundle scope:** SPEC-19 §3.2 only — requirements R8, R9, R10, R11, R12,
+R15 (part 3 — `add_border_states` primitive), R16, R17, R18 (SHOULD
+incremental invariant), R19 (pure-core). Explicitly **OUT of scope**:
+R13/R14 coordinator-side `interact_*` dispatch + R15 parts 1-2 coordinator
+dispatch + R20-R36 wire-format extensions + `GridConfig.delta_mode` flag
++ `run_grid_delta` BSP loop (all ship under item 2.26 — separate bundle).
+
+### Design-choice verdicts (spec-critic, 2026-04-17)
+
+See `docs/spec-reviews/SPEC-19-section-3.2-design-choices-2026-04-17.md`:
+
+| DC | Verdict | Anchor |
+|---|---|---|
+| DC-1 | Reuse `crate::net::DISCONNECTED` (no `BorderTarget` enum, no `Option<PortRef>`) | UT-0362-05, UT-0362-06, UT-0362-11 |
+| DC-2 | Ship `worker_borders: Vec<Vec<u32>>` now with `#[allow(dead_code)]` + R23 doc comment | field comment `// SPEC-19 §4.1 R23 (item 2.26)` |
+| DC-3 | `detect_border_redexes` returns owned `Vec<(u32, BorderState)>` (not borrowed) | UT-0363-03 mutable-borrow-while-iterating test |
+| DC-4 | Graph-enforced `is_redex` via `AddBorderEntry` input type (no `is_redex` field on input) | UT-0364-12 invariant test |
+
+Additional spec-critic observations baked in:
+
+- Obs #1: `AgentId` is a `pub type AgentId = u32` alias (not a newtype) —
+  fixtures use `PortRef::AgentPort(id, 0)` directly.
+- Obs #2: `is_principal_pair` re-exported from
+  `merge/helpers.rs` via `use super::helpers::is_principal_pair;` —
+  **not redefined** in `border_graph.rs`.
+
+### Stage History
+
+- [x] **SPLITTING** (2026-04-17): 6 atomic tasks created in `docs/backlog/`.
+  - TASK-0360 — skeleton: `BorderState` + `BorderGraph` shell + `is_principal_pair` re-export + module wiring
+  - TASK-0361 — `from_partition_plan` constructor (R10, C3 validation)
+  - TASK-0362 — `apply_deltas` + `BorderDelta` struct (R11, R17, R18)
+  - TASK-0363 — `detect_border_redexes` owned return + read-only accessors (R12, DC-3)
+  - TASK-0364 — `remove_border` + `add_border_states` + `AddBorderEntry` (R15 part 3, R16, DC-4)
+  - TASK-0365 — module `//!` doc + R19 pure-core invariant guard + `Send + Sync` witness
+- [x] **SPEC-CRITIC** (2026-04-17): 4 DC verdicts issued
+  (`docs/spec-reviews/SPEC-19-section-3.2-design-choices-2026-04-17.md`);
+  tasks amended per verdicts.
+- [x] **TESTS** (2026-04-17): 6 TEST-SPECs generated in `docs/tests/`.
+  - TEST-SPEC-0360 (8 tests, +0 net — `is_principal_pair` tests stay in
+    `helpers.rs` per Obs #2)
+  - TEST-SPEC-0361 (8 tests, +8 net: constructor + C3 panics)
+  - TEST-SPEC-0362 (11 tests, +11 net: `apply_deltas` + DISCONNECTED)
+  - TEST-SPEC-0363 (8 tests, +8 net: `detect_border_redexes` + accessors)
+  - TEST-SPEC-0364 (12 tests, +12 net: `remove_border` + `add_border_states`)
+  - TEST-SPEC-0365 (3 tests, +3 net: R19 source-scan + doc-presence + Send/Sync)
+  - Cumulative test target: 905 → 941+ lib default (+36 floor).
+- [x] **DEV** (2026-04-17): all 6 tasks bundled into a single new file
+  `relativist-core/src/merge/border_graph.rs` (~1.3 kLoC incl. tests; ~380
+  LoC of production code) + one-line edit in `relativist-core/src/merge/mod.rs`
+  (declares `pub mod border_graph;` and re-exports
+  `AddBorderEntry, BorderDelta, BorderGraph, BorderState`).
+  - Test count 905 → **955** lib default (+50) / 945 → **995** lib
+    `--features zero-copy` (+50) — exceeds +36 floor.
+  - All R8, R9, R10, R11, R12, R15-part-3, R16, R17, R18, R19 covered by
+    the inline tests (coverage map per TEST-SPEC files).
+  - All 4 design-choice verdicts (DC-1..DC-4) honoured in implementation.
+  - Quality gates GREEN:
+    - `cargo build --workspace` clean.
+    - `cargo test --workspace --lib` — 955 pass, 0 fail.
+    - `cargo test --workspace --lib --features zero-copy` — 995 pass, 0 fail.
+    - `cargo clippy --workspace --all-targets -- -D warnings` clean
+      (both default and `--features zero-copy`).
+    - `cargo fmt --check` clean.
+    - `cargo build --release` clean.
+    - Release smoke `target/release/relativist.exe compute add 3 5` prints
+      `Result: 8`.
+  - R19 pure-core invariant enforced by in-workspace canary
+    (`border_graph_source_respects_r19_pure_core_invariant`): no `use tokio`
+    / `use async_trait` / `use crate::protocol` lines in `border_graph.rs`.
+  - DC-2 dead-code allow: `worker_borders` field carries
+    `#[allow(dead_code)]` + inline comment `// SPEC-19 §4.1 R23 (item 2.26)`
+    until the worker-dispatch path in item 2.26 consumes it.
+- [x] **REVIEW** (2026-04-17) —
+      `docs/reviews/REVIEW-SPEC-SPEC-19-section-3.2-2026-04-17.md`.
+      Verdict APPROVE, 0 MUST-FIX / 0 SHOULD-FIX / 3 NICE-TO-HAVE. All
+      R8-R19 PASS; DC-1..DC-4 faithfully implemented. 10 adversarial
+      probe angles enumerated for Stage 5 QA.
+- [x] **QA** (2026-04-17) — 13 adversarial probes added to a nested
+      `adversarial_probes` module inside
+      `relativist-core/src/merge/border_graph.rs#tests`. See "Stage 5
+      QA — SPEC-19 §3.2 Summary" section below.
+- [x] **REFACTOR** (2026-04-17) — No-op. 0 MUST-FIX from REVIEW and
+      0 bugs from QA; no code changes required. 3 NICE-TO-HAVE items
+      from REVIEW are cosmetic / constant-factor only and deliberately
+      deferred (no dedicated Stage 6 dispatch). Bundle SHIPPED.
+
+### Stage 5 QA — SPEC-19 §3.2 Summary
+
+- **Probes implemented:** 13 (Q1..Q13) in a new submodule
+  `adversarial_probes` under `relativist-core/src/merge/border_graph.rs`
+  `#[cfg(test)] mod tests`. One-line summary:
+  - Q1 — `border_id = u32::MAX` roundtrips without DISCONNECTED
+    confusion (init → apply → detect → remove).
+  - Q2 — `from_partition_plan` `(side_a, worker_a, side_b, worker_b)`
+    byte-stable across 100 runs on identical input.
+  - Q3 — C3 panic under 4+ sightings names the TRUE count (`"4"`), not
+    a hard-coded `"3"`.
+  - Q4 — DC-1 sentinel discipline: `FreePort(u32::MAX - 1)` is NOT
+    DISCONNECTED; only exact `PortRef::FreePort(u32::MAX)` triggers R17.
+  - Q5 — `apply_deltas(worker_id)` for unknown `worker_id` (including
+    `u32::MAX`) is a silent no-op, not a panic or bounds fault.
+  - Q6 — Idempotent double-apply of the same delta: no membership
+    drift in `active_redexes`; cross-sectional invariant holds.
+  - Q7 — DC-4 mixed 6-entry batch (3 redex + 3 non-redex): all states
+    land, `active_redexes` matches subset, `worker_borders` updated
+    for both sides of every entry.
+  - Q8 — `remove_border` on an absent id (9999, `u32::MAX`, 0) returns
+    None and preserves every container.
+  - Q9 — 10k-border stress: promote-demote-promote cycles leave
+    `active_redex_count` deterministically at the end-state value;
+    cross-sectional invariant holds at scale.
+  - Q10 — Same-worker-on-both-sides degenerate border: contract pinned
+    (`updates_a` wins on `worker_a == worker_b` tie).
+  - Q11 — `remove_border` on a redex scrubs BOTH `borders` and
+    `active_redexes`, and `detect_border_redexes` no longer surfaces it.
+  - Q12 — `worker_borders` is populated for both sides after
+    `add_border_states`; `apply_deltas` does NOT mutate the reverse
+    index (DC-2 landmine guard for item 2.26 consumer).
+  - Q13 — Mid-batch panic in `add_border_states` (REVIEW §9 item 6):
+    duplicate-id panic leaves the already-inserted prefix consistent
+    (invariant `{bid : is_redex} == active_redexes` still holds).
+- **Bugs found:** **0.** All 13 probes PASS first try.
+- **Final test counts:**
+  - `cargo test --workspace --lib` — **968** (955 + 13).
+  - `cargo test --workspace --lib --features zero-copy` — **1008**
+    (995 + 13).
+- **Gate status:**
+  - `cargo test --workspace` GREEN (both feature configs, deltas above).
+  - `cargo clippy --workspace --all-targets -- -D warnings` GREEN
+    (default AND `--features zero-copy`).
+  - `cargo fmt --check` GREEN (after one `cargo fmt` pass on the new
+    probe block).
+  - `cargo build --release` GREEN; smoke
+    `target/release/relativist.exe compute add 3 5 → Result: 8`.
+- **Stage 6 REFACTOR:** No-op (0 bugs). Ready to ship.
+
+### Deviations / ambiguities
+
+- No spec deviations. All four DC verdicts were applied verbatim.
+- DC-2 `worker_borders` is unread production-side until item 2.26 ships;
+  the R23 doc-comment + `#[allow(dead_code)]` are the agreed sunset
+  convention.
+- `from_partition_plan` panic messages include both the offending
+  `border_id` and the sighting count (`"SPEC-19 C3 invariant violated:
+  border_id {bid} has {count} sightings"`), satisfying both test-specs
+  0361-06 (substring `"99"`), 0361-07 (substring `"3"` and `"55"`), and
+  0361-08 (substring `"77"`).
+- QA Q10 (same-worker both sides) pins the CURRENT tie-break behavior
+  (`updates_a` wins). Whether this is the *desirable* semantic is an
+  OQ per REVIEW §9 item 9. The probe locks the contract; any future
+  change MUST update Q10 accordingly (no silent drift).
+
+### Acceptance criteria — SELF-VERIFIED
+
+1. `cargo test --workspace --lib` — 955 pass, 0 fail (+50 over 905 baseline,
+   floor +36 satisfied).
+2. `cargo test --workspace --lib --features zero-copy` — 995 pass, 0 fail
+   (+50 over 945 baseline).
+3. `cargo clippy --workspace --all-targets -- -D warnings` clean
+   (default + zero-copy).
+4. `cargo fmt --check` clean.
+5. `cargo build --release` clean; `compute add 3 5` prints `Result: 8`.
+6. R19 in-workspace canary green (source-file scan).
+7. `BorderGraph` + `BorderState` + `BorderDelta` + `AddBorderEntry` re-exported
+   from `crate::merge::*`.
+
