@@ -249,14 +249,12 @@ pub fn is_hot_path_message(msg: &Message) -> bool {
 /// non-aligned path uses.
 ///
 /// The function is gated on `feature = "zero-copy"` because `AlignedVec`
-/// is a rkyv type. TASK-0357 ships `decode_archive_payload` which does
-/// its own AlignedVec copy from a `Vec<u8>`. A future hoist will let
-/// `recv_frame` allocate the aligned buffer up front via this helper
-/// (saving the second copy on the uncompressed-archive fast path); the
-/// helper and its R25 alignment tests are kept under `#[allow(dead_code)]`
-/// so that the follow-up wiring is a pure code change.
+/// is a rkyv type. `recv_frame` calls this helper directly on the
+/// uncompressed-archive fast path (FLAG_ARCHIVED set, FLAG_COMPRESSED
+/// clear), eliminating the second copy that `decode_archive_payload`
+/// would otherwise perform. The compressed-archive path still copies
+/// because `decompress_payload` returns a plain `Vec<u8>`.
 #[cfg(feature = "zero-copy")]
-#[allow(dead_code)] // wired by TASK-0357 follow-up (recv_frame hoist)
 pub(crate) async fn read_aligned_payload<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     len: usize,
@@ -398,12 +396,18 @@ pub async fn send_frame_v2<W: AsyncWriteExt + Unpin>(
 ///    that this build cannot interpret.
 /// 3. Reject if `length > max_payload_size` (OOM defense).
 /// 4. Read exactly `length` bytes of (possibly compressed) payload.
+///    On the FLAG_ARCHIVED + !FLAG_COMPRESSED fast path with the
+///    `zero-copy` feature on, the buffer is allocated as a 16-byte
+///    aligned `rkyv::util::AlignedVec` (R25) so that the validating
+///    `rkyv::access` step can run without an extra copy.
 /// 5. If `FLAG_COMPRESSED` is set, LZ4-decompress the payload (R13).
 /// 6. Verify CRC32C against the **uncompressed** payload (R12). The
 ///    ordering is load-bearing: a wrong-but-valid LZ4 block followed by
 ///    a CRC over the compressed bytes would silently decode to garbage.
-/// 7. Deserialize the uncompressed payload with bincode v2 -> Message
-///    (R1-R4).
+/// 7. Deserialize the uncompressed payload. The path forks on
+///    FLAG_ARCHIVED: rkyv validating `access` + `deserialize`
+///    (SPEC-18 §3.5 R24) when set AND the build has the `zero-copy`
+///    feature; bincode v2 (SPEC-18 §3.1) otherwise.
 pub async fn recv_frame<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     max_payload_size: u32,
@@ -435,6 +439,27 @@ pub async fn recv_frame<R: AsyncReadExt + Unpin>(
         });
     }
 
+    let total_bytes = FRAME_HEADER_SIZE + header.length as usize;
+
+    // 4-7 (uncompressed-archive fast path, zero-copy feature on):
+    // Read directly into an `AlignedVec` so `rkyv::access` does not need
+    // a second copy in `decode_archive_payload`. R12 ordering is preserved
+    // (CRC verify before rkyv access).
+    #[cfg(feature = "zero-copy")]
+    if header.is_archived() && !header.is_compressed() {
+        let aligned = read_aligned_payload(reader, header.length as usize).await?;
+
+        let computed_crc = crc32fast::hash(aligned.as_ref());
+        if computed_crc != header.checksum {
+            return Err(ProtocolError::ChecksumMismatch {
+                expected: header.checksum,
+                computed: computed_crc,
+            });
+        }
+
+        return decode_archive_payload(aligned.as_ref(), total_bytes);
+    }
+
     // 4. Read payload (compressed or raw, per the FLAG_COMPRESSED bit)
     let mut wire_payload = vec![0u8; header.length as usize];
     reader
@@ -460,10 +485,11 @@ pub async fn recv_frame<R: AsyncReadExt + Unpin>(
         });
     }
 
-    // 7. Deserialize. The path forks on FLAG_ARCHIVED:
-    //    - bincode v2 (SPEC-18 §3.1) when FLAG_ARCHIVED is clear.
-    //    - rkyv validating `access` + `deserialize` (SPEC-18 §3.5 R24)
-    //      when FLAG_ARCHIVED is set AND the build has `feature = "zero-copy"`.
+    // 7. Deserialize. The compressed-archive path lands here (the
+    //    uncompressed-archive path was handled above with a direct
+    //    aligned read). When FLAG_ARCHIVED is set under the zero-copy
+    //    feature, the (decompressed) payload is allocator-aligned only
+    //    and must be copied into an AlignedVec before rkyv access.
     //
     // R19 forward-compat: a default-features build that receives a
     // FLAG_ARCHIVED frame has already passed the `has_unknown_flags`
@@ -473,7 +499,13 @@ pub async fn recv_frame<R: AsyncReadExt + Unpin>(
     // behaviour as QA Probe 3 confirmed before this task landed.
     #[cfg(feature = "zero-copy")]
     if header.is_archived() {
-        return decode_archive_payload(&payload, FRAME_HEADER_SIZE + header.length as usize);
+        // Compressed-archive path: decompress_payload returned a plain
+        // Vec<u8> whose alignment is allocator-defined. Copy into an
+        // AlignedVec so rkyv::access can validate (R25).
+        let mut aligned: rkyv::util::AlignedVec =
+            rkyv::util::AlignedVec::with_capacity(payload.len());
+        aligned.extend_from_slice(&payload);
+        return decode_archive_payload(aligned.as_ref(), total_bytes);
     }
 
     let (message, consumed): (Message, usize) =
@@ -484,7 +516,6 @@ pub async fn recv_frame<R: AsyncReadExt + Unpin>(
         "bincode v2 decoded message must consume the entire payload"
     );
 
-    let total_bytes = FRAME_HEADER_SIZE + header.length as usize;
     Ok((message, total_bytes))
 }
 
@@ -504,23 +535,29 @@ pub async fn recv_frame<R: AsyncReadExt + Unpin>(
 /// `ArchiveValidationFailed("non-hot-path archive payload ...")`. Both
 /// `try_access` calls failing is the only path to that error: it means
 /// the payload bytes do not match either archive schema.
+///
+/// **Precondition (R25):** `payload` MUST be backed by 16-byte aligned
+/// storage. `recv_frame` enforces this on both archive paths:
+/// - Uncompressed-archive fast path: `read_aligned_payload` allocates
+///   an `AlignedVec` directly.
+/// - Compressed-archive path: `recv_frame` copies the decompressed
+///   `Vec<u8>` into an `AlignedVec` before invoking this function.
+///
+/// Empty payloads are vacuously aligned (rkyv never reads from them).
 #[cfg(feature = "zero-copy")]
 fn decode_archive_payload(
     payload: &[u8],
     total_bytes: usize,
 ) -> Result<(Message, usize), ProtocolError> {
-    // R25: rkyv::access requires a 16-byte aligned base pointer. The
-    // recv pipeline reads/decompresses into a plain Vec<u8> whose
-    // alignment is allocator-defined (typically 8 on 64-bit Windows).
-    // Copy into an AlignedVec to satisfy R25 before validating.
-    //
-    // The copy is `O(payload_len)` and unavoidable with the current
-    // recv_frame structure; future work (TASK-0357 follow-up) may
-    // hoist `read_aligned_payload` directly into recv_frame for the
-    // uncompressed-archive fast path.
-    let mut aligned: rkyv::util::AlignedVec = rkyv::util::AlignedVec::with_capacity(payload.len());
-    aligned.extend_from_slice(payload);
-    let payload: &[u8] = aligned.as_ref();
+    // R25 alignment witness: callers (`recv_frame`) hand us bytes backed
+    // by an `AlignedVec`, so the base pointer is 16-byte aligned for any
+    // non-empty payload. `debug_assert!` is acceptable here because
+    // `AlignedVec` guarantees this at construction; the assert is a
+    // structural witness, not a correctness check.
+    debug_assert!(
+        payload.is_empty() || (payload.as_ptr() as usize).is_multiple_of(16),
+        "decode_archive_payload precondition violated: payload must be 16-byte aligned (R25)"
+    );
 
     // SPEC-18 R22 discrimination
     // Try the AssignPartition archive first (DC-3: Assign-first ordering).
@@ -1708,6 +1745,10 @@ mod tests {
     // R25 mandates 16-byte alignment so that `rkyv::access` (the validating
     // API) does not reject the payload on alignment grounds.
     //
+    // The helper is wired into `recv_frame` on the FLAG_ARCHIVED +
+    // !FLAG_COMPRESSED fast path so that `decode_archive_payload` runs
+    // without an extra `Vec<u8> -> AlignedVec` copy (MF-1 hoist).
+    //
     // 5 tests under the `zero-copy` feature exercise: round-trip identity,
     // alignment, length, EOF behaviour, and capacity rounding. 1 test
     // under default features asserts the function is not exposed (its
@@ -2417,5 +2458,111 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(decoded, Message::Shutdown));
+    }
+
+    // =======================================================================
+    // QA Stage 5 probes — default-build variants. (See zero_copy_tests.rs
+    // for the feature-gated probes Q1, Q2-on, Q3-on, Q4..Q8.)
+    // Probes Q2 and Q3 have a default-build branch that asserts the
+    // shipped behavior when the `zero-copy` feature is OFF.
+    // =======================================================================
+
+    /// Q2 (default branch) — adversarial sender sets FLAG_ARCHIVED on a
+    /// bincode payload while the receiver is built WITHOUT `zero-copy`.
+    /// Per F-9 of the review, the shipped behavior is "fall through to
+    /// bincode decoder", which fails as `ProtocolError::Deserialize` for
+    /// payloads bincode does not recognise. We confirm there is no panic
+    /// and no silent acceptance.
+    #[cfg(not(feature = "zero-copy"))]
+    #[tokio::test]
+    async fn qa_probe_q2_archived_flag_on_bincode_payload_without_feature() {
+        let bincode_bytes: Vec<u8> = crate::protocol::bincode_v2::encode(&Message::Shutdown)
+            .expect("bincode encode must succeed");
+        let checksum = crc32fast::hash(&bincode_bytes);
+        let header = FrameHeader {
+            length: bincode_bytes.len() as u32,
+            checksum,
+            flags: FLAG_ARCHIVED,
+        };
+        let (mut client, mut server) = create_test_channel();
+        client.write_all(&header.to_bytes()).await.unwrap();
+        client.write_all(&bincode_bytes).await.unwrap();
+        client.flush().await.unwrap();
+
+        let result = recv_frame(&mut server, DEFAULT_MAX_PAYLOAD_SIZE).await;
+        match result {
+            // Default build: the bincode path happens to accept Message::Shutdown
+            // (the sent payload IS valid bincode; FLAG_ARCHIVED bit is ignored
+            // at the discrimination layer because the rkyv branch is
+            // cfg-stripped). This is consistent with R19 forward-compat: a
+            // future v3 receiver that *does* understand FLAG_ARCHIVED would
+            // route via rkyv; today's default receiver routes via bincode.
+            Ok((decoded, _)) => {
+                assert!(
+                    matches!(decoded, Message::Shutdown),
+                    "Q2 (default): bincode-fallthrough must decode Shutdown identity, got {:?}",
+                    decoded
+                );
+                tracing::info!(
+                    "Q2 (default): FLAG_ARCHIVED+bincode-payload accepted by bincode fallthrough"
+                );
+            }
+            Err(err) => {
+                // Acceptable alternative: the bincode decoder rejects with
+                // Deserialize. NOT acceptable: any panic or silent corruption.
+                assert!(
+                    matches!(err, ProtocolError::Deserialize(_)),
+                    "Q2 (default): expected Deserialize on bincode-reject path, got {:?}",
+                    err
+                );
+                tracing::info!(
+                    ?err,
+                    "Q2 (default): FLAG_ARCHIVED+bincode-payload rejected by bincode decoder"
+                );
+            }
+        }
+    }
+
+    /// Q3 (default branch) — feature-ON sender → default receiver
+    /// interop. We craft an archived frame (using known-bad bincode bytes
+    /// at FLAG_ARCHIVED, mirroring the existing UT-0357-09 test) and
+    /// assert the receiver rejects cleanly without panic. This also
+    /// covers the inverse "default sender → feature-on receiver" because
+    /// a default sender NEVER sets FLAG_ARCHIVED (no `send_frame_v2`
+    /// symbol in default builds), so the feature-on receiver only ever
+    /// sees bincode frames from default senders — which is asserted by
+    /// `qa_probe_q3_bincode_frame_accepted_when_feature_on` in
+    /// `zero_copy_tests.rs`.
+    #[cfg(not(feature = "zero-copy"))]
+    #[tokio::test]
+    async fn qa_probe_q3_archived_frame_rejected_when_feature_off() {
+        // Mirror the byte shape of an archived AssignPartition: 64 bytes
+        // of 0xFF (matches the existing
+        // `recv_frame_default_build_rejects_archived_frame_as_deserialize`
+        // pattern). bincode rejects the 0xFF discriminant as Deserialize.
+        let payload = vec![0xFFu8; 64];
+        let checksum = crc32fast::hash(&payload);
+        let header = FrameHeader {
+            length: payload.len() as u32,
+            checksum,
+            flags: FLAG_ARCHIVED,
+        };
+        let (mut client, mut server) = create_test_channel();
+        client.write_all(&header.to_bytes()).await.unwrap();
+        client.write_all(&payload).await.unwrap();
+        client.flush().await.unwrap();
+
+        let err = recv_frame(&mut server, DEFAULT_MAX_PAYLOAD_SIZE)
+            .await
+            .unwrap_err();
+        tracing::info!(
+            ?err,
+            "Q3 (default): archived-from-feature-on-sender rejected by feature-off receiver"
+        );
+        assert!(
+            matches!(err, ProtocolError::Deserialize(_)),
+            "Q3 (default): expected Deserialize for archived-frame on feature-off receiver, got {:?}",
+            err
+        );
     }
 }

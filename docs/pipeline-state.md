@@ -1,6 +1,6 @@
 # Pipeline State
 
-**Last updated:** 2026-04-16 (SPEC-18 §3.5 / item 2.24 — **Stage 3 DEV: all 8 tasks GREEN; ready for REVIEW**)
+**Last updated:** 2026-04-16 (SPEC-18 §3.5 / item 2.24 — **all 6 stages complete; bundle shipped at 905 default / 945 zero-copy tests, 0 bugs**)
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
@@ -8,11 +8,34 @@
 ## Active Bundle
 
 **Bundle:** SPEC-18 §3.5 (item 2.24) — Zero-Copy Archive (rkyv on hot path)
-**Stage:** 3 of 6 — **DEV COMPLETE** (TASK-0352..0359 all GREEN; ready for Stage 4 REVIEW)
+**Stage:** 5 of 6 — **QA COMPLETE** (verdict: 10 probes added / 10 PASS; 0 bugs). Stage 6 REFACTOR is no-op, ready to ship.
 **Branch:** `v2-development`
 **Test baseline:** 887 lib + 4 integration
-**Current test counts:** 903 lib default (+16) / 937 lib `--features zero-copy` (+50)
+**Current test counts:** 905 lib default (+18) / 945 lib `--features zero-copy` (+58)
 **See:** "SPEC-18 §3.5 (item 2.24)" section below for full brief.
+
+## Stage 5 QA Summary (SPEC-18 §3.5 / item 2.24)
+
+- **Probes implemented:** 10 (Q1, Q2-on, Q2-off, Q3-on, Q3-off, Q4, Q5, Q6, Q7, Q8) per
+  `docs/reviews/REVIEW-SPEC-18-section-3.5-2026-04-16.md` §7.
+- **Location:**
+  - Feature-gated (8 probes): `relativist-core/src/protocol/zero_copy_tests.rs` under
+    `#[cfg(all(test, feature = "zero-copy"))]`.
+  - Default-build (2 probes: Q2-off, Q3-off): `relativist-core/src/protocol/frame.rs`
+    inside the existing `#[cfg(test)]` module under `#[cfg(not(feature = "zero-copy"))]`.
+- **Q1 tightening:** Initial "mutate trailing 4 bytes" strategy landed on POD u32 fields
+  rather than relative pointers (rkyv 0.8 places the root struct at the buffer end, so
+  the tail bytes are fields, not the root RelPtr). Switched to a deterministic
+  front-half truncation (`payload.drain(0..len/2)`) which moves the buffer base so every
+  internal RelPtr now references pre-buffer memory — the rkyv validator rejects
+  reliably (`ArchiveValidationFailed`).
+- **Bug count:** 0. All 10 probes PASS.
+- **Gate status:** `cargo test --workspace` GREEN (905+4), `cargo test --workspace
+  --features zero-copy` GREEN (945+4), `cargo clippy --workspace --all-targets -- -D
+  warnings` GREEN (both feature configs), `cargo fmt --check` GREEN.
+- **Q6 status:** Intentional no-op traceability test (ARM alignment witness deferred —
+  no ARM CI runner). Q7 documents rkyv 0.8.x cross-patch fixture coverage as deferred.
+- **Stage 6 REFACTOR:** No-op (0 bugs). Ready to ship.
 
 ---
 
@@ -570,7 +593,7 @@ Test count must stay **>= 850 lib tests** after the bundle ships
 
 ---
 
-## SPEC-18 §3.5 (item 2.24) — Zero-Copy Archive (rkyv on hot path) — IN PROGRESS
+## SPEC-18 §3.5 (item 2.24) — Zero-Copy Archive (rkyv on hot path) — SHIPPED 2026-04-16
 
 **Started:** 2026-04-16
 **Test baseline before this work:** 887 lib + 4 integration (post-SPEC-19 §3.1 ship)
@@ -775,17 +798,85 @@ v2 receivers WITHOUT the `zero-copy` feature MUST cleanly reject
     clean both feature configs. `cargo fmt --check` clean. Release
     smoke `compute add 3 5 → 8` works. Bundle ships GREEN through
     Stage 3.
-- [ ] **REVIEW**: ready to dispatch (reviewer).
-- [ ] **QA**: pending (qa).
-- [ ] **REFACTOR**: pending (developer).
+  - [x] **MF-1 RESOLVED (2026-04-16):** Option A (hoist) — `recv_frame`
+    now calls `read_aligned_payload` directly on the FLAG_ARCHIVED +
+    !FLAG_COMPRESSED fast path, eliminating the second `Vec<u8> →
+    AlignedVec` copy that `decode_archive_payload` previously
+    performed. The compressed-archive path still copies (decompression
+    yields a plain `Vec<u8>`); `decode_archive_payload` is now a pure
+    R25-precondition consumer with a `debug_assert!` alignment witness.
+    `#[allow(dead_code)]` removed. R12 ordering preserved on both
+    paths (decompress → CRC verify on uncompressed payload → rkyv
+    access). Doc comments amended to reflect actual behavior. Tests
+    now 903 lib default / 937 lib `--features zero-copy` (unchanged
+    counts; the 5 helper tests stay valid because the function is
+    still called from production code). Clippy + fmt clean both
+    feature configs.
+- [x] **REVIEW** (2026-04-16): **APPROVE** (MF-1 resolved) — verdict at
+      `docs/reviews/REVIEW-SPEC-18-section-3.5-2026-04-16.md`.
+      1 MUST-FIX (blocking): **MF-1** resolve `read_aligned_payload`
+      dead-code state. The helper at `frame.rs:258-282` is `pub(crate)`,
+      fully tested (5 tests), but no caller exists outside tests — the
+      `#[allow(dead_code)]` is load-bearing today. Acceptable fixes:
+      **(A)** hoist into `recv_frame` uncompressed-archive fast path
+      (preferred — saves one copy); **(B)** strip the helper + 5 tests
+      and document the deferred hoist in `docs/DEFERRED-WORK.md`.
+      "Accept-with-deferred-hoist" is NOT acceptable (no follow-up
+      task tracked). 5 NICE-TO-HAVE items deferrable (NTH-1 through
+      NTH-5: builder refactor, test-helper dedup, PartialEq audit,
+      visibility narrowing × 2). Spec compliance matrix: R20-R27 +
+      R35-R37 all PASS. Architecture: dependency direction respected;
+      feature gating correct; DC-1..DC-4 spec-critic verdicts honored
+      in code. No `unsafe`, no `unwrap()` in production paths, no
+      `println!`, no `access_unchecked`. 8 QA probes enumerated for
+      Stage 5 (Q1 high-priority pointer-corruption; Q3 cross-feature
+      interop; Q6 ARM alignment defer-if-no-ARM-CI). One pipeline
+      note (F-9): default-build FLAG_ARCHIVED falls through to bincode
+      `Deserialize` error (NOT `ArchiveValidationFailed("zero-copy
+      feature disabled")` as the original brief suggested) — behavior
+      is consistent with DC-1 Option B and R19 forward-compat; brief
+      wording should be amended on next sdd-pipeline pass.
+      **Update (2026-04-16):** MF-1 RESOLVED via Option A hoist —
+      `read_aligned_payload` is now invoked from `recv_frame` on the
+      FLAG_ARCHIVED + !FLAG_COMPRESSED fast path; `#[allow(dead_code)]`
+      removed; helper is no longer dead. Verdict transitions to
+      **APPROVE** (no longer with MUST-FIX). All gates re-greened on
+      both feature configs (test 903/937, clippy clean, fmt clean).
+- [ ] **QA**: **READY TO DISPATCH** (qa). MF-1 resolved (2026-04-16);
+      gates re-greened: `cargo test --workspace` 903 lib + 4 integration
+      default / 937 lib + 4 integration `--features zero-copy`; `cargo
+      clippy --workspace --all-targets -- -D warnings` clean both
+      feature configs; `cargo fmt --check` clean. Probes Q1-Q8 from
+      the review (`docs/reviews/REVIEW-SPEC-18-section-3.5-2026-04-16.md`
+      §7) define the QA bug-hunt scope.
+- [x] **REFACTOR** (2026-04-16): no-op — Stage 4 REVIEW MF-1 already
+      resolved (Option A hoist of `read_aligned_payload` into `recv_frame`);
+      Stage 5 QA found 0 bugs across 10 probes. The 5 NICE-TO-HAVE items
+      from REVIEW (NTH-1 builder-struct refactor, NTH-2 dedup test helpers,
+      NTH-3 PartialEq audit, NTH-4/5 visibility narrowing) are deferred
+      as follow-up backlog items. Final gate: 905 lib + 4 integration
+      (default), 945 lib + 4 integration (`--features zero-copy`); clippy
+      clean both feature configs; fmt clean; release smoke green.
+      **Bundle shipped.**
+
+### Bundle Shipped — 2026-04-16
+
+SPEC-18 §3.5 (item 2.24) — Zero-Copy Archive (rkyv on hot path) closed
+green through all 6 SDD stages (plus Stage 1.5 spec-critic). Test count
+887 → 905 (default, +18) / 887 → 945 (`--features zero-copy`, +58). All
+R20-R27 PASS. DEFERRED-WORK D-002 closed and moved to Resolved
+Deferrals. Tier 1 break-even path next: **item 2.35** (Delta-Based
+Merge with BorderGraph, SPEC-19 §3.2 — item 2.25 already DONE per
+commit c360fe5).
 
 ### Current Stage
 
-**Stage 3 DEV — COMPLETE.** All 8 tasks (TASK-0352..0359) GREEN.
-Test counts: default features **903 lib** (+16 from baseline 887,
-clears the +17 TEST-SPEC target), `--features zero-copy` **937 lib**
-(+50 from baseline, clears the +52 TEST-SPEC target). Bundle floor
-887 lib was never breached. Ready for Stage 4 REVIEW.
+**Stage 4 REVIEW — COMPLETE.** Verdict: **APPROVE** (MF-1 resolved
+via Option A hoist on 2026-04-16). Bundle is structurally sound,
+spec-compliant, and the previously flagged dead-code seam is now wired
+through production. Test counts: default features **903 lib** (+16 from
+baseline 887), `--features zero-copy` **937 lib** (+50 from baseline).
+Bundle floor 887 lib never breached. Stage 5 QA ready to dispatch.
 
 ### Hard Gate Carried Forward
 
