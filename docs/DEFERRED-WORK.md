@@ -44,9 +44,25 @@ silently forgotten when their unblocker lands.
 
 ---
 
+*(D-002 was resolved on 2026-04-16 — see Resolved Deferrals below.)*
+
+---
+
 ## Resolved Deferrals (archive)
 
-*(none yet)*
+### D-002 — SPEC-18 R20-R27 (rkyv zero-copy archive path) — SHIPPED 2026-04-16
+
+| Field | Value |
+|-------|-------|
+| **Source spec** | SPEC-18 (Wire Format v2) §3.5 |
+| **Requirements shipped** | R20, R21, R22, R23, R24, R25, R26, R27 + tests T11-T14 |
+| **Bundle** | TASK-0352..0359 (~600 LoC across 8 atomic tasks) |
+| **Shipped via** | Stage 3 DEV of SPEC-18 §3.5 bundle (item 2.24). Cargo feature `zero-copy = ["dep:rkyv"]` (default OFF). Hot-path messages `AssignPartition` / `PartitionResult` carry rkyv archives with FLAG_ARCHIVED set; receivers use the validating `rkyv::access` API (NEVER `access_unchecked`); R12 ordering preserved (decompress → CRC → rkyv access); R25 alignment honored via `AlignedVec` copy in `decode_archive_payload`; R22 hot-path enforcement via try-then-try Assign-first discrimination (DC-3) with mandated source comment; R26 non-hot-path archives rejected with literal phrase `"non-hot-path archive payload (matched neither AssignPartition nor PartitionResult)"`; DC-4 send-side errors carry the mandated `"serialize: "` prefix. |
+| **Acceptance signal — verified** | Round-trip identity `recv_frame(send_frame_v2(p)) == p` holds for both `AssignPartition` and `PartitionResult` across the full size battery (TASK-0359 T11/T13 cross-cut matrix, 8 round-trips per run). FLAG_ARCHIVED is emitted only with the feature ON AND the message on the hot path; default builds reject FLAG_ARCHIVED frames cleanly via the bincode decoder (UT-0357-09). |
+| **Final test counts** | 887 lib baseline → **903 lib default** (+16) / **937 lib `--features zero-copy`** (+50). Both feature configs: clippy `--workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean. Release smoke `compute add 3 5 → 8` passes. |
+| **Files touched** | `relativist-core/Cargo.toml`, `relativist-core/src/lib.rs`, `relativist-core/src/protocol/{config,error,frame,mod,zero_copy_tests}.rs`, `relativist-core/src/config.rs`, `relativist-core/src/net/{core,types}.rs`, `relativist-core/src/partition/{types,compact}.rs`, `relativist-core/src/merge/types.rs`. |
+| **Resolved** | 2026-04-16 |
+| **Status** | SHIPPED — all 7 action steps from the original D-002 plan executed and verified; bundle entered Stage 4 REVIEW. |
 
 ---
 

@@ -179,6 +179,21 @@ pub struct CoordinatorArgs {
     #[arg(long, default_value_t = 30)]
     pub keepalive: u64,
 
+    /// LZ4 frame compression threshold in bytes (SPEC-18 R37, item 2.23 §3.3).
+    /// Frames whose uncompressed payload is shorter than this value are sent
+    /// raw. Use `0` to compress every frame; the maximum `usize` value (passed
+    /// as a very large literal) effectively disables compression.
+    #[arg(long, default_value_t = 1024)]
+    pub compression_threshold: usize,
+
+    /// Enable rkyv zero-copy archive on hot-path messages
+    /// (SPEC-18 §3.5 R36/R37, item 2.24). Defaults to `false`. Effective
+    /// only when the binary is built with `--features zero-copy`; in
+    /// default builds the flag is accepted (so configs are bit-identical
+    /// across feature builds) but no FLAG_ARCHIVED is emitted.
+    #[arg(long, default_value_t = false)]
+    pub use_zero_copy: bool,
+
     /// TLS certificate file (PEM), requires --tls-key (SPEC-10 R25).
     #[cfg(feature = "tls")]
     #[arg(long)]
@@ -234,6 +249,17 @@ pub struct WorkerArgs {
     /// TCP keepalive idle time in seconds; 0 to disable (SPEC-17 R30).
     #[arg(long, default_value_t = 30)]
     pub keepalive: u64,
+
+    /// LZ4 frame compression threshold in bytes (SPEC-18 R37, item 2.23 §3.3).
+    /// Frames whose uncompressed payload is shorter than this value are sent
+    /// raw. Use `0` to compress every frame.
+    #[arg(long, default_value_t = 1024)]
+    pub compression_threshold: usize,
+
+    /// Enable rkyv zero-copy archive on hot-path messages
+    /// (SPEC-18 §3.5 R36/R37, item 2.24). Defaults to `false`.
+    #[arg(long, default_value_t = false)]
+    pub use_zero_copy: bool,
 
     /// TLS CA certificate file (PEM) for verifying coordinator (SPEC-10 R26).
     #[cfg(feature = "tls")]
@@ -491,6 +517,7 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
+        ..GridConfig::default()
     }
 }
 
@@ -500,10 +527,12 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
+        ..GridConfig::default()
     }
 }
 
-/// Build TransportConfig from CLI transport flags (SPEC-17 R29-R32).
+/// Build TransportConfig from CLI transport flags (SPEC-17 R29-R32 + SPEC-18 R37 + SPEC-18 §3.5 R36/R37).
+#[allow(clippy::too_many_arguments)]
 fn build_transport_config(
     backend_str: &str,
     socket_path: Option<PathBuf>,
@@ -511,6 +540,8 @@ fn build_transport_config(
     send_buffer: usize,
     recv_buffer: usize,
     keepalive: u64,
+    compression_threshold: usize,
+    use_zero_copy: bool,
 ) -> Result<crate::protocol::config::TransportConfig, RelativistError> {
     use crate::protocol::config::{TransportBackend, TransportConfig};
 
@@ -550,6 +581,8 @@ fn build_transport_config(
         recv_buffer_bytes: Some(recv_buffer),
         keepalive_idle,
         unix_socket_path: socket_path,
+        compression_threshold,
+        use_zero_copy,
         ..TransportConfig::default()
     })
 }
@@ -568,6 +601,8 @@ pub fn build_node_config_coordinator(
         args.send_buffer,
         args.recv_buffer,
         args.keepalive,
+        args.compression_threshold,
+        args.use_zero_copy,
     )?;
     Ok(NodeConfig {
         bind,
@@ -606,6 +641,8 @@ pub fn build_node_config_worker(args: &WorkerArgs) -> Result<NodeConfig, Relativ
         args.send_buffer,
         args.recv_buffer,
         args.keepalive,
+        args.compression_threshold,
+        args.use_zero_copy,
     )?;
     Ok(NodeConfig {
         bind: addr,
@@ -968,6 +1005,8 @@ mod tests {
             send_buffer: 4_194_304,
             recv_buffer: 4_194_304,
             keepalive: 30,
+            compression_threshold: 1024,
+            use_zero_copy: false,
             #[cfg(feature = "tls")]
             tls_cert: None,
             #[cfg(feature = "tls")]
@@ -987,6 +1026,8 @@ mod tests {
             send_buffer: 4_194_304,
             recv_buffer: 4_194_304,
             keepalive: 30,
+            compression_threshold: 1024,
+            use_zero_copy: false,
             #[cfg(feature = "tls")]
             tls_ca: None,
         }
@@ -1207,5 +1248,222 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown transport"));
+    }
+
+    /// TASK-0346 R8: `--compression-threshold` flag threads through CLI →
+    /// CoordinatorArgs → TransportConfig (SPEC-18 R37).
+    #[test]
+    fn cli_compression_threshold_flag_threads_through_coordinator() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "4",
+            "--input",
+            "input.bin",
+            "--compression-threshold",
+            "2048",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coordinator(args) => {
+                assert_eq!(args.compression_threshold, 2048);
+                let cfg = build_node_config_coordinator(&args).unwrap();
+                assert_eq!(cfg.transport.compression_threshold, 2048);
+            }
+            _ => panic!("expected Coordinator"),
+        }
+    }
+
+    /// TASK-0346 R8 (worker side): same flag works on the worker subcommand.
+    #[test]
+    fn cli_compression_threshold_flag_threads_through_worker() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "worker",
+            "-c",
+            "127.0.0.1:9000",
+            "--compression-threshold",
+            "8192",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert_eq!(args.compression_threshold, 8192);
+                let cfg = build_node_config_worker(&args).unwrap();
+                assert_eq!(cfg.transport.compression_threshold, 8192);
+            }
+            _ => panic!("expected Worker"),
+        }
+    }
+
+    /// TASK-0346 R9 (CLI default): omitting the flag yields the 1024 default.
+    #[test]
+    fn cli_compression_threshold_default_is_1024() {
+        let args = make_coordinator_args(4, None);
+        assert_eq!(args.compression_threshold, 1024);
+        let cfg = build_node_config_coordinator(&args).unwrap();
+        assert_eq!(cfg.transport.compression_threshold, 1024);
+    }
+
+    // === SPEC-18 §3.3 — QA stage adversarial probes ===
+
+    /// QA probe #7 (CLI side): `--compression-threshold 0` parses without
+    /// error and propagates 0 all the way through to `TransportConfig`.
+    /// Pairs with `frame::tests::qa_probe_7_threshold_zero_compresses_minimal_message`,
+    /// which verifies the wire-level effect of that 0.
+    #[test]
+    fn qa_probe_7_cli_threshold_zero_threads_through_coordinator_and_worker() {
+        let coord_cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "-w",
+            "4",
+            "--input",
+            "input.bin",
+            "--compression-threshold",
+            "0",
+        ])
+        .unwrap();
+        match coord_cli.command {
+            Command::Coordinator(args) => {
+                assert_eq!(args.compression_threshold, 0);
+                let cfg = build_node_config_coordinator(&args).unwrap();
+                assert_eq!(cfg.transport.compression_threshold, 0);
+            }
+            _ => panic!("expected Coordinator"),
+        }
+
+        let worker_cli = Cli::try_parse_from([
+            "relativist",
+            "worker",
+            "-c",
+            "127.0.0.1:9000",
+            "--compression-threshold",
+            "0",
+        ])
+        .unwrap();
+        match worker_cli.command {
+            Command::Worker(args) => {
+                assert_eq!(args.compression_threshold, 0);
+                let cfg = build_node_config_worker(&args).unwrap();
+                assert_eq!(cfg.transport.compression_threshold, 0);
+            }
+            _ => panic!("expected Worker"),
+        }
+    }
+
+    /// QA probe #8 (CLI side): `--compression-threshold` accepts the
+    /// `usize::MAX` literal (`18446744073709551615` on 64-bit hosts) and
+    /// threads it through. Pairs with
+    /// `frame::tests::qa_probe_8_threshold_usize_max_skips_compression_on_large_message`.
+    #[test]
+    fn qa_probe_8_cli_threshold_usize_max_threads_through_coordinator_and_worker() {
+        // The literal must match `usize::MAX` on the target. On 32-bit
+        // hosts (which Relativist does not officially support) this would
+        // need a different literal; the assertion below makes the
+        // assumption explicit.
+        let max_literal = format!("{}", usize::MAX);
+
+        let coord_cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "-w",
+            "4",
+            "--input",
+            "input.bin",
+            "--compression-threshold",
+            &max_literal,
+        ])
+        .unwrap();
+        match coord_cli.command {
+            Command::Coordinator(args) => {
+                assert_eq!(args.compression_threshold, usize::MAX);
+                let cfg = build_node_config_coordinator(&args).unwrap();
+                assert_eq!(cfg.transport.compression_threshold, usize::MAX);
+            }
+            _ => panic!("expected Coordinator"),
+        }
+
+        let worker_cli = Cli::try_parse_from([
+            "relativist",
+            "worker",
+            "-c",
+            "127.0.0.1:9000",
+            "--compression-threshold",
+            &max_literal,
+        ])
+        .unwrap();
+        match worker_cli.command {
+            Command::Worker(args) => {
+                assert_eq!(args.compression_threshold, usize::MAX);
+                let cfg = build_node_config_worker(&args).unwrap();
+                assert_eq!(cfg.transport.compression_threshold, usize::MAX);
+            }
+            _ => panic!("expected Worker"),
+        }
+    }
+
+    // === TASK-0358: --use-zero-copy CLI flag (SPEC-18 §3.5 R36/R37) ===
+
+    /// UT-0358-CLI-01: omitting `--use-zero-copy` keeps the default `false`
+    /// on both subcommands (R20 / R37 — opt-in by design).
+    #[test]
+    fn cli_use_zero_copy_default_is_false_on_both_subcommands() {
+        let coord_args = make_coordinator_args(4, None);
+        assert!(!coord_args.use_zero_copy);
+        let coord_cfg = build_node_config_coordinator(&coord_args).unwrap();
+        assert!(!coord_cfg.transport.use_zero_copy);
+
+        let worker_args = make_worker_args("127.0.0.1:9000");
+        assert!(!worker_args.use_zero_copy);
+        let worker_cfg = build_node_config_worker(&worker_args).unwrap();
+        assert!(!worker_cfg.transport.use_zero_copy);
+    }
+
+    /// UT-0358-CLI-02: `--use-zero-copy` parses on the coordinator
+    /// subcommand and threads through to `TransportConfig.use_zero_copy`.
+    #[test]
+    fn cli_use_zero_copy_flag_threads_through_coordinator() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "4",
+            "--input",
+            "input.bin",
+            "--use-zero-copy",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coordinator(args) => {
+                assert!(args.use_zero_copy);
+                let cfg = build_node_config_coordinator(&args).unwrap();
+                assert!(cfg.transport.use_zero_copy);
+            }
+            _ => panic!("expected Coordinator"),
+        }
+    }
+
+    /// UT-0358-CLI-03: `--use-zero-copy` parses on the worker subcommand
+    /// and threads through.
+    #[test]
+    fn cli_use_zero_copy_flag_threads_through_worker() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "worker",
+            "-c",
+            "127.0.0.1:9000",
+            "--use-zero-copy",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Worker(args) => {
+                assert!(args.use_zero_copy);
+                let cfg = build_node_config_worker(&args).unwrap();
+                assert!(cfg.transport.use_zero_copy);
+            }
+            _ => panic!("expected Worker"),
+        }
     }
 }

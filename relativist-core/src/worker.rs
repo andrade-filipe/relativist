@@ -130,6 +130,10 @@ pub fn transition(ctx: &mut WorkerContext, event: WorkerEvent) -> Vec<WorkerActi
                         local_redexes: 0,             // filled by the runtime
                         reduce_duration_secs: 0.0,    // filled by the runtime
                         interactions_by_rule: [0; 6], // filled by the runtime
+                        // SPEC-19 R2: TASK-0349 wires the real value via
+                        // the async runtime path; this FSM stub stays at
+                        // false to keep the v1 contract bit-identical.
+                        has_border_activity: false,
                     },
                 },
             )));

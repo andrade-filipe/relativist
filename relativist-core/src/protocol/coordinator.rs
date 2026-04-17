@@ -21,8 +21,14 @@ use crate::security::AuthToken;
 // Phase 0: Accept workers (TASK-0088)
 // ---------------------------------------------------------------------------
 
-/// Current wire protocol version for Register handshake (SPEC-10 R36).
-pub const PROTOCOL_VERSION: u8 = 1;
+/// Current wire protocol version for Register handshake (SPEC-10 R36, SPEC-18 R28).
+///
+/// Bumped 1 → 2 by TASK-0347 to mark the atomic v2 wire break:
+/// bincode v2 + Compact PortRef + 9-byte frame header + LZ4. v1 workers
+/// must be rejected with a `RegisterNack` whose reason carries the
+/// canonical phrasing parsed by `worker::run_worker_inner` to surface
+/// `ProtocolError::VersionMismatch` (item 2.23 §3.6).
+pub const PROTOCOL_VERSION: u8 = 2;
 
 /// Accepts and authenticates workers (SPEC-06 R17, R24; SPEC-10 R14-R17).
 ///
@@ -53,14 +59,27 @@ pub async fn accept_workers(
 
             match msg {
                 Message::Register(payload) => {
-                    // Validate protocol version (SPEC-10 R36)
+                    // Validate protocol version (SPEC-10 R36, SPEC-18 R29).
+                    // The reason phrasing is contractual — `worker::run_worker_inner`
+                    // parses it to distinguish version mismatches from auth failures
+                    // and surface them as `ProtocolError::VersionMismatch`.
                     if payload.protocol_version != PROTOCOL_VERSION {
                         tracing::warn!(
                             version = payload.protocol_version,
-                            "Rejected: unsupported protocol version"
+                            "Rejected: protocol version mismatch"
                         );
+                        // Wire literal mandated by SPEC-18 R29:
+                        //   "protocol version mismatch: expected N, got M"
+                        // The local Rust field on `ProtocolError::VersionMismatch`
+                        // is named `received` (R35), and the Display impl renders
+                        // "received M" — those are intentionally distinct from the
+                        // on-wire word `got`. The worker's parser keys on `"got "`
+                        // (see `worker::parse_version_mismatch_nack`).
                         let nack = Message::RegisterNack(RegisterNackPayload {
-                            reason: "unsupported protocol version".into(),
+                            reason: format!(
+                                "protocol version mismatch: expected {}, got {}",
+                                PROTOCOL_VERSION, payload.protocol_version
+                            ),
                         });
                         let _ = send_frame(&mut stream, &nack).await;
                         continue;
@@ -544,6 +563,203 @@ mod tests {
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
     }
 
+    // === TASK-0347: PROTOCOL_VERSION bump 1 → 2 ===
+
+    // TASK-0347 R1: canary against accidental rollback during merge conflicts.
+    #[test]
+    fn protocol_version_is_two() {
+        assert_eq!(
+            PROTOCOL_VERSION, 2,
+            "v2 wire format requires PROTOCOL_VERSION = 2"
+        );
+    }
+
+    // TASK-0347 R2: coordinator rejects v1 worker with a RegisterNack whose
+    // reason carries the canonical phrase the worker keys on (SPEC-18 R29).
+    #[tokio::test]
+    async fn coordinator_rejects_v1_worker_with_register_nack() {
+        let (mut server, mut client) = ChannelTransport::pair(2, 65536);
+        let config = NodeConfig {
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_millis(500),
+            ..NodeConfig::default()
+        };
+
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, None, &mut server).await }
+        });
+
+        let mut w = client.connect().await.unwrap();
+        let v1_register = Message::Register(RegisterPayload {
+            protocol_version: 1, // <-- v1 client against v2 coordinator
+            auth_token: None,
+        });
+        send_frame(&mut w, &v1_register).await.unwrap();
+
+        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        let nack = match response {
+            Message::RegisterNack(p) => p,
+            other => panic!("expected RegisterNack, got {:?}", other),
+        };
+        assert!(
+            nack.reason.contains("protocol version mismatch"),
+            "reason missing version-mismatch phrase: {}",
+            nack.reason
+        );
+        assert!(
+            nack.reason.contains("expected 2"),
+            "expected version absent: {}",
+            nack.reason
+        );
+        assert!(
+            nack.reason.contains("got 1"),
+            "received version absent (R29 wire literal uses 'got'): {}",
+            nack.reason
+        );
+
+        // Coordinator continues waiting on a second slot → times out.
+        let result = accept_handle.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
+    }
+
+    // === SPEC-18 §3.6 — QA stage adversarial probes ===
+
+    /// QA probe #5: spec R28-R29 only call out v1-vs-v2; verify a
+    /// `protocol_version = 0` payload is rejected with the same canonical
+    /// nack so the worker-side parser still surfaces `VersionMismatch`.
+    /// (Guards against an asymmetric branch that would only fire for `1`.)
+    #[tokio::test]
+    async fn qa_probe_5_v0_register_rejected_with_canonical_nack() {
+        let (mut server, mut client) = ChannelTransport::pair(2, 65536);
+        let config = NodeConfig {
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_millis(500),
+            ..NodeConfig::default()
+        };
+
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, None, &mut server).await }
+        });
+
+        let mut w = client.connect().await.unwrap();
+        let v0_register = Message::Register(RegisterPayload {
+            protocol_version: 0,
+            auth_token: None,
+        });
+        send_frame(&mut w, &v0_register).await.unwrap();
+
+        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        let nack = match response {
+            Message::RegisterNack(p) => p,
+            other => panic!("expected RegisterNack for v0, got {:?}", other),
+        };
+        assert!(
+            nack.reason.contains("protocol version mismatch"),
+            "missing canonical phrase: {}",
+            nack.reason,
+        );
+        assert!(
+            nack.reason.contains("expected 2"),
+            "expected version absent: {}",
+            nack.reason,
+        );
+        assert!(
+            nack.reason.contains("got 0"),
+            "received version absent (R29 wire literal uses 'got'): {}",
+            nack.reason,
+        );
+
+        // Coordinator continues waiting on the slot → times out.
+        let result = accept_handle.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
+    }
+
+    /// QA probe #9: when a v1 worker arrives first and a v2 worker arrives
+    /// second, the v1 connection is nacked while the v2 one ACKs and fills
+    /// the only slot. Exercises the rejection-then-accept loop in
+    /// `accept_workers` without time-of-check race.
+    #[tokio::test]
+    async fn qa_probe_9_v1_then_v2_workers_v1_nacked_v2_acked() {
+        let (mut server, mut client) = ChannelTransport::pair(2, 65536);
+        let config = NodeConfig {
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_secs(5),
+            ..NodeConfig::default()
+        };
+
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, None, &mut server).await }
+        });
+
+        // First connector: v1 → must get a nack.
+        let mut v1 = client.connect().await.unwrap();
+        let v1_register = Message::Register(RegisterPayload {
+            protocol_version: 1,
+            auth_token: None,
+        });
+        send_frame(&mut v1, &v1_register).await.unwrap();
+        let (response, _) = recv_frame(&mut v1, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        assert!(
+            matches!(response, Message::RegisterNack(_)),
+            "v1 first must be nacked, got {:?}",
+            response,
+        );
+
+        // Second connector: v2 → must get an ack and consume the only slot.
+        let mut v2 = client.connect().await.unwrap();
+        send_register(&mut v2).await; // sends PROTOCOL_VERSION (== 2)
+        let id = expect_register_ack(&mut v2).await;
+        assert_eq!(id, 0, "v2 must take slot 0 after v1 was nacked");
+
+        let result = accept_handle.await.unwrap();
+        match result {
+            Ok(streams) => assert_eq!(streams.len(), 1, "v2 must occupy the only slot"),
+            Err(e) => panic!(
+                "coordinator must accept v2 after rejecting v1, got error {:?}",
+                e
+            ),
+        }
+    }
+
+    // TASK-0347 R7 smoke: a v2 coordinator + v2 worker handshake still ACKs.
+    // Guards against regressing the happy path while wiring the version check.
+    #[tokio::test]
+    async fn smoke_v2_coordinator_v2_worker_handshake_succeeds() {
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig {
+            num_workers: 1,
+            worker_connect_timeout: Duration::from_secs(5),
+            ..NodeConfig::default()
+        };
+
+        let accept_handle = tokio::spawn({
+            let config = config.clone();
+            async move { accept_workers(&config, None, &mut server).await }
+        });
+
+        let mut w = client.connect().await.unwrap();
+        send_register(&mut w).await; // sends PROTOCOL_VERSION (== 2)
+
+        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
+            .await
+            .unwrap();
+        assert!(
+            matches!(response, Message::RegisterAck(_)),
+            "v2/v2 handshake should ACK, got {:?}",
+            response
+        );
+        assert!(accept_handle.await.unwrap().is_ok());
+    }
+
     // T2d: accept_workers rejects missing token when auth required (ChannelTransport)
     #[tokio::test]
     async fn test_accept_workers_token_missing_rejected() {
@@ -700,6 +916,7 @@ mod tests {
                     local_redexes: 5,
                     reduce_duration_secs: 0.001,
                     interactions_by_rule: [1, 1, 1, 1, 1, 0],
+                    has_border_activity: false,
                 },
             };
             send_frame(*w, &msg).await.unwrap();
@@ -749,6 +966,7 @@ mod tests {
                 local_redexes: 0,
                 reduce_duration_secs: 0.0,
                 interactions_by_rule: [0; 6],
+                has_border_activity: false,
             },
         };
         send_frame(&mut c1, &msg).await.unwrap();
@@ -980,5 +1198,40 @@ mod tests {
 
         assert_eq!(result_net.count_live_agents(), 0);
         assert!(metrics.converged);
+    }
+
+    // UT-0351-09 (SPEC-19 §3.1 R7): wire-FSM untouched by the §3.1
+    // bundle. R7 forbids new `Message::*` variants in this file for
+    // bundle 2.34 — those belong to bundle 2.26 (Delta-Only Protocol).
+    // Verified by source-grep against a frozen forbidden-variant list.
+    //
+    // Limitation: brittle to refactors but cheap and load-bearing —
+    // it enforces a SCOPE DISCIPLINE, not a runtime property. If a
+    // future bundle legitimately introduces any of these variants the
+    // test moves with the spec change.
+    //
+    // The forbidden variant names are reconstructed from a prefix +
+    // suffix split at runtime so the literal `Message::<Variant>`
+    // substrings do NOT appear in this file (otherwise the
+    // `include_str!`-based grep would match itself).
+    #[test]
+    fn ut_0351_09_coordinator_wire_fsm_untouched_by_3_1_bundle() {
+        let src = include_str!("coordinator.rs");
+        let prefix = ["Mes", "sage::"].concat(); // "Message::"
+        let suffixes = [
+            "RoundStart",
+            "RoundResult",
+            "FinalStateRequest",
+            "FinalStateResult",
+            "InitialPartition",
+        ];
+        for suffix in suffixes {
+            let forbidden = format!("{prefix}{suffix}");
+            assert!(
+                !src.contains(&forbidden),
+                "SPEC-19 §3.1 bundle MUST NOT introduce {forbidden}; \
+                that belongs to §3.4 (item 2.26). R7 violation."
+            );
+        }
     }
 }

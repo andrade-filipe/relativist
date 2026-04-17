@@ -31,6 +31,10 @@ use crate::net::{port_index, Agent, AgentId, Net, PortRef, DISCONNECTED, PORTS_P
 /// densely connected agents cost no more than the dense encoding while the
 /// whole triple disappears for tombstoned slots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct CompactSubnet {
     /// Target length of `Net::agents` after inflation (equals the original
     /// `agents.len()`). Stored explicitly so round-trip preserves the arena
@@ -204,8 +208,8 @@ mod tests {
         net.connect(PortRef::AgentPort(c1, 2), PortRef::FreePort(42));
 
         let compact = CompactSubnet::from_net(&net);
-        let bytes = bincode::serialize(&compact).unwrap();
-        let restored: CompactSubnet = bincode::deserialize(&bytes).unwrap();
+        let bytes = crate::protocol::bincode_v2::encode(&compact).unwrap();
+        let restored: CompactSubnet = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
         let back = restored.into_net();
 
         assert!(nets_equivalent(&net, &back));
@@ -253,15 +257,65 @@ mod tests {
             net.remove_agent(id);
         }
 
-        let dense_bytes = bincode::serialize(&net).unwrap();
+        let dense_bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
         let compact = CompactSubnet::from_net(&net);
-        let compact_bytes = bincode::serialize(&compact).unwrap();
+        let compact_bytes = crate::protocol::bincode_v2::encode(&compact).unwrap();
 
         assert!(
             compact_bytes.len() * 3 < dense_bytes.len(),
             "compact ({}) should be <<< dense ({}) for sparse net",
             compact_bytes.len(),
             dense_bytes.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0353 — rkyv round-trip for CompactSubnet (SPEC-18 §3.5).
+    //
+    // CompactSubnet has no PartialEq derive — we compare via inflation
+    // back to a Net (which DOES implement PartialEq) plus the structural
+    // fields that survive the wire form (`agent_arena_len`, `next_id`,
+    // `root`, `redex_queue`, and the `live` count).
+    //
+    // CompactSubnet is the bincode v2 wire form of Partition.subnet but
+    // its rkyv derive is wired up so the type can be archived directly
+    // by anything that needs to (no production caller does today; the
+    // derive guards against future regressions and exercises the test
+    // cube fully).
+    // -----------------------------------------------------------------------
+
+    /// UT-0353-07: CompactSubnet round-trips via rkyv. Equality is checked
+    /// by inflating both sides back to Net (which implements PartialEq).
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn rkyv_round_trip_compact_subnet_minimal() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(42));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(u32::MAX));
+
+        let compact = CompactSubnet::from_net(&net);
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&compact).expect("serialize");
+        let archived =
+            rkyv::access::<rkyv::Archived<CompactSubnet>, rkyv::rancor::Error>(bytes.as_ref())
+                .expect("access");
+        let back: CompactSubnet =
+            rkyv::deserialize::<CompactSubnet, rkyv::rancor::Error>(archived).expect("deserialize");
+
+        assert_eq!(back.agent_arena_len, compact.agent_arena_len);
+        assert_eq!(back.next_id, compact.next_id);
+        assert_eq!(back.root, compact.root);
+        assert_eq!(back.redex_queue, compact.redex_queue);
+        assert_eq!(back.live.len(), compact.live.len());
+
+        // Inflated nets must compare equal via the shared PartialEq impl.
+        let original_inflated = compact.clone().into_net();
+        let round_inflated = back.into_net();
+        assert_eq!(
+            original_inflated, round_inflated,
+            "CompactSubnet -> rkyv -> CompactSubnet must inflate to an equal Net"
         );
     }
 }

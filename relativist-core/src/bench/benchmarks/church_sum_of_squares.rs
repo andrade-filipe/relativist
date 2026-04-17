@@ -98,6 +98,7 @@ mod tests {
             num_workers: 4,
             max_rounds: None,
             strict_bsp: false,
+            ..GridConfig::default()
         };
         let strategy = ContiguousIdStrategy;
         let (dist, _metrics) = run_grid(net, &config, &strategy);

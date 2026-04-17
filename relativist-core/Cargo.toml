@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # Serialization (SPEC-02 R24, SPEC-06 R11, SPEC-13 R11)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
+bincode = { version = "2", features = ["serde"] }
 
 # CLI (SPEC-07 R2, SPEC-13 R11)
 clap = { version = "4", features = ["derive"] }
@@ -36,6 +36,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-uti
 
 # Checksum (SPEC-06 R10)
 crc32fast = "1"
+
+# Frame compression (SPEC-18 R9-R13, item 2.23 §3.3)
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 
 # Async utilities (SPEC-06 R21 — concurrent partition sends)
 futures = "0.3"
@@ -71,6 +74,12 @@ axum = { version = "0.8", optional = true }
 opentelemetry = { version = "0.28", optional = true }
 opentelemetry_sdk = { version = "0.28", optional = true }
 
+# Zero-copy archive (SPEC-18 §3.5 R20-R27, item 2.24 — optional, opt-in)
+# `bytecheck` enables the safe `rkyv::access` validating API (R24 step 3 mandates it).
+# `alloc` enables `rkyv::util::AlignedVec` (R25 — 16-byte aligned receive buffer).
+# `std` is required for the validation infrastructure to work with std types.
+rkyv = { version = "0.8", optional = true, default-features = false, features = ["bytecheck", "alloc", "std"] }
+
 [dev-dependencies]
 # Property-based testing (PESQ-023 D6, SPEC-13 R13)
 proptest = "1"
@@ -90,6 +99,9 @@ tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
 metrics = ["dep:prometheus-client", "dep:axum"]
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
 full = ["tls", "metrics", "otel"]
+# SPEC-18 R20: `zero-copy` MUST NOT be a default feature; `full` MUST NOT include it.
+# Opt-in via `cargo build --features zero-copy`. See SPEC-18 §3.5 (item 2.24).
+zero-copy = ["dep:rkyv"]
 
 [[bench]]
 name = "benchmarks"

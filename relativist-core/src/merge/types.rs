@@ -77,6 +77,15 @@ pub struct GridMetrics {
 
     /// Per-worker statistics, per round (populated in distributed context).
     pub worker_stats_per_round: Vec<Vec<WorkerRoundStats>>,
+
+    /// SPEC-19 §3.1 R4 (TASK-0350): number of rounds in which the
+    /// merge phase was skipped because every worker reported
+    /// `has_border_activity == false`.
+    ///
+    /// Only the v2 coordinator-free path (TASK-0351, gated by
+    /// `GridConfig::coordinator_free_rounds`) increments this counter.
+    /// In v1 / default mode this remains `0` for the entire run.
+    pub coordinator_free_rounds: u32,
 }
 
 impl GridMetrics {
@@ -105,6 +114,10 @@ impl GridMetrics {
 /// Statistics of a single worker in a specific round.
 /// Canonical definition: SPEC-05 R37. Resolves SPEC-11 OQ-1.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct WorkerRoundStats {
     /// Identifier of the worker.
     pub worker_id: WorkerId,
@@ -119,6 +132,21 @@ pub struct WorkerRoundStats {
     /// Per-rule interaction counts:
     /// [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA].
     pub interactions_by_rule: [u64; 6],
+    /// SPEC-19 §3.1 R1, R2: `true` iff at least one entry of
+    /// `partition.free_port_index` points at a principal port
+    /// (`AgentPort(_, 0)`) after local reduction. Computed by
+    /// `merge::helpers::compute_border_activity`.
+    ///
+    /// IC concept: a "principal port" is the active interaction port.
+    /// When a local border endpoint is principal, a future merge could
+    /// produce a border redex if the remote side is also principal.
+    /// When **no** worker has a principal-port border endpoint, no
+    /// border redex can fire this round — the coordinator can safely
+    /// skip the merge-redistribute cycle (R3, R5 strong confluence).
+    ///
+    /// The field is part of the bincode v2 wire payload of
+    /// `Message::PartitionResult` (R7 — additive, no new variant).
+    pub has_border_activity: bool,
 }
 
 /// Configuration for the grid loop (SPEC-05, R25, R29, R30a).
@@ -149,6 +177,27 @@ pub struct GridConfig {
     /// Form is reached. The Fundamental Property G1 (SPEC-01) holds in both
     /// modes; only the round distribution changes.
     pub strict_bsp: bool,
+
+    /// SPEC-19 §3.1 R3, R4 (TASK-0350): opt-in for the coordinator-free
+    /// round (merge avoidance) optimization.
+    ///
+    /// When `false` (default — v1 behaviour), every BSP round runs the
+    /// full split → reduce → merge → resolve cycle.
+    ///
+    /// When `true`, after each local-reduction phase the coordinator
+    /// inspects the per-worker `has_border_activity` flags. If **every**
+    /// worker reports `false`, the merge phase is skipped for that round
+    /// and `GridMetrics::coordinator_free_rounds` is incremented (R4).
+    /// Termination still happens via Global Normal Form: when no worker
+    /// has local redexes AND no worker has border activity, the loop
+    /// exits with `converged = true`. The wire-format (R7) and FSM
+    /// remain untouched — only the coordinator schedules differently.
+    ///
+    /// IC concept: under T4 (strong confluence) the order of independent
+    /// reductions is irrelevant. If no border endpoint is principal, no
+    /// merge can produce a new redex this round, so the merge phase is
+    /// pure overhead and may safely be skipped.
+    pub coordinator_free_rounds: bool,
 }
 
 impl Default for GridConfig {
@@ -157,6 +206,8 @@ impl Default for GridConfig {
             num_workers: 1,
             max_rounds: None,
             strict_bsp: false,
+            // SPEC-19 §3.1 R4: opt-in only — defaults preserve v1 behaviour.
+            coordinator_free_rounds: false,
         }
     }
 }
@@ -190,6 +241,34 @@ mod tests {
         assert_eq!(m.total_time, Duration::ZERO);
         assert!(!m.converged);
         assert!(m.worker_stats_per_round.is_empty());
+        // TASK-0350 UT-02: new metric defaults to zero (v1 baseline).
+        assert_eq!(m.coordinator_free_rounds, 0);
+    }
+
+    // TASK-0350 UT-01: GridConfig::default() must keep v1 behaviour
+    // (coordinator_free_rounds disabled). Any change to this default
+    // would silently re-route every default run through the v2 skip
+    // path — guard against that here.
+    #[test]
+    fn grid_config_default_disables_coordinator_free_rounds() {
+        let cfg = GridConfig::default();
+        assert!(
+            !cfg.coordinator_free_rounds,
+            "default GridConfig must keep coordinator_free_rounds = false"
+        );
+    }
+
+    // TASK-0350 UT-03: the field is settable and round-tripped through
+    // a clone (sanity check for the public API).
+    #[test]
+    fn grid_config_coordinator_free_rounds_is_settable() {
+        let cfg = GridConfig {
+            coordinator_free_rounds: true,
+            ..GridConfig::default()
+        };
+        assert!(cfg.coordinator_free_rounds);
+        let cloned = cfg.clone();
+        assert!(cloned.coordinator_free_rounds);
     }
 
     // T2: GridMetrics fields are writable and accessible
@@ -227,6 +306,7 @@ mod tests {
             local_redexes: 25,
             reduce_duration_secs: 0.042,
             interactions_by_rule: [5, 3, 7, 2, 4, 4],
+            has_border_activity: false,
         };
         assert_eq!(stats.worker_id, 2);
         assert_eq!(stats.agents_before, 100);
@@ -234,9 +314,10 @@ mod tests {
         assert_eq!(stats.local_redexes, 25);
         assert!((stats.reduce_duration_secs - 0.042).abs() < f64::EPSILON);
         assert_eq!(stats.interactions_by_rule, [5, 3, 7, 2, 4, 4]);
+        assert!(!stats.has_border_activity);
     }
 
-    // T2: WorkerRoundStats serde round-trip
+    // T2: WorkerRoundStats serde round-trip (default polarity: false)
     #[test]
     fn test_worker_round_stats_serde() {
         let stats = WorkerRoundStats {
@@ -246,9 +327,11 @@ mod tests {
             local_redexes: 50,
             reduce_duration_secs: 1.5,
             interactions_by_rule: [10, 20, 5, 8, 3, 4],
+            has_border_activity: false,
         };
-        let bytes = bincode::serialize(&stats).unwrap();
-        let deserialized: WorkerRoundStats = bincode::deserialize(&bytes).unwrap();
+        let bytes = crate::protocol::bincode_v2::encode(&stats).unwrap();
+        let deserialized: WorkerRoundStats =
+            crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
         assert_eq!(deserialized.worker_id, stats.worker_id);
         assert_eq!(deserialized.agents_before, stats.agents_before);
         assert_eq!(deserialized.agents_after, stats.agents_after);
@@ -260,6 +343,7 @@ mod tests {
             deserialized.interactions_by_rule,
             stats.interactions_by_rule
         );
+        assert!(!deserialized.has_border_activity);
     }
 
     // T3: interactions_by_rule has exactly 6 elements
@@ -272,8 +356,37 @@ mod tests {
             local_redexes: 0,
             reduce_duration_secs: 0.0,
             interactions_by_rule: [0; 6],
+            has_border_activity: false,
         };
         assert_eq!(stats.interactions_by_rule.len(), 6);
+    }
+
+    // TASK-0348 UT-06: new field round-trips through bincode v2 with the
+    // "active" polarity (true). Serves as the wire-carrier regression for
+    // SPEC-19 R2 — the field rides inside Message::PartitionResult's
+    // bincode v2 payload (R7 additive, no new variant).
+    #[test]
+    fn worker_round_stats_serde_roundtrip_with_activity_true() {
+        let stats = WorkerRoundStats {
+            worker_id: 7,
+            agents_before: 12,
+            agents_after: 10,
+            local_redexes: 3,
+            reduce_duration_secs: 0.005,
+            interactions_by_rule: [1, 2, 3, 4, 5, 6],
+            has_border_activity: true,
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&stats).unwrap();
+        let decoded: WorkerRoundStats = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+        assert_eq!(decoded.worker_id, stats.worker_id);
+        assert_eq!(decoded.agents_before, stats.agents_before);
+        assert_eq!(decoded.agents_after, stats.agents_after);
+        assert_eq!(decoded.local_redexes, stats.local_redexes);
+        assert_eq!(decoded.interactions_by_rule, stats.interactions_by_rule);
+        assert!(
+            decoded.has_border_activity,
+            "round-tripped value must preserve has_border_activity = true"
+        );
     }
 
     // === GridConfig tests (TASK-0062) ===
@@ -372,5 +485,62 @@ mod tests {
             ..GridMetrics::default()
         };
         assert_eq!(m.network_overhead_fraction(), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0353 — rkyv round-trip for WorkerRoundStats (SPEC-18 §3.5).
+    //
+    // WorkerRoundStats lacks PartialEq (see SPEC-19 history — the f64
+    // `reduce_duration_secs` field is the obstacle), so we compare each
+    // field individually. The f64 is compared via `to_bits` for exact
+    // bitwise equality (rkyv's archived f64 is just a re-aligned native
+    // load on little-endian targets).
+    //
+    // This is the "stats" half of the wire payload that flows back from
+    // workers under the zero-copy path (SPEC-18 §4.4 — the
+    // `ArchivePartitionResultPayload` wrapper added by TASK-0356).
+    // -----------------------------------------------------------------------
+
+    /// UT-0353-08: WorkerRoundStats round-trips through rkyv with both
+    /// `has_border_activity` polarities and a non-trivial f64 duration.
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn rkyv_round_trip_worker_round_stats() {
+        for (worker_id, has_border_activity, duration_secs) in [
+            (0u32, false, 0.0_f64),
+            (7u32, true, 0.042_f64),
+            (u32::MAX, false, 1234.5678_f64),
+        ] {
+            let original = WorkerRoundStats {
+                worker_id,
+                agents_before: 100,
+                agents_after: 50,
+                local_redexes: 25,
+                reduce_duration_secs: duration_secs,
+                interactions_by_rule: [1, 2, 3, 4, 5, 6],
+                has_border_activity,
+            };
+
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&original).expect("serialize");
+            let archived = rkyv::access::<rkyv::Archived<WorkerRoundStats>, rkyv::rancor::Error>(
+                bytes.as_ref(),
+            )
+            .expect("access");
+            let back: WorkerRoundStats =
+                rkyv::deserialize::<WorkerRoundStats, rkyv::rancor::Error>(archived)
+                    .expect("deserialize");
+
+            assert_eq!(back.worker_id, original.worker_id);
+            assert_eq!(back.agents_before, original.agents_before);
+            assert_eq!(back.agents_after, original.agents_after);
+            assert_eq!(back.local_redexes, original.local_redexes);
+            assert_eq!(
+                back.reduce_duration_secs.to_bits(),
+                original.reduce_duration_secs.to_bits(),
+                "f64 duration must round-trip bit-exact"
+            );
+            assert_eq!(back.interactions_by_rule, original.interactions_by_rule);
+            assert_eq!(back.has_border_activity, original.has_border_activity);
+        }
     }
 }

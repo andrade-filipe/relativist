@@ -12,9 +12,33 @@ use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
 use super::transport::{Transport, TransportStream};
 use super::types::{Message, RegisterPayload};
+use crate::merge::helpers::compute_border_activity;
 use crate::merge::{rebuild_free_port_index, WorkerRoundStats};
 use crate::reduction::reduce_all;
 use crate::security::AuthToken;
+
+/// Parses a `RegisterNack` reason string for the canonical
+/// "protocol version mismatch: expected N, got M" phrasing emitted by
+/// `coordinator::accept_workers` (SPEC-18 R29). Returns `Some(received)`
+/// when the phrase is present and the received-version field can be
+/// parsed as a `u8`; `None` otherwise. Callers fall back to `AuthFailed`
+/// on `None` to preserve the SPEC-10 contract for non-version nacks.
+///
+/// Note: the wire word is `"got"` (R29 literal) but the variable name
+/// `received` matches `ProtocolError::VersionMismatch { received }`
+/// (R35). The two intentionally use different terms — the wire string is
+/// the spec-mandated literal, the field name is the local Rust name.
+fn parse_version_mismatch_nack(reason: &str) -> Option<u8> {
+    if !reason.contains("protocol version mismatch") {
+        return None;
+    }
+    let got_idx = reason.find("got ")?;
+    let tail = &reason[got_idx + "got ".len()..];
+    let end = tail
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(tail.len());
+    tail[..end].parse::<u8>().ok()
+}
 
 /// Maximum number of connection attempts before giving up (single-shot mode).
 const MAX_ATTEMPTS: u32 = 10;
@@ -163,6 +187,17 @@ async fn run_worker_inner(
         }
         Message::RegisterNack(nack) => {
             tracing::error!("Registration rejected: {}", nack.reason);
+            // SPEC-18 R30: a coordinator-issued nack carrying the canonical
+            // "protocol version mismatch" phrase must surface as
+            // `VersionMismatch` so daemon-mode workers fail fast (no point
+            // retrying against an incompatible peer). Other nacks remain
+            // `AuthFailed` for backwards compatibility with SPEC-10.
+            if let Some(received) = parse_version_mismatch_nack(&nack.reason) {
+                return Err(ProtocolError::VersionMismatch {
+                    expected: PROTOCOL_VERSION,
+                    received,
+                });
+            }
             return Err(ProtocolError::AuthFailed);
         }
         other => {
@@ -194,14 +229,23 @@ async fn run_worker_inner(
                 let reduce_duration = t_reduce.elapsed();
                 let agents_after = partition.subnet.count_live_agents();
 
-                // Reconstruct free_port_index (SPEC-05, Section 4.3)
+                // Reconstruct free_port_index (SPEC-05, Section 4.3).
+                // SPEC-19 R1 ordering: rebuild_free_port_index MUST run
+                // before compute_border_activity below — the activity
+                // flag reflects the post-reduction, post-rebuild state.
                 partition.free_port_index = rebuild_free_port_index(
                     &partition.subnet,
                     partition.border_id_start,
                     partition.border_id_end,
                 );
 
-                // Send result with full 6-field WorkerRoundStats
+                // SPEC-19 R2: report whether any local border endpoint is
+                // a principal port. The coordinator uses this (TASK-0351,
+                // out of scope for this wire path until Delta-Only
+                // Protocol ships) to skip merge when every worker reports
+                // false. Computed AFTER rebuild_free_port_index (R1).
+                let has_border_activity = compute_border_activity(&partition);
+
                 let stats = WorkerRoundStats {
                     worker_id: partition.worker_id,
                     agents_before,
@@ -209,6 +253,7 @@ async fn run_worker_inner(
                     local_redexes: reduction_stats.total_interactions as usize,
                     reduce_duration_secs: reduce_duration.as_secs_f64(),
                     interactions_by_rule: reduction_stats.interactions_by_rule,
+                    has_border_activity,
                 };
 
                 tracing::info!(
@@ -445,6 +490,7 @@ mod tests {
                 local_redexes: 0,
                 reduce_duration_secs: 0.0,
                 interactions_by_rule: [0; 6],
+                has_border_activity: false,
             },
         };
         send_frame(&mut stream, &bad_msg).await.unwrap();
@@ -454,6 +500,122 @@ mod tests {
             result,
             Err(ProtocolError::UnexpectedMessage { .. })
         ));
+    }
+
+    // TASK-0347 R3: worker receives a version-mismatch RegisterNack and
+    // surfaces ProtocolError::VersionMismatch (NOT AuthFailed). This lets
+    // daemon-mode workers fail fast against an incompatible peer.
+    #[tokio::test]
+    async fn worker_terminates_on_version_mismatch_nack() {
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig::default();
+
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
+        let mut stream = server.accept().await.unwrap();
+
+        // Drain the worker's Register, then reply with the canonical NACK
+        // (matches the format coordinator::accept_workers emits).
+        let max = NodeConfig::default().max_payload_size;
+        let (msg, _) = recv_frame(&mut stream, max).await.unwrap();
+        assert!(matches!(msg, Message::Register(_)));
+
+        let nack = Message::RegisterNack(RegisterNackPayload {
+            reason: "protocol version mismatch: expected 2, got 1".into(),
+        });
+        send_frame(&mut stream, &nack).await.unwrap();
+
+        let result = worker_handle.await.unwrap();
+        match result {
+            Err(ProtocolError::VersionMismatch { expected, received }) => {
+                assert_eq!(expected, PROTOCOL_VERSION);
+                assert_eq!(received, 1);
+            }
+            other => panic!(
+                "worker did not terminate with VersionMismatch, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // TASK-0347 R3 (negative case): non-version nacks must still surface as
+    // AuthFailed so SPEC-10's tier-2/3 contract is preserved.
+    #[tokio::test]
+    async fn worker_returns_auth_failed_for_non_version_nack() {
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig::default();
+
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
+        let mut stream = server.accept().await.unwrap();
+
+        let max = NodeConfig::default().max_payload_size;
+        let (msg, _) = recv_frame(&mut stream, max).await.unwrap();
+        assert!(matches!(msg, Message::Register(_)));
+
+        let nack = Message::RegisterNack(RegisterNackPayload {
+            reason: "authentication failed".into(),
+        });
+        send_frame(&mut stream, &nack).await.unwrap();
+
+        let result = worker_handle.await.unwrap();
+        assert!(matches!(result, Err(ProtocolError::AuthFailed)));
+    }
+
+    // TASK-0347 R3 unit: version-mismatch parser handles the canonical phrase
+    // and rejects non-matching reasons. Pure helper, no async.
+    #[test]
+    fn parse_version_mismatch_nack_recognises_canonical_phrase() {
+        assert_eq!(
+            super::parse_version_mismatch_nack("protocol version mismatch: expected 2, got 1"),
+            Some(1)
+        );
+        assert_eq!(
+            super::parse_version_mismatch_nack("protocol version mismatch: expected 2, got 17"),
+            Some(17)
+        );
+        assert_eq!(
+            super::parse_version_mismatch_nack("authentication failed"),
+            None
+        );
+        // Phrase present but received-version unparseable → None.
+        assert_eq!(
+            super::parse_version_mismatch_nack("protocol version mismatch: garbage"),
+            None
+        );
+    }
+
+    // === SPEC-18 §3.6 — QA stage adversarial probe ===
+
+    /// QA probe #6: a stray `RegisterNack` arriving mid-stream (after a
+    /// successful handshake, while the worker is awaiting `AssignPartition`
+    /// or `Shutdown`) must surface as `UnexpectedMessage`. Guards against
+    /// the worker silently treating a late nack as a fatal auth failure
+    /// and against any panic on an unmatched arm.
+    #[tokio::test]
+    async fn qa_probe_6_stray_nack_mid_stream_surfaces_unexpected_message() {
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let config = NodeConfig::default();
+
+        let worker_handle =
+            tokio::spawn(async move { run_worker(&config, None, &mut client).await });
+        let mut stream = server.accept().await.unwrap();
+
+        // Successful handshake — worker now in main loop expecting Assign/Shutdown.
+        coordinator_handshake(&mut stream, 0).await;
+
+        // Stray nack mid-stream.
+        let nack = Message::RegisterNack(RegisterNackPayload {
+            reason: "stray nack mid-stream".into(),
+        });
+        send_frame(&mut stream, &nack).await.unwrap();
+
+        let result = worker_handle.await.unwrap();
+        assert!(
+            matches!(result, Err(ProtocolError::UnexpectedMessage { .. })),
+            "stray nack must surface as UnexpectedMessage, got {:?}",
+            result,
+        );
     }
 
     // T6: run_worker receives RegisterNack and returns AuthFailed (ChannelTransport)

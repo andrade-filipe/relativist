@@ -31,6 +31,10 @@ pub type PortId = u8;
 /// any interaction net system can be encoded using only Con, Dup, and Era
 /// (Lafont 1997, Theorem 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[repr(u8)]
 pub enum Symbol {
     /// γ (gamma) — Constructor. Arity 2 (principal + 2 auxiliary ports).
@@ -56,7 +60,11 @@ pub enum Symbol {
 ///
 /// Both are structurally identical at the type level; the distinction is
 /// semantic and resolved by context (the border map in SPEC-04/SPEC-05).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PortRef {
     /// Port of an agent: `(agent_id, port_id)`.
     /// Port 0 = principal, 1 = left auxiliary, 2 = right auxiliary.
@@ -65,6 +73,113 @@ pub enum PortRef {
     /// Used for Lafont interface ports and boundary sentinels during partitioning.
     /// `FreePort(u32::MAX)` is reserved as the `DISCONNECTED` sentinel (see TASK-0007).
     FreePort(u32),
+}
+
+// PortRef serde encoding (SPEC-18 §3.2 / §4.3 — TASK-0344).
+//
+// PortRef is the most-frequent value on the wire (every port slot in every
+// partition). The default bincode v2 enum encoding is `varint(discriminant)
+// + payload`, which costs 6 bytes for the DISCONNECTED sentinel
+// (`FreePort(u32::MAX)`) — the single hottest path in any partition.
+//
+// We override Serialize/Deserialize with a manual tagged-bytes encoding:
+//
+//   0xFF                    -> DISCONNECTED (1 byte)
+//   0x00 + varint(id) + pid -> AgentPort(id, pid)  (3-7 bytes)
+//   0x01 + varint(border)   -> FreePort(border)    (2-6 bytes; border != u32::MAX)
+//
+// The trick: bincode v2's `serialize_tuple(N)` does NOT prefix the byte
+// stream with N — it just expects N elements to follow. So we model each
+// PortRef variant as a tuple whose element count matches the wire shape.
+// Deserialization peeks the tag byte and reads only the trailing elements
+// the variant actually uses.
+//
+// NOTE: this encoding is wire-only. PortRef under serde_json now produces
+// a JSON array of bytes, not a tagged map. No production code path uses
+// JSON for PortRef (verified during TASK-0344).
+
+impl serde::Serialize for PortRef {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        match *self {
+            PortRef::FreePort(bid) if bid == u32::MAX => {
+                // DISCONNECTED — single tag byte, exactly 1 wire byte.
+                let mut t = ser.serialize_tuple(1)?;
+                t.serialize_element(&PORTREF_TAG_DISCONNECTED)?;
+                t.end()
+            }
+            PortRef::AgentPort(id, pid) => {
+                // tag (u8) + id (varint u32) + pid (u8) = 3 elements
+                let mut t = ser.serialize_tuple(3)?;
+                t.serialize_element(&PORTREF_TAG_AGENT_PORT)?;
+                t.serialize_element(&id)?;
+                t.serialize_element(&pid)?;
+                t.end()
+            }
+            PortRef::FreePort(bid) => {
+                // tag (u8) + bid (varint u32) = 2 elements
+                let mut t = ser.serialize_tuple(2)?;
+                t.serialize_element(&PORTREF_TAG_FREE_PORT)?;
+                t.serialize_element(&bid)?;
+                t.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PortRef {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        // We request the maximum element count (3 for AgentPort) and let the
+        // visitor consume only what the discovered tag requires. Bincode v2
+        // does not pre-read the elements — `next_element` pulls bytes lazily.
+        de.deserialize_tuple(3, PortRefVisitor)
+    }
+}
+
+/// Tag byte for the `DISCONNECTED` (`FreePort(u32::MAX)`) sentinel.
+pub const PORTREF_TAG_DISCONNECTED: u8 = 0xFF;
+/// Tag byte for the `AgentPort(id, pid)` variant.
+pub const PORTREF_TAG_AGENT_PORT: u8 = 0x00;
+/// Tag byte for the `FreePort(bid)` variant where `bid != u32::MAX`.
+pub const PORTREF_TAG_FREE_PORT: u8 = 0x01;
+
+struct PortRefVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PortRefVisitor {
+    type Value = PortRef;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "compact PortRef wire bytes (SPEC-18 §4.3)")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<PortRef, A::Error> {
+        use serde::de::Error as _;
+        let tag: u8 = seq
+            .next_element()?
+            .ok_or_else(|| A::Error::custom("PortRef: missing tag byte"))?;
+        match tag {
+            PORTREF_TAG_DISCONNECTED => Ok(PortRef::FreePort(u32::MAX)),
+            PORTREF_TAG_AGENT_PORT => {
+                let id: AgentId = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("PortRef::AgentPort: missing id"))?;
+                let pid: PortId = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("PortRef::AgentPort: missing pid"))?;
+                Ok(PortRef::AgentPort(id, pid))
+            }
+            PORTREF_TAG_FREE_PORT => {
+                let bid: u32 = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::custom("PortRef::FreePort: missing border id"))?;
+                Ok(PortRef::FreePort(bid))
+            }
+            other => Err(A::Error::custom(format!(
+                "PortRef: unknown tag byte 0x{:02X}",
+                other
+            ))),
+        }
+    }
 }
 
 /// An agent (node) in the interaction net.
@@ -77,6 +192,10 @@ pub enum PortRef {
 /// This separation simplifies removal: marking a slot as `None` in the
 /// agent arena is O(1), without updating a complex adjacency structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct Agent {
     /// The symbol determines arity and interaction rules.
     pub symbol: Symbol,
@@ -207,8 +326,8 @@ mod tests {
     #[test]
     fn test_symbol_serde_roundtrip() {
         for sym in [Symbol::Con, Symbol::Dup, Symbol::Era] {
-            let bytes = bincode::serialize(&sym).unwrap();
-            let deserialized: Symbol = bincode::deserialize(&bytes).unwrap();
+            let bytes = crate::protocol::bincode_v2::encode(&sym).unwrap();
+            let deserialized: Symbol = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
             assert_eq!(sym, deserialized);
         }
     }
@@ -332,8 +451,8 @@ mod tests {
     #[test]
     fn test_portref_serde_roundtrip() {
         for pr in [PortRef::AgentPort(100, 0), PortRef::FreePort(55)] {
-            let bytes = bincode::serialize(&pr).unwrap();
-            let des: PortRef = bincode::deserialize(&bytes).unwrap();
+            let bytes = crate::protocol::bincode_v2::encode(&pr).unwrap();
+            let des: PortRef = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
             assert_eq!(pr, des);
         }
     }
@@ -359,6 +478,87 @@ mod tests {
     fn test_portref_freeport_max() {
         let p = PortRef::FreePort(u32::MAX);
         assert_eq!(p, PortRef::FreePort(u32::MAX));
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0344 — compact PortRef wire encoding (SPEC-18 §3.2 / §4.3)
+    // -----------------------------------------------------------------------
+
+    // R1: round-trip identity for every variant in the SPEC-18 §7.1 T2 list.
+    #[test]
+    fn test_portref_compact_round_trip_t2_set() {
+        let cases = [
+            PortRef::AgentPort(0, 0),
+            PortRef::AgentPort(16383, 2),
+            PortRef::AgentPort(16384, 1),
+            PortRef::AgentPort(u32::MAX - 1, 2),
+            PortRef::FreePort(0),
+            PortRef::FreePort(1000),
+            PortRef::FreePort(u32::MAX), // DISCONNECTED sentinel
+        ];
+        for p in cases {
+            let bytes = crate::protocol::bincode_v2::encode(&p).unwrap();
+            let (back, n): (PortRef, usize) = crate::protocol::bincode_v2::decode(&bytes).unwrap();
+            assert_eq!(n, bytes.len(), "{:?}: bytes not fully consumed", p);
+            assert_eq!(back, p, "{:?}: round-trip mismatch", p);
+        }
+    }
+
+    // R2: DISCONNECTED collapses to exactly 1 wire byte (R8 hot path).
+    #[test]
+    fn test_portref_compact_disconnected_is_one_byte() {
+        let bytes = crate::protocol::bincode_v2::encode(&PortRef::FreePort(u32::MAX)).unwrap();
+        assert_eq!(bytes.len(), 1, "DISCONNECTED must collapse to 1 byte");
+        assert_eq!(bytes[0], PORTREF_TAG_DISCONNECTED);
+    }
+
+    // R3: small AgentPort fits in <= 4 bytes.
+    #[test]
+    fn test_portref_compact_small_agent_port_le_four_bytes() {
+        let bytes = crate::protocol::bincode_v2::encode(&PortRef::AgentPort(100, 0)).unwrap();
+        assert!(
+            bytes.len() <= 4,
+            "AgentPort(100, 0) compact encoding was {} bytes (expected <= 4)",
+            bytes.len(),
+        );
+    }
+
+    // R4: AgentPort(0, 0) is exactly 3 bytes (tag + varint(0) + pid).
+    #[test]
+    fn test_portref_compact_zero_agent_port_is_three_bytes() {
+        let bytes = crate::protocol::bincode_v2::encode(&PortRef::AgentPort(0, 0)).unwrap();
+        assert_eq!(bytes.len(), 3, "AgentPort(0,0) tag+varint+pid = 3 bytes");
+        assert_eq!(bytes[0], PORTREF_TAG_AGENT_PORT, "tag for AgentPort");
+    }
+
+    // R5: malformed payload — unknown tag is rejected.
+    #[test]
+    fn test_portref_compact_unknown_tag_is_error() {
+        let res: Result<(PortRef, usize), _> =
+            crate::protocol::bincode_v2::decode(&[0x42, 0x00, 0x00]);
+        assert!(res.is_err(), "tag 0x42 must be rejected");
+    }
+
+    // R6: malformed payload — truncated stream is rejected.
+    // 0x00 tag = AgentPort, but no following bytes for id/pid.
+    #[test]
+    fn test_portref_compact_truncated_payload_is_error() {
+        let res: Result<(PortRef, usize), _> = crate::protocol::bincode_v2::decode(&[0x00]);
+        assert!(
+            res.is_err(),
+            "AgentPort tag without id/pid must produce a serde error"
+        );
+    }
+
+    // R7: composition with `CompactSubnet` — round-trip a Partition that
+    // contains every PortRef variant inside a Net.
+    // (Lives in `partition::compact` tests; this is a sanity-only smoke.)
+    #[test]
+    fn test_portref_compact_freeport_zero_two_bytes() {
+        let bytes = crate::protocol::bincode_v2::encode(&PortRef::FreePort(0)).unwrap();
+        // tag(1) + varint(0)(1) = 2 bytes
+        assert_eq!(bytes.len(), 2, "FreePort(0) = tag + varint(0) = 2 bytes");
+        assert_eq!(bytes[0], PORTREF_TAG_FREE_PORT);
     }
 
     // --- Agent tests (TASK-0005) ---
@@ -434,8 +634,8 @@ mod tests {
             symbol: Symbol::Con,
             id: 100,
         };
-        let bytes = bincode::serialize(&a).unwrap();
-        let des: Agent = bincode::deserialize(&bytes).unwrap();
+        let bytes = crate::protocol::bincode_v2::encode(&a).unwrap();
+        let des: Agent = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
         assert_eq!(a, des);
     }
 
@@ -532,5 +732,82 @@ mod tests {
     fn test_disconnected_not_agent_port() {
         assert_ne!(DISCONNECTED, PortRef::AgentPort(0, 0));
         assert_ne!(DISCONNECTED, PortRef::AgentPort(u32::MAX, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0353 — rkyv round-trip tests for hot-path types (SPEC-18 §3.5).
+    //
+    // The `zero-copy` feature derives `rkyv::{Archive, Serialize, Deserialize}`
+    // on Symbol, PortRef, Agent (this file), Net, IdRange, Partition,
+    // CompactSubnet, and WorkerRoundStats. These tests confirm each type
+    // round-trips byte-for-byte through `rkyv::to_bytes` -> `access`
+    // -> `deserialize` (the validating API mandated by R24 step 3).
+    //
+    // The bincode v2 path MUST remain unaffected by the rkyv derives —
+    // see `serde_bincode_v2_path_unaffected_by_rkyv_derives` in
+    // `protocol::frame` for the cross-build coexistence guarantee.
+    // -----------------------------------------------------------------------
+
+    /// UT-0353-01: Symbol round-trips for every variant.
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn rkyv_round_trip_symbol_exhaustive() {
+        for sym in [Symbol::Con, Symbol::Dup, Symbol::Era] {
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&sym).expect("serialize");
+            let archived =
+                rkyv::access::<rkyv::Archived<Symbol>, rkyv::rancor::Error>(bytes.as_ref())
+                    .expect("access");
+            let back: Symbol =
+                rkyv::deserialize::<Symbol, rkyv::rancor::Error>(archived).expect("deserialize");
+            assert_eq!(sym, back, "Symbol::{:?} did not round-trip", sym);
+        }
+    }
+
+    /// UT-0353-02: Agent round-trips with each Symbol value.
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn rkyv_round_trip_agent_each_symbol() {
+        for (sym, id) in [
+            (Symbol::Con, 0u32),
+            (Symbol::Dup, 1_234u32),
+            (Symbol::Era, u32::MAX),
+        ] {
+            let agent = Agent { symbol: sym, id };
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&agent).expect("serialize");
+            let archived =
+                rkyv::access::<rkyv::Archived<Agent>, rkyv::rancor::Error>(bytes.as_ref())
+                    .expect("access");
+            let back: Agent =
+                rkyv::deserialize::<Agent, rkyv::rancor::Error>(archived).expect("deserialize");
+            assert_eq!(
+                agent, back,
+                "Agent {{ {:?}, {} }} did not round-trip",
+                sym, id
+            );
+        }
+    }
+
+    /// UT-0353-03: PortRef round-trips both variants and the DISCONNECTED
+    /// sentinel (which is `FreePort(u32::MAX)`).
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn rkyv_round_trip_portref_all_variants() {
+        let cases = [
+            PortRef::AgentPort(0, 0),
+            PortRef::AgentPort(42, 1),
+            PortRef::AgentPort(u32::MAX - 1, 2),
+            PortRef::FreePort(0),
+            PortRef::FreePort(1_000),
+            PortRef::FreePort(u32::MAX), // DISCONNECTED sentinel
+        ];
+        for p in cases {
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&p).expect("serialize");
+            let archived =
+                rkyv::access::<rkyv::Archived<PortRef>, rkyv::rancor::Error>(bytes.as_ref())
+                    .expect("access");
+            let back: PortRef =
+                rkyv::deserialize::<PortRef, rkyv::rancor::Error>(archived).expect("deserialize");
+            assert_eq!(p, back, "PortRef {:?} did not round-trip", p);
+        }
     }
 }

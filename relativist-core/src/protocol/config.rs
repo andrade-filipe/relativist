@@ -65,6 +65,29 @@ pub struct TransportConfig {
     /// Socket path for Unix domain sockets.
     /// Only used when backend is `Unix`.
     pub unix_socket_path: Option<PathBuf>,
+
+    /// Minimum payload size (in bytes) before LZ4 frame compression
+    /// kicks in (SPEC-18 R9 + R37, item 2.23 §3.3). Frames whose
+    /// uncompressed payload is shorter than this threshold are sent
+    /// raw. `usize::MAX` disables compression entirely; `0` always
+    /// compresses (useful for tests). Default: 1024.
+    pub compression_threshold: usize,
+
+    /// Enable the rkyv zero-copy archive path on hot-path messages
+    /// (`AssignPartition`, `PartitionResult`) per SPEC-18 §3.5 R36/R37
+    /// (item 2.24). Default: `false`.
+    ///
+    /// The field is unconditional (the type compiles with and without
+    /// the `zero-copy` cargo feature) so that test fixtures and CLI
+    /// configs are bit-identical across feature builds. The runtime
+    /// effect of the flag is gated separately:
+    /// - When `feature = "zero-copy"` is enabled AND `use_zero_copy ==
+    ///   true`, the coordinator/worker call `send_frame_v2` and
+    ///   eligible hot-path messages are emitted with `FLAG_ARCHIVED`.
+    /// - When the feature is disabled, the flag is honored at the
+    ///   config layer but the send path falls back to bincode v2
+    ///   transparently (no FLAG_ARCHIVED is ever emitted).
+    pub use_zero_copy: bool,
 }
 
 impl Default for TransportConfig {
@@ -78,6 +101,8 @@ impl Default for TransportConfig {
             keepalive_interval: Duration::from_secs(10),
             keepalive_count: 3,
             unix_socket_path: None,
+            compression_threshold: 1024,
+            use_zero_copy: false,
         }
     }
 }
@@ -259,5 +284,62 @@ mod tests {
         let cloned = config.clone();
         assert_eq!(cloned.backend, TransportBackend::Tcp);
         assert!(cloned.tcp_nodelay);
+    }
+
+    // --- TASK-0358: --use-zero-copy CLI flag + TransportConfig.use_zero_copy ---
+
+    /// UT-0358-01: `TransportConfig::default()` returns `use_zero_copy ==
+    /// false` (R20: zero-copy is opt-in even when the feature is on).
+    #[test]
+    fn use_zero_copy_default_is_false() {
+        let config = TransportConfig::default();
+        assert!(
+            !config.use_zero_copy,
+            "use_zero_copy must default to false (R20 / R37)"
+        );
+    }
+
+    /// UT-0358-02: the field is settable via struct-update syntax.
+    #[test]
+    fn use_zero_copy_is_settable() {
+        let config = TransportConfig {
+            use_zero_copy: true,
+            ..TransportConfig::default()
+        };
+        assert!(config.use_zero_copy);
+    }
+
+    /// UT-0358-03: Debug formatting includes the field.
+    #[test]
+    fn use_zero_copy_appears_in_debug() {
+        let config = TransportConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(
+            debug.contains("use_zero_copy"),
+            "TransportConfig Debug must include use_zero_copy field, got: {}",
+            debug
+        );
+    }
+
+    /// UT-0358-04: Clone preserves the field.
+    #[test]
+    fn use_zero_copy_cloned_preserves_value() {
+        let config = TransportConfig {
+            use_zero_copy: true,
+            ..TransportConfig::default()
+        };
+        let cloned = config.clone();
+        assert!(cloned.use_zero_copy);
+    }
+
+    /// UT-0358-05: NodeConfig.transport.use_zero_copy is settable through
+    /// the embedded TransportConfig (CLI build path target).
+    #[test]
+    fn node_config_use_zero_copy_default_chain() {
+        let node = NodeConfig::default();
+        assert!(
+            !node.transport.use_zero_copy,
+            "NodeConfig defaults must keep use_zero_copy = false"
+        );
     }
 }

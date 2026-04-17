@@ -108,6 +108,7 @@ mod tests {
     use super::*;
     use crate::net::{Net, PortRef, Symbol};
     use crate::partition::IdRange;
+    use crate::protocol::bincode_v2;
     use std::collections::HashMap;
 
     fn make_test_partition() -> Partition {
@@ -132,6 +133,7 @@ mod tests {
             local_redexes: 5,
             reduce_duration_secs: 0.001,
             interactions_by_rule: [1, 1, 1, 1, 1, 0],
+            has_border_activity: false,
         }
     }
 
@@ -165,8 +167,8 @@ mod tests {
         ];
 
         for msg in &variants {
-            let bytes = bincode::serialize(msg).unwrap();
-            let restored: Message = bincode::deserialize(&bytes).unwrap();
+            let bytes = bincode_v2::encode(msg).unwrap();
+            let restored: Message = bincode_v2::decode_value(&bytes).unwrap();
             // Can't use PartialEq (Net doesn't derive it for this use),
             // but assert it doesn't panic.
             let _ = format!("{:?}", restored);
@@ -176,8 +178,9 @@ mod tests {
     // T2: Shutdown variant is small (just an enum discriminant)
     #[test]
     fn test_shutdown_size() {
-        let bytes = bincode::serialize(&Message::Shutdown).unwrap();
-        // bincode v1 uses u32 for enum discriminant = 4 bytes
+        let bytes = bincode_v2::encode(&Message::Shutdown).unwrap();
+        // bincode v2 (varint) encodes the Shutdown discriminant in 1 byte.
+        // Allow up to 8 to remain robust against discriminant reordering.
         assert!(bytes.len() <= 8);
     }
 
@@ -249,8 +252,8 @@ mod tests {
             protocol_version: 1,
             auth_token: Some(token),
         });
-        let bytes = bincode::serialize(&msg).unwrap();
-        let restored: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode_v2::encode(&msg).unwrap();
+        let restored: Message = bincode_v2::decode_value(&bytes).unwrap();
         match restored {
             Message::Register(payload) => {
                 assert_eq!(payload.protocol_version, 1);
@@ -267,8 +270,8 @@ mod tests {
             protocol_version: 1,
             auth_token: None,
         });
-        let bytes = bincode::serialize(&msg).unwrap();
-        let restored: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode_v2::encode(&msg).unwrap();
+        let restored: Message = bincode_v2::decode_value(&bytes).unwrap();
         match restored {
             Message::Register(payload) => {
                 assert_eq!(payload.auth_token, None);
@@ -281,8 +284,8 @@ mod tests {
     #[test]
     fn test_register_ack_serde() {
         let msg = Message::RegisterAck(RegisterAckPayload { worker_id: 99 });
-        let bytes = bincode::serialize(&msg).unwrap();
-        let restored: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode_v2::encode(&msg).unwrap();
+        let restored: Message = bincode_v2::decode_value(&bytes).unwrap();
         match restored {
             Message::RegisterAck(payload) => assert_eq!(payload.worker_id, 99),
             _ => panic!("wrong variant"),
@@ -295,8 +298,8 @@ mod tests {
         let msg = Message::RegisterNack(RegisterNackPayload {
             reason: "bad token".into(),
         });
-        let bytes = bincode::serialize(&msg).unwrap();
-        let restored: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode_v2::encode(&msg).unwrap();
+        let restored: Message = bincode_v2::decode_value(&bytes).unwrap();
         match restored {
             Message::RegisterNack(payload) => assert_eq!(payload.reason, "bad token"),
             _ => panic!("wrong variant"),
@@ -327,8 +330,8 @@ mod tests {
             round: 0,
             partition,
         };
-        let bytes = bincode::serialize(&msg).unwrap();
-        let restored: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode_v2::encode(&msg).unwrap();
+        let restored: Message = bincode_v2::decode_value(&bytes).unwrap();
         match restored {
             Message::AssignPartition { partition, .. } => {
                 assert_eq!(partition.subnet.count_live_agents(), 1);

@@ -17,6 +17,10 @@ use super::types::{total_ports, Agent, AgentId, PortRef, Symbol, DISCONNECTED, P
 /// Connections are represented implicitly by a flat port array.
 /// The redex queue maintains known active pairs for incremental reduction.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct Net {
     /// Agent arena. `agents[id] == Some(agent)` if the agent is live.
     /// `agents[id] == None` if the slot is free (removed or never created).
@@ -53,6 +57,7 @@ pub struct Net {
     /// Empty for nets that are not partition subnets.
     /// Not serialized: only relevant during the grid cycle.
     #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub freeport_redirects: HashMap<u32, PortRef>,
 }
 
@@ -292,17 +297,19 @@ impl Net {
         self.agents.iter().filter_map(|slot| slot.as_ref())
     }
 
-    /// Serializes the net to a bincode byte vector.
+    /// Serializes the net to a bincode v2 byte vector (SPEC-18 §3.1).
     ///
     /// The format is self-contained: the receiver can reconstruct
     /// the complete Net from the bytes alone (SPEC-02 R25).
     pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::NetError> {
-        bincode::serialize(self).map_err(|e| crate::error::NetError::Serialize(e.to_string()))
+        crate::protocol::bincode_v2::encode(self)
+            .map_err(|e| crate::error::NetError::Serialize(e.to_string()))
     }
 
-    /// Deserializes a net from a bincode byte slice.
+    /// Deserializes a net from a bincode v2 byte slice (SPEC-18 §3.1).
     pub fn from_bytes(bytes: &[u8]) -> Result<Net, crate::error::NetError> {
-        bincode::deserialize(bytes).map_err(|e| crate::error::NetError::Deserialize(e.to_string()))
+        crate::protocol::bincode_v2::decode_value(bytes)
+            .map_err(|e| crate::error::NetError::Deserialize(e.to_string()))
     }
 }
 
@@ -362,8 +369,8 @@ mod tests {
     #[test]
     fn test_net_serde_roundtrip() {
         let net = Net::new();
-        let bytes = bincode::serialize(&net).unwrap();
-        let des: Net = bincode::deserialize(&bytes).unwrap();
+        let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
+        let des: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
         assert_eq!(net, des);
     }
 
@@ -995,5 +1002,45 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         let des = Net::from_bytes(&net.to_bytes().unwrap()).unwrap();
         assert_eq!(net, des);
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0353 — rkyv round-trip for Net (SPEC-18 §3.5).
+    //
+    // Net derives `rkyv::{Archive, Serialize, Deserialize}` under the
+    // `zero-copy` feature. The non-serializable `freeport_redirects` field
+    // is `#[serde(skip)]` AND `#[rkyv(with = rkyv::with::Skip)]`, so it is
+    // never carried on the wire and the round-trip MUST inflate it to
+    // an empty HashMap (matching its `Default` value).
+    // -----------------------------------------------------------------------
+
+    /// UT-0353-04: Net round-trips through rkyv with a small, connected
+    /// pair of agents. Net implements PartialEq, so we compare the whole
+    /// struct directly. `freeport_redirects` is empty before and after.
+    #[cfg(feature = "zero-copy")]
+    #[test]
+    fn rkyv_round_trip_net_minimal() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(7));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(u32::MAX));
+
+        // Sanity: PartialEq derive should consider freeport_redirects, but
+        // we keep both empty here so the comparison is unambiguous.
+        assert!(net.freeport_redirects.is_empty());
+
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&net).expect("serialize");
+        let archived = rkyv::access::<rkyv::Archived<Net>, rkyv::rancor::Error>(bytes.as_ref())
+            .expect("access");
+        let back: Net =
+            rkyv::deserialize::<Net, rkyv::rancor::Error>(archived).expect("deserialize");
+
+        assert_eq!(net, back, "Net did not round-trip through rkyv");
+        assert!(
+            back.freeport_redirects.is_empty(),
+            "freeport_redirects must be re-defaulted to empty (skip adapter)"
+        );
     }
 }

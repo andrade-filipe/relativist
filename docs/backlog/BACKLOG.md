@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
 **Last updated:** 2026-04-16
-**Total tasks:** 236 (158 done, 0 in progress, 77 todo, 1 obsoleted)
+**Total tasks:** 248 (158 done, 0 in progress, 89 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -311,6 +311,48 @@
 | TASK-0340 | Phase 6 — RecipeEncoder trait — R24, R25 (R26-R28 deferred → DEFERRED-WORK.md D-001) | P1 | **DONE** | 0337 | S |
 | TASK-0341 | Phase 6 — Refactor SPEC-25 generators to RecipeEncoder — R26 | P1 | BLOCKED on M7 (SPEC-25) — see DEFERRED-WORK.md D-001 | 0340 | M |
 | TASK-0342 | Phase 6 — Generalize AssignRecipe to carry encoder name — R27, R28 | P1 | BLOCKED on M7 (SPEC-25) — see DEFERRED-WORK.md D-001 | 0341 | M |
+
+## SPEC-18 Wire Format v2 (ROADMAP 2.23, M1, Tier 1 break-even)
+
+| Task | Description | Priority | Status | Depends | Size |
+|------|-------------|----------|--------|---------|------|
+| TASK-0343 | bincode v2 migration — R1-R4 | P0 | TODO | — | M |
+| TASK-0344 | Compact PortRef serde encoding — R5-R8 | P0 | TODO | 0343 | S |
+| TASK-0345 | Frame header v2 (9 bytes + flags) — R14-R19 | P0 | TODO | 0343 | S |
+| TASK-0346 | LZ4 compression pipeline — R9-R13, R36-R39 | P0 | TODO | 0345 | M |
+| TASK-0347 | PROTOCOL_VERSION bump 1→2 (atomic wire break) — R28-R32 | P0 | TODO | 0343, 0344, 0345, 0346 | S |
+
+## SPEC-18 §3.5 Zero-Copy Archive (ROADMAP 2.24, closes DEFERRED-WORK D-002)
+
+Bundle index: `SPEC-18-section-3.5-zero-copy-tasks.md`. Scope is strictly
+R20-R27 + §3.9 R36-R37 + §7.2 T11-T14. Total ~600 LoC, 8 atomic tasks,
++24 tests under `--features zero-copy`. FLAG_RESERVED design choice
+(Option B recommended: route FLAG_ARCHIVED via `recv_frame` branch, mask
+unchanged) flagged for spec-critic.
+
+| Task | Description | Priority | Status | Depends | Size |
+|------|-------------|----------|--------|---------|------|
+| TASK-0352 | rkyv optional dep + `zero-copy` feature gate — R20 | P0 | TODO | — | S |
+| TASK-0353 | Derive Archive/Serialize/Deserialize on 8 hot-path types — R21 | P0 | TODO | 0352 | M |
+| TASK-0354 | `ProtocolError::ArchiveValidationFailed` variant — R26, R35 | P0 | TODO | 0352 | S |
+| TASK-0355 | 16-byte aligned receive buffer (`AlignedVec`) — R25 | P0 | TODO | 0352, 0353 | S |
+| TASK-0356 | `send_frame_v2` rkyv path (hot-path only, optional LZ4) — R22, R23 | P0 | TODO | 0353, 0354 | M |
+| TASK-0357 | `recv_frame` archive branch (decompress→CRC→access, R12 ordering) — R12, R22, R24, R26 | P0 | TODO | 0354, 0355, 0356 | M |
+| TASK-0358 | `TransportConfig.use_zero_copy` + `--use-zero-copy` CLI — R36, R37 | P0 | TODO | 0356, 0357 | S |
+| TASK-0359 | T11-T14 round-trip + corruption + archive-flag suite — R27, T11-T14 | P0 | TODO | 0353, 0356, 0357 | S |
+
+## SPEC-19 §3.1 Coordinator-Free Round (ROADMAP 2.34, Tier 1 break-even)
+
+Bundle index: `SPEC-19-section-3.1-coordinator-free-round-tasks.md`. Scope is
+strictly R1-R7 (§3.1). §3.2 (BorderGraph), §3.3 (Delta-Only Protocol), and
+§3.4-§3.7 are separate bundles (items 2.35 / 2.26).
+
+| Task | Description | Priority | Status | Depends | Size |
+|------|-------------|----------|--------|---------|------|
+| TASK-0348 | Add `has_border_activity` field + `compute_border_activity` helper — R1, R2 | P0 | TODO | — | S |
+| TASK-0349 | Populate `has_border_activity` at every WorkerRoundStats build site — R2 | P0 | TODO | 0348 | S |
+| TASK-0350 | Add `coordinator_free_rounds` config flag + metrics counter — R6, R41p, R45p | P0 | TODO | — (logical: 0348) | S |
+| TASK-0351 | Coordinator skip-merge logic + Global Normal Form termination — R3, R4, R5, R6, R7 | P0 | TODO | 0348, 0349, 0350 | M |
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

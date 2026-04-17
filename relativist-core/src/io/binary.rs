@@ -4,16 +4,17 @@ use std::path::Path;
 
 use crate::error::RelativistError;
 use crate::net::Net;
+use crate::protocol::bincode_v2;
 
-/// Serialize a Net to bytes (bincode).
+/// Serialize a Net to bytes (bincode v2 — SPEC-18 §3.1).
 pub fn serialize_net(net: &Net) -> Result<Vec<u8>, RelativistError> {
-    bincode::serialize(net)
+    bincode_v2::encode(net)
         .map_err(|e| RelativistError::Config(format!("serialization failed: {}", e)))
 }
 
-/// Deserialize a Net from bytes (bincode).
+/// Deserialize a Net from bytes (bincode v2 — SPEC-18 §3.1).
 pub fn deserialize_net(bytes: &[u8]) -> Result<Net, RelativistError> {
-    bincode::deserialize(bytes)
+    bincode_v2::decode_value(bytes)
         .map_err(|e| RelativistError::Config(format!("deserialization failed: {}", e)))
 }
 
