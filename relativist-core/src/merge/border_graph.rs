@@ -57,7 +57,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::net::{PortRef, DISCONNECTED};
+use crate::net::{AgentId, PortRef, Symbol, DISCONNECTED};
 use crate::partition::types::{PartitionPlan, WorkerId};
 
 use super::helpers::is_principal_pair;
@@ -122,12 +122,80 @@ pub struct BorderGraph {
 /// erasures use the DISCONNECTED sentinel
 /// (`PortRef::FreePort(u32::MAX)` — see [`crate::net::DISCONNECTED`],
 /// spec-critic DC-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `serde::Serialize + Deserialize` derives per SPEC-19 §3.4 R33 (DC-A1,
+/// 2026-04-17 amendment). The derives were missing from the §3.2 ship
+/// because the §3.2 bundle did not yet consume the wire path; §3.4 needs
+/// them so `Vec<BorderDelta>` can appear inside `Message::RoundStart` /
+/// `Message::RoundResult` payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BorderDelta {
     /// Border affected by this delta.
     pub border_id: u32,
     /// Worker's new-round view of its own side of the border.
     pub new_target: PortRef,
+}
+
+/// Internal port reconnection dispatched coordinator → worker after a
+/// CON-DUP border-redex resolution produces new agents whose auxiliary
+/// ports are not themselves borders (SPEC-19 §3.3 R23, §3.4 R33, DC-B3
+/// — 2026-04-17 amendment).
+///
+/// The worker MUST apply the reconnection to its stored partition before
+/// running `reduce_all` for the round: port `port` of `agent_id` is now
+/// connected to `new_target`. Neither `BorderDelta` (which names border
+/// ids, not agent ports) nor `resolved_borders` / `new_borders` can
+/// express this interior rewire.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LocalReconnection {
+    /// Agent on the worker side whose port needs rewiring.
+    pub agent_id: AgentId,
+    /// Port of that agent (0 = principal, 1..arity = aux).
+    pub port: u8,
+    /// New endpoint this port connects to.
+    pub new_target: PortRef,
+}
+
+/// Coordinator → worker AgentId allocation request carried on
+/// `Message::RoundStart` (SPEC-19 §3.3 R23, §3.4 R33, R48, DC-B5 —
+/// 2026-04-17 amendment).
+///
+/// Phase 1 of the 2-phase AgentId allocation flow: the coordinator
+/// asks the worker to mint one fresh `AgentId` from the worker's own
+/// `id_range` (SPEC-04) for a new agent of shape `(symbol_type, arity)`.
+/// The worker echoes the minted id back via `MintedAgent` on the next
+/// `Message::RoundResult`, correlated by `request_id`.
+///
+/// `request_id` values are allocated by the coordinator from a
+/// monotonically increasing counter scoped to the BSP run (R48); the
+/// worker MUST NOT overlap the coordinator-reserved AgentId range
+/// `u32::MAX - 10_000 .. u32::MAX`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingCommutation {
+    /// Correlation id, unique within this BSP run (R48).
+    pub request_id: u32,
+    /// Symbol type for the new agent (CON, DUP, ERA).
+    pub symbol_type: Symbol,
+    /// Arity of the new agent (0 for ERA; 2 for CON/DUP — two aux ports).
+    pub arity: u8,
+}
+
+/// Worker → coordinator response to a `PendingCommutation`, carried on
+/// `Message::RoundResult.minted_agents` (SPEC-19 §3.3 R26, §3.4 R33, R48,
+/// DC-B5 — 2026-04-17 amendment).
+///
+/// Pairs the coordinator-issued `request_id` with the worker-allocated
+/// `AgentId`. The coordinator treats an unmatched `request_id` as a
+/// protocol violation (R48).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MintedAgent {
+    /// Matches the `PendingCommutation.request_id` from the paired
+    /// `Message::RoundStart` (R48 correlation key).
+    pub request_id: u32,
+    /// The `AgentId` the worker has allocated for this request. MUST NOT
+    /// overlap the coordinator-reserved range
+    /// `u32::MAX - 10_000 .. u32::MAX` (R48).
+    pub minted_agent_id: AgentId,
 }
 
 /// Coordinator's input to [`BorderGraph::add_border_states`] (SPEC-19 R15
@@ -1570,6 +1638,74 @@ mod tests {
         assert_send_sync::<BorderState>();
         assert_send_sync::<BorderDelta>();
         assert_send_sync::<AddBorderEntry>();
+    }
+
+    // -----------------------------------------------------------------
+    // SPEC-19 §3.4 wire-type round-trip tests (item 2.26-A — DC-A1 + DC-B3
+    // + DC-B5 amendments, 2026-04-17). Locks R33's bincode round-trip
+    // identity at the struct level; variant-level round-trips live in
+    // `protocol::types::tests`.
+    // -----------------------------------------------------------------
+
+    /// DC-A1: `BorderDelta` round-trips under bincode v2. This test was
+    /// deferred from the §3.2 ship because the struct lacked serde
+    /// derives at that time; the derives are added by the §3.4 bundle
+    /// and this test pins the property.
+    #[test]
+    fn test_border_delta_bincode_roundtrip() {
+        let delta = BorderDelta {
+            border_id: 1234,
+            new_target: PortRef::AgentPort(42, 1),
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&delta)
+            .expect("BorderDelta must encode under bincode v2");
+        let decoded: BorderDelta = crate::protocol::bincode_v2::decode_value(&bytes)
+            .expect("BorderDelta must decode under bincode v2");
+        assert_eq!(decoded, delta);
+    }
+
+    /// DC-B3: `LocalReconnection` round-trips under bincode v2.
+    #[test]
+    fn test_local_reconnection_bincode_roundtrip() {
+        let rec = LocalReconnection {
+            agent_id: 7,
+            port: 2,
+            new_target: PortRef::AgentPort(11, 1),
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&rec)
+            .expect("LocalReconnection must encode under bincode v2");
+        let decoded: LocalReconnection = crate::protocol::bincode_v2::decode_value(&bytes)
+            .expect("LocalReconnection must decode under bincode v2");
+        assert_eq!(decoded, rec);
+    }
+
+    /// DC-B5: `PendingCommutation` round-trips under bincode v2.
+    #[test]
+    fn test_pending_commutation_bincode_roundtrip() {
+        let pc = PendingCommutation {
+            request_id: 42,
+            symbol_type: Symbol::Dup,
+            arity: 2,
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&pc)
+            .expect("PendingCommutation must encode under bincode v2");
+        let decoded: PendingCommutation = crate::protocol::bincode_v2::decode_value(&bytes)
+            .expect("PendingCommutation must decode under bincode v2");
+        assert_eq!(decoded, pc);
+    }
+
+    /// DC-B5: `MintedAgent` round-trips under bincode v2.
+    #[test]
+    fn test_minted_agent_bincode_roundtrip() {
+        let ma = MintedAgent {
+            request_id: 42,
+            minted_agent_id: 103,
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&ma)
+            .expect("MintedAgent must encode under bincode v2");
+        let decoded: MintedAgent = crate::protocol::bincode_v2::decode_value(&bytes)
+            .expect("MintedAgent must decode under bincode v2");
+        assert_eq!(decoded, ma);
     }
 
     // -----------------------------------------------------------------

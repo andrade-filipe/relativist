@@ -1314,6 +1314,11 @@ mod tests {
                 Message::Register(_) => {}
                 Message::RegisterAck(_) => {}
                 Message::RegisterNack(_) => {}
+                Message::InitialPartition { .. } => {}
+                Message::RoundStart { .. } => {}
+                Message::RoundResult { .. } => {}
+                Message::FinalStateRequest { .. } => {}
+                Message::FinalStateResult { .. } => {}
             }
         }
 
@@ -1360,6 +1365,43 @@ mod tests {
                 Message::RegisterNack(RegisterNackPayload {
                     reason: "protocol version mismatch: expected 2, got 1".into(),
                 }),
+            ),
+            // SPEC-19 §3.4 (item 2.26-A) — delta-protocol variants.
+            (
+                "InitialPartition",
+                Message::InitialPartition {
+                    round: 0,
+                    partition: make_test_partition(),
+                },
+            ),
+            (
+                "RoundStart",
+                Message::RoundStart {
+                    round: 1,
+                    border_deltas: Vec::new(),
+                    resolved_borders: Vec::new(),
+                    new_borders: Vec::new(),
+                    local_reconnections: Vec::new(),
+                    pending_commutations: Vec::new(),
+                },
+            ),
+            (
+                "RoundResult",
+                Message::RoundResult {
+                    round: 1,
+                    border_deltas: Vec::new(),
+                    stats: make_test_stats(),
+                    has_border_activity: false,
+                    minted_agents: Vec::new(),
+                },
+            ),
+            ("FinalStateRequest", Message::FinalStateRequest { round: 2 }),
+            (
+                "FinalStateResult",
+                Message::FinalStateResult {
+                    round: 2,
+                    partition: make_test_partition(),
+                },
             ),
         ]
     }

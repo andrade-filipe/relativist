@@ -5,7 +5,10 @@
 
 use std::time::Duration;
 
-use crate::partition::WorkerId;
+use crate::error::GridError;
+use crate::merge::border_graph::BorderDelta;
+use crate::merge::border_resolver::RoundStartDispatch;
+use crate::partition::{Partition, PartitionPlan, WorkerId};
 
 /// Metrics collected during grid loop execution (SPEC-05, R34-R35, R35a).
 ///
@@ -86,6 +89,20 @@ pub struct GridMetrics {
     /// `GridConfig::coordinator_free_rounds`) increments this counter.
     /// In v1 / default mode this remains `0` for the entire run.
     pub coordinator_free_rounds: u32,
+
+    /// SPEC-19 R20 (TASK-0384): `true` iff this run used the delta BSP
+    /// loop (`run_grid_delta`). `false` for v1 `run_grid`. Populated at
+    /// the entry point; immutable after that. Larger delta-specific
+    /// metric extensions (per-round delta byte volumes, border-resolution
+    /// timings) belong to sub-bundle 2.26-D — this minimal marker is
+    /// the only field TASK-0384 adds.
+    pub delta_mode: bool,
+
+    /// SPEC-19 R30 (TASK-0388): populated only in delta mode; records
+    /// whether `run_grid_delta` hit the `max_rounds` cap without
+    /// reaching Global Normal Form. `None` in v1 mode or when
+    /// convergence was reached naturally.
+    pub delta_max_rounds_hit: Option<bool>,
 }
 
 impl GridMetrics {
@@ -149,10 +166,101 @@ pub struct WorkerRoundStats {
     pub has_border_activity: bool,
 }
 
-/// Configuration for the grid loop (SPEC-05, R25, R29, R30a).
+/// SPEC-19 R26 (TASK-0384): pure-core mirror of `Message::RoundResult`'s
+/// payload plus the `worker_id` that sent it. Used by `WorkerDispatch`
+/// implementations to return collected worker reports from a single
+/// round without dragging the wire-level `Message` enum into pure-core.
+///
+/// Kept separate from `Message::RoundResult` (in `protocol/`) so that
+/// `merge/` — per the SPEC-13 dependency direction `net → reduction →
+/// partition → merge → protocol → coordinator/worker` — does NOT back-
+/// reference protocol types. The `From` / `TryFrom` bridging between
+/// `Message::RoundResult` and `RoundResultPayload` lives in `protocol/`
+/// (OUT of this bundle).
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // TASK-0385+ wires callers; kept scaffolded to anchor the trait signature.
+pub(crate) struct RoundResultPayload {
+    pub(crate) worker_id: WorkerId,
+    pub(crate) round: u32,
+    pub(crate) border_deltas: Vec<BorderDelta>,
+    pub(crate) stats: WorkerRoundStats,
+    pub(crate) has_border_activity: bool,
+}
+
+/// SPEC-19 R20, R21 (TASK-0384, DC-C2 option (c) ratified 2026-04-17):
+/// abstraction over the actual I/O path for delta-mode coordination.
+///
+/// Two concrete implementations are anticipated:
+/// - An async tokio/TCP wrapper used by the real distributed coordinator
+///   (lives in `protocol/coordinator.rs` — OUT of this bundle; binds the
+///   synchronous trait to an async transport via `block_on`).
+/// - An in-process `LocalDeltaDispatch` used by integration tests and
+///   benchmarks (lives behind tests until needed).
+///
+/// **Pure-core discipline:** this trait MUST NOT require `Send + Sync`
+/// or any async-related supertraits — that would force `futures` /
+/// `tokio` imports into the pure-core layer, breaking SPEC-13 R6-R8.
+/// Concrete async implementations wrap the runtime behind a synchronous
+/// `block_on` facade; see `PartitionStrategy` precedent.
+#[allow(dead_code)] // TASK-0385+ wires coordinator callers; tests already cover object-safety.
+pub(crate) trait WorkerDispatch {
+    /// SPEC-19 R21 phase 1 (Round 0): send `Message::InitialPartition`
+    /// to every worker carrying its slice of the `PartitionPlan`. The
+    /// coordinator does NOT wait for acks (DC-C1 option (b) locked-in
+    /// 2026-04-17 — arrival is implicit from the first `RoundResult`).
+    fn dispatch_initial(&mut self, plan: &PartitionPlan) -> Result<(), GridError>;
+
+    /// SPEC-19 R21 phase 2 (Rounds 1+): send `Message::RoundStart` to
+    /// every worker carrying its per-worker payload and block until all
+    /// `Message::RoundResult`s arrive. Output length equals the number
+    /// of workers; ordering is by `WorkerId` ascending.
+    fn dispatch_round_start(
+        &mut self,
+        dispatch: &[(WorkerId, RoundStartDispatch)],
+    ) -> Result<Vec<RoundResultPayload>, GridError>;
+
+    /// SPEC-19 R21 phase 3 (Final State Collection): send
+    /// `Message::FinalStateRequest` to every worker and collect their
+    /// `Message::FinalStateResult` payloads. Output length equals the
+    /// number of workers; ordering is by `WorkerId` ascending.
+    fn dispatch_final_state_request(&mut self, round: u32) -> Result<Vec<Partition>, GridError>;
+}
+
+/// Configuration for the grid loop (SPEC-05, R25, R29, R30a; SPEC-19 §3.6).
 ///
 /// The partition strategy is NOT stored here because trait objects
 /// are not Clone. It is passed as a separate parameter to `run_grid`.
+///
+/// # Examples
+///
+/// Opt into the delta protocol from a builder pattern (SPEC-19 §3.6 R41):
+///
+/// ```
+/// use relativist_core::merge::GridConfig;
+///
+/// let cfg = GridConfig {
+///     num_workers: 4,
+///     delta_mode: true,
+///     ..GridConfig::default()
+/// };
+/// assert!(cfg.delta_mode);
+/// assert_eq!(cfg.num_workers, 4);
+/// // All other fields retain defaults:
+/// assert!(!cfg.strict_bsp);
+/// assert!(!cfg.coordinator_free_rounds);
+/// ```
+///
+/// The default is the v1 path (SPEC-19 §3.6 R42 — backwards
+/// compatibility; no caller is silently routed through the delta loop):
+///
+/// ```
+/// use relativist_core::merge::GridConfig;
+///
+/// let cfg = GridConfig::default();
+/// assert!(!cfg.delta_mode);
+/// assert!(!cfg.strict_bsp);
+/// assert!(!cfg.coordinator_free_rounds);
+/// ```
 #[derive(Debug, Clone)]
 pub struct GridConfig {
     /// Number of workers for parallel reduction.
@@ -177,6 +285,37 @@ pub struct GridConfig {
     /// Form is reached. The Fundamental Property G1 (SPEC-01) holds in both
     /// modes; only the round distribution changes.
     pub strict_bsp: bool,
+
+    /// SPEC-19 §3.6 R41 (TASK-0389): opt-in for the delta-only BSP
+    /// protocol (stateful workers).
+    ///
+    /// When `false` (default — R42 backwards compatibility), `run_grid`
+    /// uses the v1 full-partition protocol (SPEC-05 R24-R30a): every
+    /// round re-partitions the net and redistributes it to workers.
+    ///
+    /// When `true`, the grid loop dispatches the delta BSP loop
+    /// (`run_grid_delta`, bundle 2.26-C), which keeps workers stateful
+    /// across rounds and sends only border deltas between them. The
+    /// delta loop is functionally equivalent to the v1 loop up to
+    /// isomorphism (G1 amendment, R38), with the same Normal Form and
+    /// the same total interaction count (T7).
+    ///
+    /// IC concept: the delta protocol exploits strong confluence (T4) —
+    /// the *order* of independent reductions does not affect the Normal
+    /// Form, so keeping local partitions stable and exchanging only
+    /// border changes is safe. Partial state distributed across workers
+    /// is a valid representation of the sequential intermediate state
+    /// (recoverable via Final State Collection, R27-R29).
+    ///
+    /// Independent of `coordinator_free_rounds` (SPEC-19 §3.6 R44): both
+    /// flags are opt-ins that can be combined or enabled separately. The
+    /// combination has no cross-field interaction beyond the individual
+    /// R4 (coordinator-free skip) and R41 (delta dispatch) semantics.
+    ///
+    /// Inert until bundle 2.26-C's dispatch site reads the flag. Setting
+    /// it to `true` in the current codebase is a no-op beyond the field
+    /// round-trip (see TASK-0391 for the R42 regression proof).
+    pub delta_mode: bool,
 
     /// SPEC-19 §3.1 R3, R4 (TASK-0350): opt-in for the coordinator-free
     /// round (merge avoidance) optimization.
@@ -206,6 +345,8 @@ impl Default for GridConfig {
             num_workers: 1,
             max_rounds: None,
             strict_bsp: false,
+            // SPEC-19 §3.6 R42: opt-in only — default preserves v1 behaviour.
+            delta_mode: false,
             // SPEC-19 §3.1 R4: opt-in only — defaults preserve v1 behaviour.
             coordinator_free_rounds: false,
         }
@@ -243,6 +384,27 @@ mod tests {
         assert!(m.worker_stats_per_round.is_empty());
         // TASK-0350 UT-02: new metric defaults to zero (v1 baseline).
         assert_eq!(m.coordinator_free_rounds, 0);
+        // UT-0384-04 — delta-mode fields default to "off" so v1 code
+        // paths that build `GridMetrics::default()` do not accidentally
+        // engage the delta route.
+        assert!(!m.delta_mode);
+        assert!(m.delta_max_rounds_hit.is_none());
+    }
+
+    // UT-0384-04 (duplicate target — see TEST-SPEC-0384): explicit
+    // check for the two new fields so a future refactor that renames
+    // them trips a targeted test, not only the big default bundle.
+    #[test]
+    fn grid_metrics_default_delta_fields_are_off() {
+        let m = GridMetrics::default();
+        assert!(
+            !m.delta_mode,
+            "GridMetrics::default().delta_mode MUST be false"
+        );
+        assert!(
+            m.delta_max_rounds_hit.is_none(),
+            "GridMetrics::default().delta_max_rounds_hit MUST be None"
+        );
     }
 
     // TASK-0350 UT-01: GridConfig::default() must keep v1 behaviour
@@ -269,6 +431,31 @@ mod tests {
         assert!(cfg.coordinator_free_rounds);
         let cloned = cfg.clone();
         assert!(cloned.coordinator_free_rounds);
+    }
+
+    // TASK-0389 UT-01: GridConfig::default() must keep delta_mode = false
+    // per SPEC-19 R42 backwards compatibility — a silent flip of this
+    // default would route every caller through the delta path.
+    #[test]
+    fn grid_config_default_disables_delta_mode() {
+        let cfg = GridConfig::default();
+        assert!(
+            !cfg.delta_mode,
+            "default GridConfig must keep delta_mode = false (R42)"
+        );
+    }
+
+    // TASK-0389 UT-02: the field is settable and round-tripped through
+    // a clone (sanity check for the public API).
+    #[test]
+    fn grid_config_delta_mode_is_settable() {
+        let cfg = GridConfig {
+            delta_mode: true,
+            ..GridConfig::default()
+        };
+        assert!(cfg.delta_mode);
+        let cloned = cfg.clone();
+        assert!(cloned.delta_mode);
     }
 
     // T2: GridMetrics fields are writable and accessible

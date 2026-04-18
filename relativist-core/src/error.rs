@@ -65,6 +65,25 @@ pub enum MergeError {
     InvariantViolation(String),
 }
 
+/// SPEC-19 R20, R21 (TASK-0384): errors produced by the delta-mode
+/// grid loop (`run_grid_delta`) and `WorkerDispatch` implementations.
+/// Reserved for transport / protocol failures surfaced by the dispatch
+/// trait; pure-core logic errors continue to use `MergeError`.
+#[derive(Debug, Error)]
+pub enum GridError {
+    #[error("worker dispatch failed at round {round}: {message}")]
+    DispatchFailed { round: u32, message: String },
+
+    #[error("worker {worker_id} did not reply at round {round}")]
+    WorkerTimeout { worker_id: WorkerId, round: u32 },
+
+    #[error("max rounds ({max}) exceeded without convergence")]
+    MaxRoundsExceeded { max: u32 },
+
+    #[error(transparent)]
+    Merge(#[from] MergeError),
+}
+
 /// Errors from the coordinator.
 #[derive(Debug, Error)]
 pub enum CoordinatorError {

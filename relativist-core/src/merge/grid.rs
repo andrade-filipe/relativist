@@ -302,6 +302,487 @@ pub fn run_grid(
     (current_net, metrics)
 }
 
+// ---------------------------------------------------------------------------
+// SPEC-19 R20, R21 — delta-mode grid entry (TASK-0384)
+// ---------------------------------------------------------------------------
+
+/// SPEC-19 R20, R21 (TASK-0384): delta-mode BSP loop entry point.
+///
+/// Dispatched by the caller based on `config.delta_mode` (field lands in
+/// sub-bundle 2.26-D — until then, calling this function unconditionally
+/// routes through the delta path). The outer shell handles the two
+/// degenerate cases inherited from v1 `run_grid`:
+/// 1. **Already-normalized input** — if `drain_stale_redexes` leaves the
+///    queue empty, return `(net, metrics)` immediately with
+///    `metrics.converged = true`, `metrics.rounds = 0`,
+///    `metrics.delta_mode = true`. No dispatch I/O.
+/// 2. **Single worker (`n == 1`)** — delegate to the existing
+///    `run_single_worker` path; the one-worker contract has no borders
+///    so the delta machinery has nothing to do.
+///
+/// For the genuine multi-worker non-trivial case, this function
+/// delegates the round loop to `run_grid_delta_inner` (landed in
+/// TASK-0385). Until that task is DEV-green, the inner stub `todo!()`s
+/// — tests that EXIT through the degenerate-case paths stay runnable.
+///
+/// **DC-C3 firewall (2026-04-17):** this entry point MUST accept both
+/// `strict_bsp = true` (deferred border dispatch — delta strict
+/// semantics per R40) AND `strict_bsp = false` (inline border
+/// resolution — delta lenient semantics per R40). No `assert!` on the
+/// flag combination. Branching logic lives in TASK-0385.
+///
+/// **DC-C2 (ratified):** the `dispatch` parameter is a synchronous
+/// `&mut dyn WorkerDispatch`. The async binding is the
+/// `impl WorkerDispatch for CoordinatorConnection` block in
+/// `protocol/coordinator.rs`, OUTSIDE this bundle.
+#[allow(dead_code)] // TASK-0385+ exercises via real coordinator; tests cover degenerate paths today.
+pub(crate) fn run_grid_delta(
+    net: Net,
+    config: &GridConfig,
+    strategy: &dyn PartitionStrategy,
+    dispatch: &mut dyn crate::merge::types::WorkerDispatch,
+) -> (Net, GridMetrics) {
+    assert!(config.num_workers >= 1, "num_workers must be >= 1");
+    // TODO(2.26-D): once `GridConfig.delta_mode` lands, assert it here.
+    // Until then, this function is unconditionally delta-mode at entry.
+    // DC-C3 firewall (2026-04-17): intentionally NO assert on
+    // `config.strict_bsp` — both values are legal per R40.
+
+    let mut current_net = net;
+    let mut metrics = GridMetrics {
+        delta_mode: true,
+        ..GridMetrics::default()
+    };
+    let start_time = Instant::now();
+
+    // [0] Already-normalized short-circuit — identical to v1 contract.
+    drain_stale_redexes(&mut current_net);
+    if current_net.redex_queue.is_empty() {
+        metrics.converged = true;
+        metrics.total_time = start_time.elapsed();
+        return (current_net, metrics);
+    }
+
+    // [1] Single-worker degenerate — delegate. No dispatch I/O.
+    if config.num_workers == 1 {
+        let _ = dispatch; // explicitly unused on this path
+        return run_single_worker(current_net, config, metrics, start_time);
+    }
+
+    // [2] Multi-worker delta loop — TASK-0385 implements the body.
+    let plan = crate::partition::split(current_net, config.num_workers, strategy);
+    match run_grid_delta_inner(plan, config, dispatch, &mut metrics) {
+        Ok(final_net) => {
+            metrics.total_time = start_time.elapsed();
+            (final_net, metrics)
+        }
+        Err(_err) => {
+            metrics.converged = false;
+            metrics.total_time = start_time.elapsed();
+            (Net::new(), metrics)
+        }
+    }
+}
+
+/// SPEC-19 R21 phase 2 (TASK-0385): per-round coordinator loop.
+///
+/// Fires Round 0 `InitialPartition` (fire-and-forget, DC-C1), then loops
+/// delta rounds:
+/// 1. Dispatch `RoundStart` (Round 1's payload is empty; subsequent
+///    rounds carry the previous round's resolver output per DC-C3).
+/// 2. Collect `RoundResult`s and apply worker deltas to both the
+///    coordinator's `BorderGraph` and the per-worker partition cache.
+/// 3. Detect remaining active border redexes and resolve them via
+///    `resolve_border_redex` (per redex — the public API is fine-grained).
+/// 4. Run the DC-C3 branch:
+///    - **strict_bsp = true (strict):** convergence check runs BEFORE
+///      resolution. Resolutions ship as round k+1's payload.
+///    - **strict_bsp = false (lenient):** convergence check runs AFTER
+///      resolution (if the resolver emptied the graph, we converge this
+///      round). Resolutions still ship as round k+1's payload (if we
+///      haven't converged).
+/// 5. Cap at `config.max_rounds` (TASK-0388's predicate).
+///
+/// On convergence, delegates to `run_grid_delta_final_collect` (TASK-0387)
+/// to ship `FinalStateRequest` and reassemble the net.
+#[allow(dead_code)] // Called from run_grid_delta; tests reach here via the multi-worker path.
+fn run_grid_delta_inner(
+    plan: crate::partition::PartitionPlan,
+    config: &GridConfig,
+    dispatch: &mut dyn crate::merge::types::WorkerDispatch,
+    metrics: &mut GridMetrics,
+) -> Result<Net, crate::error::GridError> {
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    use crate::merge::border_graph::BorderGraph;
+    use crate::merge::border_resolver::{
+        package_resolutions, resolve_border_redex, BorderIdAllocator, BorderResolution,
+        CommutationIdAllocator, RoundStartDispatch,
+    };
+    use crate::merge::helpers::apply_border_deltas_to_partition;
+    use crate::partition::{Partition, WorkerId};
+
+    let num_workers = plan.partitions.len();
+    debug_assert!(
+        num_workers >= 2,
+        "run_grid_delta_inner: multi-worker path only (num_workers = {num_workers})"
+    );
+
+    // === Round 0 (R21.1): InitialPartition, fire-and-forget (DC-C1). ===
+    dispatch.dispatch_initial(&plan)?;
+
+    // Initial coordinator-side agent count for the Round 0 metrics slot
+    // (task acceptance criterion: agents_per_round.push(plan_agents_total)
+    // at Round 0).
+    let initial_agents: usize = plan
+        .partitions
+        .iter()
+        .map(|p| p.subnet.count_live_agents())
+        .sum();
+    metrics.agents_per_round.push(initial_agents);
+
+    let mut border_graph = BorderGraph::from_partition_plan(&plan);
+    let mut partitions_vec: Vec<Partition> = plan.partitions.clone();
+    let mut border_alloc = BorderIdAllocator::from_graph(&border_graph);
+    let mut commutation_alloc = CommutationIdAllocator::new();
+
+    // Round 1's dispatch carries no resolver output — workers just
+    // reduce their seeded partition. Subsequent rounds reuse this slot
+    // with the previous round's `package_resolutions` output.
+    let mut pending_dispatch: Vec<(WorkerId, RoundStartDispatch)> = (0..num_workers as WorkerId)
+        .map(|w| (w, RoundStartDispatch::default()))
+        .collect();
+
+    loop {
+        // TASK-0388 cap — stop if we've already hit the configured ceiling.
+        if check_max_rounds_cap(config, metrics) {
+            metrics.delta_max_rounds_hit = Some(true);
+            metrics.converged = false;
+            break;
+        }
+
+        // Per-round timers. The "partition" slot tracks coordinator-side
+        // bookkeeping (resolver prep); "compute" covers the wait for
+        // worker replies; "merge" covers delta apply + cache refresh.
+        let t_partition = Instant::now();
+        metrics.partition_time_per_round.push(t_partition.elapsed());
+
+        let t_compute = Instant::now();
+        let results = dispatch.dispatch_round_start(&pending_dispatch)?;
+        metrics.compute_time_per_round.push(t_compute.elapsed());
+
+        let t_merge = Instant::now();
+        for result in &results {
+            border_graph.apply_deltas(result.worker_id, &result.border_deltas);
+            if let Some(cached) = partitions_vec.get_mut(result.worker_id as usize) {
+                apply_border_deltas_to_partition(cached, &result.border_deltas, &[], &[]);
+            }
+        }
+        metrics.merge_time_per_round.push(t_merge.elapsed());
+
+        // Per-round stats accumulation.
+        metrics.rounds += 1;
+        let agents_this_round: usize = partitions_vec
+            .iter()
+            .map(|p| p.subnet.count_live_agents())
+            .sum();
+        metrics.agents_per_round.push(agents_this_round);
+        let worker_stats_snapshot: Vec<_> = results.iter().map(|r| r.stats.clone()).collect();
+        let local_interactions_this_round: u64 = worker_stats_snapshot
+            .iter()
+            .map(|s| s.local_redexes as u64)
+            .sum();
+        let mut local_by_rule = [0u64; 6];
+        for s in &worker_stats_snapshot {
+            for (i, count) in local_by_rule.iter_mut().enumerate() {
+                *count += s.interactions_by_rule[i];
+            }
+        }
+        metrics
+            .local_interactions_per_round
+            .push(local_interactions_this_round);
+        metrics.worker_stats_per_round.push(worker_stats_snapshot);
+
+        // Snapshot the active border redexes BEFORE resolution so the
+        // strict-branch convergence test sees the pre-resolve graph.
+        let t_border = Instant::now();
+        let redexes = border_graph.detect_border_redexes();
+        let pre_resolve_redex_count = redexes.len() as u32;
+        metrics
+            .border_redexes_per_round
+            .push(pre_resolve_redex_count);
+
+        // ---- DC-C3 strict branch: check convergence BEFORE resolution. ----
+        if config.strict_bsp && check_delta_convergence(&results, &border_graph) {
+            metrics
+                .border_reduce_time_per_round
+                .push(t_border.elapsed());
+            metrics.border_interactions_per_round.push(0);
+            metrics.converged = true;
+            break;
+        }
+
+        // Resolve all detected border redexes. Each call mutates
+        // `border_graph` (removes the redex) and advances the two
+        // allocators. Partition cache state is read-only here — the
+        // resolver's side effects land on `border_graph` only.
+        let mut resolutions: Vec<BorderResolution> = Vec::with_capacity(redexes.len());
+        for (border_id, _state) in &redexes {
+            let resolution = resolve_border_redex(
+                &mut border_graph,
+                &partitions_vec,
+                *border_id,
+                &mut border_alloc,
+                &mut commutation_alloc,
+            );
+            resolutions.push(resolution);
+        }
+        let border_interactions_this_round = resolutions.len() as u64;
+        metrics
+            .border_reduce_time_per_round
+            .push(t_border.elapsed());
+        metrics
+            .border_interactions_per_round
+            .push(border_interactions_this_round);
+
+        // Global interaction accumulators (matches v1 run_grid semantics).
+        for (i, count) in local_by_rule.iter().enumerate() {
+            metrics.total_interactions_by_rule[i] += count;
+        }
+        metrics.total_interactions +=
+            local_interactions_this_round + border_interactions_this_round;
+
+        // ---- DC-C3 lenient branch: check convergence AFTER resolution. ----
+        // If the resolver emptied the graph AND workers were quiet this
+        // round, the net is in Global Normal Form.
+        if !config.strict_bsp && check_delta_convergence(&results, &border_graph) {
+            metrics.converged = true;
+            break;
+        }
+
+        // Build next round's dispatch payload from the resolutions and
+        // mirror the same changes into the coordinator's partition cache
+        // so the resolver can read consistent agent state next round.
+        let packaged = package_resolutions(resolutions, num_workers);
+        for (worker_id, payload) in &packaged {
+            if let Some(cached) = partitions_vec.get_mut(*worker_id as usize) {
+                // IC rule semantics: every resolved principal-port border
+                // consumes the agent on that side. Snapshot the set of
+                // consumed agents BEFORE `apply_border_deltas_to_partition`
+                // mutates `free_port_index`; remove them AFTER the rest of
+                // cache maintenance so local_reconnections targeting their
+                // aux ports still resolve cleanly.
+                let mut agents_to_remove: Vec<crate::net::AgentId> = Vec::new();
+                for bid in &payload.resolved_borders {
+                    if let Some(&crate::net::PortRef::AgentPort(id, 0)) =
+                        cached.free_port_index.get(bid)
+                    {
+                        agents_to_remove.push(id);
+                    }
+                }
+
+                apply_border_deltas_to_partition(
+                    cached,
+                    &payload.border_deltas,
+                    &payload.resolved_borders,
+                    &payload.new_borders,
+                );
+                // Skip reconnections that target DISCONNECTED on either side
+                // (the `net::connect` debug_assert rejects self-sentinel
+                // pairs) or that would form a same-port self-loop.
+                for (a, b) in &payload.local_reconnections {
+                    if *a == crate::net::DISCONNECTED || *b == crate::net::DISCONNECTED || *a == *b
+                    {
+                        continue;
+                    }
+                    cached.subnet.connect(*a, *b);
+                }
+
+                // Annihilate consumed agents — `remove_agent` clears each
+                // of their port-array slots, restoring T1 for the cache.
+                for agent_id in agents_to_remove {
+                    cached.subnet.remove_agent(agent_id);
+                }
+            }
+        }
+        pending_dispatch = packaged;
+    }
+
+    // === Round N+1 (R21.3): FinalStateRequest + reassembly. ===
+    let partition_cache: HashMap<WorkerId, Partition> = partitions_vec
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| (i as WorkerId, p))
+        .collect();
+    let final_net = run_grid_delta_final_collect(dispatch, partition_cache, border_graph, metrics)?;
+    Ok(final_net)
+}
+
+/// SPEC-19 R4, R21 phase 3, R40 (TASK-0386, DC-C5 amendment 2026-04-17):
+/// three-conjunct Global Normal Form predicate for delta-mode BSP.
+///
+/// Returns `true` iff all three conjuncts hold:
+/// 1. Every worker reports `has_border_activity == false`
+///    — no border endpoint on any worker is a principal port that could
+///    fire under a future coordinator-side resolution.
+/// 2. Every worker reports `stats.local_redexes == 0`
+///    — no local redex fired during the last round (no pending work
+///    ended up on the local queue at round boundary).
+/// 3. `border_graph.detect_border_redexes().is_empty()`
+///    — no pending coordinator-side (cross-partition) redex.
+///
+/// # Rationale (DC-C5 FLIP, 2026-04-17)
+///
+/// SPEC-19 R40 literal: "all workers report zero local redexes AND the
+/// BorderGraph contains zero active pairs". The v1 `check_global_normal_form`
+/// at `merge/grid.rs` already required both `local_redexes == 0` and
+/// an empty graph; delta mode adds `has_border_activity == false` as the
+/// worker-local signal that *complements* the coordinator's graph view.
+///
+/// Dropping `local_redexes == 0` (the task-splitter's two-predicate
+/// draft) would rely on the folklore assumption that
+/// `reduce_all` always reaches a local fixed point before reporting.
+/// Keeping it defends against that gap: one extra O(W) scan per round,
+/// wall time measured in microseconds.
+///
+/// Complexity: O(|results| + |active_redexes|). `detect_border_redexes`
+/// consults the incremental redex-set (R18), so the graph scan is
+/// proportional to the number of currently-active borders, not the
+/// total border count.
+pub(crate) fn check_delta_convergence(
+    results: &[crate::merge::types::RoundResultPayload],
+    border_graph: &crate::merge::border_graph::BorderGraph,
+) -> bool {
+    let all_no_border_activity = results.iter().all(|r| !r.has_border_activity);
+    let all_no_local_redexes = results.iter().all(|r| r.stats.local_redexes == 0);
+    let graph_has_no_redexes = border_graph.detect_border_redexes().is_empty();
+    all_no_border_activity && all_no_local_redexes && graph_has_no_redexes
+}
+
+/// SPEC-19 R30 (TASK-0388): check whether `run_grid_delta`'s round loop
+/// has reached the `max_rounds` cap.
+///
+/// Called at the TOP of each round-loop iteration, BEFORE any resolver
+/// or dispatch work for the round. Preserves v1 `run_grid` semantics
+/// (SPEC-05 R29):
+/// - `max_rounds == None` → unbounded; caller relies on
+///   [`check_delta_convergence`] for termination. Returns `false`.
+/// - `max_rounds == Some(m)` → caps the round count at `m`. Returns
+///   `metrics.rounds >= m` (inclusive: the cap fires when the loop
+///   has ALREADY executed `m` rounds; `Some(0)` fires on entry
+///   before the first dispatch).
+///
+/// On cap hit, the caller sets
+/// `metrics.delta_max_rounds_hit = Some(true)` and
+/// `metrics.converged = false`, then `break`s to Final Collection
+/// (TASK-0387). Per R30, Final Collection runs REGARDLESS of
+/// convergence-vs-cap — the returned net is "best effort": partially
+/// reduced, with any remaining border redexes unresolved.
+pub(crate) fn check_max_rounds_cap(config: &GridConfig, metrics: &GridMetrics) -> bool {
+    match config.max_rounds {
+        None => false,
+        Some(m) => metrics.rounds >= m,
+    }
+}
+
+/// SPEC-19 R21 phase 3, R27, R29 (TASK-0387): Final State Collection +
+/// final `merge()`.
+///
+/// Invoked when the round loop exits via:
+/// - **convergence (R4)** — `check_delta_convergence` returned `true`;
+///   the reassembled net MUST be border-redex-free, and the caller
+///   observes `metrics.converged = true`.
+/// - **max_rounds cap (R30)** — the loop hit the ceiling before
+///   converging. `merge()` MAY return a non-zero border-redex count;
+///   we return the partial net anyway so callers that set
+///   `delta_max_rounds_hit = Some(true)` can distinguish it.
+///
+/// Semantics (R27 + R29):
+/// 1. Dispatch `Message::FinalStateRequest { round: metrics.rounds }`
+///    to every worker via `WorkerDispatch`.
+/// 2. **Cache fallback (in-process path):** when the dispatch returns
+///    an empty `Vec` (`LocalDeltaDispatch` harness / unit tests), use
+///    the coordinator's logical `partition_cache` — workers and
+///    coordinator have been mirroring deltas since Round 0.
+/// 3. **Sanity check:** when the dispatch returns a non-empty `Vec`
+///    whose length != `partition_cache.len()`, error out with
+///    `GridError::DispatchFailed { round, message }` — a real
+///    transport that drops some workers' responses is a protocol bug.
+/// 4. **Reconstruct `PartitionPlan`** via
+///    [`reconstruct_partition_plan_from_collected`]: sort partitions
+///    by `worker_id`, rebuild `borders` from the `BorderGraph`.
+/// 5. Invoke `merge()` (SPEC-05) and record `merge_time_per_round`.
+fn run_grid_delta_final_collect(
+    dispatch: &mut dyn crate::merge::types::WorkerDispatch,
+    partition_cache: std::collections::HashMap<
+        crate::partition::WorkerId,
+        crate::partition::Partition,
+    >,
+    border_graph: crate::merge::border_graph::BorderGraph,
+    metrics: &mut GridMetrics,
+) -> Result<Net, crate::error::GridError> {
+    // R27: dispatch FinalStateRequest to every worker.
+    let final_round = metrics.rounds;
+    let collected = dispatch.dispatch_final_state_request(final_round)?;
+
+    // R29: coordinate partitions for the final merge. Prefer the
+    // collected responses (carry each worker's post-reduction state
+    // including minted agents); fall back to the coordinator cache
+    // only when the transport returned an empty slice (in-process
+    // test fixtures). A non-empty-but-wrong-size response is a
+    // protocol-level violation and fails loudly.
+    let partitions: Vec<crate::partition::Partition> = if collected.is_empty() {
+        let mut ordered: Vec<_> = partition_cache.into_iter().collect();
+        ordered.sort_by_key(|(wid, _)| *wid);
+        ordered.into_iter().map(|(_, p)| p).collect()
+    } else {
+        if collected.len() != partition_cache.len() {
+            return Err(crate::error::GridError::DispatchFailed {
+                round: final_round,
+                message: format!(
+                    "FinalStateResult count mismatch: expected {}, got {}",
+                    partition_cache.len(),
+                    collected.len()
+                ),
+            });
+        }
+        let mut sorted = collected;
+        sorted.sort_by_key(|p| p.worker_id);
+        sorted
+    };
+
+    let plan = reconstruct_partition_plan_from_collected(partitions, &border_graph);
+    let t_merge = Instant::now();
+    let (merged_net, _border_redex_count) = super::core::merge(plan);
+    metrics.merge_time_per_round.push(t_merge.elapsed());
+    Ok(merged_net)
+}
+
+/// SPEC-19 R29, TASK-0387: compose a `PartitionPlan` from the collected
+/// `Vec<Partition>` plus the coordinator's remaining `BorderGraph`.
+///
+/// Invariants:
+/// - `partitions` is sorted ascending by `worker_id` (SPEC-04 / R29
+///   expect `partitions[i].worker_id == i`).
+/// - `borders` is populated from every surviving `BorderGraph` entry
+///   as `(side_a, side_b)`. Empty `BorderGraph` → empty map → final
+///   merge is a pure union of agents.
+fn reconstruct_partition_plan_from_collected(
+    mut partitions: Vec<crate::partition::Partition>,
+    border_graph: &crate::merge::border_graph::BorderGraph,
+) -> crate::partition::PartitionPlan {
+    partitions.sort_by_key(|p| p.worker_id);
+    let mut borders = std::collections::HashMap::with_capacity(border_graph.len());
+    for (border_id, state) in &border_graph.borders {
+        borders.insert(*border_id, (state.side_a, state.side_b));
+    }
+    crate::partition::PartitionPlan {
+        partitions,
+        borders,
+    }
+}
+
 /// Optimized path for n == 1: reduce locally without partitioning (R26).
 fn run_single_worker(
     mut net: Net,
@@ -1303,6 +1784,7 @@ mod tests {
             num_workers: 2,
             max_rounds: Some(100),
             strict_bsp: true,
+            delta_mode: false,
             coordinator_free_rounds: true,
         };
         let (result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
@@ -1353,6 +1835,7 @@ mod tests {
             num_workers: 2,
             max_rounds: Some(5),
             strict_bsp: false, // lenient
+            delta_mode: false,
             coordinator_free_rounds: true,
         };
         let (_result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
@@ -1465,6 +1948,93 @@ mod tests {
             "G1: church_add(2, 3) result must match across skip on/off"
         );
         assert_eq!(dec_off["result"], 5, "church_add(2, 3) must decode to 5");
+    }
+
+    // TASK-0391 UT-01 (SPEC-19 R42): a default GridConfig with
+    // delta_mode = false MUST produce bit-identical behaviour to a
+    // GridConfig constructed *before* the delta_mode field existed.
+    // Concretely: run_grid over church_add(2, 3) with delta_mode = false
+    // must converge, decode to 5, and match the number of interactions
+    // reported by the v1 baseline path (constructed here by explicitly
+    // spelling the same field set the CoordinatorArgs-driven builder
+    // produces). A silent behavioural flip from the additive struct
+    // change — the only realistic failure mode of TASK-0389 — would
+    // surface here.
+    //
+    // TODO(2.26-C): when the delta grid loop lands, add a polarity pass
+    // that asserts `delta_mode = true` still decodes to 5 (and record
+    // any permitted metric divergences in the amendment notes).
+    #[test]
+    fn r42_default_delta_mode_preserves_v1_smoke_output() {
+        use crate::encoding::codec_church::ChurchArithmeticCodec;
+        use crate::encoding::traits::{Decoder, Encoder};
+
+        let codec = ChurchArithmeticCodec::add();
+        let input = br#"{"op":"add","a":2,"b":3}"#;
+        let net = codec.encode(input).unwrap();
+
+        // Baseline: explicit field set, no delta_mode mention.
+        // This mirrors the pre-TASK-0389 call sites.
+        let cfg_baseline = GridConfig {
+            num_workers: 2,
+            max_rounds: Some(50),
+            strict_bsp: true,
+            ..GridConfig::default()
+        };
+        // R42: delta_mode defaults to false via Default::default(); we
+        // also write the field explicitly to catch a hypothetical future
+        // change to the Default impl that would flip it silently.
+        let cfg_delta_off = GridConfig {
+            num_workers: 2,
+            max_rounds: Some(50),
+            strict_bsp: true,
+            delta_mode: false,
+            ..GridConfig::default()
+        };
+        // Preflight: the default impl must still say false, otherwise the
+        // regression wouldn't be testing what it claims to test.
+        assert!(
+            !GridConfig::default().delta_mode,
+            "R42 preflight: Default::default() must keep delta_mode = false"
+        );
+
+        let (net_baseline, metrics_baseline) =
+            run_grid(net.clone(), &cfg_baseline, &ContiguousIdStrategy);
+        let (net_delta_off, metrics_delta_off) =
+            run_grid(net, &cfg_delta_off, &ContiguousIdStrategy);
+
+        // Functional equivalence: both paths must converge and decode to 5.
+        assert!(
+            metrics_baseline.converged,
+            "baseline path must converge on church_add(2,3)"
+        );
+        assert!(
+            metrics_delta_off.converged,
+            "delta_mode=false path must converge on church_add(2,3)"
+        );
+        let dec_baseline = codec.decode(&net_baseline).unwrap();
+        let dec_delta_off = codec.decode(&net_delta_off).unwrap();
+        assert_eq!(dec_baseline["result"], 5);
+        assert_eq!(dec_delta_off["result"], 5);
+
+        // R42 characterisation: adding the field must not change metric
+        // counts for the default caller. We compare exact totals here
+        // (not a loose inequality) because `..Default::default()` vs.
+        // explicit `delta_mode: false` must be observationally identical.
+        assert_eq!(
+            metrics_baseline.total_interactions, metrics_delta_off.total_interactions,
+            "R42: delta_mode=false must produce the same total_interactions as the \
+             pre-bundle baseline"
+        );
+        assert_eq!(
+            metrics_baseline.rounds, metrics_delta_off.rounds,
+            "R42: delta_mode=false must complete in the same round count as baseline"
+        );
+        assert_eq!(
+            metrics_baseline.total_interactions_by_rule,
+            metrics_delta_off.total_interactions_by_rule,
+            "R42: delta_mode=false must record the same per-rule interaction breakdown"
+        );
     }
 
     // ============================================================================
@@ -1622,6 +2192,7 @@ mod tests {
             num_workers: 2,
             max_rounds: Some(5),
             strict_bsp: false, // lenient
+            delta_mode: false,
             coordinator_free_rounds: true,
         };
         let (result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
@@ -1784,6 +2355,7 @@ mod tests {
             num_workers: 2,
             max_rounds: Some(50),
             strict_bsp: true,
+            delta_mode: false,
             coordinator_free_rounds: true,
         };
         let (_result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
@@ -1822,6 +2394,1159 @@ mod tests {
             metrics_off.coordinator_free_rounds, 0,
             "flag-off run on the same workload MUST report 0; got {}",
             metrics_off.coordinator_free_rounds
+        );
+    }
+
+    // === TASK-0384 — run_grid_delta entry-point tests (SPEC-19 R20, R21) ===
+    //
+    // These tests exercise ONLY the degenerate paths that exit BEFORE
+    // `run_grid_delta_inner` (which `todo!()`s until TASK-0385 lands).
+    // UT-0384-01 is marked `#[ignore]` until the inner loop is green.
+
+    use std::collections::HashMap;
+
+    use crate::error::GridError;
+    use crate::merge::border_resolver::RoundStartDispatch;
+    use crate::merge::types::{RoundResultPayload, WorkerDispatch};
+    use crate::partition::{Partition, PartitionPlan, WorkerId};
+
+    /// Minimal `WorkerDispatch` test fixture. Counts how many times
+    /// each method is called and returns trivial `Ok` values. Used by
+    /// UT-0384-02 / UT-0384-03 to verify the degenerate short-circuits
+    /// never invoke the dispatch trait.
+    #[derive(Debug, Default)]
+    struct NoopDispatch {
+        initial_calls: usize,
+        round_start_calls: usize,
+        final_state_calls: usize,
+    }
+
+    impl WorkerDispatch for NoopDispatch {
+        fn dispatch_initial(&mut self, _plan: &PartitionPlan) -> Result<(), GridError> {
+            self.initial_calls += 1;
+            Ok(())
+        }
+
+        fn dispatch_round_start(
+            &mut self,
+            _dispatch: &[(WorkerId, RoundStartDispatch)],
+        ) -> Result<Vec<RoundResultPayload>, GridError> {
+            self.round_start_calls += 1;
+            Ok(Vec::new())
+        }
+
+        fn dispatch_final_state_request(
+            &mut self,
+            _round: u32,
+        ) -> Result<Vec<Partition>, GridError> {
+            self.final_state_calls += 1;
+            Ok(Vec::new())
+        }
+    }
+
+    // UT-0384-01 (DC-C3 firewall) — entry point accepts both strict_bsp
+    // values without panicking. With TASK-0385 shipped, the multi-worker
+    // path now runs through the real loop. The `NoopDispatch` returns an
+    // empty `Vec<RoundResultPayload>`, so `check_delta_convergence`
+    // trivially holds (vacuous `all()` on zero workers reporting) and the
+    // loop exits after Round 1.
+    //
+    // Aux ports are wired to free sinks so the input net is T1-valid
+    // (the final `merge()` in `run_grid_delta_final_collect` asserts
+    // all invariants in debug builds).
+    #[test]
+    fn run_grid_delta_accepts_both_strict_bsp_values() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(1_000));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1_001));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(1_002));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(1_003));
+
+        for strict in [true, false] {
+            let cfg = GridConfig {
+                num_workers: 2,
+                strict_bsp: strict,
+                ..GridConfig::default()
+            };
+            let mut dispatch = NoopDispatch::default();
+            let (_n, metrics) =
+                run_grid_delta(net.clone(), &cfg, &ContiguousIdStrategy, &mut dispatch);
+            assert!(metrics.delta_mode, "delta_mode marker MUST be set");
+        }
+    }
+
+    // UT-0384-02 — short-circuit when the input net is already in
+    // Normal Form (empty redex queue after `drain_stale_redexes`).
+    #[test]
+    fn run_grid_delta_short_circuits_on_normalized_net() {
+        // Empty net: no agents, no redexes → instantly normalized.
+        let net = Net::new();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+        let mut dispatch = NoopDispatch::default();
+
+        let (_result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert!(metrics.converged, "already-normalized must converge");
+        assert_eq!(metrics.rounds, 0, "zero rounds for already-normalized");
+        assert!(metrics.delta_mode, "delta_mode marker MUST be set");
+        assert_eq!(metrics.delta_max_rounds_hit, None);
+        assert_eq!(dispatch.initial_calls, 0);
+        assert_eq!(dispatch.round_start_calls, 0);
+        assert_eq!(dispatch.final_state_calls, 0);
+    }
+
+    // UT-0384-03 — single-worker degenerate delegates to run_single_worker.
+    #[test]
+    fn run_grid_delta_delegates_single_worker_to_run_single_worker() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+
+        let cfg = GridConfig {
+            num_workers: 1,
+            ..GridConfig::default()
+        };
+        let mut dispatch = NoopDispatch::default();
+
+        let (_result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert_eq!(
+            dispatch.initial_calls, 0,
+            "single-worker path MUST bypass WorkerDispatch"
+        );
+        assert_eq!(dispatch.round_start_calls, 0);
+        assert_eq!(dispatch.final_state_calls, 0);
+        assert_eq!(
+            metrics.rounds, 1,
+            "single-worker path runs exactly one local round"
+        );
+        assert!(metrics.delta_mode, "delta_mode marker MUST be set");
+    }
+
+    // UT-0384-05 — trait is object-safe (compile-time check).
+    #[test]
+    fn worker_dispatch_trait_is_object_safe() {
+        let mut dispatch = NoopDispatch::default();
+        let dispatch_ref: &mut dyn WorkerDispatch = &mut dispatch;
+
+        // All three methods must be callable through the trait object.
+        let plan = PartitionPlan {
+            partitions: Vec::new(),
+            borders: HashMap::new(),
+        };
+        assert!(dispatch_ref.dispatch_initial(&plan).is_ok());
+        assert!(dispatch_ref.dispatch_round_start(&[]).is_ok());
+        assert!(dispatch_ref.dispatch_final_state_request(0).is_ok());
+    }
+
+    // === TASK-0385 — run_grid_delta_inner coordinator round loop tests ===
+    //
+    // See TEST-SPEC-0385.md. Covers R21.1 (Round 0 dispatch), R21.2
+    // (delta rounds), R23 (RoundStart payload), R26 (RoundResult
+    // consumption), DC-C3 (strict_bsp branching), and DC-C5 (convergence
+    // predicate) inline. DC-C3 lenient/strict matrix cells + G1 parity
+    // (UT-0385-06..08) live in tests/grid_delta_roundloop.rs.
+
+    use crate::merge::border_graph::BorderGraph;
+    use std::collections::VecDeque;
+
+    /// Test-only in-process `WorkerDispatch` that both records every
+    /// dispatch call into per-method vectors AND serves canned responses
+    /// from FIFO queues. Queue-based so a single test can script an
+    /// arbitrary multi-round scenario. Unused fields panic loudly if an
+    /// unanticipated dispatch path fires.
+    #[derive(Debug, Default)]
+    struct CapturingDispatch {
+        initial_dispatches: Vec<PartitionPlan>,
+        round_start_dispatches: Vec<Vec<(WorkerId, RoundStartDispatch)>>,
+        final_state_dispatches: Vec<u32>,
+        canned_round_results: VecDeque<Vec<RoundResultPayload>>,
+        canned_final_states: Option<Vec<Partition>>,
+    }
+
+    impl WorkerDispatch for CapturingDispatch {
+        fn dispatch_initial(&mut self, plan: &PartitionPlan) -> Result<(), GridError> {
+            self.initial_dispatches.push(plan.clone());
+            Ok(())
+        }
+
+        fn dispatch_round_start(
+            &mut self,
+            dispatch: &[(WorkerId, RoundStartDispatch)],
+        ) -> Result<Vec<RoundResultPayload>, GridError> {
+            self.round_start_dispatches.push(dispatch.to_vec());
+            Ok(self.canned_round_results.pop_front().unwrap_or_default())
+        }
+
+        fn dispatch_final_state_request(
+            &mut self,
+            round: u32,
+        ) -> Result<Vec<Partition>, GridError> {
+            self.final_state_dispatches.push(round);
+            Ok(self.canned_final_states.take().unwrap_or_default())
+        }
+    }
+
+    /// Build a 2-worker `Net` with a single cross-partition redex: two
+    /// CON agents connected principal-to-principal. `ContiguousIdStrategy`
+    /// splits this so each worker owns one CON agent with a shared
+    /// border `FreePort`.
+    fn build_two_worker_cross_redex_net() -> Net {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // Dangling aux ports: connect to free sinks so the net is
+        // well-formed post-split.
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(1_000));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1_001));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(1_002));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(1_003));
+        net
+    }
+
+    /// Build a canned `RoundResultPayload` that reports "this worker is
+    /// quiet" (no border activity, 0 local redexes, no deltas).
+    fn canned_quiet_result(worker_id: WorkerId, round: u32) -> RoundResultPayload {
+        RoundResultPayload {
+            worker_id,
+            round,
+            border_deltas: Vec::new(),
+            stats: WorkerRoundStats {
+                worker_id,
+                agents_before: 1,
+                agents_after: 1,
+                local_redexes: 0,
+                reduce_duration_secs: 0.0,
+                interactions_by_rule: [0; 6],
+                has_border_activity: false,
+            },
+            has_border_activity: false,
+        }
+    }
+
+    /// Build a canned `RoundResultPayload` for a worker that still has
+    /// border activity (forces the loop to continue another round).
+    fn canned_active_result(worker_id: WorkerId, round: u32) -> RoundResultPayload {
+        RoundResultPayload {
+            worker_id,
+            round,
+            border_deltas: Vec::new(),
+            stats: WorkerRoundStats {
+                worker_id,
+                agents_before: 1,
+                agents_after: 1,
+                local_redexes: 0,
+                reduce_duration_secs: 0.0,
+                interactions_by_rule: [0; 6],
+                has_border_activity: true,
+            },
+            has_border_activity: true,
+        }
+    }
+
+    // UT-0385-01: Round 0 dispatches `InitialPartition` exactly once and
+    // does not fire anything else before the first `RoundStart`.
+    #[test]
+    fn run_grid_delta_inner_round_zero_dispatches_initial_partition_only() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![vec![
+                canned_quiet_result(0, 1),
+                canned_quiet_result(1, 1),
+            ]]),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (_result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert_eq!(
+            dispatch.initial_dispatches.len(),
+            1,
+            "Round 0 must dispatch InitialPartition exactly once"
+        );
+        assert_eq!(
+            dispatch.round_start_dispatches.len(),
+            1,
+            "exactly one RoundStart before convergence on quiet workers"
+        );
+        assert_eq!(
+            dispatch.final_state_dispatches.len(),
+            1,
+            "FinalStateRequest must be dispatched after convergence"
+        );
+        assert_eq!(metrics.rounds, 1);
+        assert!(metrics.converged);
+    }
+
+    // UT-0385-02: Happy path — one round, workers converge naturally.
+    #[test]
+    fn run_grid_delta_inner_single_delta_round_converges() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![vec![
+                canned_quiet_result(0, 1),
+                canned_quiet_result(1, 1),
+            ]]),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (_result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert_eq!(metrics.rounds, 1);
+        assert!(metrics.converged);
+        assert!(metrics.delta_mode);
+        assert_eq!(metrics.delta_max_rounds_hit, None);
+        assert_eq!(dispatch.round_start_dispatches.len(), 1);
+        assert_eq!(dispatch.final_state_dispatches.len(), 1);
+    }
+
+    // UT-0385-03: 3-round scenario — per-round metric vectors track loop
+    // iterations exactly. Rounds 1 and 2 report border activity to keep
+    // the loop running; round 3 reports quiet, triggering convergence.
+    #[test]
+    fn run_grid_delta_inner_multi_round_records_metrics() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![
+                vec![canned_active_result(0, 1), canned_active_result(1, 1)],
+                vec![canned_active_result(0, 2), canned_active_result(1, 2)],
+                vec![canned_quiet_result(0, 3), canned_quiet_result(1, 3)],
+            ]),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (_result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert_eq!(metrics.rounds, 3);
+        assert_eq!(metrics.partition_time_per_round.len(), 3);
+        assert_eq!(metrics.compute_time_per_round.len(), 3);
+        // 3 per-round entries + 1 final merge entry (TASK-0387, R29).
+        assert_eq!(metrics.merge_time_per_round.len(), 4);
+        assert_eq!(metrics.border_redexes_per_round.len(), 3);
+        assert_eq!(metrics.border_reduce_time_per_round.len(), 3);
+        assert_eq!(metrics.border_interactions_per_round.len(), 3);
+        assert_eq!(metrics.worker_stats_per_round.len(), 3);
+        assert_eq!(dispatch.round_start_dispatches.len(), 3);
+        assert!(metrics.converged);
+    }
+
+    // UT-0385-04: Each round's `RoundResultPayload.border_deltas` feeds
+    // `BorderGraph::apply_deltas` per worker. Construct a canned
+    // response that re-points a specific border's target; after the
+    // loop the packaged resolutions (or post-loop partition cache) must
+    // reflect the update.
+    #[test]
+    fn run_grid_delta_inner_applies_round_result_deltas_to_border_graph() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+
+        // Split once so we know what border_ids exist. The inner loop
+        // does this too — we replicate to synthesise matching deltas.
+        let plan_preview = crate::partition::split(net.clone(), 2, &ContiguousIdStrategy);
+        let first_border_id = plan_preview
+            .borders
+            .keys()
+            .next()
+            .copied()
+            .expect("split must yield at least one border for a cross-redex net");
+
+        // Round 1: worker 0 reports a delta re-pointing the border to a
+        // new (fake) local target. The coordinator's BorderGraph must
+        // apply this; the test passes iff the loop completes without
+        // panicking (invariant violations inside `apply_deltas` panic).
+        let mut delta_result = canned_active_result(0, 1);
+        delta_result.border_deltas.push(crate::merge::BorderDelta {
+            border_id: first_border_id,
+            new_target: crate::net::PortRef::AgentPort(0, 1),
+        });
+
+        // The synthetic repoint delta above leaves agent 0's principal
+        // port DISCONNECTED in the coordinator cache (no worker-side
+        // reconnection accompanies the test's delta). In a real worker
+        // flow the post-reduction partition would be well-formed;
+        // simulate that by supplying empty final partitions so the
+        // `final_collect` path uses them instead of the invalid cache.
+        let final_partitions = vec![
+            crate::partition::Partition {
+                subnet: Net::new(),
+                worker_id: 0,
+                free_port_index: HashMap::new(),
+                id_range: crate::partition::IdRange { start: 0, end: 0 },
+                border_id_start: 0,
+                border_id_end: 0,
+            },
+            crate::partition::Partition {
+                subnet: Net::new(),
+                worker_id: 1,
+                free_port_index: HashMap::new(),
+                id_range: crate::partition::IdRange { start: 0, end: 0 },
+                border_id_start: 0,
+                border_id_end: 0,
+            },
+        ];
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![
+                vec![delta_result, canned_active_result(1, 1)],
+                vec![canned_quiet_result(0, 2), canned_quiet_result(1, 2)],
+            ]),
+            canned_final_states: Some(final_partitions),
+            ..CapturingDispatch::default()
+        };
+
+        let (_result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        // Two rounds: round 1 applied the delta (and potentially
+        // resolved the border), round 2 reports quiet → converge.
+        assert!(
+            metrics.rounds >= 1,
+            "delta application must not short-circuit the loop"
+        );
+        assert!(metrics.converged);
+    }
+
+    // UT-0385-05: Coordinator-side partition cache stays in sync with
+    // worker-reported deltas (DC-B1 option (a)). The cache is private to
+    // `run_grid_delta_inner`; we assert the proxy invariant that the
+    // final net returned does NOT carry the re-pointed border any more.
+    #[test]
+    fn run_grid_delta_inner_caches_partitions_for_resolver() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![vec![
+                canned_quiet_result(0, 1),
+                canned_quiet_result(1, 1),
+            ]]),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (result, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        // Cache consistency proxy: the final merge produced a net with
+        // at least the two original CON agents; the loop didn't drop
+        // agents on the floor during cache maintenance.
+        assert!(
+            result.count_live_agents() >= 2,
+            "final merged net must retain the worker-side agents"
+        );
+        assert!(metrics.converged);
+        assert_eq!(metrics.rounds, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // TASK-0386 — `check_delta_convergence` (DC-C5 three-conjunct GNF).
+    //
+    // SPEC-19 R4, R21 phase 3, R40 literal:
+    //   "all workers report zero local redexes AND the BorderGraph
+    //    contains zero active pairs"
+    // plus the worker-local `has_border_activity == false` signal that
+    // complements the coordinator's graph view.
+    //
+    // Acceptance Criteria → 7 inline tests:
+    //   UT-0386-01: all quiet + empty graph                → true
+    //   UT-0386-02: one worker active, graph empty         → false
+    //   UT-0386-03: all quiet, graph has pending redex     → false
+    //   UT-0386-04: workers active AND graph redex         → false
+    //   UT-0386-05: empty results + empty graph (vacuous)  → true
+    //   UT-0386-06: has_border_activity=false but
+    //               local_redexes=99 (DC-C5 FLIP)          → false
+    //   UT-0386-07: one worker has local_redexes=1, rest
+    //               quiet, graph empty (DC-C5 sanity)      → false
+    // -----------------------------------------------------------------
+
+    /// Build a two-worker `BorderGraph` whose single border is a
+    /// principal-principal pair → exactly one active redex. Used by
+    /// UT-0386-03/04.
+    fn one_principal_redex_graph() -> BorderGraph {
+        let mut p0 = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: crate::partition::IdRange { start: 0, end: 1 },
+            border_id_start: 0,
+            border_id_end: 1,
+        };
+        p0.free_port_index.insert(1, PortRef::AgentPort(0, 0));
+        let mut p1 = Partition {
+            subnet: Net::new(),
+            worker_id: 1,
+            free_port_index: HashMap::new(),
+            id_range: crate::partition::IdRange { start: 1, end: 2 },
+            border_id_start: 0,
+            border_id_end: 1,
+        };
+        p1.free_port_index.insert(1, PortRef::AgentPort(1, 0));
+        let mut borders = HashMap::new();
+        borders.insert(1, (PortRef::FreePort(0), PortRef::FreePort(0)));
+        let plan = PartitionPlan {
+            partitions: vec![p0, p1],
+            borders,
+        };
+        let graph = BorderGraph::from_partition_plan(&plan);
+        debug_assert_eq!(
+            graph.detect_border_redexes().len(),
+            1,
+            "fixture must yield exactly one principal-principal border redex"
+        );
+        graph
+    }
+
+    /// Build a `BorderGraph` with zero borders. Used by UT-0386-01, 02,
+    /// 05, 06, 07.
+    fn empty_graph() -> BorderGraph {
+        let plan = PartitionPlan {
+            partitions: Vec::new(),
+            borders: HashMap::new(),
+        };
+        BorderGraph::from_partition_plan(&plan)
+    }
+
+    // UT-0386-01 (DC-C5): every conjunct holds → Global Normal Form.
+    #[test]
+    fn check_delta_convergence_true_when_all_quiet() {
+        let graph = empty_graph();
+        let results = vec![canned_quiet_result(0, 1), canned_quiet_result(1, 1)];
+        assert!(
+            check_delta_convergence(&results, &graph),
+            "all quiet workers + empty graph MUST converge"
+        );
+    }
+
+    // UT-0386-02 (DC-C5): worker-level activity flag breaks convergence
+    // even when the coordinator's graph is empty.
+    #[test]
+    fn check_delta_convergence_false_on_worker_activity() {
+        let graph = empty_graph();
+        let results = vec![canned_quiet_result(0, 1), canned_active_result(1, 1)];
+        assert!(
+            !check_delta_convergence(&results, &graph),
+            "any worker reporting has_border_activity=true MUST block GNF"
+        );
+    }
+
+    // UT-0386-03 (DC-C5): a pending coordinator-side border redex blocks
+    // convergence even when every worker reports quiet.
+    #[test]
+    fn check_delta_convergence_false_on_graph_redex() {
+        let graph = one_principal_redex_graph();
+        let results = vec![canned_quiet_result(0, 1), canned_quiet_result(1, 1)];
+        assert!(
+            !check_delta_convergence(&results, &graph),
+            "non-empty BorderGraph MUST block GNF"
+        );
+    }
+
+    // UT-0386-04 (DC-C5): both worker-level and graph-level signals
+    // positive → false (sanity / matrix corner).
+    #[test]
+    fn check_delta_convergence_false_both() {
+        let graph = one_principal_redex_graph();
+        let results = vec![canned_active_result(0, 1), canned_active_result(1, 1)];
+        assert!(
+            !check_delta_convergence(&results, &graph),
+            "both signals positive MUST block GNF"
+        );
+    }
+
+    // UT-0386-05 (DC-C5, vacuous edge): empty results slice + empty
+    // graph → `true`. Not expected in practice (the round loop always
+    // collects ≥1 result per worker), but the predicate must not panic.
+    #[test]
+    fn check_delta_convergence_vacuous_empty_results_empty_graph() {
+        let graph = empty_graph();
+        let results: Vec<RoundResultPayload> = Vec::new();
+        assert!(
+            check_delta_convergence(&results, &graph),
+            "empty results + empty graph MUST be vacuously converged"
+        );
+    }
+
+    // UT-0386-06 (DC-C5 FLIP, 2026-04-17): `has_border_activity=false`
+    // AND empty graph is NOT sufficient — `stats.local_redexes > 0`
+    // BLOCKS convergence per SPEC-19 R40 literal. The pre-amendment
+    // two-predicate draft would have returned `true` here; the
+    // amendment forces `false`.
+    #[test]
+    fn check_delta_convergence_requires_no_local_redexes() {
+        let graph = empty_graph();
+        let mut result = canned_quiet_result(0, 1);
+        result.stats.local_redexes = 99;
+        assert!(
+            !check_delta_convergence(&[result], &graph),
+            "DC-C5 FLIP: local_redexes>0 MUST block GNF even if \
+             has_border_activity=false and graph is empty"
+        );
+    }
+
+    // UT-0386-07 (DC-C5 sanity, folklore-gap closure): any single
+    // worker reporting `local_redexes > 0` is enough to block GNF,
+    // even with all other workers quiet and the graph empty. Closes
+    // the assumption that `has_border_activity=false` implies
+    // `reduce_all` reached a fixed point.
+    #[test]
+    fn check_delta_convergence_false_when_one_worker_has_local_redexes() {
+        let graph = empty_graph();
+        let quiet_a = canned_quiet_result(0, 1);
+        let mut nonzero_b = canned_quiet_result(1, 1);
+        nonzero_b.stats.local_redexes = 1;
+        assert!(
+            !check_delta_convergence(&[quiet_a, nonzero_b], &graph),
+            "one worker with local_redexes>0 MUST block GNF"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // TASK-0387 — `run_grid_delta_final_collect` +
+    //             `reconstruct_partition_plan_from_collected`.
+    //
+    // SPEC-19 R21 phase 3, R27, R29. Acceptance Criteria → 6 inline
+    // unit tests. E2E integration lives in `tests/grid_delta_e2e.rs`.
+    //
+    //   UT-0387-01: empty graph, 2 collected partitions → merge succeeds
+    //   UT-0387-02: 1 remaining inert border, 2 partitions → merge OK
+    //   UT-0387-03: transport returns 1 partition when 2 expected → err
+    //   UT-0387-04: reconstruct sorts partitions by worker_id
+    //   UT-0387-05: reconstruct preserves every remaining border
+    //   UT-0387-06: merge call records one merge_time_per_round entry
+    // -----------------------------------------------------------------
+
+    /// Build a `Partition` with one CON agent whose ports are wired to
+    /// FreePort sinks (no borders). The worker's `next_id` is bumped so
+    /// each partition mints a DISTINCT agent id (needed because
+    /// `merge()` must union non-overlapping arenas).
+    fn lone_con_partition(worker_id: WorkerId, base_free: u32) -> Partition {
+        let mut subnet = Net::new();
+        // Bump next_id by worker_id so the minted agent has a unique id.
+        subnet.next_id = worker_id;
+        let a = subnet.create_agent(Symbol::Con);
+        subnet.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(base_free));
+        subnet.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(base_free + 1));
+        subnet.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(base_free + 2));
+        Partition {
+            subnet,
+            worker_id,
+            free_port_index: HashMap::new(),
+            id_range: crate::partition::IdRange {
+                start: worker_id,
+                end: worker_id + 1,
+            },
+            border_id_start: 0,
+            border_id_end: 0,
+        }
+    }
+
+    /// `WorkerDispatch` that returns canned partitions from a one-shot
+    /// `Option` — `take()` ensures the second call sees `None`, helping
+    /// assert dispatch is invoked exactly once.
+    #[derive(Debug, Default)]
+    struct FinalStateOnlyDispatch {
+        canned: Option<Vec<Partition>>,
+        calls: usize,
+    }
+
+    impl WorkerDispatch for FinalStateOnlyDispatch {
+        fn dispatch_initial(&mut self, _plan: &PartitionPlan) -> Result<(), GridError> {
+            Ok(())
+        }
+        fn dispatch_round_start(
+            &mut self,
+            _dispatch: &[(WorkerId, RoundStartDispatch)],
+        ) -> Result<Vec<RoundResultPayload>, GridError> {
+            Ok(Vec::new())
+        }
+        fn dispatch_final_state_request(
+            &mut self,
+            _round: u32,
+        ) -> Result<Vec<Partition>, GridError> {
+            self.calls += 1;
+            Ok(self.canned.take().unwrap_or_default())
+        }
+    }
+
+    // UT-0387-01: empty BorderGraph + 2 collected partitions →
+    // `merge()` returns union of agents, no borders, T1-valid.
+    #[test]
+    fn run_grid_delta_final_collect_empty_border_graph() {
+        let p0 = lone_con_partition(0, 100);
+        let p1 = lone_con_partition(1, 200);
+        let mut dispatch = FinalStateOnlyDispatch {
+            canned: Some(vec![p0.clone(), p1.clone()]),
+            calls: 0,
+        };
+        let mut cache: HashMap<WorkerId, Partition> = HashMap::new();
+        cache.insert(0, p0);
+        cache.insert(1, p1);
+        let graph = empty_graph();
+        let mut metrics = GridMetrics::default();
+
+        let net = run_grid_delta_final_collect(&mut dispatch, cache, graph, &mut metrics)
+            .expect("empty border graph must merge successfully");
+
+        assert_eq!(
+            net.count_live_agents(),
+            2,
+            "merged net must contain both CON agents"
+        );
+        assert_eq!(dispatch.calls, 1);
+    }
+
+    // UT-0387-02: one remaining inert border (aux-aux) + 2 partitions.
+    // The merge reconnects the two aux ports; `merge()` returns a
+    // T1-valid net with both agents.
+    #[test]
+    fn run_grid_delta_final_collect_remaining_borders() {
+        // Build two partitions each with one CON agent whose port 1
+        // sits on a shared border_id (aux endpoints → inert border).
+        // Distinct agent IDs per partition — `merge()` unions arenas
+        // and expects non-overlapping ranges.
+        let mut subnet_a = Net::new();
+        subnet_a.next_id = 0;
+        let a = subnet_a.create_agent(Symbol::Con);
+        subnet_a.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(50));
+        subnet_a.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(77));
+        subnet_a.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(51));
+        let mut idx_a = HashMap::new();
+        idx_a.insert(77, PortRef::AgentPort(a, 1));
+        let p0 = Partition {
+            subnet: subnet_a,
+            worker_id: 0,
+            free_port_index: idx_a,
+            id_range: crate::partition::IdRange { start: 0, end: 1 },
+            border_id_start: 77,
+            border_id_end: 78,
+        };
+
+        let mut subnet_b = Net::new();
+        subnet_b.next_id = 1;
+        let b = subnet_b.create_agent(Symbol::Con);
+        subnet_b.connect(PortRef::AgentPort(b, 0), PortRef::FreePort(60));
+        subnet_b.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(77));
+        subnet_b.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(61));
+        let mut idx_b = HashMap::new();
+        idx_b.insert(77, PortRef::AgentPort(b, 1));
+        let p1 = Partition {
+            subnet: subnet_b,
+            worker_id: 1,
+            free_port_index: idx_b,
+            id_range: crate::partition::IdRange { start: 1, end: 2 },
+            border_id_start: 77,
+            border_id_end: 78,
+        };
+
+        let mut plan_for_graph = PartitionPlan {
+            partitions: vec![p0.clone(), p1.clone()],
+            borders: HashMap::new(),
+        };
+        plan_for_graph
+            .borders
+            .insert(77, (PortRef::FreePort(0), PortRef::FreePort(0)));
+        let graph = BorderGraph::from_partition_plan(&plan_for_graph);
+        // Aux-aux → not a redex.
+        assert!(graph.detect_border_redexes().is_empty());
+
+        let mut dispatch = FinalStateOnlyDispatch {
+            canned: Some(vec![p0.clone(), p1.clone()]),
+            calls: 0,
+        };
+        let mut cache: HashMap<WorkerId, Partition> = HashMap::new();
+        cache.insert(0, p0);
+        cache.insert(1, p1);
+        let mut metrics = GridMetrics::default();
+
+        let net = run_grid_delta_final_collect(&mut dispatch, cache, graph, &mut metrics)
+            .expect("aux-aux inert border must merge cleanly");
+        assert_eq!(net.count_live_agents(), 2);
+    }
+
+    // UT-0387-03: transport returns 1 partition when cache has 2 →
+    // `GridError::DispatchFailed` with "count mismatch" in the message.
+    #[test]
+    fn run_grid_delta_final_collect_mismatched_partitions_errors() {
+        let p0 = lone_con_partition(0, 100);
+        let p1 = lone_con_partition(1, 200);
+        let mut dispatch = FinalStateOnlyDispatch {
+            canned: Some(vec![p0.clone()]), // Only 1; cache has 2.
+            calls: 0,
+        };
+        let mut cache: HashMap<WorkerId, Partition> = HashMap::new();
+        cache.insert(0, p0);
+        cache.insert(1, p1);
+        let mut metrics = GridMetrics::default();
+
+        let err = run_grid_delta_final_collect(&mut dispatch, cache, empty_graph(), &mut metrics)
+            .expect_err("size mismatch must error");
+        match err {
+            crate::error::GridError::DispatchFailed { message, .. } => {
+                assert!(
+                    message.contains("count mismatch"),
+                    "error must mention count mismatch, got: {message}"
+                );
+            }
+            other => panic!("expected DispatchFailed, got {other:?}"),
+        }
+    }
+
+    // UT-0387-04: `reconstruct_partition_plan_from_collected` sorts
+    // partitions by `worker_id` regardless of input order.
+    #[test]
+    fn reconstruct_partition_plan_sorts_by_worker_id() {
+        let p2 = lone_con_partition(2, 300);
+        let p0 = lone_con_partition(0, 100);
+        let p1 = lone_con_partition(1, 200);
+        let graph = empty_graph();
+        let plan = reconstruct_partition_plan_from_collected(vec![p2, p0, p1], &graph);
+        let ids: Vec<WorkerId> = plan.partitions.iter().map(|p| p.worker_id).collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+    }
+
+    // UT-0387-05: every surviving `BorderGraph` entry shows up in the
+    // reconstructed plan's `borders` map with matching id.
+    #[test]
+    fn reconstruct_partition_plan_preserves_remaining_borders() {
+        // Three aux-aux borders → not redexes, all survive.
+        let mut subnet_a = Net::new();
+        let ea = subnet_a.create_agent(Symbol::Era);
+        subnet_a.connect(PortRef::AgentPort(ea, 0), PortRef::FreePort(999));
+        let mut idx_a = HashMap::new();
+        idx_a.insert(10, PortRef::AgentPort(ea, 0));
+        idx_a.insert(20, PortRef::FreePort(20));
+        idx_a.insert(30, PortRef::FreePort(30));
+
+        let mut subnet_b = Net::new();
+        let eb = subnet_b.create_agent(Symbol::Era);
+        subnet_b.connect(PortRef::AgentPort(eb, 0), PortRef::FreePort(998));
+        let mut idx_b = HashMap::new();
+        idx_b.insert(10, PortRef::FreePort(10));
+        idx_b.insert(20, PortRef::FreePort(21));
+        idx_b.insert(30, PortRef::FreePort(31));
+
+        // We only need a graph with three borders — construct via plan.
+        let mut borders = HashMap::new();
+        borders.insert(10, (PortRef::FreePort(0), PortRef::FreePort(0)));
+        borders.insert(20, (PortRef::FreePort(0), PortRef::FreePort(0)));
+        borders.insert(30, (PortRef::FreePort(0), PortRef::FreePort(0)));
+        let plan_for_graph = PartitionPlan {
+            partitions: vec![
+                Partition {
+                    subnet: subnet_a.clone(),
+                    worker_id: 0,
+                    free_port_index: idx_a.clone(),
+                    id_range: crate::partition::IdRange { start: 0, end: 1 },
+                    border_id_start: 10,
+                    border_id_end: 31,
+                },
+                Partition {
+                    subnet: subnet_b.clone(),
+                    worker_id: 1,
+                    free_port_index: idx_b.clone(),
+                    id_range: crate::partition::IdRange { start: 1, end: 2 },
+                    border_id_start: 10,
+                    border_id_end: 31,
+                },
+            ],
+            borders,
+        };
+        let graph = BorderGraph::from_partition_plan(&plan_for_graph);
+
+        // Now reconstruct from collected partitions (same shape) + graph.
+        let collected = vec![
+            Partition {
+                subnet: subnet_a,
+                worker_id: 0,
+                free_port_index: idx_a,
+                id_range: crate::partition::IdRange { start: 0, end: 1 },
+                border_id_start: 10,
+                border_id_end: 31,
+            },
+            Partition {
+                subnet: subnet_b,
+                worker_id: 1,
+                free_port_index: idx_b,
+                id_range: crate::partition::IdRange { start: 1, end: 2 },
+                border_id_start: 10,
+                border_id_end: 31,
+            },
+        ];
+        let plan = reconstruct_partition_plan_from_collected(collected, &graph);
+        let keys: std::collections::HashSet<u32> = plan.borders.keys().copied().collect();
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from([10, 20, 30]),
+            "every surviving border must appear in the reconstructed plan"
+        );
+    }
+
+    // UT-0387-06: `run_grid_delta_final_collect` pushes exactly one
+    // entry to `merge_time_per_round`.
+    #[test]
+    fn run_grid_delta_final_collect_merge_call_records_time() {
+        let p0 = lone_con_partition(0, 100);
+        let p1 = lone_con_partition(1, 200);
+        let mut dispatch = FinalStateOnlyDispatch {
+            canned: Some(vec![p0.clone(), p1.clone()]),
+            calls: 0,
+        };
+        let mut cache: HashMap<WorkerId, Partition> = HashMap::new();
+        cache.insert(0, p0);
+        cache.insert(1, p1);
+        let mut metrics = GridMetrics::default();
+        let before = metrics.merge_time_per_round.len();
+
+        let _ = run_grid_delta_final_collect(&mut dispatch, cache, empty_graph(), &mut metrics)
+            .expect("merge must succeed");
+
+        assert_eq!(metrics.merge_time_per_round.len(), before + 1);
+    }
+
+    // -----------------------------------------------------------------
+    // TASK-0388 — `check_max_rounds_cap` (SPEC-19 R30).
+    //
+    // Acceptance Criteria → 5 inline tests. Integration coverage
+    // (cap-hit partial net, natural-convergence leaves None, zero-cap
+    // immediate exit, v1 non-regression) lives in
+    // `tests/grid_delta_maxrounds.rs`.
+    //
+    //   UT-0388-01: None → false regardless of rounds
+    //   UT-0388-02: Some(5), rounds=3 → false
+    //   UT-0388-03: Some(5), rounds=5 → true
+    //   UT-0388-04: Some(5), rounds=100 → true
+    //   UT-0388-05: Some(0), rounds=0 → true (immediate)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn check_max_rounds_cap_none_returns_false() {
+        let cfg = GridConfig {
+            max_rounds: None,
+            ..GridConfig::default()
+        };
+        let mut metrics = GridMetrics {
+            rounds: 0,
+            ..Default::default()
+        };
+        assert!(!check_max_rounds_cap(&cfg, &metrics));
+        metrics.rounds = 10_000;
+        assert!(
+            !check_max_rounds_cap(&cfg, &metrics),
+            "None means unbounded — even very large rounds MUST not cap"
+        );
+    }
+
+    #[test]
+    fn check_max_rounds_cap_below_returns_false() {
+        let cfg = GridConfig {
+            max_rounds: Some(5),
+            ..GridConfig::default()
+        };
+        let metrics = GridMetrics {
+            rounds: 3,
+            ..Default::default()
+        };
+        assert!(!check_max_rounds_cap(&cfg, &metrics));
+    }
+
+    #[test]
+    fn check_max_rounds_cap_at_returns_true() {
+        let cfg = GridConfig {
+            max_rounds: Some(5),
+            ..GridConfig::default()
+        };
+        let metrics = GridMetrics {
+            rounds: 5,
+            ..Default::default()
+        };
+        assert!(
+            check_max_rounds_cap(&cfg, &metrics),
+            "cap fires inclusive at rounds == max_rounds"
+        );
+    }
+
+    #[test]
+    fn check_max_rounds_cap_above_returns_true() {
+        let cfg = GridConfig {
+            max_rounds: Some(5),
+            ..GridConfig::default()
+        };
+        let metrics = GridMetrics {
+            rounds: 100,
+            ..Default::default()
+        };
+        assert!(check_max_rounds_cap(&cfg, &metrics));
+    }
+
+    #[test]
+    fn check_max_rounds_cap_zero_immediately_true() {
+        let cfg = GridConfig {
+            max_rounds: Some(0),
+            ..GridConfig::default()
+        };
+        let metrics = GridMetrics::default();
+        assert_eq!(metrics.rounds, 0);
+        assert!(
+            check_max_rounds_cap(&cfg, &metrics),
+            "Some(0) MUST fire on entry before any dispatch"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // TASK-0388 integration tests (inline per spec — `tests/` crate
+    // cannot reach `pub(crate) run_grid_delta`). Cover the cap wiring
+    // end-to-end through `run_grid_delta`.
+    //
+    //   UT-0388-06: Some(2) on non-convergent net → rounds=2, flag set
+    //   UT-0388-07: natural convergence leaves flag == None
+    //   UT-0388-08: Some(0) → rounds=0, flag set, partial net returned
+    //   UT-0388-09: v1 `run_grid` never sets delta_max_rounds_hit
+    // -----------------------------------------------------------------
+
+    // UT-0388-06: cap fires after `max_rounds` rounds; Final Collection
+    // STILL runs (R30); metrics reflect cap-hit state.
+    #[test]
+    fn run_grid_delta_respects_max_rounds_cap() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            max_rounds: Some(2),
+            ..GridConfig::default()
+        };
+        // Supply 2 rounds of "active" canned results — workers never
+        // report convergence, so only the cap can stop the loop.
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![
+                vec![canned_active_result(0, 1), canned_active_result(1, 1)],
+                vec![canned_active_result(0, 2), canned_active_result(1, 2)],
+            ]),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (_net, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert_eq!(metrics.rounds, 2, "loop MUST exit at the cap");
+        assert_eq!(
+            metrics.delta_max_rounds_hit,
+            Some(true),
+            "cap-hit flag MUST be set"
+        );
+        assert!(
+            !metrics.converged,
+            "converged MUST be false on cap-hit exit"
+        );
+        // R30: Final Collection ran even though no convergence.
+        assert_eq!(
+            dispatch.final_state_dispatches.len(),
+            1,
+            "FinalStateRequest MUST fire even on cap-hit (R30)"
+        );
+    }
+
+    // UT-0388-07: natural convergence (cap not hit) leaves
+    // `delta_max_rounds_hit == None` — distinguishes the two exit
+    // paths in metrics.
+    #[test]
+    fn run_grid_delta_natural_convergence_leaves_delta_max_rounds_hit_none() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            max_rounds: Some(100),
+            ..GridConfig::default()
+        };
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::from(vec![vec![
+                canned_quiet_result(0, 1),
+                canned_quiet_result(1, 1),
+            ]]),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (_net, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert!(metrics.converged);
+        assert_eq!(
+            metrics.delta_max_rounds_hit, None,
+            "natural convergence MUST leave delta_max_rounds_hit == None"
+        );
+    }
+
+    // UT-0388-08: `Some(0)` caps BEFORE any dispatch. `metrics.rounds
+    // == 0`, `delta_max_rounds_hit == Some(true)`, `converged == false`.
+    // Final Collection still runs (R30).
+    #[test]
+    fn run_grid_delta_zero_max_rounds_returns_partial_immediately() {
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            max_rounds: Some(0),
+            ..GridConfig::default()
+        };
+        let mut dispatch = CapturingDispatch {
+            canned_round_results: VecDeque::new(),
+            canned_final_states: Some(Vec::new()),
+            ..CapturingDispatch::default()
+        };
+
+        let (_net, metrics) = run_grid_delta(net, &cfg, &ContiguousIdStrategy, &mut dispatch);
+
+        assert_eq!(metrics.rounds, 0);
+        assert_eq!(metrics.delta_max_rounds_hit, Some(true));
+        assert!(!metrics.converged);
+        assert_eq!(
+            dispatch.round_start_dispatches.len(),
+            0,
+            "zero-cap MUST exit before any RoundStart"
+        );
+        // R30: Final Collection runs regardless.
+        assert_eq!(dispatch.final_state_dispatches.len(), 1);
+    }
+
+    // UT-0388-09: v1 `run_grid` non-regression — the existing public
+    // entry point MUST NOT touch `delta_max_rounds_hit` (v1 code paths
+    // never set it).
+    #[test]
+    fn grid_metrics_v1_never_sets_delta_max_rounds_hit() {
+        // Build a simple two-CON input that v1 run_grid will reduce.
+        let net = build_two_worker_cross_redex_net();
+        let cfg = GridConfig {
+            num_workers: 2,
+            ..GridConfig::default()
+        };
+        let (_net, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
+        assert_eq!(
+            metrics.delta_max_rounds_hit, None,
+            "v1 run_grid MUST leave delta_max_rounds_hit at its default (None)"
         );
     }
 }

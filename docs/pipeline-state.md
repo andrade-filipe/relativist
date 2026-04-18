@@ -1,18 +1,19 @@
 # Pipeline State
 
-**Last updated:** 2026-04-17 (SPEC-19 §3.2 / item 2.35 — **all 6 stages complete; bundle shipped at 968 default / 1008 zero-copy tests, 0 bugs**)
+**Last updated:** 2026-04-18 (SPEC-19 §3.3 / item 2.26-B — **Bundle 2.26-B COMPLETE (TASK-0372..TASK-0377 DEV all green); awaiting human review at end of feature set per user directive**)
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
 
 ## Active Bundle
 
-**Bundle:** SPEC-19 §3.2 (item 2.35) — BorderGraph (coordinator-side delta-protocol connectivity tracker) — **SHIPPED**
-**Stage:** 6 of 6 — **SHIPPED.** All 6 SDD pipeline stages complete. 968 default / 1008 zero-copy tests; 0 bugs.
+**Bundle:** SPEC-19 §3.3 (item 2.26-B) — Coordinator-Side Border-Redex Resolution — **DEV COMPLETE (TASK-0372..TASK-0377 all green)**
+**Stage:** DEV finished — all 6 tasks shipped with green gates. Ready to roll forward to bundle 2.26-C (coordinator wire-layer BSP loop) without commit per user directive.
 **Branch:** `v2-development`
-**Test baseline:** 905 lib default / 945 lib `--features zero-copy` (post-SPEC-18 §3.5 ship)
-**Current test counts:** 968 lib default (+63: 50 DEV + 13 QA) / 1008 lib `--features zero-copy` (+63)
-**See:** "SPEC-19 §3.2 (item 2.35)" stage-history section below for full record.
+**Test baseline (start of bundle):** 1009 lib default / 1049 lib `--features zero-copy` (post-SPEC-19 §3.4 ship).
+**Current test counts:** **1039** lib default (+30: TASK-0372 +5, TASK-0373 +6, TASK-0374 +6, TASK-0375 +5, TASK-0376 +7, TASK-0377 +1) / **1079** lib `--features zero-copy` (+30, same set).
+**Tasks covered:** TASK-0372, TASK-0373, TASK-0374, TASK-0375, TASK-0376, TASK-0377. See the dedicated "SPEC-19 §3.3 (item 2.26-B)" stage-history section below.
+**Previous bundle:** SPEC-19 §3.4 (item 2.26-A) — Delta-Only Protocol Wire Extensions — Stages 3-6 COMPLETE 2026-04-18 (awaiting human review, not yet committed).
 
 ## Stage 5 QA Summary (SPEC-18 §3.5 / item 2.24)
 
@@ -1190,4 +1191,265 @@ Additional spec-critic observations baked in:
 6. R19 in-workspace canary green (source-file scan).
 7. `BorderGraph` + `BorderState` + `BorderDelta` + `AddBorderEntry` re-exported
    from `crate::merge::*`.
+
+---
+
+## SPEC-19 §3.4 (item 2.26-A) — Delta-Only Protocol Wire Extensions — DEV COMPLETE 2026-04-17
+
+**Started:** 2026-04-17
+**Test baseline before this work:** 968 lib default / 1008 lib `--features zero-copy`.
+**Spec anchors:** SPEC-19 §3.4 R33 amendments (2026-04-17) — DC-A1, DC-A2, DC-B3, DC-B5.
+
+**Bundle scope (2.26-A — wire layer only):** 5 new `Message` variants
+(`InitialPartition`, `RoundStart`, `RoundResult`, `FinalStateRequest`,
+`FinalStateResult` at discriminants 7..=11) + merge-owned wire structs
+(`BorderDelta`, `LocalReconnection`, `PendingCommutation`, `MintedAgent`)
+serde-derived and re-exported from `crate::protocol::*` for wire callers.
+Explicitly **OUT of scope** (ships under 2.26-B and 2.26-C): coordinator
+dispatch of delta rounds (`run_grid_delta`), worker-side stateful
+reduction handlers, `GridConfig.delta_mode` flag.
+
+### Stage History
+
+- [x] **SPLITTING** (2026-04-17): 6 atomic tasks (TASK-0366..0371) created
+  in `docs/backlog/` covering DC-A1 serde+re-export, DC-A2 equality,
+  DC-B3 `LocalReconnection`, DC-B5 2-phase AgentId alloc, 5 new Message
+  variants, and discriminant stability R37.
+- [x] **SPEC-CRITIC** (2026-04-17): R33 amendments ratified inline in
+  SPEC-19 §3.4 (`specs/SPEC-19-distribution-protocol.md`). No new DC
+  review file for 2.26-A (decisions are embedded in the spec text).
+- [x] **TESTS** (2026-04-17): TEST-SPECs for TASK-0366..0371 in
+  `docs/tests/`. Floor: +22 net tests.
+- [x] **DEV** (2026-04-17): all 6 tasks landed across 4 files.
+  - `relativist-core/src/merge/border_graph.rs`: added `serde` derives
+    on `BorderDelta`; added 3 new structs `LocalReconnection`,
+    `PendingCommutation`, `MintedAgent` (DC-B3, DC-B5) with full
+    `Serialize`/`Deserialize`/`Clone`/`Debug`/`PartialEq`/`Eq` derives;
+    4 inline bincode round-trip tests.
+  - `relativist-core/src/merge/mod.rs`: re-exported the 3 new structs
+    from `border_graph::*` alongside existing `BorderDelta`.
+  - `relativist-core/src/protocol/types.rs`: imported
+    `{BorderDelta, LocalReconnection, MintedAgent, PendingCommutation,
+    WorkerRoundStats}` from `crate::merge` and `PortRef` from
+    `crate::net`; added 5 new `Message` variants at discriminants
+    7..=11 with doc-comments anchoring DC-A1/A2/B3/B5; added helper
+    fixtures `make_test_stats_with_activity(bool)` and
+    `make_partition_with_n_agents(n)`; appended 17 unit tests
+    (per-variant serde round-trips + DC-A2 equality + 12-variant
+    discriminant-stability cardinality assertion); extended
+    `test_all_variants_serde_roundtrip` with 5 new entries.
+  - `relativist-core/src/protocol/mod.rs`: `mod delta_wire_tests;`
+    (feature-agnostic integration tests) + `pub use crate::merge::
+    {BorderDelta, LocalReconnection, MintedAgent, PendingCommutation};`
+    so downstream callers can name all delta-wire structs via
+    `crate::protocol::*`.
+  - `relativist-core/src/protocol/delta_wire_tests.rs` (new, ~300 LoC):
+    7 tokio tests covering framing round-trips for all 5 new variants
+    — compression benefit (R35, >=1024 payload via
+    `make_large_partition(2000)`), compression-threshold skip
+    (`send_frame_with_threshold` with threshold above payload size),
+    forced compression when threshold=1, and CRC-tamper rejection
+    (accepts `ChecksumMismatch | DecompressionFailed | Serialize |
+    Deserialize` families since tampering can fail LZ4 before CRC).
+  - `relativist-core/src/protocol/frame.rs`: extended the R5
+    `_exhaustive_check` canary with 5 new match arms and appended 5
+    new fixture entries to `sample_all_message_variants`.
+  - Key invariants honoured:
+    - R19 pure-core: `merge/` still has no `use crate::protocol` lines;
+      canary green.
+    - R37 discriminant stability: variants 0-6 untouched; new variants
+      7-11 are append-only; bincode v2 varint still encodes disc 0..=250
+      as a single byte.
+    - SPEC-18 R22: `FLAG_ARCHIVED` fast path remains restricted to
+      `AssignPartition` / `PartitionResult`; all 5 new variants ride
+      plain bincode.
+  - Quality gates GREEN:
+    - `cargo build --workspace` clean.
+    - `cargo build --workspace --features zero-copy` clean.
+    - `cargo test --workspace --lib` — **995** pass, 0 fail, 1 ignored
+      (+27 over 968 baseline; floor +22 satisfied).
+    - `cargo test --workspace --lib --features zero-copy` — **1035**
+      pass, 0 fail, 1 ignored (+27 over 1008 baseline).
+    - `cargo test --workspace` (incl. CLI integration) — all pass.
+    - `cargo clippy --workspace --all-targets -- -D warnings` clean
+      (default + `--features zero-copy`).
+    - `cargo fmt --check` clean (after one `cargo fmt` pass to
+      normalise the new `matches!(...)` and tuple-literal formatting).
+    - `cargo build --release` clean; release smoke
+      `target/release/relativist.exe compute add 3 5 → Result: 8`.
+- [ ] **REVIEW** — pending. Awaiting human review before dispatching
+  Stage 4 reviewer agent.
+- [ ] **QA** — pending (Stage 5).
+- [ ] **REFACTOR** — pending (Stage 6).
+
+### Deviations / ambiguities
+
+- **LZ4 benefit fixture size.** `make_large_partition(200)` was initially
+  used for the "compression beneficial" tests but produced a payload
+  near the LZ4 break-even (bincode 1217 B → compressed 1236 B). The
+  fixture was bumped to 2000 agents, which yields a clear
+  compression win and makes the R35 assertion deterministic across
+  LZ4 implementations.
+- **CRC-tamper error family.** Tampering the payload before the CRC
+  check can fail in three places depending on which check trips
+  first: LZ4 decompression (byte-level corruption of the compressed
+  stream), CRC32C verification, or bincode deserialisation. The
+  tamper test accepts the union `{ChecksumMismatch,
+  DecompressionFailed, Serialize, Deserialize}` with a comment
+  documenting why.
+- **No commit.** Per the DEV stage contract for this bundle, the work
+  is left uncommitted at the end of Stage 3 for human review. The
+  working tree carries the full diff on branch `v2-development`.
+
+### Acceptance criteria — SELF-VERIFIED
+
+1. `cargo test --workspace --lib` — **995** pass, 0 fail (+27 over 968).
+2. `cargo test --workspace --lib --features zero-copy` — **1035** pass,
+   0 fail (+27 over 1008).
+3. `cargo test --workspace` (unit + integration + doc) — all pass.
+4. `cargo clippy --workspace --all-targets -- -D warnings` clean
+   (default + zero-copy).
+5. `cargo fmt --check` clean.
+6. `cargo build --release` clean; `compute add 3 5` prints `Result: 8`.
+7. R19 pure-core canary green (no `use crate::protocol` in `merge/`).
+8. R37 discriminant stability: `test_message_discriminant_stability`
+   asserts `cases.len() == 12` and byte-0 equals expected disc for
+   every variant 0..=11.
+9. `BorderDelta`, `LocalReconnection`, `PendingCommutation`,
+   `MintedAgent` are reachable via `crate::protocol::*`.
+
+### Stage 4 — REVIEW (2026-04-17)
+
+**Agent:** reviewer (unified code-quality + architecture review)
+**Output:** `docs/reviews/REVIEW-SPEC-19-section-3.4-item-2.26-A-2026-04-17.md`
+**Verdict:** APPROVE — 0 MUST-FIX, 2 SHOULD-FIX (S1, S2), 4 NICE-TO-HAVE.
+
+**Scope of review**
+
+- Spec conformance per R31-R37 and R48 (coordinator-reserved AgentId range
+  `u32::MAX - 10_000 .. u32::MAX`).
+- R33 amendment coverage: DC-A1 (`BorderDelta` derives + re-export),
+  DC-A2 (`RoundResult.has_border_activity` ↔ `stats.has_border_activity`
+  equality invariant), DC-B3 (`LocalReconnection` for interior port
+  rewires), DC-B5 (two-phase AgentId allocation via `PendingCommutation`
+  request_id + `MintedAgent` echo).
+- R19 pure-core canary: source-scan confirms `merge/` does NOT import
+  `tokio`, `async_trait`, or `crate::protocol`.
+- Test-spec coverage ledger: mapped every assertion in `delta_wire_tests.rs`
+  and `types.rs` discriminant-stability test to its TEST-SPEC-0370/0371
+  clause.
+
+**SHOULD-FIX items (addressed in Stage 6 REFACTOR)**
+
+- **S1.** `T8 final_state_result_crc_still_valid_no_tamper` was specified
+  in TEST-SPEC-0370 but missing from the delivered file. Positive control
+  complementary to T7 — proves the CRC path does not systematically
+  reject legitimate frames.
+- **S2.** Stale docstring on `make_large_partition`: claimed
+  `n_agents = 200` exceeds 1024 bytes under bincode v2 varint, but all
+  threshold-crossing callers (T1, T2, T7) now pass 2000.
+
+**NICE-TO-HAVE items (declined — premature abstraction)**
+
+- NICE-2 (extract `EXPECTED_VARIANT_COUNT` constant): the single-use
+  literal `12` with an in-place comment is clearer than an indirection;
+  adding the constant would not lower the cost of a future bump. Declined.
+- NICE-3 (document tamper-test error-family rationale in code):
+  already documented inline above `assert!(matches!(err, ...))`.
+
+### Stage 5 — QA (2026-04-17)
+
+**Agent:** qa (adversarial bug hunting)
+**Probes:** 13 designed (Q1-Q13) / 14 implemented (Q13 split into Q13a
+and Q13b, mutually exclusive via `#[cfg(not(feature = "zero-copy"))]`
+and `#[cfg(feature = "zero-copy")]`).
+**Location:** `relativist-core/src/protocol/delta_wire_tests.rs`,
+`mod adversarial_probes`.
+
+**Coverage**
+
+| Probe | Surface | Expected outcome |
+|-------|---------|-----------------|
+| Q1 | Disc-byte tamper on uncompressed `RoundStart` | `ChecksumMismatch` |
+| Q2 | Empty-payload byte-count floor | bincode_len == 7; frame_len == 16 |
+| Q3 | Wire semantics preserved: `has_border_activity` vs `stats` | Equal on wire; canonical source = stats |
+| Q4 | `PendingCommutation.arity = u8::MAX` | Lossless round-trip |
+| Q5 | `LocalReconnection` with `u32::MAX` agent_id, `u8::MAX` port | Lossless round-trip |
+| Q6 | `MintedAgent` inside R48-reserved range | Lossless round-trip (R48 is runtime-only; wire MUST NOT enforce) |
+| Q7 | `BorderDelta AgentPort(u32::MAX, _)` ≠ `DISCONNECTED` | Distinct wire encoding |
+| Q8 | `InitialPartition` below threshold | `FLAG_COMPRESSED` unset |
+| Q9 | Threshold boundary: `>= semantics` | Exact threshold compresses; threshold+1 does not |
+| Q10 | 10 000-entry `border_deltas` vector | Round-trips; exercises varint length path |
+| Q11 | `FinalStateRequest { round: u32::MAX }` | Lossless round-trip (max varint length) |
+| Q12 | Truncated frame (8 bytes < 9-byte header) | `ConnectionLost` |
+| Q13a | FLAG_ARCHIVED on `RoundStart` (default features) | Falls through to bincode decode (R22 whitelist not enforced when `zero-copy` off) |
+| Q13b | FLAG_ARCHIVED on `RoundStart` (zero-copy) | Either `Deserialize` or `ArchiveValidationFailed` — R22 whitelist rejects |
+
+**Results**
+
+- All 14 probes compile and pass on their respective feature-configs.
+- Default config: 1008 lib tests (+13 probes over 995). Zero-copy
+  config: 1048 lib tests (+13 probes over 1035).
+- No probe surfaced a bug. Two probes (Q4, Q5) validated that the
+  extreme-value encoding crosses bincode varint boundaries cleanly.
+
+### Stage 6 — REFACTOR (2026-04-17)
+
+**Agent:** developer (fix-in-place after REVIEW + QA)
+
+**Changes**
+
+- **S1.** Added T8 `final_state_result_crc_still_valid_no_tamper` as
+  specified in TEST-SPEC-0370 §T8. Positive-control complement to T7.
+  Fixture: `make_large_partition(200)` — does not require compression
+  engagement.
+- **S2.** Rewrote the `make_large_partition` docstring to reflect
+  reality: callers that need compression pass 2000; smaller values
+  (200, 10) are acceptable for tests that do not need the frame to
+  cross the threshold.
+
+**Acceptance criteria — SELF-VERIFIED**
+
+1. `cargo test --workspace --lib` — **1009** pass, 0 fail (+1 T8 over Stage-5 1008).
+2. `cargo test --workspace --lib --features zero-copy` — **1049** pass,
+   0 fail (+1 T8 over Stage-5 1048).
+3. `cargo clippy --workspace --all-targets -- -D warnings` clean (default + zero-copy).
+4. `cargo fmt --check` clean.
+5. `cargo build --release` clean; `./target/release/relativist.exe compute add 3 5` prints `Result: 8` (0.66 MIPS, 6 interactions, 29 agents, 1 redex).
+6. No commit. Full diff on branch `v2-development` awaits human review.
+
+---
+
+## SPEC-19 §3.3 (item 2.26-B) — Coordinator-Side Border-Redex Resolution — DEV COMPLETE
+
+**Bundle scope:** Coordinator's `border_resolver` module: `materialize_agent`, `assert_agent` (DC-B2), `resolve_border_redex` dispatcher + three same-symbol rule bodies (CON-CON, DUP-DUP, ERA-ERA), plus the asymmetric rule bodies (CON-DUP commutation via DC-B5, CON-ERA / DUP-ERA via DC-B6). `package_resolutions` fan-out to per-worker `RoundStartDispatch`, integration tests, and programmatic pure-core grep guard close the bundle. Spec-critic DC-B1..B9 verdicts at `docs/spec-reviews/SPEC-19-section-3.3-2.26B-design-choices-2026-04-17.md`.
+
+**Tasks covered:**
+- TASK-0372 — `materialize_agent` helper + module skeleton (+5 tests).
+- TASK-0373 — `resolve_border_redex` dispatcher + CON-CON, DUP-DUP, ERA-ERA bodies + DC-B2 `assert_agent` panic (+6 tests).
+- TASK-0374 — Asymmetric dispatch: CON-DUP commutation (DC-B5 2-phase flow) + CON-ERA/DUP-ERA erasure (DC-B6 preserve-via-apply_deltas). Adds `BorderIdAllocator`, `resolve_con_dup`, `resolve_non_era_era`, `emit_external_principal`, `emit_erasure_principal`, and `SLOT_MARKER_BASE` / `slot_marker` helpers (+6 tests).
+- TASK-0375 — `RoundStartDispatch` + `package_resolutions`: folds a stream of `BorderResolution`s into per-worker dispatch payloads (DC-B3 split / DC-B5 `pending_commutations` fan / DC-B7 triple fan / R23 every-worker-each-round invariant); drops `pending_new_borders` (coordinator-only state) (+5 tests).
+- TASK-0376 — End-to-end composition tests (UT-0376-01..07): 6 per-rule integration tests (CON-CON, DUP-DUP, ERA-ERA, CON-DUP, CON-ERA, DUP-ERA) each calling `resolve_border_redex` + `package_resolutions` back-to-back on 2-partition fixtures; plus 1 defensive `catch_unwind` double-resolve test validating the DC-B2 panic-not-silent-default contract (+7 tests).
+- TASK-0377 — Programmatic R19 pure-core guard. DC-B8 factoring: shared scanner in `merge/internal/pure_core_guard.rs` (`FORBIDDEN_USE_PREFIXES: &[&str; 5]` + `assert_no_forbidden_imports(src, label)`), with `internal/` module `#[cfg(test)]`-gated since the helper is test-only. DC-B9 cardinality canary: single `#[test]` fn in `border_resolver.rs::tests` asserts the list has exactly 5 entries AND each of the 5 prefixes is present, then hands `include_str!("border_resolver.rs")` to the scanner (+1 test).
+
+**Remaining tasks:** none — bundle 2.26-B DEV complete.
+
+**Current test counts:** **1039** lib default (+30: 5 from TASK-0372 + 6 from TASK-0373 + 6 from TASK-0374 + 5 from TASK-0375 + 7 from TASK-0376 + 1 from TASK-0377) / **1079** lib `--features zero-copy` (+30, same set).
+
+### Stage History (2.26-B)
+
+- [x] **TASK-0372 DEV (2026-04-17)** — Module skeleton (docblock with SPEC cites + DC-B1/B2/B4 rulings), `materialize_agent`, 5 unit tests (principal-port live agent, non-principal slots, FreePort/DISCONNECTED, vacated agent slot, doc-block grep guard). Pure-core invariant preserved.
+- [x] **TASK-0373 DEV (2026-04-18)** — `WorkerDeltas` + `BorderResolution` structs (DC-B3 split + DC-B7 resolved-borders triples). `assert_agent` with DC-B2 panic format (grep-able: `"border_resolver: agent missing for border {bid} on side {name}"` + `"cache desync"` + `"DC-B1"`). `resolve_border_redex` dispatcher routes on `(sym_a, sym_b)` and calls `graph.remove_border` post-resolution (R15 part 2). Asymmetric pairs `todo!()`-stubbed for TASK-0374. 3 same-symbol rule bodies: `resolve_con_con` (cross pattern `(a.1↔b.2, a.2↔b.1)`), `resolve_dup_dup` (parallel `(a.1↔b.1, a.2↔b.2)`), `resolve_era_era` (empty `worker_deltas`). 6 unit tests covering UT-0373-01..06 (cross, parallel, void, dispatcher normalization, targeted removal, DC-B2 panic-format substrings). `#[allow(dead_code)]` annotations on pub(crate) items pending TASK-0375 consumption (same precedent as `BorderGraph::worker_borders` R23 reverse index).
+- [x] **TASK-0376 DEV (2026-04-18)** — End-to-end integration tests composing `resolve_border_redex` + `package_resolutions` on 2-partition fixtures. Reuses the existing `build_two_partition_same_symbol_fixture`, `build_two_partition_era_era_fixture`, `build_two_partition_asymmetric_fixture`, and `build_con_era_aux_border_fixture` helpers from `mod tests` (avoiding fixture duplication) instead of carving a new inner `mod integration_tests` with parallel builders — the TEST-SPEC-0376 "Resolved ambiguities" section permits either organizational path and the test IDs, names, and assertions are preserved verbatim. 7 new `#[test]` fns: `con_con_border_redex_end_to_end_resolves_and_packages` (UT-0376-01, Anni cross + DC-B3 + DC-B7 fan to both workers; asserts worker 0 keeps both local_reconnections per resolver convention, worker 1 empty), `dup_dup_border_redex_end_to_end_resolves_and_packages` (UT-0376-02, Anni parallel mirror), `era_era_border_redex_end_to_end_resolves_and_packages` (UT-0376-03, Void — empty worker_deltas, both workers receive `resolved_borders == [0]` and all other dispatch fields empty), `con_dup_border_redex_end_to_end_emits_pending_commutations` (UT-0376-04, DC-B5 2-phase: `r.pending_commutations.len() == 2`, each packaged worker gets exactly 1 batch with matching `batch.worker`, `new_borders.is_empty()`, `pending_new_borders.len() <= 4`), `con_era_border_redex_end_to_end_preserves_auxiliary_border` (UT-0376-05, DC-B6: border 0 removed, border 7 preserved — endpoint update threads through either `worker_deltas.border_deltas` OR `pending_new_borders`), `dup_era_border_redex_end_to_end_preserves_auxiliary_border` (UT-0376-06, mirror), `resolve_border_redex_on_absent_border_panics_per_dc_b2` (UT-0376-07, `catch_unwind` + `AssertUnwindSafe` on second resolve; payload string-matches `"border 0 not present"` or `"agent missing for border 0"`). No new fixture helpers added; no new types introduced; grep guard preserved.
+- [x] **TASK-0375 DEV (2026-04-18)** — `RoundStartDispatch` struct (DC-B3 `local_reconnections` parallel to `border_deltas`; DC-B5 `new_borders: Vec<(u32, PortRef)>` concrete + `pending_commutations: Vec<CommutationBatch>` fan-out; DC-B7 `resolved_borders: Vec<u32>` collapsed from source triples). Derives `Debug, Clone, Default, PartialEq, Eq` (Eq required by UT-0375-05 full-Vec equality). `CommutationBatch` updated to derive `PartialEq, Eq` (transitive requirement for the dispatch struct's Eq). `package_resolutions(resolutions, num_workers) -> Vec<(WorkerId, RoundStartDispatch)>`: preallocates `num_workers` default dispatches (R23: every worker addressed each round even on empty payload); iterates each resolution folding `worker_deltas → per_worker[wid].{border_deltas, local_reconnections}`, `resolved_borders: (bid, wa, wb) → per_worker[wa] + per_worker[wb]` (self-border guard skips duplicate push when `wa == wb`), `new_borders: AddBorderEntry → per_worker[worker_a].new_borders.push((border_id, side_a)) + worker_b.push((border_id, side_b))` (same self-border guard), `pending_commutations: batch → per_worker[batch.worker]` (never duplicated — QA-0375-C regression). Output sorted `0..num_workers` ascending via `.enumerate()`; input-order preserved within each per-worker bucket. `pending_new_borders` INTENTIONALLY dropped (DC-B5: coordinator-only state pending round N+2). 5 unit tests (UT-0375-01..05) cover: empty input → 3 defaults with ascending keys; DC-B3 fan-out (worker 0 + 1 populated, worker 2 default); DC-B7 two-triple fan `[(0,0,1), (5,1,2)] → worker 1 gets [0,5]`; DC-B5 `pending_commutations` per-worker routing via `batch.worker`; determinism across two invocations with cloned inputs (byte-identical via `assert_eq!` on full `Vec<(WorkerId, RoundStartDispatch)>`). Pure-core invariant preserved.
+- [x] **TASK-0374 DEV (2026-04-18)** — Asymmetric rule bodies. **CON-DUP (commutation, DC-B5 2-phase):** `resolve_con_dup` uses a balanced worker assignment — each worker mints 1 Dup + 1 Con into slots `[0, 1]`, producing 2 `CommutationBatch`es with `target_symbols == vec![Dup, Con]`. External principals (p.0↔a1, q.0↔a2, r.0↔b1, s.0↔b2) go through `emit_external_principal`: `AgentPort` targets become `BorderDelta`s on the home worker; `FreePort(bid)` targets become fresh `PendingNewBorder`s. Internal wires (p.1↔r.1, p.2↔s.1, q.1↔r.2, q.2↔s.2) use `SLOT_MARKER_BASE` (`R48` reserved range `u32::MAX - 10_000 .. u32::MAX`) to encode `PendingPortRef::Pending { request_id, agent_slot, port_slot }` sibling references. Two local internal wires (p.1↔r.1, q.2↔s.2) surface as `CommutationBatch.local_wiring`; two cross internal wires (p.2↔s.1, q.1↔r.2) surface as `PendingNewBorder`s with both sides `PendingPortRef::Pending`. `new_borders` is EMPTY at resolver time (round N+2 finalizes after `MintedAgent` echoes arrive). **CON-ERA / DUP-ERA (erasure, DC-B6):** `resolve_non_era_era` emits 1 `CommutationBatch` with `target_symbols == vec![Era, Era]` on the non-ERA worker. `emit_erasure_principal` classifies each auxiliary neighbour of the non-ERA agent: `AgentPort` → `local_wiring` hint; `FreePort(bid)` already in `graph.borders` → `PendingNewBorder` reusing the same `border_id` (DC-B6 preserve-via-apply_deltas); `FreePort(bid)` not in graph → fallback `PendingNewBorder` with side_b Concrete pointing at the ERA worker's DISCONNECTED slot. **New allocator:** `BorderIdAllocator::from_graph(&graph)` scans existing ids to avoid collision; `CommutationIdAllocator::new()` produces monotonic `CommutationId`s. Dispatcher reborrow pattern (`&*graph` inside match, `&mut graph` for `remove_border` after) preserves the pure-core contract. Module docstring extended with DC-B5 + DC-B6 paragraphs; grep guard extended with "DC-B5" and "DC-B6" needles. All 6 existing UT-0373-xx callers updated to declare + pass the two allocators. 6 new unit tests (UT-0374-01..06): CON-DUP pending_commutations shape (balanced Con+Dup counts per worker), PendingNewBorder placeholder-ref structural audit, CON-ERA preserve-border-7-via-apply_deltas, DUP-ERA mirror, back-to-back CON-DUP allocator uniqueness across 4 workers, asymmetric-order dispatcher symmetry across all 6 (sym_a, sym_b) pairs. Clippy `too_many_arguments` waived on 3 helpers (argument list dictated by protocol topology; bundling into struct would just displace signature to new type). Pure-core invariant preserved.
+- [x] **TASK-0377 DEV (2026-04-18)** — Programmatic R19 pure-core guard. **Shared helper (DC-B8 option c):** new `merge/internal/` module (gated `#[cfg(test)]` since the guard is test-only — both `merge/mod.rs` and `merge/internal/mod.rs` carry the `#[cfg(test)]` attribute to keep the helper out of the non-test build and side-step `dead_code`). `internal/pure_core_guard.rs` exposes two pub(crate) items: the frozen `FORBIDDEN_USE_PREFIXES: &[&str; 5]` list (DC-B9: `use tokio`, `use async_trait`, `use crate::protocol`, `use crate::coordinator`, `use crate::worker`) and `assert_no_forbidden_imports(src, label)` which scans each line, trims leading whitespace, and on any `use `-prefixed line asserts no entry in the forbidden list is a prefix; failure message tags the offender with `R19 violation: {label} imports {prefix:?}` and cites SPEC-19 §3.2 R19 + DC-B9. **Opt-in site:** `border_resolver.rs::tests::border_resolver_pure_core_no_forbidden_imports` asserts `FORBIDDEN_USE_PREFIXES.len() == 5` (DC-B9 cardinality canary — narrowing without a fresh spec-critic verdict trips this first), asserts each of the 5 expected prefixes is present (drift canary), then hands `include_str!("border_resolver.rs")` to the scanner. **Scanner-in-source hazard:** an initial cardinality message that inlined the 5 prefix spellings across continuation lines was itself matched by the scanner (each continuation line, after `trim_start()`, started with `use crate::coordinator` inside the string literal). Fixed by rewording the message to refer callers to `merge/internal/pure_core_guard.rs` for the canonical list instead of inlining the spellings. Test cardinality +1 (UT-0377-01). Pure-core invariant now enforced programmatically — any future `use tokio|async_trait|crate::protocol|crate::coordinator|crate::worker` in `border_resolver.rs` fails CI loudly with an R19-tagged panic.
+
+### Acceptance (after TASK-0377 — bundle 2.26-B DEV COMPLETE)
+
+1. `cargo test --workspace --lib` — **1039** pass, 0 fail (+1 over TASK-0376 baseline 1038, +30 over bundle-start 1009).
+2. `cargo test --workspace --lib --features zero-copy` — **1079** pass, 0 fail (+1 over TASK-0376, +30 over bundle-start 1049).
+3. `cargo clippy --workspace --all-targets -- -D warnings` clean (default + zero-copy).
+4. `cargo fmt --check` clean.
+5. No commit. Bundle 2.26-B DEV complete; proceeding to bundle 2.26-C (coordinator wire-layer — `RoundStartDispatch` → `Message::RoundStart` emission + BSP loop) per user directive "full review at the end, when all features are implemented".
 

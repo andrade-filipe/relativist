@@ -194,6 +194,13 @@ pub struct CoordinatorArgs {
     #[arg(long, default_value_t = false)]
     pub use_zero_copy: bool,
 
+    /// Enable the delta-only BSP protocol (stateful workers).
+    /// SPEC-19 §3.6 R41. Defaults to `false` (R42 — v1 backwards compatibility).
+    /// When `true`, the grid loop dispatches `run_grid_delta` (bundle 2.26-C)
+    /// instead of the v1 `run_grid` full-partition loop.
+    #[arg(long, default_value_t = false)]
+    pub delta_mode: bool,
+
     /// TLS certificate file (PEM), requires --tls-key (SPEC-10 R25).
     #[cfg(feature = "tls")]
     #[arg(long)]
@@ -289,6 +296,11 @@ pub struct LocalArgs {
     /// nets with cross-partition cascades. Default: false (lenient).
     #[arg(long, default_value_t = false)]
     pub strict_bsp: bool,
+
+    /// Enable the delta-only BSP protocol (stateful workers).
+    /// SPEC-19 §3.6 R41. Defaults to `false` (R42). See `CoordinatorArgs::delta_mode`.
+    #[arg(long, default_value_t = false)]
+    pub delta_mode: bool,
 
     /// Path to write the reduced network (.bin).
     #[arg(short = 'o', long)]
@@ -517,6 +529,7 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
+        delta_mode: args.delta_mode,
         ..GridConfig::default()
     }
 }
@@ -527,6 +540,7 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
         num_workers: args.workers,
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
+        delta_mode: args.delta_mode,
         ..GridConfig::default()
     }
 }
@@ -1007,6 +1021,7 @@ mod tests {
             keepalive: 30,
             compression_threshold: 1024,
             use_zero_copy: false,
+            delta_mode: false,
             #[cfg(feature = "tls")]
             tls_cert: None,
             #[cfg(feature = "tls")]
@@ -1041,6 +1056,99 @@ mod tests {
         let config = build_grid_config(&args);
         assert_eq!(config.num_workers, 4);
         assert_eq!(config.max_rounds, Some(10));
+    }
+
+    // TASK-0390 UT-01: SPEC-19 R42 — absence of `--delta-mode` MUST leave
+    // `delta_mode = false` on both the `CoordinatorArgs`/`LocalArgs` struct
+    // and the derived `GridConfig`. A silent flip here would route every
+    // default run through the delta path.
+    #[test]
+    fn cli_delta_mode_default_is_false_on_coordinator_and_local() {
+        let coord_args = make_coordinator_args(4, None);
+        assert!(
+            !coord_args.delta_mode,
+            "make_coordinator_args must default delta_mode = false"
+        );
+        let coord_cfg = build_grid_config(&coord_args);
+        assert!(
+            !coord_cfg.delta_mode,
+            "build_grid_config must thread delta_mode = false (R42)"
+        );
+
+        let local_cli = Cli::try_parse_from([
+            "relativist",
+            "local",
+            "--workers",
+            "2",
+            "--input",
+            "test.bin",
+        ])
+        .unwrap();
+        match local_cli.command {
+            Command::Local(args) => {
+                assert!(!args.delta_mode, "local --delta-mode default must be false");
+                let cfg = build_grid_config_from_local(&args);
+                assert!(
+                    !cfg.delta_mode,
+                    "build_grid_config_from_local must thread delta_mode = false (R42)"
+                );
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    // TASK-0390 UT-02: SPEC-19 R41 — `--delta-mode` on the coordinator
+    // subcommand parses and reaches `GridConfig.delta_mode = true`.
+    #[test]
+    fn cli_delta_mode_flag_threads_through_coordinator() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "4",
+            "--input",
+            "input.bin",
+            "--delta-mode",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coordinator(args) => {
+                assert!(args.delta_mode, "--delta-mode must set args.delta_mode");
+                let cfg = build_grid_config(&args);
+                assert!(
+                    cfg.delta_mode,
+                    "build_grid_config must thread delta_mode = true"
+                );
+            }
+            _ => panic!("expected Coordinator"),
+        }
+    }
+
+    // TASK-0390 UT-03: SPEC-19 R41 — `--delta-mode` on the local subcommand
+    // parses and reaches `GridConfig.delta_mode = true`.
+    #[test]
+    fn cli_delta_mode_flag_threads_through_local() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "local",
+            "--workers",
+            "2",
+            "--input",
+            "test.bin",
+            "--delta-mode",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Local(args) => {
+                assert!(args.delta_mode, "--delta-mode must set args.delta_mode");
+                let cfg = build_grid_config_from_local(&args);
+                assert!(
+                    cfg.delta_mode,
+                    "build_grid_config_from_local must thread delta_mode = true"
+                );
+            }
+            _ => panic!("expected Local"),
+        }
     }
 
     #[test]

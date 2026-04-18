@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use crate::net::{total_ports, Net, PortRef};
+use crate::merge::BorderDelta;
+use crate::net::{total_ports, Net, PortRef, DISCONNECTED};
 use crate::partition::Partition;
 
 /// Returns true if both ports are principal ports (port index 0).
@@ -110,6 +111,124 @@ pub fn drain_stale_redexes(net: &mut Net) {
         }
     }
     net.redex_queue = valid;
+}
+
+/// SPEC-19 R23 (TASK-0381): apply the three-part payload of
+/// `Message::RoundStart` to a worker's stored `Partition`. All three
+/// sub-operations mutate both the underlying `Net` (so the post-apply
+/// subnet is a well-formed partition ready for `reduce_all`) and the
+/// `free_port_index` (so any caller that skips rebuild still observes
+/// the new topology).
+///
+/// **Semantics (per R23):**
+/// 1. **`border_deltas` — reconnection.** For each
+///    `BorderDelta { border_id, new_target }`, the local port currently
+///    bound to `FreePort(border_id)` is disconnected and `new_target`
+///    becomes the new local side of the border. `new_target` is a local
+///    port within this worker's subnet (an `AgentPort` the coordinator
+///    computed via border-resolver book-keeping). When `new_target ==
+///    crate::net::DISCONNECTED` (DC-C6 sentinel), the border is simply
+///    dropped — no new wire is created and the index entry is removed.
+/// 2. **`resolved_borders` — removal.** For each `border_id`, the local
+///    port currently bound to `FreePort(border_id)` is disconnected and
+///    the index entry is removed. This encodes coordinator-side
+///    annihilation / void resolution.
+/// 3. **`new_borders` — insertion.** For each `(border_id, port_ref)`,
+///    a fresh `FreePort(border_id) ↔ port_ref` wire is established and
+///    the index is populated. This encodes CON-DUP expansion that gave
+///    the worker a new cross-partition wire.
+///
+/// Pure (no I/O, no async). No reduction: `reduce_all` is the caller's
+/// next step (R24.2). Idempotent against a well-formed input.
+pub(crate) fn apply_border_deltas_to_partition(
+    partition: &mut Partition,
+    border_deltas: &[BorderDelta],
+    resolved_borders: &[u32],
+    new_borders: &[(u32, PortRef)],
+) {
+    // [1] Re-point existing borders. Disconnect the old local-side port,
+    // then connect the new local-side port to FreePort(border_id).
+    for delta in border_deltas {
+        if let Some(&old_target) = partition.free_port_index.get(&delta.border_id) {
+            if matches!(old_target, PortRef::AgentPort(_, _)) {
+                partition.subnet.disconnect(old_target);
+            }
+        }
+        if delta.new_target == DISCONNECTED {
+            // DC-C6: the remote side is gone; drop the border entirely.
+            partition.free_port_index.remove(&delta.border_id);
+        } else {
+            partition
+                .subnet
+                .connect(delta.new_target, PortRef::FreePort(delta.border_id));
+            partition
+                .free_port_index
+                .insert(delta.border_id, delta.new_target);
+        }
+    }
+
+    // [2] Remove resolved borders. Disconnect the local side, drop index.
+    for bid in resolved_borders {
+        if let Some(&old_target) = partition.free_port_index.get(bid) {
+            if matches!(old_target, PortRef::AgentPort(_, _)) {
+                partition.subnet.disconnect(old_target);
+            }
+        }
+        partition.free_port_index.remove(bid);
+    }
+
+    // [3] Insert new borders. CON-DUP expansion at the coordinator
+    // created a new cross-partition wire whose local end is `target`.
+    for (bid, target) in new_borders {
+        partition.subnet.connect(*target, PortRef::FreePort(*bid));
+        partition.free_port_index.insert(*bid, *target);
+    }
+}
+
+/// SPEC-19 R25 (TASK-0382): diff the previously-reported border-port
+/// state against the freshly rebuilt `free_port_index` and emit only
+/// the changed entries as `BorderDelta`s for inclusion in the round's
+/// `Message::RoundResult`.
+///
+/// Three cases handled:
+/// - **Changed endpoint:** `previous[K] != current[K]` → delta with
+///   the new target.
+/// - **Newly-created border:** `K ∈ current ∧ K ∉ previous` → delta
+///   with the new target (first report after CON-DUP expansion gave
+///   the worker a new `FreePort(K)`).
+/// - **Disconnected border:** `K ∈ previous ∧ K ∉ current` → delta
+///   with sentinel `crate::net::DISCONNECTED` (DC-C6 option (c)
+///   locked-in 2026-04-17 — reuses the `FreePort(u32::MAX)` sentinel
+///   that SPEC-18 §4.3 already collapses to a single wire byte).
+///
+/// Pure / O(|previous| + |current|). No allocation beyond the result
+/// vector. No ordering guarantee (caller sorts if needed).
+pub(crate) fn compute_outgoing_deltas(
+    previous: &HashMap<u32, PortRef>,
+    current: &HashMap<u32, PortRef>,
+) -> Vec<BorderDelta> {
+    let mut out = Vec::new();
+
+    for (&bid, &new_target) in current {
+        match previous.get(&bid) {
+            Some(prev) if *prev == new_target => {}
+            _ => out.push(BorderDelta {
+                border_id: bid,
+                new_target,
+            }),
+        }
+    }
+
+    for &bid in previous.keys() {
+        if !current.contains_key(&bid) {
+            out.push(BorderDelta {
+                border_id: bid,
+                new_target: DISCONNECTED,
+            });
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -610,5 +729,123 @@ mod tests {
         drain_stale_redexes(&mut net);
         assert_eq!(net.redex_queue.len(), 1);
         assert_eq!(net.redex_queue[0], (c, d));
+    }
+
+    // === SPEC-19 R25 — compute_outgoing_deltas tests (TASK-0382) ===
+
+    #[test]
+    fn compute_outgoing_deltas_empty_both() {
+        let previous: HashMap<u32, PortRef> = HashMap::new();
+        let current: HashMap<u32, PortRef> = HashMap::new();
+        assert!(compute_outgoing_deltas(&previous, &current).is_empty());
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_unchanged_entry_emits_nothing() {
+        let mut previous = HashMap::new();
+        let mut current = HashMap::new();
+        previous.insert(5, PortRef::AgentPort(1, 0));
+        current.insert(5, PortRef::AgentPort(1, 0));
+        assert!(compute_outgoing_deltas(&previous, &current).is_empty());
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_changed_entry_emits_delta() {
+        let mut previous = HashMap::new();
+        let mut current = HashMap::new();
+        previous.insert(5, PortRef::AgentPort(1, 0));
+        current.insert(5, PortRef::AgentPort(2, 1));
+        let out = compute_outgoing_deltas(&previous, &current);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].border_id, 5);
+        assert_eq!(out[0].new_target, PortRef::AgentPort(2, 1));
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_new_entry_emits_delta() {
+        let previous = HashMap::new();
+        let mut current = HashMap::new();
+        current.insert(9, PortRef::AgentPort(3, 0));
+        let out = compute_outgoing_deltas(&previous, &current);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].border_id, 9);
+        assert_eq!(out[0].new_target, PortRef::AgentPort(3, 0));
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_removed_entry_emits_sentinel() {
+        let mut previous = HashMap::new();
+        let current: HashMap<u32, PortRef> = HashMap::new();
+        previous.insert(7, PortRef::AgentPort(4, 0));
+        let out = compute_outgoing_deltas(&previous, &current);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].border_id, 7);
+        assert_eq!(
+            out[0].new_target, DISCONNECTED,
+            "DC-C6: removed border must emit DISCONNECTED sentinel, \
+             not FreePort(border_id)"
+        );
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_mixed() {
+        // 5 previous: [0, 1, 2, 3, 4]; current drops 4, changes 1, keeps 0, 2, 3;
+        // current adds 10. Expected deltas: {1 changed, 4 disconnected, 10 new}.
+        let mut previous = HashMap::new();
+        let mut current = HashMap::new();
+        previous.insert(0, PortRef::AgentPort(10, 0));
+        previous.insert(1, PortRef::AgentPort(11, 0));
+        previous.insert(2, PortRef::AgentPort(12, 0));
+        previous.insert(3, PortRef::AgentPort(13, 0));
+        previous.insert(4, PortRef::AgentPort(14, 0));
+        current.insert(0, PortRef::AgentPort(10, 0));
+        current.insert(1, PortRef::AgentPort(99, 1));
+        current.insert(2, PortRef::AgentPort(12, 0));
+        current.insert(3, PortRef::AgentPort(13, 0));
+        current.insert(10, PortRef::AgentPort(50, 0));
+
+        let mut out = compute_outgoing_deltas(&previous, &current);
+        out.sort_by_key(|d| d.border_id);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].border_id, 1);
+        assert_eq!(out[0].new_target, PortRef::AgentPort(99, 1));
+        assert_eq!(out[1].border_id, 4);
+        assert_eq!(out[1].new_target, DISCONNECTED);
+        assert_eq!(out[2].border_id, 10);
+        assert_eq!(out[2].new_target, PortRef::AgentPort(50, 0));
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_large_unchanged() {
+        let mut previous = HashMap::new();
+        let mut current = HashMap::new();
+        for i in 0..1000u32 {
+            previous.insert(i, PortRef::AgentPort(i, 0));
+            current.insert(i, PortRef::AgentPort(i, 0));
+        }
+        assert!(compute_outgoing_deltas(&previous, &current).is_empty());
+    }
+
+    // DC-C6 amendment (2026-04-17): disconnect / reconnect path coverage.
+    #[test]
+    fn compute_outgoing_deltas_encodes_disconnect_as_sentinel() {
+        let mut previous = HashMap::new();
+        previous.insert(3, PortRef::AgentPort(7, 0));
+        let current: HashMap<u32, PortRef> = HashMap::new();
+        let out = compute_outgoing_deltas(&previous, &current);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].border_id, 3);
+        assert_eq!(out[0].new_target, DISCONNECTED);
+    }
+
+    #[test]
+    fn compute_outgoing_deltas_encodes_reconnect_as_agentport() {
+        let previous: HashMap<u32, PortRef> = HashMap::new();
+        let mut current = HashMap::new();
+        current.insert(3, PortRef::AgentPort(11, 0));
+        let out = compute_outgoing_deltas(&previous, &current);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].border_id, 3);
+        assert!(matches!(out[0].new_target, PortRef::AgentPort(_, _)));
     }
 }
