@@ -9,7 +9,7 @@ Relativist is a Rust implementation of [Lafont's Interaction Combinators](https:
 - **Deterministic distributed reduction** — Strong confluence ensures the result is identical whether computed on 1 machine or 8
 - **Zero coordination overhead for correctness** — Workers reduce independently; only boundary redexes require cross-node resolution
 - **Formally specified** — Every module has a detailed spec with invariants, requirements, and Rust type signatures
-- **TDD from specs** — 676+ tests, 11 benchmarks across 3 workload profiles
+- **TDD from specs** — 690+ tests, 13 benchmarks across 3 workload profiles
 
 ## Architecture
 
@@ -30,35 +30,59 @@ Relativist is a Rust implementation of [Lafont's Interaction Combinators](https:
 
 The coordinator partitions an IC net, distributes partitions to workers via TCP, collects reduced partitions, merges them, resolves boundary redexes, and repeats until the net reaches normal form.
 
-## Quick Start
-
-### Local mode (simulated distribution)
+## 3-minute Quick Start
 
 ```bash
+# 1. Build
 cargo build --release
-./target/release/relativist local --workers 4 --net examples/ep_annihilation.bin
+
+# 2. Generate a small test net
+./target/release/relativist generate ep-annihilation -n 20 -o test.bin
+
+# 3. Reduce sequentially
+./target/release/relativist reduce -i test.bin -o seq.bin
+
+# 4. Reduce via simulated grid (4 workers, in-process)
+./target/release/relativist local -w 4 -i test.bin -o grid.bin
+
+# 5. Confirm identical outputs
+./target/release/relativist inspect -i seq.bin
+./target/release/relativist inspect -i grid.bin
 ```
 
-### Distributed mode
+Both `inspect` calls must show identical agent counts and `Normal Form: yes`. That is G1 (fundamental property) in action.
+
+**Full distributed mode (3 terminals):**
 
 ```bash
-# Terminal 1: Start coordinator
-./target/release/relativist coordinator --workers 2 --port 9000 --net examples/ep_annihilation.bin
+# Terminal 1: Coordinator
+./target/release/relativist coordinator --workers 2 --port 9000 -i test.bin -o out.bin
 
-# Terminal 2: Start worker
-./target/release/relativist worker --coordinator localhost:9000
-
-# Terminal 3: Start another worker
+# Terminals 2 and 3: Workers
 ./target/release/relativist worker --coordinator localhost:9000
 ```
 
-### Docker
+**Docker:**
 
 ```bash
-docker-compose up --scale worker=4
+docker compose up --scale worker=4
 ```
 
-> For the full command reference — every subcommand, every flag, end-to-end pipelines, benchmark workflows, known limitations (L1-L7), and troubleshooting — see [**USAGE_GUIDE.md**](USAGE_GUIDE.md).
+## Documentation
+
+Start here based on your goal:
+
+| Goal                                   | Start at                                                               |
+|----------------------------------------|------------------------------------------------------------------------|
+| Learn Relativist step by step          | [**docs/guides/**](docs/guides/README.md) — 7-step learning path        |
+| Look up a command or flag              | [docs/reference/cli.md](docs/reference/cli.md)                          |
+| Reproduce or extend benchmarks         | [docs/benchmarks/](docs/benchmarks/README.md)                           |
+| Understand the invariants (G1, D3, D6) | [docs/reference/invariants.md](docs/reference/invariants.md)            |
+| Debug an issue                         | [docs/reference/troubleshooting.md](docs/reference/troubleshooting.md)  |
+| Contribute code                        | [CONTRIBUTING.md](CONTRIBUTING.md)                                      |
+| Navigate everything else               | [docs/INDEX.md](docs/INDEX.md)                                          |
+
+v2 features already documented: [delta protocol (SPEC-19)](docs/guides/06-delta-protocol.md), [zero-copy wire format (SPEC-18)](docs/guides/07-zero-copy.md).
 
 ## Interaction Combinators
 
@@ -83,35 +107,15 @@ The **strong confluence** theorem (Lafont 1997) guarantees that any two non-over
 
 ## Specs
 
-All design decisions are documented in formal specifications:
-
-| Spec | Title | Reqs |
-|------|-------|------|
-| [SPEC-00](specs/SPEC-00-glossary.md) | Glossary | 35 terms |
-| [SPEC-01](specs/SPEC-01-invariantes.md) | Invariants | 24 invariants |
-| [SPEC-02](specs/SPEC-02-net-representation.md) | Net Representation | 27 reqs |
-| [SPEC-03](specs/SPEC-03-reduction.md) | Reduction Engine | 26 reqs |
-| [SPEC-04](specs/SPEC-04-partition.md) | Partitioning | 28 reqs |
-| [SPEC-05](specs/SPEC-05-merge.md) | Merge & Grid Cycle | 40 reqs |
-| [SPEC-06](specs/SPEC-06-wire-protocol.md) | Wire Protocol | 40 reqs |
-| [SPEC-07](specs/SPEC-07-deployment.md) | Deployment | 44 reqs |
-| [SPEC-08](specs/SPEC-08-test-strategy.md) | Test Strategy | 44 reqs |
-| [SPEC-09](specs/SPEC-09-benchmarks.md) | Benchmarks | 49 reqs |
-| [SPEC-10](specs/SPEC-10-security.md) | Security | 37 reqs |
-| [SPEC-11](specs/SPEC-11-observability.md) | Observability | 37 reqs |
-| [SPEC-12](specs/SPEC-12-user-io.md) | User I/O & Examples | 61 reqs |
-| [SPEC-13](specs/SPEC-13-system-architecture.md) | System Architecture | 52 reqs |
-| [SPEC-14](specs/SPEC-14-encoding.md) | Arithmetic Encoding | 27 reqs |
-| [SPEC-15](specs/SPEC-15-distribution.md) | Distribution & Packaging | 20 reqs |
-| [SPEC-16](specs/SPEC-16-worker-daemon.md) | Worker Daemon Mode | 13 reqs |
+All design decisions are documented in formal specifications under [`specs/`](specs/). 17 specs (SPEC-00 through SPEC-16) cover the v1 surface; SPEC-17 onwards cover v2 work. See [docs/INDEX.md](docs/INDEX.md) for the full table.
 
 ## Benchmark Results
 
-**Zero correctness failures in 4,200 benchmark executions.**
+**Zero correctness failures in 4,490 benchmark executions.**
 
 | Campaign | Reps | Wall Clock | Correctness | Mode |
 |----------|------|------------|-------------|------|
-| Phase 1 (in-process) | 3,800 | 11 min 39 s | 0 failures | Local shared-memory |
+| Phase 1 (in-process) | 3,800+ | 11 min 39 s | 0 failures | Local shared-memory |
 | Phase 2 (Docker/TCP) | 400 | 43 min 42 s | 0 failures | TCP localhost containers |
 
 Every single data point is verified by the fundamental property:
@@ -126,12 +130,14 @@ where ≅ denotes graph isomorphism (structural equality modulo ID renaming).
 - `cascade_cross(N)` terminates in N rounds (workers ≥ 2)
 - `dual_tree(d)` terminates in d rounds (workers ≥ 2)
 
-Full data: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baseline/) — frozen with SHA-256 checksums and provenance manifest.
+Full data: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baseline/) — frozen with SHA-256 checksums and provenance manifest. Reproduction: [docs/benchmarks/campaigns/v1-local-baseline.md](docs/benchmarks/campaigns/v1-local-baseline.md).
 
 ## Known Limitations
 
-1. **No break-even on local shared memory** — Distribution overhead exceeds parallel gain for all tested configurations in-process. Break-even is expected on network-separated machines (Phase 3 LAN).
-2. **Round-robin partitioning only** — No topology-aware partitioning (planned for v2).
+Summary only — full list with status and remediation in [docs/benchmarks/limitations.md](docs/benchmarks/limitations.md) (L1-L7).
+
+1. **No break-even on local shared memory** — Distribution overhead exceeds parallel gain in-process. Break-even is expected on network-separated machines (Phase 3 LAN).
+2. **Round-robin partitioning only** — No topology-aware partitioning (v2 work).
 3. **Single coordinator, star topology** — Scalability limited by coordinator merge bandwidth.
 4. **Terminating nets only** — Non-terminating nets are out of scope (qualified by premise P6).
 5. **Exponential readback** — Church exponential results cannot be decoded back to integers (DUP cycle limitation).
@@ -142,13 +148,6 @@ Full data: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baselin
 - **Grid computing practitioners** exploring deterministic distributed computation models
 - **Students** learning Spec-Driven Development, TDD from specs, or distributed systems
 - **HVM/Bend community** curious about distributed IC reduction beyond shared memory
-
-## Documentation
-
-- [**USAGE_GUIDE.md**](USAGE_GUIDE.md) — Complete command reference (every subcommand, every flag, end-to-end pipelines, known limitations L1-L7)
-- [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development guidelines
-- [**docs/INDEX.md**](docs/INDEX.md) — Full documentation index (542 documents organized by topic)
-- [**specs/**](specs/) — 17 formal specifications
 
 ## Research Context
 
