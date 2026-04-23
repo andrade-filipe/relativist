@@ -105,6 +105,17 @@ pub enum WorkerError {
 
     #[error("reduction failed: {0}")]
     ReductionFailed(String),
+
+    /// SPEC-19 R26, DC-B5 second half (TASK-0394): the worker's
+    /// `id_range` ran out of `AgentId`s while fulfilling the current
+    /// round's `pending_commutations`. The `request_id` identifies which
+    /// `PendingCommutation` the worker could not satisfy. The coordinator
+    /// treats this as a recoverable protocol error: on receipt it MAY
+    /// repartition or abort cleanly. Partial-progress semantics apply —
+    /// already-minted agents from earlier entries of the same
+    /// `pending_commutations` vector remain committed in the partition.
+    #[error("worker id_range exhausted while minting agent for request {request_id}")]
+    IdRangeExhausted { request_id: u32 },
 }
 
 // ---------------------------------------------------------------------------

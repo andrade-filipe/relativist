@@ -336,6 +336,23 @@ pub struct GridConfig {
     /// reductions is irrelevant. If no border endpoint is principal, no
     /// merge can produce a new redex this round, so the merge phase is
     /// pure overhead and may safely be skipped.
+    ///
+    /// SPEC-19 §3.6 R43 (TASK-0397): when `delta_mode` is `true`, this
+    /// field is AUTO-ENABLED via [`GridConfig::normalize`] — the delta
+    /// protocol's design assumes the coordinator-free-round optimization
+    /// is in effect (merge rounds become rare because workers hold
+    /// persistent state). `Default::default()` alone leaves this field
+    /// `false` to preserve R42 v1 baseline; CLI construction paths
+    /// (`build_grid_config*`) always call `.normalize()` so users passing
+    /// `--delta-mode` on the CLI get R43 behaviour automatically.
+    ///
+    /// Per DC-0397-A (option c), the normalization is UNCONDITIONAL: even
+    /// a caller who sets `delta_mode=true, coordinator_free_rounds=false`
+    /// explicitly sees `coordinator_free_rounds` forced to `true` after
+    /// `.normalize()`. A `tracing::debug!` records the coercion. If user-
+    /// choice preservation is required in the future, DC-0397-A is
+    /// revised and a `coordinator_free_rounds_user_set` tracking bit is
+    /// introduced.
     pub coordinator_free_rounds: bool,
 }
 
@@ -350,6 +367,32 @@ impl Default for GridConfig {
             // SPEC-19 §3.1 R4: opt-in only — defaults preserve v1 behaviour.
             coordinator_free_rounds: false,
         }
+    }
+}
+
+impl GridConfig {
+    /// SPEC-19 §3.6 R43 (TASK-0397): enforce the `delta_mode → coordinator_free_rounds`
+    /// default coupling. When `delta_mode` is `true` this method sets
+    /// `coordinator_free_rounds` to `true` unconditionally (DC-0397-A option c),
+    /// emitting a `tracing::debug!` if the previous value was `false` so the
+    /// coercion is auditable. When `delta_mode` is `false` the method is a no-op.
+    ///
+    /// The method is called automatically by CLI construction paths
+    /// (`build_grid_config`, `build_grid_config_from_local`) so users running
+    /// `relativist <coord|local> --delta-mode` get R43 semantics transparently.
+    /// Programmatic callers constructing a `GridConfig` via struct literal should
+    /// call `.normalize()` themselves if they want R43 enforcement; `Default`
+    /// alone leaves both fields at their raw default (R42 baseline).
+    ///
+    /// Idempotent: `cfg.normalize().normalize() == cfg.normalize()`.
+    pub fn normalize(mut self) -> Self {
+        if self.delta_mode && !self.coordinator_free_rounds {
+            tracing::debug!(
+                "SPEC-19 R43: coordinator_free_rounds forced to true under delta_mode=true"
+            );
+            self.coordinator_free_rounds = true;
+        }
+        self
     }
 }
 
@@ -456,6 +499,111 @@ mod tests {
         assert!(cfg.delta_mode);
         let cloned = cfg.clone();
         assert!(cloned.delta_mode);
+    }
+
+    // TASK-0397 UT-0397-01: Default::default() alone (without normalize)
+    // preserves R42 baseline — both `delta_mode` and
+    // `coordinator_free_rounds` stay `false`. Normalize is a no-op on the
+    // default per DC-0397-B (do NOT fold normalize into Default).
+    #[test]
+    fn ut_0397_01_default_grid_config_preserves_v1_r42_baseline() {
+        let cfg = GridConfig::default();
+        assert!(
+            !cfg.delta_mode,
+            "default GridConfig.delta_mode must be false (R42)"
+        );
+        assert!(
+            !cfg.coordinator_free_rounds,
+            "default GridConfig.coordinator_free_rounds must be false (R42 baseline)"
+        );
+        // Idempotence on default: normalize is a no-op when delta_mode is false.
+        let normalized = cfg.clone().normalize();
+        assert!(!normalized.delta_mode);
+        assert!(
+            !normalized.coordinator_free_rounds,
+            "normalize on a default GridConfig must not flip coordinator_free_rounds (R42)"
+        );
+    }
+
+    // TASK-0397 UT-0397-02: R43 primary path — delta_mode=true + default
+    // coordinator_free_rounds=false → normalize flips coordinator_free_rounds
+    // to true. Other fields pass through untouched.
+    #[test]
+    fn ut_0397_02_normalize_with_delta_mode_true_sets_coordinator_free_rounds_true() {
+        let cfg = GridConfig {
+            delta_mode: true,
+            coordinator_free_rounds: false,
+            ..GridConfig::default()
+        };
+        let normalized = cfg.normalize();
+        assert!(
+            normalized.delta_mode,
+            "normalize must preserve delta_mode=true"
+        );
+        assert!(
+            normalized.coordinator_free_rounds,
+            "SPEC-19 R43: normalize must set coordinator_free_rounds=true under delta_mode"
+        );
+        // Other fields pass through.
+        assert_eq!(normalized.num_workers, 1);
+        assert_eq!(normalized.max_rounds, None);
+        assert!(!normalized.strict_bsp);
+    }
+
+    // TASK-0397 UT-0397-03: DC-0397-A option (c) — unconditional override.
+    // Even when caller EXPLICITLY sets coordinator_free_rounds=false,
+    // delta_mode=true + normalize forces coordinator_free_rounds=true.
+    // The tracing::debug! records the coercion (not asserted here; QA probe).
+    #[test]
+    fn ut_0397_03_normalize_with_delta_mode_true_and_explicit_coordinator_free_rounds_false_forces_true(
+    ) {
+        let cfg = GridConfig {
+            delta_mode: true,
+            coordinator_free_rounds: false, // explicit user-set false
+            ..GridConfig::default()
+        };
+        let normalized = cfg.normalize();
+        assert!(normalized.delta_mode);
+        assert!(
+            normalized.coordinator_free_rounds,
+            "DC-0397-A (option c): R43 override wins over explicit coordinator_free_rounds=false"
+        );
+    }
+
+    // TASK-0397 — Idempotence canary (QA-0397-A): normalize twice is the
+    // same as normalize once. Guards against accidental accumulation of
+    // side effects in future normalize extensions.
+    #[test]
+    fn ut_0397_normalize_is_idempotent() {
+        let cfg_delta = GridConfig {
+            delta_mode: true,
+            ..GridConfig::default()
+        };
+        let once = cfg_delta.clone().normalize();
+        let twice = once.clone().normalize();
+        assert_eq!(once.delta_mode, twice.delta_mode);
+        assert_eq!(
+            once.coordinator_free_rounds, twice.coordinator_free_rounds,
+            "normalize must be idempotent (DC-0397-A)"
+        );
+    }
+
+    // TASK-0397 — QA-0397-B: R44 legal combination
+    // `coordinator_free_rounds=true + delta_mode=false` is preserved
+    // through normalize (normalize only fires on the delta_mode=true arm).
+    #[test]
+    fn ut_0397_normalize_preserves_r44_coord_free_without_delta_mode() {
+        let cfg = GridConfig {
+            delta_mode: false,
+            coordinator_free_rounds: true, // legal per R44
+            ..GridConfig::default()
+        };
+        let normalized = cfg.normalize();
+        assert!(!normalized.delta_mode);
+        assert!(
+            normalized.coordinator_free_rounds,
+            "SPEC-19 R44: coordinator_free_rounds=true + delta_mode=false is legal and must be preserved"
+        );
     }
 
     // T2: GridMetrics fields are writable and accessible

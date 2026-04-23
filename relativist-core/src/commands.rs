@@ -30,12 +30,33 @@ fn log_loopback_advisory(bind: std::net::SocketAddr, config: &TransportConfig) {
 }
 
 /// Execute local mode: grid loop in-process, no TCP (SPEC-07 R18).
+///
+/// SPEC-19 R20 (TASK-0396): routes through `run_grid_entry` to observe
+/// `grid_config.delta_mode`. When the flag is true on this CLI path we
+/// cleanly refuse: the delta BSP loop requires a `WorkerDispatch`, and
+/// no in-process dispatch has been wired to the local CLI yet (DC-C2
+/// defers the async binding to `protocol/coordinator.rs`; TASK-0395
+/// will land a test-support `LocalDeltaDispatch` usable from integration
+/// tests but not from production CLI). When the flag is false, the
+/// router delegates to the v1 full-partition path unchanged, preserving
+/// SPEC-19 R42 byte-for-byte.
 pub fn run_local_command(args: LocalArgs) -> Result<(), RelativistError> {
     let grid_config = build_grid_config_from_local(&args);
     let strategy = parse_strategy(&args.strategy)?;
 
+    if grid_config.delta_mode {
+        return Err(RelativistError::Config(
+            "--delta-mode on `local` requires a coordinator runtime that is not yet \
+             wired on the in-process CLI path (SPEC-19 R20, TASK-0396 placeholder). \
+             Omit --delta-mode to use the v1 full-partition path, or run under \
+             `coordinator` mode once TCP-backed WorkerDispatch ships."
+                .into(),
+        ));
+    }
+
     let net = load_net_from_file(&args.input)?;
-    let (mut reduced_net, metrics) = run_grid(net, &grid_config, &*strategy);
+    let (mut reduced_net, metrics) =
+        crate::merge::run_grid_entry(net, &grid_config, &*strategy, None);
 
     crate::encoding::discover_root(&mut reduced_net);
     print_summary(&reduced_net, &metrics);

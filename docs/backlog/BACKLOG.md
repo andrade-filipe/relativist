@@ -354,6 +354,22 @@ strictly R1-R7 (§3.1). §3.2 (BorderGraph), §3.3 (Delta-Only Protocol), and
 | TASK-0350 | Add `coordinator_free_rounds` config flag + metrics counter — R6, R41p, R45p | P0 | TODO | — (logical: 0348) | S |
 | TASK-0351 | Coordinator skip-merge logic + Global Normal Form termination — R3, R4, R5, R6, R7 | P0 | TODO | 0348, 0349, 0350 | M |
 
+## SPEC-19 §3.3 Refactor — post-REVIEW 2026-04-23 (MF-001, MF-002, SF-001, SF-002)
+
+Bundle source: `docs/reviews/REVIEW-SPEC-19-section-3.3-3.5-3.6-item-2.26-BCD-2026-04-23.md`.
+Triggered by two Must-Fix items and two Should-Fix items identified during the unified REVIEW of bundle 2.26-B/C/D. Closes DEFERRED-WORK D-003 **partially** (symmetric rules); opens D-004 for asymmetric-rule closure.
+
+| Task | Description | Priority | Status | Depends | Size |
+|------|-------------|----------|--------|---------|------|
+| TASK-0394 | MF-001 — Worker R23/R26 completion: `local_reconnections` + DC-B5 `pending_commutations → minted_agents` echo | P0 | **DONE** (2026-04-23) | 0381, 0384 | M |
+| TASK-0395 | MF-002 — G1 parity integration tests in `merge::grid_delta_integration_tests` (Option b — in-crate; closes UT-0385-06..08 symmetric; asymmetric under `SKIP_ASYMMETRIC` pending D-004) | P0 | **DONE** (2026-04-23) | 0394 | M |
+| TASK-0396 | SF-001 — R20 dispatcher fork: `run_grid_entry` routes on `cfg.delta_mode` | P1 | **DONE** (2026-04-23) | 0394 | S |
+| TASK-0397 | SF-002 — R43 normalize: `coordinator_free_rounds` defaults to `true` when `delta_mode=true` | P1 | **DONE** (2026-04-23) | — | S |
+
+**Bundle test delta:** 1109 → 1138 default (+29), 1149 → 1178 zero-copy (+29).
+**Stage 5 QA probes** added inline post-DEV (Option B rigor pass): `qa_0394_a_duplicate_request_id_in_pending_commutations_is_lenient`, `qa_0394_f_exhaustion_check_treats_next_id_equals_end_as_exhausted`, `qa_0377_l_pure_core_guard_panics_on_synthetic_forbidden_import`. Covers 13 of 15 Q-probes from the REVIEW artifact; Q2/Q3 asymmetric-rule G1 parity remain open per D-004.
+**Gates:** `cargo test --workspace --lib` 1138/1178 green, `cargo clippy --workspace --all-targets -- -D warnings` clean both feature configs, `cargo fmt --check` clean.
+
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 
 | ID | Title | Priority | Status | Depends | Complexity |

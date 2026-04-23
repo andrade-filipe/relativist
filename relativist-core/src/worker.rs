@@ -4,7 +4,8 @@
 //! them locally via reduce_all (SPEC-03), and return results.
 //! Workers have no knowledge of each other (star topology, SPEC-13 R27).
 
-use crate::merge::BorderDelta;
+use crate::error::WorkerError;
+use crate::merge::{BorderDelta, LocalReconnection, MintedAgent, PendingCommutation};
 use crate::net::PortRef;
 use crate::partition::Partition;
 use crate::protocol::Message;
@@ -70,6 +71,15 @@ pub enum WorkerAction {
     ShutdownSelf,
     /// Log a state transition at INFO level (SPEC-13 R23).
     LogTransition { from: WorkerState, to: WorkerState },
+    /// SPEC-19 R26, DC-B5 (TASK-0394): a recoverable worker-side
+    /// protocol error surfaced during round processing (e.g.,
+    /// `id_range` exhaustion while fulfilling `pending_commutations`).
+    /// The runtime decides whether to report to the coordinator via a
+    /// future `Message::Error` variant or terminate; today it is
+    /// logged and the worker is expected to abort that round cleanly.
+    /// When this action is emitted, no `RoundResult` is emitted in the
+    /// same return vector (spec-compliant failure mode).
+    Error(WorkerError),
 }
 
 // ---------------------------------------------------------------------------
@@ -323,12 +333,15 @@ pub fn handle_initial_partition(
 /// `WorkerDeltaState::from_initial_partition`). The first delta emitted
 /// by this handler (in Round 1) therefore reports only borders that
 /// Round-1 local reduction actually moved.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_round_start(
     ctx: &mut WorkerContext,
     round: u32,
     border_deltas: Vec<BorderDelta>,
     resolved_borders: Vec<u32>,
     new_borders: Vec<(u32, PortRef)>,
+    local_reconnections: Vec<LocalReconnection>,
+    pending_commutations: Vec<PendingCommutation>,
 ) -> Vec<WorkerAction> {
     use crate::merge::helpers::{
         apply_border_deltas_to_partition, compute_border_activity, compute_outgoing_deltas,
@@ -356,6 +369,82 @@ pub fn handle_round_start(
         &resolved_borders,
         &new_borders,
     );
+
+    // R24.1.5 — TASK-0394 DC-B3: apply coordinator-emitted
+    // `local_reconnections` BEFORE local reduction. Each entry rewires
+    // `agent_id.port` to `new_target` on the stored subnet. Self-loops
+    // (`new_target == AgentPort(agent_id, port)`) and DISCONNECTED
+    // targets are applied verbatim — `Net::connect` handles both cases.
+    // The resolver contract (DC-B3) guarantees the pairs describe valid
+    // post-resolution topology; the worker applies them transparently.
+    for lr in &local_reconnections {
+        let local = PortRef::AgentPort(lr.agent_id, lr.port);
+        // Self-loop defence: skip a pair where source equals target on
+        // the same port. This cannot arise from a well-formed resolver
+        // emission but we guard against it rather than tripping
+        // Net::connect's debug_assert.
+        if lr.new_target == local {
+            tracing::trace!(
+                agent_id = lr.agent_id,
+                port = lr.port,
+                "handle_round_start: skipping LocalReconnection self-loop (DC-B3)"
+            );
+            continue;
+        }
+        state.partition.subnet.connect(local, lr.new_target);
+    }
+
+    // R24.1.6 — TASK-0394 DC-B5 second half: fulfil coordinator-issued
+    // `pending_commutations`. For each entry, mint a fresh agent from
+    // the worker's own `id_range` via `Net::create_agent` (which uses
+    // `next_id`, seeded at partition split to `id_range.start`). If the
+    // range is exhausted mid-loop, partial-progress semantics apply:
+    // already-minted agents remain committed; the handler returns ONLY
+    // a `WorkerAction::Error` and does NOT emit a `Message::RoundResult`
+    // for this round. The coordinator (per R48) is responsible for
+    // deciding whether to repartition or abort.
+    let mut minted_agents: Vec<MintedAgent> = Vec::with_capacity(pending_commutations.len());
+    for pc in &pending_commutations {
+        // Exhaustion check: the next `create_agent` call would produce
+        // an id == `next_id`, which MUST remain strictly less than
+        // `id_range.end` (exclusive upper bound, SPEC-04 IdRange).
+        if state.partition.subnet.next_id >= state.partition.id_range.end {
+            tracing::warn!(
+                request_id = pc.request_id,
+                worker_id = state.partition.worker_id,
+                next_id = state.partition.subnet.next_id,
+                id_range_end = state.partition.id_range.end,
+                "handle_round_start: id_range exhausted while fulfilling PendingCommutation (SPEC-19 R26, DC-B5)"
+            );
+            return vec![
+                WorkerAction::LogTransition {
+                    from,
+                    to: ctx.state.clone(),
+                },
+                WorkerAction::Error(WorkerError::IdRangeExhausted {
+                    request_id: pc.request_id,
+                }),
+            ];
+        }
+        // Arity check: the resolver MUST emit arity consistent with
+        // the symbol's natural arity (Con/Dup => 2, Era => 0). A
+        // mismatch is a resolver bug; debug_assert surfaces it in
+        // development. In release builds we trust the resolver.
+        debug_assert_eq!(
+            pc.arity,
+            crate::net::arity(pc.symbol_type),
+            "DC-B5: PendingCommutation arity {} mismatches symbol {:?} natural arity {}",
+            pc.arity,
+            pc.symbol_type,
+            crate::net::arity(pc.symbol_type)
+        );
+        let minted_agent_id = state.partition.subnet.create_agent(pc.symbol_type);
+        minted_agents.push(MintedAgent {
+            request_id: pc.request_id,
+            minted_agent_id,
+        });
+    }
+
     let agents_before = state.partition.subnet.count_live_agents();
 
     // R24.2 — local reduction to quiescence.
@@ -407,7 +496,7 @@ pub fn handle_round_start(
             border_deltas: outgoing,
             stats,
             has_border_activity,
-            minted_agents: Vec::new(),
+            minted_agents,
         })),
     ]
 }
@@ -767,7 +856,7 @@ mod tests {
     #[test]
     fn handle_round_start_empty_deltas_no_reduction() {
         let mut ctx = seed_delta_worker(make_quiet_partition());
-        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![]);
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![]);
 
         // Stats must report zero local reductions.
         let send = actions
@@ -805,7 +894,7 @@ mod tests {
             border_id: 105,
             new_target: PortRef::AgentPort(b, 1),
         };
-        let _ = handle_round_start(&mut ctx, 1, vec![delta], vec![], vec![]);
+        let _ = handle_round_start(&mut ctx, 1, vec![delta], vec![], vec![], vec![], vec![]);
 
         let stored = ctx.delta_state.as_ref().unwrap();
         assert_eq!(
@@ -821,7 +910,7 @@ mod tests {
         let (partition, _a) = make_partition_with_border(107);
         let mut ctx = seed_delta_worker(partition);
 
-        let _ = handle_round_start(&mut ctx, 1, vec![], vec![107], vec![]);
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![107], vec![], vec![], vec![]);
 
         let stored = ctx.delta_state.as_ref().unwrap();
         assert!(
@@ -843,6 +932,8 @@ mod tests {
             vec![],
             vec![],
             vec![(109, PortRef::AgentPort(c, 1))],
+            vec![],
+            vec![],
         );
 
         let stored = ctx.delta_state.as_ref().unwrap();
@@ -878,7 +969,7 @@ mod tests {
         };
         let mut ctx = seed_delta_worker(partition);
 
-        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![]);
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![]);
         let send = actions
             .iter()
             .find_map(|a| match a {
@@ -906,7 +997,7 @@ mod tests {
         let (partition, _a) = make_partition_with_border(103);
         let mut ctx = seed_delta_worker(partition);
 
-        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![]);
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![]);
 
         let stored = ctx.delta_state.as_ref().unwrap();
         assert_eq!(
@@ -922,7 +1013,7 @@ mod tests {
         let mut ctx = seed_delta_worker(partition);
         assert_eq!(ctx.state, WorkerState::DeltaIdle);
 
-        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![]);
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![]);
         assert_eq!(ctx.state, WorkerState::DeltaActive);
     }
 
@@ -932,7 +1023,7 @@ mod tests {
     fn handle_round_start_emits_send_message_round_result() {
         let mut ctx = seed_delta_worker(make_quiet_partition());
 
-        let actions = handle_round_start(&mut ctx, 42, vec![], vec![], vec![]);
+        let actions = handle_round_start(&mut ctx, 42, vec![], vec![], vec![], vec![], vec![]);
         let sends: Vec<_> = actions
             .iter()
             .filter_map(|a| match a {
@@ -947,6 +1038,731 @@ mod tests {
             }
             other => panic!("expected RoundResult, got {:?}", other),
         }
+    }
+
+    // ============================================================
+    // TASK-0394: handle_round_start full R23/R26 completion tests
+    // (SPEC-19 §3.3 R23 full payload, R26 minted_agents echo, DC-B5
+    // 2-phase allocation second half). Baseline: UT-0381-01..09 remain
+    // valid with the 2-arg signature extension (all pass vec![], vec![]).
+    // Adds 11 new #[test] fns exercising:
+    //   - local_reconnections application (UT-0394-01..04)
+    //   - pending_commutations → minted_agents echo (UT-0394-05..09)
+    //   - error paths / invariants (UT-0394-10, UT-0394-11)
+    // ============================================================
+
+    // UT-0394-01 — backward-compat sanity: empty new fields → output is
+    // equivalent to UT-0381-01's 5-arg baseline behavior.
+    #[test]
+    fn ut_0394_01_empty_local_reconnections_empty_pending_commutations_unchanged() {
+        let mut ctx = seed_delta_worker(make_quiet_partition());
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![]);
+        let send = actions
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m),
+                _ => None,
+            })
+            .expect("RoundResult must be emitted (no pending exhaustion)");
+        match send.as_ref() {
+            Message::RoundResult {
+                border_deltas,
+                stats,
+                has_border_activity,
+                minted_agents,
+                ..
+            } => {
+                assert_eq!(stats.local_redexes, 0);
+                assert!(border_deltas.is_empty());
+                assert!(!has_border_activity);
+                assert!(
+                    minted_agents.is_empty(),
+                    "empty pending_commutations must yield empty minted_agents"
+                );
+            }
+            other => panic!("expected RoundResult, got {:?}", other),
+        }
+        assert_eq!(ctx.state, WorkerState::DeltaActive);
+    }
+
+    // UT-0394-02 — single LocalReconnection mutates subnet before reduce.
+    #[test]
+    fn ut_0394_02_applies_single_local_reconnection() {
+        // Two CON agents, ports 1 and 2 unconnected; resolver directs
+        // rewire of a.1 → b.2.
+        let mut subnet = Net::new();
+        let a = subnet.create_agent(Symbol::Con);
+        let b = subnet.create_agent(Symbol::Con);
+        // Principal ports: bind to distinct FreePorts so reduce_all
+        // finds no local redex (avoid accidental reduction during the test).
+        subnet.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
+        subnet.connect(PortRef::AgentPort(b, 0), PortRef::FreePort(1));
+        // Aux pairs: leave (a,2) and (b,1) dangling so the rewire is
+        // observable on (a,1) and (b,2).
+        subnet.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(2));
+        subnet.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(3));
+
+        let partition = Partition {
+            subnet,
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        let mut ctx = seed_delta_worker(partition);
+
+        let lr = LocalReconnection {
+            agent_id: a,
+            port: 1,
+            new_target: PortRef::AgentPort(b, 2),
+        };
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![lr], vec![]);
+
+        let stored = ctx.delta_state.as_ref().unwrap();
+        assert_eq!(
+            stored.partition.subnet.get_target(PortRef::AgentPort(a, 1)),
+            PortRef::AgentPort(b, 2),
+            "local_reconnection must rewire a.1 to b.2"
+        );
+        assert_eq!(
+            stored.partition.subnet.get_target(PortRef::AgentPort(b, 2)),
+            PortRef::AgentPort(a, 1),
+            "Net::connect symmetry: b.2 must point back at a.1"
+        );
+    }
+
+    // UT-0394-03 — multiple LocalReconnections applied sequentially. Two
+    // reconnections on disjoint ports should both take effect.
+    #[test]
+    fn ut_0394_03_applies_multiple_local_reconnections() {
+        let mut subnet = Net::new();
+        let a = subnet.create_agent(Symbol::Con);
+        let b = subnet.create_agent(Symbol::Con);
+        let c = subnet.create_agent(Symbol::Con);
+        // Seed all ports DISCONNECTED (Net::create_agent initializes to DISCONNECTED).
+        let partition = Partition {
+            subnet,
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        let mut ctx = seed_delta_worker(partition);
+
+        let lrs = vec![
+            LocalReconnection {
+                agent_id: a,
+                port: 1,
+                new_target: PortRef::AgentPort(b, 1),
+            },
+            LocalReconnection {
+                agent_id: a,
+                port: 2,
+                new_target: PortRef::AgentPort(c, 1),
+            },
+        ];
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], lrs, vec![]);
+
+        let stored = ctx.delta_state.as_ref().unwrap();
+        assert_eq!(
+            stored.partition.subnet.get_target(PortRef::AgentPort(a, 1)),
+            PortRef::AgentPort(b, 1),
+            "first LR: a.1 → b.1"
+        );
+        assert_eq!(
+            stored.partition.subnet.get_target(PortRef::AgentPort(a, 2)),
+            PortRef::AgentPort(c, 1),
+            "second LR: a.2 → c.1"
+        );
+    }
+
+    // UT-0394-04 — self-loop in LocalReconnection (new_target == source
+    // port) is skipped without panic; tracing::trace! captures it.
+    #[test]
+    fn ut_0394_04_skips_self_loop_in_local_reconnections() {
+        let mut subnet = Net::new();
+        let a = subnet.create_agent(Symbol::Con);
+        let b = subnet.create_agent(Symbol::Con);
+        let partition = Partition {
+            subnet,
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        let mut ctx = seed_delta_worker(partition);
+
+        let lrs = vec![
+            // self-loop: a.1 → a.1 — skipped
+            LocalReconnection {
+                agent_id: a,
+                port: 1,
+                new_target: PortRef::AgentPort(a, 1),
+            },
+            // valid: b.1 → b.2 — applied
+            LocalReconnection {
+                agent_id: b,
+                port: 1,
+                new_target: PortRef::AgentPort(b, 2),
+            },
+        ];
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], lrs, vec![]);
+
+        let stored = ctx.delta_state.as_ref().unwrap();
+        // Self-loop NOT applied: a.1 stays DISCONNECTED.
+        assert_eq!(
+            stored.partition.subnet.get_target(PortRef::AgentPort(a, 1)),
+            crate::net::DISCONNECTED,
+            "self-loop must be skipped (DC-B3 defensive)"
+        );
+        // Valid pair applied.
+        assert_eq!(
+            stored.partition.subnet.get_target(PortRef::AgentPort(b, 1)),
+            PortRef::AgentPort(b, 2),
+            "second LR must apply after skip"
+        );
+    }
+
+    // UT-0394-05 — single PendingCommutation mints 1 agent, minted_agents
+    // carries matching request_id + fresh AgentId from id_range.
+    #[test]
+    fn ut_0394_05_mints_agent_for_single_pending_commutation() {
+        let partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            // Worker 0's range starts at 100 to test that id_range is honored.
+            id_range: IdRange {
+                start: 100,
+                end: 200,
+            },
+            border_id_start: 200,
+            border_id_end: 300,
+        };
+        // Partition split sets subnet.next_id = id_range.start when the
+        // partition has no prior agents; here we simulate that.
+        let mut partition = partition;
+        partition.subnet.next_id = 100;
+        let mut ctx = seed_delta_worker(partition);
+
+        let pc = PendingCommutation {
+            request_id: 42,
+            symbol_type: Symbol::Con,
+            arity: 2,
+        };
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![pc]);
+        let send = actions
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m),
+                _ => None,
+            })
+            .expect("RoundResult must be emitted");
+        match send.as_ref() {
+            Message::RoundResult { minted_agents, .. } => {
+                assert_eq!(minted_agents.len(), 1);
+                assert_eq!(minted_agents[0].request_id, 42);
+                assert_eq!(minted_agents[0].minted_agent_id, 100);
+            }
+            other => panic!("expected RoundResult, got {:?}", other),
+        }
+        let stored = ctx.delta_state.as_ref().unwrap();
+        assert_eq!(stored.partition.subnet.next_id, 101);
+    }
+
+    // UT-0394-06 — multiple PendingCommutations: AgentIds are allocated
+    // contiguously from id_range.start, minted_agents preserves order.
+    #[test]
+    fn ut_0394_06_mints_multiple_agents_with_contiguous_ids() {
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange {
+                start: 100,
+                end: 200,
+            },
+            border_id_start: 200,
+            border_id_end: 300,
+        };
+        partition.subnet.next_id = 100;
+        let mut ctx = seed_delta_worker(partition);
+
+        let pcs = vec![
+            PendingCommutation {
+                request_id: 1,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 2,
+                symbol_type: Symbol::Dup,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 3,
+                symbol_type: Symbol::Era,
+                arity: 0,
+            },
+        ];
+        let actions = handle_round_start(&mut ctx, 2, vec![], vec![], vec![], vec![], pcs);
+        let send = actions
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m),
+                _ => None,
+            })
+            .expect("RoundResult must be emitted");
+        match send.as_ref() {
+            Message::RoundResult { minted_agents, .. } => {
+                assert_eq!(minted_agents.len(), 3);
+                assert_eq!(minted_agents[0].request_id, 1);
+                assert_eq!(minted_agents[0].minted_agent_id, 100);
+                assert_eq!(minted_agents[1].request_id, 2);
+                assert_eq!(minted_agents[1].minted_agent_id, 101);
+                assert_eq!(minted_agents[2].request_id, 3);
+                assert_eq!(minted_agents[2].minted_agent_id, 102);
+            }
+            other => panic!("expected RoundResult, got {:?}", other),
+        }
+    }
+
+    // UT-0394-07 — DC-B5 non-overlap: independent id_ranges on two
+    // workers do not collide.
+    #[test]
+    fn ut_0394_07_id_ranges_do_not_collide_across_workers() {
+        fn seed(range_start: u32, worker_id: u32) -> WorkerContext {
+            let mut partition = Partition {
+                subnet: Net::new(),
+                worker_id,
+                free_port_index: HashMap::new(),
+                id_range: IdRange {
+                    start: range_start,
+                    end: range_start + 100,
+                },
+                border_id_start: range_start + 100,
+                border_id_end: range_start + 200,
+            };
+            partition.subnet.next_id = range_start;
+            seed_delta_worker(partition)
+        }
+        let mut ctx_a = seed(100, 0);
+        let mut ctx_b = seed(200, 1);
+        let pc = PendingCommutation {
+            request_id: 1,
+            symbol_type: Symbol::Con,
+            arity: 2,
+        };
+        let actions_a = handle_round_start(
+            &mut ctx_a,
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![pc.clone()],
+        );
+        let actions_b = handle_round_start(&mut ctx_b, 1, vec![], vec![], vec![], vec![], vec![pc]);
+
+        let id_a = match actions_a
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m.as_ref()),
+                _ => None,
+            })
+            .unwrap()
+        {
+            Message::RoundResult { minted_agents, .. } => minted_agents[0].minted_agent_id,
+            _ => unreachable!(),
+        };
+        let id_b = match actions_b
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m.as_ref()),
+                _ => None,
+            })
+            .unwrap()
+        {
+            Message::RoundResult { minted_agents, .. } => minted_agents[0].minted_agent_id,
+            _ => unreachable!(),
+        };
+        assert_eq!(id_a, 100);
+        assert_eq!(id_b, 200);
+        assert_ne!(id_a, id_b, "DC-B5 non-overlap: id_ranges must not collide");
+    }
+
+    // UT-0394-08 — symbol transparency: the agent created has the exact
+    // Symbol the PendingCommutation requested.
+    #[test]
+    fn ut_0394_08_minted_agent_symbol_matches_request() {
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        partition.subnet.next_id = 0;
+        let mut ctx = seed_delta_worker(partition);
+
+        let pcs = vec![
+            PendingCommutation {
+                request_id: 1,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 2,
+                symbol_type: Symbol::Dup,
+                arity: 2,
+            },
+        ];
+        let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], pcs);
+
+        let stored = ctx.delta_state.as_ref().unwrap();
+        // Agents at IDs 0 and 1 must exist with the requested symbols.
+        let a0 = stored.partition.subnet.agents[0].as_ref().unwrap();
+        let a1 = stored.partition.subnet.agents[1].as_ref().unwrap();
+        assert_eq!(a0.symbol, Symbol::Con);
+        assert_eq!(a1.symbol, Symbol::Dup);
+    }
+
+    // UT-0394-09 — DC-0394-B: minted_agents preserves pending_commutations
+    // input order even when request_ids are non-monotonic.
+    #[test]
+    fn ut_0394_09_minted_agents_preserve_input_order() {
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        partition.subnet.next_id = 0;
+        let mut ctx = seed_delta_worker(partition);
+
+        let pcs = vec![
+            PendingCommutation {
+                request_id: 7,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 3,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 11,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 2,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 5,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+        ];
+        let actions = handle_round_start(&mut ctx, 3, vec![], vec![], vec![], vec![], pcs);
+        let ids: Vec<u32> = match actions
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m.as_ref()),
+                _ => None,
+            })
+            .unwrap()
+        {
+            Message::RoundResult { minted_agents, .. } => {
+                minted_agents.iter().map(|m| m.request_id).collect()
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            ids,
+            vec![7, 3, 11, 2, 5],
+            "DC-0394-B: input order MUST be preserved"
+        );
+    }
+
+    // UT-0394-10 — id_range exhaustion mid-loop: returns Error action,
+    // NO RoundResult, partial progress preserved.
+    #[test]
+    fn ut_0394_10_id_range_exhaustion_returns_error_no_round_result() {
+        use crate::error::WorkerError;
+
+        // id_range has room for 2 AgentIds only; 3 PendingCommutations
+        // should allocate 2 and error on the 3rd.
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange {
+                start: 100,
+                end: 102,
+            },
+            border_id_start: 200,
+            border_id_end: 300,
+        };
+        partition.subnet.next_id = 100;
+        let mut ctx = seed_delta_worker(partition);
+
+        let pcs = vec![
+            PendingCommutation {
+                request_id: 1,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 2,
+                symbol_type: Symbol::Dup,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 3,
+                symbol_type: Symbol::Era,
+                arity: 0,
+            },
+        ];
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], pcs);
+
+        // No RoundResult SendMessage.
+        let sends = actions
+            .iter()
+            .filter(|a| matches!(a, WorkerAction::SendMessage(_)))
+            .count();
+        assert_eq!(
+            sends, 0,
+            "on exhaustion handler MUST NOT emit Message::RoundResult"
+        );
+        // Exactly one Error action with request_id=3 (the one that
+        // exceeded the range).
+        let err_request_ids: Vec<u32> = actions
+            .iter()
+            .filter_map(|a| match a {
+                WorkerAction::Error(WorkerError::IdRangeExhausted { request_id }) => {
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(err_request_ids, vec![3]);
+
+        // Partial progress: first two agents committed, third never allocated.
+        let stored = ctx.delta_state.as_ref().unwrap();
+        assert_eq!(stored.partition.subnet.next_id, 102);
+        assert!(stored.partition.subnet.agents[100].is_some());
+        assert!(stored.partition.subnet.agents[101].is_some());
+        assert_eq!(
+            stored.partition.subnet.agents.len(),
+            102,
+            "arena must not extend past the two committed agents"
+        );
+    }
+
+    // UT-0394-11 — arity consistency: PendingCommutation.arity matching
+    // the symbol's natural arity does not panic; the minted agent has
+    // the correct natural arity of ports.
+    #[test]
+    fn ut_0394_11_arity_consistent_with_symbol_succeeds() {
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        partition.subnet.next_id = 0;
+        let mut ctx = seed_delta_worker(partition);
+
+        // Era is arity 0 (natural); the pending_commutation's arity field
+        // must match. If it didn't, the debug_assert in handle_round_start
+        // would fire (guarded by debug_assertions).
+        let pc_era = PendingCommutation {
+            request_id: 1,
+            symbol_type: Symbol::Era,
+            arity: 0,
+        };
+        let pc_con = PendingCommutation {
+            request_id: 2,
+            symbol_type: Symbol::Con,
+            arity: 2,
+        };
+        let _ = handle_round_start(
+            &mut ctx,
+            1,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![pc_era, pc_con],
+        );
+
+        let stored = ctx.delta_state.as_ref().unwrap();
+        // Era agent: 0 aux ports, but the net arena still holds the
+        // principal slot. Con agent: 2 aux ports.
+        let era_agent = stored.partition.subnet.agents[0].as_ref().unwrap();
+        let con_agent = stored.partition.subnet.agents[1].as_ref().unwrap();
+        assert_eq!(era_agent.symbol, Symbol::Era);
+        assert_eq!(con_agent.symbol, Symbol::Con);
+    }
+
+    // ============================================================
+    // QA adversarial probes (Stage 5 partial — Option B rigor pass,
+    // post-DEV of TASK-0394..0397, pre-commit). Each probe closes a
+    // gap flagged in REVIEW-SPEC-19-section-3.3-3.5-3.6-item-2.26-BCD-2026-04-23
+    // or TEST-SPEC-0394 that the DEV-stage unit tests did not exercise.
+    // ============================================================
+
+    // QA-0394-A — duplicate `request_id` in pending_commutations.
+    // Spec R48 states the coordinator rejects stray request_ids; it
+    // does NOT mandate the worker detect duplicates. Current worker
+    // contract is LENIENT: it mints both agents, each with the same
+    // echoed request_id in `minted_agents`. This probe PINS that
+    // behavior so a future refactor that silently tightens it (or
+    // loosens a tightening) is caught.
+    #[test]
+    fn qa_0394_a_duplicate_request_id_in_pending_commutations_is_lenient() {
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 100 },
+            border_id_start: 100,
+            border_id_end: 200,
+        };
+        partition.subnet.next_id = 0;
+        let mut ctx = seed_delta_worker(partition);
+
+        // Both entries share request_id = 42 — a resolver-side bug or
+        // a malicious coordinator. The worker's current contract is
+        // NOT to detect this; it mints both agents.
+        let pcs = vec![
+            PendingCommutation {
+                request_id: 42,
+                symbol_type: Symbol::Con,
+                arity: 2,
+            },
+            PendingCommutation {
+                request_id: 42,
+                symbol_type: Symbol::Dup,
+                arity: 2,
+            },
+        ];
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], pcs);
+        let send = actions
+            .iter()
+            .find_map(|a| match a {
+                WorkerAction::SendMessage(m) => Some(m),
+                _ => None,
+            })
+            .expect("RoundResult must be emitted (lenient contract)");
+        match send.as_ref() {
+            Message::RoundResult { minted_agents, .. } => {
+                assert_eq!(
+                    minted_agents.len(),
+                    2,
+                    "lenient contract: worker mints one agent per pending_commutation \
+                     regardless of request_id duplication"
+                );
+                assert_eq!(minted_agents[0].request_id, 42);
+                assert_eq!(minted_agents[1].request_id, 42);
+                // IDs must still be distinct — id_range allocator
+                // doesn't care about request_id.
+                assert_ne!(
+                    minted_agents[0].minted_agent_id,
+                    minted_agents[1].minted_agent_id,
+                    "id_range allocator must produce distinct AgentIds even under request_id collision"
+                );
+            }
+            other => panic!("expected RoundResult, got {:?}", other),
+        }
+    }
+
+    // QA-0394-F — exhaustion check treats `next_id == id_range.end`
+    // as already-exhausted (off-by-one guard on the boundary check).
+    //
+    // UT-0394-10 covers mid-loop exhaustion; this probe covers the
+    // stricter case where the FIRST PendingCommutation is rejected
+    // because the worker enters the round with the range already
+    // full. Protects the `>=` semantics of the check against an
+    // accidental `>` refactor that would allow one over-allocation.
+    //
+    // NOTE: this intentionally uses small id_range boundaries to
+    // avoid triggering `Net::agents.resize(id + 1, None)` with a
+    // massive dense arena (the arena is O(max_AgentId); testing at
+    // u32::MAX would attempt a ~100 GB allocation and OOM the test
+    // process). The semantic property being tested — the boundary
+    // `next_id >= id_range.end` — is independent of the absolute
+    // values, so a single-slot range near 100 captures the same
+    // logic as a single-slot range near u32::MAX.
+    #[test]
+    fn qa_0394_f_exhaustion_check_treats_next_id_equals_end_as_exhausted() {
+        use crate::error::WorkerError;
+
+        let mut partition = Partition {
+            subnet: Net::new(),
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            // Single-slot range [100, 101): exactly one mintable id = 100.
+            id_range: IdRange {
+                start: 100,
+                end: 101,
+            },
+            border_id_start: 200,
+            border_id_end: 300,
+        };
+        // Seed next_id already at id_range.end — already-exhausted
+        // on entry. An off-by-one `>` check would incorrectly permit
+        // one more allocation here.
+        partition.subnet.next_id = 101;
+        let mut ctx = seed_delta_worker(partition);
+
+        let pc = PendingCommutation {
+            request_id: 7,
+            symbol_type: Symbol::Con,
+            arity: 2,
+        };
+        let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![pc]);
+
+        // Exhaustion fires on the FIRST iteration — no RoundResult, one Error.
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, WorkerAction::SendMessage(_))),
+            "handler MUST NOT emit RoundResult when the first PC cannot be minted"
+        );
+        let errs: Vec<u32> = actions
+            .iter()
+            .filter_map(|a| match a {
+                WorkerAction::Error(WorkerError::IdRangeExhausted { request_id }) => {
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            errs,
+            vec![7],
+            "boundary check must treat next_id == id_range.end as already-exhausted"
+        );
+
+        // No mint committed — partition.next_id unchanged.
+        let stored = ctx.delta_state.as_ref().unwrap();
+        assert_eq!(
+            stored.partition.subnet.next_id, 101,
+            "next_id must not advance when exhausted at entry"
+        );
     }
 
     // UT-0381-09 (helper) — apply_border_deltas on all-empty inputs

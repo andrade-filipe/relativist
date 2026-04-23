@@ -303,6 +303,69 @@ pub fn run_grid(
 }
 
 // ---------------------------------------------------------------------------
+// SPEC-19 R20 — dispatcher fork (TASK-0396, 2026-04-23)
+// ---------------------------------------------------------------------------
+
+/// SPEC-19 R20 (TASK-0396): public dispatcher that observes
+/// `config.delta_mode` and routes to either the v1 full-partition path
+/// ([`run_grid`]) or the v2 delta BSP loop ([`run_grid_delta`]).
+///
+/// This function closes SF-001 from
+/// `docs/reviews/REVIEW-SPEC-19-section-3.3-3.5-3.6-item-2.26-BCD-2026-04-23.md`:
+/// before this router, `GridConfig.delta_mode` was threaded through the
+/// CLI but no call site actually read it, so passing `--delta-mode` on
+/// the command line was a no-op beyond the field round-trip. Callers
+/// now go through `run_grid_entry` and get the correct path based on
+/// their config.
+///
+/// # Semantics
+///
+/// - `config.delta_mode == false`: delegates to `run_grid(net, config, strategy)`
+///   and ignores `dispatch`. `dispatch` MAY be `None`.
+/// - `config.delta_mode == true`: delegates to
+///   `run_grid_delta(net, config, strategy, dispatch.unwrap())`. Passing
+///   `None` in this case panics with a clear SPEC-19 R20 message
+///   (DC-0396-B option: panic over `Result`, matching the
+///   pre-condition-assertion convention in `merge/grid.rs`).
+///
+/// # When to call this
+///
+/// Production CLI paths and downstream callers (benchmarks, harnesses)
+/// should reach grid reduction through `run_grid_entry` rather than the
+/// individual `run_grid` / `run_grid_delta` functions. Unit tests that
+/// want to exercise a specific path directly may still call
+/// `run_grid` / `run_grid_delta` by name.
+// Visibility note (TASK-0396 + DC-0395-A coordination): this function
+// is `pub(crate)` — not `pub` — because it takes `&mut dyn WorkerDispatch`,
+// and `WorkerDispatch` is `pub(crate)` per DC-C2 (the async binding is
+// deferred to `protocol/coordinator.rs`). Promoting either surface to
+// `pub` would leak internals; the `test-support` feature gate introduced
+// by TASK-0395 for external integration tests is the proper vehicle for
+// cross-crate exposure. CLI paths call this function from within the
+// same crate (`commands.rs::local_main`) so `pub(crate)` is sufficient.
+pub(crate) fn run_grid_entry(
+    net: Net,
+    config: &GridConfig,
+    strategy: &dyn PartitionStrategy,
+    dispatch: Option<&mut dyn crate::merge::types::WorkerDispatch>,
+) -> (Net, GridMetrics) {
+    if config.delta_mode {
+        let d = dispatch.expect(
+            "SPEC-19 R20: run_grid_entry with delta_mode=true requires a WorkerDispatch; \
+             None was provided. Callers that cannot supply a dispatch (e.g., current CLI \
+             paths without coordinator runtime) MUST either set delta_mode=false or \
+             short-circuit with a user-facing error before reaching this entry point.",
+        );
+        run_grid_delta(net, config, strategy, d)
+    } else {
+        // v1 path: `dispatch` is ignored. This is by design — the v1
+        // run_grid has no stateful worker contract to satisfy.
+        let _ = dispatch;
+        run_grid(net, config, strategy)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SPEC-19 R20, R21 — delta-mode grid entry (TASK-0384)
 // ---------------------------------------------------------------------------
 
@@ -343,10 +406,14 @@ pub(crate) fn run_grid_delta(
     dispatch: &mut dyn crate::merge::types::WorkerDispatch,
 ) -> (Net, GridMetrics) {
     assert!(config.num_workers >= 1, "num_workers must be >= 1");
-    // TODO(2.26-D): once `GridConfig.delta_mode` lands, assert it here.
-    // Until then, this function is unconditionally delta-mode at entry.
-    // DC-C3 firewall (2026-04-17): intentionally NO assert on
-    // `config.strict_bsp` — both values are legal per R40.
+    // TASK-0396 (2026-04-23): the `GridConfig.delta_mode` gate is enforced
+    // at `run_grid_entry` — the router ensures callers only reach this
+    // function when `delta_mode = true`. We intentionally do NOT
+    // re-assert the flag here so that focused unit tests can drive
+    // `run_grid_delta` directly with a degenerate `GridConfig` that does
+    // not set `delta_mode` (the inner delta BSP semantics are identical
+    // either way). DC-C3 firewall (2026-04-17): intentionally NO assert
+    // on `config.strict_bsp` — both values are legal per R40.
 
     let mut current_net = net;
     let mut metrics = GridMetrics {
@@ -2038,6 +2105,160 @@ mod tests {
     }
 
     // ============================================================================
+    // TASK-0396 — SPEC-19 R20 dispatcher fork (run_grid_entry) tests
+    // ============================================================================
+
+    // UT-0396-01 — delta_mode=false delegates to v1 run_grid; dispatch=None is accepted.
+    #[test]
+    fn ut_0396_01_run_grid_entry_with_delta_mode_false_delegates_to_v1() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+
+        let cfg = GridConfig {
+            num_workers: 2,
+            delta_mode: false,
+            ..GridConfig::default()
+        };
+
+        let (net_v1, metrics_v1) = run_grid(net.clone(), &cfg, &ContiguousIdStrategy);
+        let (net_entry, metrics_entry) = run_grid_entry(net, &cfg, &ContiguousIdStrategy, None);
+
+        // Byte-identical metrics: the router on the v1 branch must be a
+        // pass-through. count_live_agents is a crude but sufficient net
+        // equality proxy for this regression probe.
+        assert_eq!(
+            metrics_v1.total_interactions,
+            metrics_entry.total_interactions
+        );
+        assert_eq!(metrics_v1.rounds, metrics_entry.rounds);
+        assert_eq!(metrics_v1.converged, metrics_entry.converged);
+        assert_eq!(
+            net_v1.count_live_agents(),
+            net_entry.count_live_agents(),
+            "v1 output net agent count must match when routed through run_grid_entry"
+        );
+    }
+
+    // UT-0396-02 — delta_mode=true with a Some(dispatch) delegates to
+    // run_grid_delta. Uses the same fixture as UT-0384-01 so the delta
+    // path exercises the real inner loop (not the short-circuit).
+    #[test]
+    fn ut_0396_02_run_grid_entry_with_delta_mode_true_and_dispatch_delegates_to_delta() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(1_000));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1_001));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(1_002));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(1_003));
+
+        let cfg = GridConfig {
+            num_workers: 2,
+            delta_mode: true,
+            ..GridConfig::default()
+        };
+        let mut dispatch = NoopDispatch::default();
+        let (_out, metrics) = run_grid_entry(net, &cfg, &ContiguousIdStrategy, Some(&mut dispatch));
+
+        assert!(
+            metrics.delta_mode,
+            "run_grid_entry with delta_mode=true MUST set metrics.delta_mode"
+        );
+    }
+
+    // UT-0396-03 — delta_mode=true with dispatch=None panics with a
+    // SPEC-19 R20 descriptive message. Uses catch_unwind to assert the
+    // panic payload contains the grep-able anchors.
+    #[test]
+    fn ut_0396_03_run_grid_entry_with_delta_mode_true_and_no_dispatch_panics() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let net = Net::new();
+        let cfg = GridConfig {
+            num_workers: 2,
+            delta_mode: true,
+            ..GridConfig::default()
+        };
+
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            run_grid_entry(net, &cfg, &ContiguousIdStrategy, None)
+        }));
+        let err = caught.expect_err("must panic on delta_mode=true + dispatch=None");
+
+        // Extract the panic message for assertion on anchor substrings.
+        let msg = if let Some(s) = err.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = err.downcast_ref::<&'static str>() {
+            s.to_string()
+        } else {
+            String::from("<non-string panic payload>")
+        };
+        assert!(
+            msg.contains("SPEC-19 R20"),
+            "panic message must cite SPEC-19 R20 (got: {msg})"
+        );
+        assert!(
+            msg.contains("delta_mode"),
+            "panic message must mention delta_mode (got: {msg})"
+        );
+        assert!(
+            msg.contains("WorkerDispatch"),
+            "panic message must mention WorkerDispatch (got: {msg})"
+        );
+    }
+
+    // UT-0396-04 — R42 regression canary under the router: routing
+    // church_add(2,3) through run_grid_entry(delta_mode=false) MUST
+    // yield metrics byte-identical to the direct run_grid invocation.
+    // If this test ever fails, the router introduced drift on the v1
+    // path.
+    #[test]
+    fn ut_0396_04_run_grid_entry_preserves_r42_church_add_smoke() {
+        use crate::encoding::codec_church::ChurchArithmeticCodec;
+        use crate::encoding::traits::{Decoder, Encoder};
+
+        let codec = ChurchArithmeticCodec::add();
+        let net = codec.encode(br#"{"op":"add","a":2,"b":3}"#).unwrap();
+
+        let cfg = GridConfig {
+            num_workers: 2,
+            max_rounds: Some(50),
+            strict_bsp: true,
+            ..GridConfig::default()
+        };
+
+        let (net_direct, metrics_direct) = run_grid(net.clone(), &cfg, &ContiguousIdStrategy);
+        let (net_entry, metrics_entry) = run_grid_entry(net, &cfg, &ContiguousIdStrategy, None);
+
+        assert!(metrics_direct.converged);
+        assert!(metrics_entry.converged);
+        assert_eq!(
+            codec.decode(&net_direct).unwrap()["result"],
+            5,
+            "direct run_grid path must decode church_add(2,3) = 5"
+        );
+        assert_eq!(
+            codec.decode(&net_entry).unwrap()["result"],
+            5,
+            "run_grid_entry path must decode church_add(2,3) = 5"
+        );
+        assert_eq!(
+            metrics_direct.total_interactions, metrics_entry.total_interactions,
+            "router must not introduce drift on total_interactions"
+        );
+        assert_eq!(metrics_direct.rounds, metrics_entry.rounds);
+        assert_eq!(
+            metrics_direct.total_interactions_by_rule,
+            metrics_entry.total_interactions_by_rule
+        );
+    }
+
+    // ============================================================================
     // SPEC-19 §3.1 Stage 5 QA probes (qa agent, 2026-04-16)
     // ============================================================================
     //
@@ -2554,7 +2775,9 @@ mod tests {
     // (delta rounds), R23 (RoundStart payload), R26 (RoundResult
     // consumption), DC-C3 (strict_bsp branching), and DC-C5 (convergence
     // predicate) inline. DC-C3 lenient/strict matrix cells + G1 parity
-    // (UT-0385-06..08) live in tests/grid_delta_roundloop.rs.
+    // (UT-0385-06..08) live in `super::grid_delta_integration_tests`
+    // (sibling `#[cfg(test)]` module under `merge/`, introduced by
+    // TASK-0395 MF-002 closure 2026-04-23).
 
     use crate::merge::border_graph::BorderGraph;
     use std::collections::VecDeque;

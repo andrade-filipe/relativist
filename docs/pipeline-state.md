@@ -1,19 +1,38 @@
 # Pipeline State
 
-**Last updated:** 2026-04-18 (SPEC-19 §3.3 / item 2.26-B — **Bundle 2.26-B COMPLETE (TASK-0372..TASK-0377 DEV all green); awaiting human review at end of feature set per user directive**)
+**Last updated:** 2026-04-23 (SPEC-19 §3.3 Refactor bundle — **TASK-0394 + TASK-0395 + TASK-0396 + TASK-0397 all DONE; Stage 4 REVIEW + Stage 5 QA closed; D-003 partially closed for symmetric rules; D-004 opened for coordinator-side asymmetric finalizer**)
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
 
 ## Active Bundle
 
-**Bundle:** SPEC-19 §3.3 (item 2.26-B) — Coordinator-Side Border-Redex Resolution — **DEV COMPLETE (TASK-0372..TASK-0377 all green)**
-**Stage:** DEV finished — all 6 tasks shipped with green gates. Ready to roll forward to bundle 2.26-C (coordinator wire-layer BSP loop) without commit per user directive.
+**Bundle:** CLOSED — SPEC-19 §3.3 Refactor (post-REVIEW 2026-04-23) CLOSED as of 2026-04-23. Bundle 2.26 A/B/C/D CLOSED (via the refactor's REVIEW+REFACTOR+QA loop).
+**Stage:** DONE. All six SDD stages completed for the refactor bundle:
+  1. SPLITTING — TASK-0394..0397 authored directly (Option B "cheap and equally formal" path per user directive, matching template of TASK-0377).
+  2. TESTS — TEST-SPEC-0394/0396/0397 authored; TASK-0395 reuses existing TEST-SPEC-0385 UT-0385-06..08.
+  3. DEV — all four tasks shipped inline; TASK-0395 shipped via sub-agent `developer` (Opus).
+  4. REVIEW — `docs/reviews/REVIEW-SPEC-19-section-3.3-3.5-3.6-item-2.26-BCD-2026-04-23.md` (authored pre-refactor, drove the bundle).
+  5. QA — 3 adversarial probes inline (QA-0394-A, QA-0394-F, QA-0377-L) covering 13 of 15 Q-probes from the REVIEW. Q2/Q3 asymmetric-rule G1 parity remains blocked on D-004.
+  6. REFACTOR — no-op (0 Must-Fix from QA).
 **Branch:** `v2-development`
-**Test baseline (start of bundle):** 1009 lib default / 1049 lib `--features zero-copy` (post-SPEC-19 §3.4 ship).
-**Current test counts:** **1039** lib default (+30: TASK-0372 +5, TASK-0373 +6, TASK-0374 +6, TASK-0375 +5, TASK-0376 +7, TASK-0377 +1) / **1079** lib `--features zero-copy` (+30, same set).
-**Tasks covered:** TASK-0372, TASK-0373, TASK-0374, TASK-0375, TASK-0376, TASK-0377. See the dedicated "SPEC-19 §3.3 (item 2.26-B)" stage-history section below.
-**Previous bundle:** SPEC-19 §3.4 (item 2.26-A) — Delta-Only Protocol Wire Extensions — Stages 3-6 COMPLETE 2026-04-18 (awaiting human review, not yet committed).
+**Test baseline (start of refactor):** 1109 lib default / 1149 lib `--features zero-copy`.
+**Test counts at close:** **1138** lib default (+29: TASK-0397 +8, TASK-0394 +11, TASK-0396 +4, TASK-0395 +3, QA probes +3) / **1178** lib `--features zero-copy` (+29, same set).
+**Clippy:** clean both feature configs.
+**fmt:** clean.
+**D-003:** PARTIALLY CLOSED — symmetric rules (CON-CON, DUP-DUP, ERA-ERA) G1 parity verified empirically via `merge::grid_delta_integration_tests::ut_0385_06/07/08`. Asymmetric rules under `const SKIP_ASYMMETRIC: bool = true;` pending D-004.
+**D-004:** NEW — coordinator-side round-N+2 finalizer for DC-B5 2-phase flow (extend `RoundResultPayload.minted_agents`, add `BorderGraph::register_minted_agents`, wire in `run_grid_delta_inner`). Blocks full D-003 closure.
+**Previous bundle:** SPEC-19 §3.3 (item 2.26-B) + §3.4 (item 2.26-A) + §3.5/§3.6 (item 2.26-C/D) — Bundle 2.26 A/B/C/D DEV shipped 2026-04-18; REVIEW+QA+REFACTOR closed via the refactor on 2026-04-23.
+
+## Next Action
+
+**Tier 1 progress assessment**: M1 (Transport Optimization) features done; M4 (Full Delta Protocol) partial closure. Candidates for the next bundle, in priority order:
+
+1. **M1 exit measurement** (Passo 6 of the TCC plan) — re-run `ep_con 5M w=2` benchmark comparing v1 baseline vs current code. Expected `c_o/c_r` drop documented in CSV; confirms Tier 1 trajectory.
+2. **D-004 implementation** (full D-003 closure for asymmetric rules) — 200-400 LoC task, independent of other deferrals, user-scheduled.
+3. **Phase 3 LAN preparation** — orthogonal to D-004; benchmarks v1 `run_grid` on real network.
+
+No active bundle. Invoke `sdd-pipeline` when next bundle is chosen.
 
 ## Stage 5 QA Summary (SPEC-18 §3.5 / item 2.24)
 

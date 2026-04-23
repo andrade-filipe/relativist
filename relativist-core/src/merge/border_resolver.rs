@@ -2563,6 +2563,76 @@ mod tests {
         );
     }
 
+    // QA-0377-L (adversarial, 2026-04-23) — negative-path probe for
+    // the pure-core guard helper itself. Feeds a synthetic source
+    // string containing `use tokio::time::sleep;` and asserts the
+    // helper panics with an R19-tagged message. Closes the gap flagged
+    // in TEST-SPEC-0377 §Out-of-scope "Negative-path assertions" —
+    // the gap was deferred at ship time because the helper-level
+    // unit test was considered optional; post-TASK-0394..0397 refactor
+    // the rigor is retro-added as a Stage-5 QA probe without any
+    // source-file mutation.
+    #[test]
+    fn qa_0377_l_pure_core_guard_panics_on_synthetic_forbidden_import() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        // Iterate through each of the 5 forbidden prefixes, build a
+        // minimal synthetic source that includes exactly that prefix,
+        // and confirm the helper panics with the R19 anchor + the
+        // correct label + the offending prefix substring.
+        let probes = [
+            ("use tokio::time::sleep;", "use tokio"),
+            ("use async_trait::async_trait;", "use async_trait"),
+            ("use crate::protocol::Message;", "use crate::protocol"),
+            (
+                "use crate::coordinator::Coordinator;",
+                "use crate::coordinator",
+            ),
+            ("use crate::worker::WorkerState;", "use crate::worker"),
+        ];
+        for (line, expected_prefix) in probes {
+            let synthetic = format!("// synthetic probe fixture\n{line}\n\nfn f() {{}}\n");
+            let label = "qa_0377_l_synthetic_probe.rs";
+            let caught = catch_unwind(AssertUnwindSafe(|| {
+                crate::merge::internal::pure_core_guard::assert_no_forbidden_imports(
+                    &synthetic, label,
+                )
+            }));
+            let err = caught.expect_err(&format!(
+                "helper must panic on forbidden prefix {expected_prefix:?}; \
+                 synthetic source was: {synthetic:?}"
+            ));
+            let msg = if let Some(s) = err.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = err.downcast_ref::<&'static str>() {
+                s.to_string()
+            } else {
+                String::from("<non-string panic payload>")
+            };
+            assert!(
+                msg.contains("R19"),
+                "panic message must cite R19 for prefix {expected_prefix:?}; got: {msg}"
+            );
+            assert!(
+                msg.contains(label),
+                "panic message must include the synthetic label {label:?}; got: {msg}"
+            );
+            assert!(
+                msg.contains(expected_prefix),
+                "panic message must include the offending prefix {expected_prefix:?}; got: {msg}"
+            );
+        }
+
+        // Positive control: a clean synthetic source (no forbidden
+        // imports) must NOT panic. Catches the "silent no-op helper"
+        // regression (QA-0377-L's companion concern).
+        let clean_source = "// clean fixture\nuse std::collections::HashMap;\n\nfn g() {}\n";
+        crate::merge::internal::pure_core_guard::assert_no_forbidden_imports(
+            clean_source,
+            "qa_0377_l_clean_probe.rs",
+        );
+    }
+
     #[test]
     fn border_resolver_module_doc_cites_spec_sections_and_dc_rulings() {
         const SRC: &str = include_str!("border_resolver.rs");

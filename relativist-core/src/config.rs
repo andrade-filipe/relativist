@@ -524,6 +524,12 @@ pub struct CompletionsArgs {
 // ---------------------------------------------------------------------------
 
 /// Build GridConfig from coordinator CLI arguments.
+///
+/// Applies SPEC-19 R43 normalization via [`GridConfig::normalize`]: if
+/// `--delta-mode` is set, `coordinator_free_rounds` is auto-enabled
+/// (TASK-0397, DC-0397-B). Programmatic constructors that do not route
+/// through this function are responsible for calling `.normalize()` if
+/// they want R43 enforcement.
 pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
     GridConfig {
         num_workers: args.workers,
@@ -532,9 +538,12 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         delta_mode: args.delta_mode,
         ..GridConfig::default()
     }
+    .normalize()
 }
 
 /// Build GridConfig from local mode CLI arguments.
+///
+/// See [`build_grid_config`] for SPEC-19 R43 normalization semantics.
 pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
     GridConfig {
         num_workers: args.workers,
@@ -543,6 +552,7 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
         delta_mode: args.delta_mode,
         ..GridConfig::default()
     }
+    .normalize()
 }
 
 /// Build TransportConfig from CLI transport flags (SPEC-17 R29-R32 + SPEC-18 R37 + SPEC-18 §3.5 R36/R37).
@@ -1148,6 +1158,99 @@ mod tests {
                 );
             }
             _ => panic!("expected Local"),
+        }
+    }
+
+    // TASK-0397 UT-0397-04 (coordinator): SPEC-19 R43 — `--delta-mode`
+    // on the coordinator subcommand MUST normalize through
+    // `build_grid_config`, setting `coordinator_free_rounds = true` by
+    // default even though the CLI does not expose a flag for that field.
+    // This is the CLI-integration regression canary for DC-0397-B option
+    // (a)+(b): normalization fires automatically on CLI construction.
+    #[test]
+    fn ut_0397_04_build_grid_config_with_delta_mode_flag_normalizes_coordinator_free_rounds() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "4",
+            "--input",
+            "input.bin",
+            "--delta-mode",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coordinator(args) => {
+                assert!(args.delta_mode);
+                let cfg = build_grid_config(&args);
+                assert!(cfg.delta_mode, "build_grid_config threads delta_mode");
+                assert!(
+                    cfg.coordinator_free_rounds,
+                    "SPEC-19 R43: build_grid_config must normalize \
+                     coordinator_free_rounds=true under delta_mode=true"
+                );
+                assert_eq!(cfg.num_workers, 4);
+            }
+            _ => panic!("expected Coordinator"),
+        }
+    }
+
+    // TASK-0397 UT-0397-04 (local mirror): same as above for the local
+    // subcommand, exercising `build_grid_config_from_local`.
+    #[test]
+    fn ut_0397_04_build_grid_config_from_local_with_delta_mode_flag_normalizes_coordinator_free_rounds(
+    ) {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "local",
+            "--workers",
+            "2",
+            "--input",
+            "test.bin",
+            "--delta-mode",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Local(args) => {
+                assert!(args.delta_mode);
+                let cfg = build_grid_config_from_local(&args);
+                assert!(cfg.delta_mode);
+                assert!(
+                    cfg.coordinator_free_rounds,
+                    "SPEC-19 R43: build_grid_config_from_local must normalize \
+                     coordinator_free_rounds=true under delta_mode=true"
+                );
+                assert_eq!(cfg.num_workers, 2);
+            }
+            _ => panic!("expected Local"),
+        }
+    }
+
+    // TASK-0397 — negative-path sanity: absence of --delta-mode leaves
+    // coordinator_free_rounds=false (R42 baseline preserved through
+    // normalize's no-op branch).
+    #[test]
+    fn ut_0397_build_grid_config_without_delta_mode_preserves_r42_baseline() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "4",
+            "--input",
+            "input.bin",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coordinator(args) => {
+                assert!(!args.delta_mode);
+                let cfg = build_grid_config(&args);
+                assert!(!cfg.delta_mode);
+                assert!(
+                    !cfg.coordinator_free_rounds,
+                    "R42 baseline: without --delta-mode, coordinator_free_rounds stays false"
+                );
+            }
+            _ => panic!("expected Coordinator"),
         }
     }
 

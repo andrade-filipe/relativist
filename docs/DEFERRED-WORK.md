@@ -53,27 +53,45 @@ silently forgotten when their unblocker lands.
 | Field | Value |
 |-------|-------|
 | **Source spec** | SPEC-19 §3.2 (item 2.35) |
-| **Requirements deferred** | R13 (coordinator dispatches border redex via `interact_*`), R14 (coordinator uses the 6 SPEC-03 rules), R15 parts 1 and 2 (send port-update deltas to workers; update `BorderGraph` after resolution) |
-| **Shipped instead** | R8, R9, R10, R11, R12, R15 part 3 (`add_border_states` primitive), R16, R17, R18, R19 — the `BorderGraph` pure data structure itself, in `relativist-core/src/merge/border_graph.rs`. |
-| **Unblocker** | SPEC-19 §3.3 (item 2.26) — Delta-Only Protocol with Stateful Workers. The coordinator integration is the same work that stands up `run_grid_delta`, the `InitialPartition`/`RoundStart`/`RoundResult`/`FinalStateRequest`/`FinalStateResult` wire messages (R31-R36), and the `GridConfig.delta_mode` flag (R20). |
-| **Why deferred** | R13-R15 parts 1-2 describe *what the coordinator must do when a border redex is detected*. The detection primitive (`BorderGraph::detect_border_redexes`) and the state-mutation primitives (`apply_deltas`, `remove_border`, `add_border_states`) all ship now. The *caller* — the coordinator's BSP loop — does not exist yet because the wire protocol extensions (R31-R36) and the stateful-worker lifecycle (R20-R30) are both item 2.26 scope. Shipping R13-R15 parts 1-2 now would mean writing speculative coordinator glue against a delta loop that has no test harness. |
-| **What R13 needs** | Coordinator-side call path: when `border_graph.detect_border_redexes()` yields entries, dispatch each to the appropriate `interact_*` function (from `reduction/`) using agents materialized from the two workers' partitions. |
-| **What R14 needs** | Wire up the 6-rule dispatch table (CON-CON, DUP-DUP, ERA-ERA, CON-DUP, CON-ERA, DUP-ERA) on the coordinator side, mirroring `interact_*` used in `reduce_all`. |
-| **What R15 parts 1-2 needs** | After `interact_*` returns new connections, (1) package the port reconnections as `BorderDelta`s keyed to the affected workers, and (2) call `border_graph.remove_border(bid)` or `border_graph.apply_deltas(worker_id, ...)` to reflect the resolution. R15 part 3 (`add_border_states` for CON-DUP expansion) already ships — it's the *primitive*; the coordinator just needs to call it. |
-| **Estimated effort** | ~200-300 LoC of coordinator glue inside `relativist-core/src/coordinator.rs` (or a new `coordinator/delta_loop.rs` module), plus matching test fixtures. Part of the ~1600 LoC envelope already budgeted for item 2.26. |
-| **Acceptance signal** | An integration test in which a 2-worker grid converges on an input that requires at least one border-redex resolution: the coordinator detects the redex via `BorderGraph::detect_border_redexes`, invokes the right `interact_*` rule, sends `BorderDelta` patches to both workers, and the workers' next-round states reflect the resolution. The final `merge()` reconstructs the same output net that the v1 full-partition protocol produces on identical input. |
-| **Files to revisit** | `relativist-core/src/coordinator.rs`, `relativist-core/src/protocol/messages.rs` (add `InitialPartition`, `RoundStart`, `RoundResult`, `FinalStateRequest`, `FinalStateResult` per R31-R32), `relativist-core/src/protocol/frame.rs` (discriminant 7-11), `relativist-core/src/merge/grid.rs` (new `run_grid_delta`), `relativist-core/src/config.rs` (`GridConfig.delta_mode: bool` per R20). |
-| **Created** | 2026-04-17 (during Stage 6 SHIP of SPEC-19 §3.2) |
-| **Status** | OPEN — waiting on item 2.26 |
+| **Requirements deferred** | R13, R14, R15 parts 1-2 — originally the full set; **partially closed as of 2026-04-23**. |
+| **Shipped (Stage 1)** | R8, R9, R10, R11, R12, R15 part 3, R16, R17, R18, R19 — `BorderGraph` pure data structure (2026-04-17). |
+| **Shipped (Stage 2, bundle 2.26 A/B/C/D)** | R20-R36 wire extensions + resolver + BSP loop + stateful-worker lifecycle (2026-04-18). |
+| **Shipped (Stage 3, refactor 2026-04-23)** | **MF-001 closure** (TASK-0394): worker-side R23/R26 completion — `local_reconnections` + `pending_commutations → minted_agents` 2-phase echo. **MF-002 closure** (TASK-0395): G1 parity integration tests `grid_delta_integration_tests::ut_0385_06/07/08`. **Symmetric rules (CON-CON, DUP-DUP, ERA-ERA) empirically verified** via `LocalDeltaDispatch`-driven round-trip, asserting `canonicalize(out_delta) == canonicalize(out_v1)` and `metrics.total_interactions == metrics_v1.total_interactions` in both `strict_bsp = true` and `strict_bsp = false` matrices. |
+| **Still deferred** | **Asymmetric rules (CON-DUP, CON-ERA, DUP-ERA)** cross-partition G1 parity — blocked on coordinator-side round-N+2 finalizer for the DC-B5 2-phase flow (new row **D-004**). In `tests/grid_delta_integration_tests.rs` these fixtures run under `const SKIP_ASYMMETRIC: bool = true;` which asserts convergence only (not net equivalence). Flipping the constant is the re-enable gate. |
+| **Unblocker** | **D-004** — extend `RoundResultPayload` with `minted_agents` + add `BorderGraph::register_minted_agents` + wire call in `run_grid_delta_inner`. |
+| **Acceptance signal — partial** | Symmetric-rule parity: 3 of 6 IC rules verified (UT-0385-06/07/08 symmetric branches, both strict modes). |
+| **Acceptance signal — full** | All 6 rules verified; `SKIP_ASYMMETRIC = false`. |
+| **Created** | 2026-04-17 |
+| **Status** | **PARTIALLY CLOSED** 2026-04-23 — symmetric-rule branch shipped. Asymmetric branch waiting on D-004. |
 
-**Action when item 2.26 starts:**
-1. Open `relativist-core/src/merge/border_graph.rs` — all primitives are already defined, tested, and adversarially probed.
-2. Create `TASK-04XX` (coordinator border-redex dispatch) under SPEC-19 §3.3 covering R13+R14+R15 parts 1-2 in a single ticket.
-3. Add the 5 wire variants (R31-R32) to `Message` with discriminants 7-11; wire framing unchanged (piggybacks on SPEC-18 v2 frame).
-4. Stand up `run_grid_delta` in `merge/grid.rs` gated on `GridConfig.delta_mode`.
-5. Coordinator loop calls `detect_border_redexes` → `interact_*` → patch via `apply_deltas` / `remove_border` / `add_border_states`.
-6. Add integration test demonstrating equivalence with v1 full-partition output on a workload with cross-partition redexes.
-7. Close this row after acceptance signal is met.
+**Action when D-004 ships:**
+1. Set `SKIP_ASYMMETRIC = false` in `relativist-core/src/merge/grid_delta_integration_tests.rs`.
+2. Re-run `cargo test --workspace --lib` and verify UT-0385-08 passes on all 6 fixtures under both strict modes.
+3. Move this row to "Resolved Deferrals" with the commit hash.
+
+---
+
+### D-004 — Coordinator-side round-N+2 finalizer for DC-B5 2-phase commutation flow
+
+| Field | Value |
+|-------|-------|
+| **Source spec** | SPEC-19 §3.3 R26, R48, DC-B5 (2026-04-17 spec-critic) |
+| **Requirements deferred** | Coordinator consumption of `Message::RoundResult.minted_agents` — resolution of `PendingPortRef::Pending { request_id, agent_slot, port_slot }` tokens emitted by the resolver's CON-DUP / CON-ERA / DUP-ERA branches into concrete `PortRef::AgentPort(minted_id, port)` assignments; subsequent call to `BorderGraph::add_border_states` for the `pending_new_borders` packaged with the commutation. |
+| **Shipped instead** | Worker-side half (TASK-0394): the worker fulfils `PendingCommutation`s by minting agents from `partition.id_range`, populates `Message::RoundResult.minted_agents` with the correlated `request_id` / `minted_agent_id` pairs. The wire protocol carries the echo (shipped 2.26-A). The *coordinator-side consumption* of that echo never reached DEV because 2.26-C scoped `RoundResultPayload` (the pure-core dispatch type used by `WorkerDispatch`) without the `minted_agents` field, so the coordinator's BSP loop discards it silently. |
+| **Unblocker** | None — this is a direct implementation task, not a wait on another spec. Can be scheduled whenever the user prioritises MF-003 closure. |
+| **Why deferred** | Discovered during DEV of TASK-0395 (MF-002). The review of 2026-04-23 flagged the wire/worker gap (MF-001, closed) but did not audit the pure-core `RoundResultPayload` shape, so the coordinator-side half was invisible at review time. Scope ~200-400 LoC touching `RoundResultPayload` + `BorderGraph` + `run_grid_delta_inner` + LocalDeltaDispatch update + 3 integration tests (`SKIP_ASYMMETRIC` flip). Non-blocking for the current TCC scope: the v1 protocol (run_grid) is what Phase 3 LAN benchmarks exercise; `delta_mode=true` is v2 future work. |
+| **What the fix needs** | (1) Extend `pub struct RoundResultPayload` in `relativist-core/src/merge/types.rs` with `pub minted_agents: Vec<MintedAgent>`. (2) Add `BorderGraph::register_minted_agents(&mut self, worker_id: WorkerId, mints: &[MintedAgent])` in `relativist-core/src/merge/border_graph.rs` that resolves `PendingPortRef::Pending` tokens against the received mints and promotes `pending_new_borders` via `add_border_states`. (3) Wire a call to `register_minted_agents` in `run_grid_delta_inner`'s result-apply loop (`relativist-core/src/merge/grid.rs`), immediately after `apply_deltas`. (4) Update `LocalDeltaDispatch` in `relativist-core/src/merge/grid_delta_integration_tests.rs` to forward `minted_agents` from `Message::RoundResult` into the returned `RoundResultPayload`. (5) Flip `SKIP_ASYMMETRIC = false` and verify UT-0385-08 passes on all 6 fixtures under both strict modes (closes D-003 in full). |
+| **Estimated effort** | ~200-400 LoC production + ~50 LoC test updates; 2-4 days of focused work. TDD-friendly: each of steps (1)-(4) is independently testable, and (5) is the acceptance gate. |
+| **Acceptance signal** | `cargo test --workspace --lib` retains ≥ 1138 passing (post-refactor-2026-04-23 baseline), UT-0385-08 runs all 6 fixtures × 2 strict modes under `SKIP_ASYMMETRIC = false`, canonicalized net equivalence AND `metrics.total_interactions` parity hold on every case. After this: D-003 closes fully. |
+| **Files to revisit** | `relativist-core/src/merge/types.rs` (`RoundResultPayload` struct), `relativist-core/src/merge/border_graph.rs` (`register_minted_agents`), `relativist-core/src/merge/grid.rs` (`run_grid_delta_inner` wire), `relativist-core/src/merge/grid_delta_integration_tests.rs` (`LocalDeltaDispatch` forwarding + `SKIP_ASYMMETRIC` flip). |
+| **Created** | 2026-04-23 (during DEV of TASK-0395, post-REVIEW-2026-04-23 bundle close) |
+| **Status** | OPEN — independent of other deferrals; scheduled at user discretion. |
+
+**Action when D-004 starts:**
+1. Create `TASK-04XX` with scope = steps (1)-(5) above in a single ticket (they are tightly coupled).
+2. Follow the 6-stage SDD pipeline: SPLITTING → TESTS → DEV → REVIEW → QA → REFACTOR.
+3. Step (5) flips the canary; it doubles as the D-003 full-closure gate.
+4. Close this row AND close D-003 after step (5) is green.
 
 ---
 
