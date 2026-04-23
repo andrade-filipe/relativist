@@ -80,6 +80,15 @@ pub enum GridError {
     #[error("max rounds ({max}) exceeded without convergence")]
     MaxRoundsExceeded { max: u32 },
 
+    /// SPEC-19 R48 / DC-B5 (TASK-0398): the coordinator detected a
+    /// protocol violation — e.g., a `MintedAgent.request_id` in a
+    /// `RoundResult` that does not correlate to any outstanding
+    /// `PendingPortRef::Pending` in `BorderGraph.pending_new_borders`
+    /// (stray request_id). Diagnostic string carries the guilty worker
+    /// + decoded (commutation_id, agent_slot) pair.
+    #[error("R48 protocol violation: {0}")]
+    ProtocolViolation(String),
+
     #[error(transparent)]
     Merge(#[from] MergeError),
 }

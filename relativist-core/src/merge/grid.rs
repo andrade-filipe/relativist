@@ -484,8 +484,8 @@ fn run_grid_delta_inner(
 
     use crate::merge::border_graph::BorderGraph;
     use crate::merge::border_resolver::{
-        package_resolutions, resolve_border_redex, BorderIdAllocator, BorderResolution,
-        CommutationIdAllocator, RoundStartDispatch,
+        package_resolutions_with_pending, resolve_border_redex, BorderIdAllocator,
+        BorderResolution, CommutationIdAllocator, RoundStartDispatch,
     };
     use crate::merge::helpers::apply_border_deltas_to_partition;
     use crate::partition::{Partition, WorkerId};
@@ -538,6 +538,19 @@ fn run_grid_delta_inner(
         let t_compute = Instant::now();
         let results = dispatch.dispatch_round_start(&pending_dispatch)?;
         metrics.compute_time_per_round.push(t_compute.elapsed());
+
+        // D-004 round-N+2 finalizer (TASK-0399, SPEC-19 R26 / DC-B5).
+        // Consume the `minted_agents` echo BEFORE applying border deltas
+        // and BEFORE the resolver pass — promoting fully-resolved pending
+        // borders to `self.borders` here means any subsequent apply_deltas
+        // call that references a freshly-materialized border_id finds it
+        // present. R48 protocol violations propagate via `?` to the
+        // loop's existing error branch (metrics.converged = false +
+        // degenerate net return). Per-result call preserves the guilty
+        // worker attribution in the ProtocolViolation message (DC-0399-A).
+        for result in &results {
+            border_graph.register_minted_agents(result.worker_id, &result.minted_agents)?;
+        }
 
         let t_merge = Instant::now();
         for result in &results {
@@ -631,7 +644,17 @@ fn run_grid_delta_inner(
         // Build next round's dispatch payload from the resolutions and
         // mirror the same changes into the coordinator's partition cache
         // so the resolver can read consistent agent state next round.
-        let packaged = package_resolutions(resolutions, num_workers);
+        //
+        // D-004 TASK-0399: `package_resolutions_with_pending` is the
+        // companion function that ALSO extracts `pending_new_borders`
+        // from each BorderResolution (the base `package_resolutions`
+        // intentionally drops them per DC-B5 §3.3 design). We feed them
+        // into `border_graph.enqueue_pending_borders` so the next-round
+        // `register_minted_agents` call (above, after dispatch_round_start)
+        // can promote fully-resolved entries via `add_border_states`.
+        let (packaged, pending_new_borders) =
+            package_resolutions_with_pending(resolutions, num_workers);
+        border_graph.enqueue_pending_borders(pending_new_borders);
         for (worker_id, payload) in &packaged {
             if let Some(cached) = partitions_vec.get_mut(*worker_id as usize) {
                 // IC rule semantics: every resolved principal-port border
@@ -2854,6 +2877,10 @@ mod tests {
                 has_border_activity: false,
             },
             has_border_activity: false,
+            // TASK-0398 (D-004): no mints on canned quiet results — no
+            // commutation happened. `register_minted_agents` treats
+            // empty slices as no-op (not a ProtocolViolation).
+            minted_agents: Vec::new(),
         }
     }
 
@@ -2874,6 +2901,8 @@ mod tests {
                 has_border_activity: true,
             },
             has_border_activity: true,
+            // TASK-0398 (D-004): no mints on canned active results either.
+            minted_agents: Vec::new(),
         }
     }
 

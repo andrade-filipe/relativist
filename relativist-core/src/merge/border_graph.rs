@@ -57,9 +57,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::error::GridError;
 use crate::net::{AgentId, PortRef, Symbol, DISCONNECTED};
 use crate::partition::types::{PartitionPlan, WorkerId};
 
+use super::border_resolver::{decode_request_id, PendingNewBorder, PendingPortRef};
 use super::helpers::is_principal_pair;
 
 /// One border's coordinator-side state (SPEC-19 R9).
@@ -112,6 +114,28 @@ pub struct BorderGraph {
     /// `{bid : borders[bid].is_redex == true}`. Incrementally maintained
     /// across all mutation paths (R18).
     pub(crate) active_redexes: HashSet<u32>,
+    /// SPEC-19 §3.3 DC-B5 / D-004 (TASK-0398): coordinator-local state
+    /// for round-N+2 finalization of CON-DUP / CON-ERA / DUP-ERA
+    /// commutations. Populated by `enqueue_pending_borders` at the end
+    /// of round N with the `BorderResolution.pending_new_borders` the
+    /// resolver emits; drained progressively by `register_minted_agents`
+    /// as matching `MintedAgent`s arrive on subsequent round results.
+    ///
+    /// An entry whose BOTH `side_a` and `side_b` resolve to
+    /// `PendingPortRef::Concrete` (either because the resolver emitted
+    /// a concrete side directly or because an earlier register call
+    /// materialized the pending side via the `resolved_mints` cache) is
+    /// promoted to an `AddBorderEntry` and removed from this Vec.
+    /// Partial resolutions stay queued across rounds.
+    pub(crate) pending_new_borders: Vec<PendingNewBorder>,
+    /// SPEC-19 §3.3 DC-B5 / D-004 (TASK-0398): cache of `MintedAgent`
+    /// correlations. Keyed by `(commutation_id_low28, agent_slot)` —
+    /// the decoded `(CommutationId, u8)` pair from
+    /// `MintedAgent.request_id` per
+    /// [`crate::merge::border_resolver::decode_request_id`]. Persists
+    /// across rounds so that multi-round pending borders (one side
+    /// resolved in round N+2, the other in round N+3+) can finalize.
+    pub(crate) resolved_mints: HashMap<(u32, u8), AgentId>,
 }
 
 /// A single border mutation reported by a worker at round boundary
@@ -313,6 +337,10 @@ impl BorderGraph {
             borders,
             worker_borders,
             active_redexes,
+            // DC-B5 round-N+2 state: empty at construction; populated
+            // by enqueue_pending_borders throughout the BSP run.
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         }
     }
 
@@ -502,6 +530,210 @@ impl BorderGraph {
             if is_redex {
                 self.active_redexes.insert(entry.border_id);
             }
+        }
+    }
+
+    /// SPEC-19 §3.3 DC-B5 / D-004 (TASK-0398).
+    ///
+    /// Enqueue coordinator-local pending borders produced by
+    /// `BorderResolution.pending_new_borders` at the end of round N.
+    /// Items remain in `self.pending_new_borders` until
+    /// [`BorderGraph::register_minted_agents`] at round N+2 resolves all
+    /// their `PendingPortRef::Pending` endpoints to concrete `PortRef`.
+    ///
+    /// Called by `run_grid_delta_inner` (TASK-0399) immediately after the
+    /// per-round resolver pass; input is the `pending_new_borders`
+    /// vector that [`super::border_resolver::package_resolutions_with_pending`]
+    /// extracts from the `BorderResolution`s.
+    ///
+    /// No validation: this method is a pure push; the finalizer in
+    /// `register_minted_agents` handles all invariants (R48 protocol
+    /// violation, duplicate-request-id lenient behavior per QA-0394-A /
+    /// DC-0398-B). Input order is preserved — downstream promotion to
+    /// `AddBorderEntry` is stable.
+    #[allow(dead_code)] // TASK-0399 wires production caller (run_grid_delta_inner).
+    pub(crate) fn enqueue_pending_borders(&mut self, borders: Vec<PendingNewBorder>) {
+        self.pending_new_borders.extend(borders);
+    }
+
+    /// SPEC-19 §3.3 DC-B5 round-N+2 finalizer (TASK-0398 / D-004).
+    ///
+    /// Consumes the `minted_agents` echo from a `RoundResultPayload`,
+    /// resolves all matching `PendingPortRef::Pending` tokens in
+    /// `self.pending_new_borders` to concrete
+    /// `PortRef::AgentPort(minted_id, port_slot)`, and promotes every
+    /// fully-resolved `PendingNewBorder` to an `AddBorderEntry` via
+    /// [`BorderGraph::add_border_states`].
+    ///
+    /// # Semantics
+    ///
+    /// 1. Decode every `MintedAgent.request_id` via
+    ///    [`super::border_resolver::decode_request_id`] into a
+    ///    `(commutation_id_low28, agent_slot)` pair; cache the
+    ///    corresponding `minted_agent_id` into `self.resolved_mints`.
+    ///    Duplicate request_ids within `mints` are LENIENT per DC-0398-B:
+    ///    the second write overwrites the first (last-wins) and both
+    ///    register as "touched".
+    /// 2. Walk `self.pending_new_borders`, partitioning into
+    ///    "fully resolved" (both `side_a` and `side_b` are `Concrete` OR
+    ///    can be substituted via `resolved_mints`) and "still pending".
+    /// 3. For each fully-resolved entry: build an `AddBorderEntry` with
+    ///    concrete `PortRef`s. If the `border_id` already exists in
+    ///    `self.borders` (DC-B6 CON-ERA / DUP-ERA preserve-border path),
+    ///    call [`BorderGraph::remove_border`] first to clean up the stale
+    ///    entry; then invoke `add_border_states` with the batch.
+    /// 4. If ANY `MintedAgent.request_id` decodes to a
+    ///    `(commutation_id, agent_slot)` pair that matches NO outstanding
+    ///    `PendingPortRef::Pending` across the current
+    ///    `self.pending_new_borders` (stray request_id), return
+    ///    [`GridError::ProtocolViolation`] with a grep-able message
+    ///    including the guilty worker + the decoded pair. Partial
+    ///    success is NOT committed: the method rejects the whole slice
+    ///    via early return before any mutation of `self.pending_new_borders`.
+    /// 5. Replace `self.pending_new_borders` with the "still pending"
+    ///    partition. Input order is preserved.
+    ///
+    /// # Parameters
+    ///
+    /// - `worker_id`: the source worker (used solely for R48 diagnostic
+    ///   messages; no logic branches on it).
+    /// - `mints`: the worker's echoed mint vector from
+    ///   `RoundResultPayload.minted_agents`.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` — all mints correlate to outstanding Pending tokens;
+    ///   `self.pending_new_borders` drained of fully-resolved entries;
+    ///   `self.borders` gains the promoted entries.
+    /// - `Err(GridError::ProtocolViolation)` — R48 stray request_id
+    ///   detected in Phase 1 validation; ALL state is unchanged
+    ///   (`self.pending_new_borders`, `self.borders`, `self.worker_borders`,
+    ///   and `self.resolved_mints`). Phase 1 runs fully before any Phase 2
+    ///   cache writes, so a stray mint in the batch aborts the whole call
+    ///   before mutation.
+    ///
+    /// # Complexity
+    ///
+    /// O(|mints| + |pending_new_borders|) per call. Each outstanding
+    /// `PendingPortRef::Pending` is scanned at most twice (once during
+    /// R48 validation, once during substitution).
+    #[allow(dead_code)] // TASK-0399 wires production caller (run_grid_delta_inner post-dispatch).
+    pub(crate) fn register_minted_agents(
+        &mut self,
+        worker_id: WorkerId,
+        mints: &[MintedAgent],
+    ) -> Result<(), GridError> {
+        // --- Phase 1: R48 validation pass. ---
+        // For each mint, decode (commutation_id_low28, agent_slot); confirm
+        // at least one outstanding PendingPortRef::Pending references that
+        // pair. Stray request_ids fire the ProtocolViolation error BEFORE
+        // any mutation so callers observe the strict pre-check semantics.
+        for mint in mints {
+            let (cid_low28, slot) = decode_request_id(mint.request_id);
+            let matches_outstanding = self.pending_new_borders.iter().any(|border| {
+                pending_port_matches(&border.side_a, cid_low28, slot)
+                    || pending_port_matches(&border.side_b, cid_low28, slot)
+            });
+            if !matches_outstanding {
+                return Err(GridError::ProtocolViolation(format!(
+                    "R48: stray MintedAgent.request_id {} from worker {} \
+                     (decoded to commutation_id_low28={}, agent_slot={}) — \
+                     no outstanding PendingPortRef::Pending matches; \
+                     see SPEC-19 §3.3 R48 / DC-B5 / TASK-0398.",
+                    mint.request_id, worker_id, cid_low28, slot
+                )));
+            }
+        }
+
+        // --- Phase 2: cache mints into resolved_mints. ---
+        // DC-0398-B option (a): duplicates are LENIENT — last-write-wins.
+        for mint in mints {
+            let (cid_low28, slot) = decode_request_id(mint.request_id);
+            self.resolved_mints
+                .insert((cid_low28, slot), mint.minted_agent_id);
+        }
+
+        // --- Phase 3: walk pending_new_borders; partition into resolved vs still_pending. ---
+        // We must take ownership to allow calls to `self.add_border_states`
+        // (which takes `&mut self`). Swap out, rebuild the residual in place.
+        let candidates = std::mem::take(&mut self.pending_new_borders);
+        let mut resolved_entries: Vec<AddBorderEntry> = Vec::new();
+        let mut still_pending: Vec<PendingNewBorder> = Vec::new();
+        let mut replace_existing: Vec<u32> = Vec::new();
+
+        for border in candidates {
+            let resolved_a = try_resolve_port_ref(&border.side_a, &self.resolved_mints);
+            let resolved_b = try_resolve_port_ref(&border.side_b, &self.resolved_mints);
+            match (resolved_a, resolved_b) {
+                (Some(side_a), Some(side_b)) => {
+                    // DC-B6 preserve-existing-border path.
+                    if self.borders.contains_key(&border.border_id) {
+                        replace_existing.push(border.border_id);
+                    }
+                    resolved_entries.push(AddBorderEntry {
+                        border_id: border.border_id,
+                        side_a,
+                        side_b,
+                        worker_a: border.worker_a,
+                        worker_b: border.worker_b,
+                    });
+                }
+                _ => {
+                    // At least one side still Pending; keep queued.
+                    still_pending.push(border);
+                }
+            }
+        }
+        self.pending_new_borders = still_pending;
+
+        // --- Phase 4: DC-B6 replace-existing cleanup, then bulk add. ---
+        for bid in &replace_existing {
+            self.remove_border(*bid);
+        }
+        if !resolved_entries.is_empty() {
+            self.add_border_states(resolved_entries);
+        }
+
+        Ok(())
+    }
+}
+
+/// DC-B5 helper: returns `true` iff `port` is a `PendingPortRef::Pending`
+/// whose `(commutation_id, agent_slot)` projects onto
+/// `(cid_low28, agent_slot)` when the commutation_id is masked to its low
+/// 28 bits (matches the encoding of `decode_request_id`).
+#[allow(dead_code)] // Called by `register_minted_agents` (dead until TASK-0399).
+fn pending_port_matches(port: &PendingPortRef, cid_low28: u32, agent_slot: u8) -> bool {
+    match port {
+        PendingPortRef::Pending {
+            commutation_id,
+            agent_slot: s,
+            port_slot: _,
+        } => ((*commutation_id as u32) & 0x0FFF_FFFF) == cid_low28 && *s == agent_slot,
+        PendingPortRef::Concrete(_) => false,
+    }
+}
+
+/// DC-B5 helper: if `port` is `Concrete`, return it verbatim. If it's
+/// `Pending` and the resolver cache has a matching `minted_agent_id`,
+/// return `PortRef::AgentPort(minted_id, port_slot)`. Otherwise return
+/// `None` (stays pending).
+#[allow(dead_code)] // Called by `register_minted_agents` (dead until TASK-0399).
+fn try_resolve_port_ref(
+    port: &PendingPortRef,
+    resolved_mints: &HashMap<(u32, u8), AgentId>,
+) -> Option<PortRef> {
+    match port {
+        PendingPortRef::Concrete(p) => Some(*p),
+        PendingPortRef::Pending {
+            commutation_id,
+            agent_slot,
+            port_slot,
+        } => {
+            let cid_low28 = (*commutation_id as u32) & 0x0FFF_FFFF;
+            resolved_mints
+                .get(&(cid_low28, *agent_slot))
+                .map(|mid| PortRef::AgentPort(*mid, *port_slot))
         }
     }
 }
@@ -721,6 +953,8 @@ mod tests {
             borders: HashMap::new(),
             worker_borders: Vec::new(),
             active_redexes: HashSet::new(),
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
         assert_eq!(graph.borders.len(), 0);
         assert_eq!(graph.worker_borders.len(), 0);
@@ -734,6 +968,8 @@ mod tests {
             borders: HashMap::new(),
             worker_borders: Vec::new(),
             active_redexes: HashSet::new(),
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
         let s = format!("{graph:?}");
         assert!(
@@ -776,6 +1012,8 @@ mod tests {
             borders: HashMap::new(),
             worker_borders: Vec::new(),
             active_redexes: HashSet::new(),
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
         let bs: crate::merge::BorderState = _ct_borderstate();
         assert_eq!(bs.border_id, 0);
@@ -2428,6 +2666,367 @@ mod tests {
             assert!(from_active.contains(&1));
             assert!(from_active.contains(&100));
             assert!(!from_active.contains(&101));
+        }
+    }
+
+    // ============================================================
+    // D-004 TASK-0398: enqueue_pending_borders + register_minted_agents tests
+    // ============================================================
+    //
+    // 8 unit tests (UT-0398-01..08) covering the DC-B5 round-N+2
+    // finalizer plumbing. See TEST-SPEC-0398 for the given/when/then.
+    // These tests live in a nested submodule so the imports don't
+    // leak into the parent `mod tests` namespace.
+    mod d_004_tests {
+        use super::*;
+        use crate::merge::border_resolver::{encode_request_id, PendingPortRef};
+
+        // Helper: empty BorderGraph with `n` workers, no borders.
+        fn empty_graph(n_workers: usize) -> BorderGraph {
+            BorderGraph {
+                borders: HashMap::new(),
+                worker_borders: vec![Vec::new(); n_workers],
+                active_redexes: HashSet::new(),
+                pending_new_borders: Vec::new(),
+                resolved_mints: HashMap::new(),
+            }
+        }
+
+        // Helper: PendingNewBorder with Pending side_a and Concrete side_b.
+        fn pnb_pending_a_concrete_b(
+            border_id: u32,
+            cid: u64,
+            agent_slot: u8,
+            port_slot: u8,
+            side_b: PortRef,
+            worker_a: WorkerId,
+            worker_b: WorkerId,
+        ) -> PendingNewBorder {
+            PendingNewBorder {
+                border_id,
+                side_a: PendingPortRef::Pending {
+                    commutation_id: cid,
+                    agent_slot,
+                    port_slot,
+                },
+                side_b: PendingPortRef::Concrete(side_b),
+                worker_a,
+                worker_b,
+            }
+        }
+
+        // UT-0398-01 — encode/decode roundtrip within <2^28 range.
+        #[test]
+        fn ut_0398_01_encode_decode_request_id_is_roundtrip_for_small_ids() {
+            let cases = [
+                (0u64, 0u8),
+                (0, 15),
+                (1, 0),
+                (100, 7),
+                (0x0FFF_FFFF, 15),
+                (0xFF_FFFF, 3),
+            ];
+            for (cid, slot) in cases {
+                let r = encode_request_id(cid, slot);
+                let (cid_back, slot_back) = decode_request_id(r);
+                assert_eq!(slot_back, slot, "slot roundtrip failed for cid={cid}");
+                assert_eq!(
+                    cid_back,
+                    (cid as u32) & 0x0FFF_FFFF,
+                    "cid low-28-bit projection failed for cid={cid}"
+                );
+            }
+        }
+
+        // UT-0398-02 — enqueue is pure storage; no mutation of graph state.
+        #[test]
+        fn ut_0398_02_enqueue_pending_borders_is_passive_storage() {
+            let mut graph = empty_graph(2);
+            let borders = vec![
+                pnb_pending_a_concrete_b(100, 7, 0, 0, PortRef::FreePort(900), 0, 1),
+                pnb_pending_a_concrete_b(101, 7, 1, 1, PortRef::FreePort(901), 0, 1),
+            ];
+            graph.enqueue_pending_borders(borders);
+
+            assert_eq!(graph.pending_new_borders.len(), 2);
+            assert!(graph.borders.is_empty());
+            assert!(graph.active_redexes.is_empty());
+            assert_eq!(graph.worker_borders[0].len(), 0);
+            assert_eq!(graph.worker_borders[1].len(), 0);
+            assert!(graph.resolved_mints.is_empty());
+        }
+
+        // UT-0398-03 — single mint promotes a fully-resolved border.
+        #[test]
+        fn ut_0398_03_register_minted_agents_single_mint_promotes_fully_resolved_border() {
+            let mut graph = empty_graph(2);
+            let cid = 7u64;
+            graph.enqueue_pending_borders(vec![pnb_pending_a_concrete_b(
+                100,
+                cid,
+                0,
+                1,
+                PortRef::AgentPort(5, 0),
+                0,
+                1,
+            )]);
+
+            let mint = MintedAgent {
+                request_id: encode_request_id(cid, 0),
+                minted_agent_id: 42,
+            };
+            let res = graph.register_minted_agents(0, &[mint]);
+            assert!(res.is_ok(), "got {res:?}");
+
+            assert!(graph.pending_new_borders.is_empty());
+            let state = graph
+                .borders
+                .get(&100)
+                .expect("border 100 must be present after promotion");
+            assert_eq!(state.side_a, PortRef::AgentPort(42, 1));
+            assert_eq!(state.side_b, PortRef::AgentPort(5, 0));
+            assert!(graph.worker_borders[0].contains(&100));
+            assert!(graph.worker_borders[1].contains(&100));
+            assert_eq!(graph.resolved_mints.get(&(cid as u32, 0)), Some(&42));
+        }
+
+        // UT-0398-04 — multiple mints; add_border_states called with
+        // entries in pending-borders input order; mint order irrelevant.
+        #[test]
+        fn ut_0398_04_register_minted_agents_multiple_mints_preserve_input_order() {
+            let mut graph = empty_graph(2);
+            let cid = 7u64;
+            graph.enqueue_pending_borders(vec![
+                pnb_pending_a_concrete_b(100, cid, 0, 1, PortRef::FreePort(900), 0, 1),
+                pnb_pending_a_concrete_b(101, cid, 1, 2, PortRef::FreePort(901), 0, 1),
+                pnb_pending_a_concrete_b(102, cid, 2, 0, PortRef::FreePort(902), 0, 1),
+            ]);
+
+            // Mints in DELIBERATELY reversed order.
+            let mints = vec![
+                MintedAgent {
+                    request_id: encode_request_id(cid, 2),
+                    minted_agent_id: 14,
+                },
+                MintedAgent {
+                    request_id: encode_request_id(cid, 0),
+                    minted_agent_id: 12,
+                },
+                MintedAgent {
+                    request_id: encode_request_id(cid, 1),
+                    minted_agent_id: 13,
+                },
+            ];
+            let res = graph.register_minted_agents(0, &mints);
+            assert!(res.is_ok());
+
+            assert!(graph.pending_new_borders.is_empty());
+            assert_eq!(
+                graph.borders.get(&100).unwrap().side_a,
+                PortRef::AgentPort(12, 1)
+            );
+            assert_eq!(
+                graph.borders.get(&101).unwrap().side_a,
+                PortRef::AgentPort(13, 2)
+            );
+            assert_eq!(
+                graph.borders.get(&102).unwrap().side_a,
+                PortRef::AgentPort(14, 0)
+            );
+        }
+
+        // UT-0398-05 — both sides Pending; partial resolution across
+        // multiple register calls.
+        #[test]
+        fn ut_0398_05_register_minted_agents_partial_resolution_keeps_unresolved_borders_queued() {
+            let mut graph = empty_graph(2);
+            let cid = 7u64;
+            graph.enqueue_pending_borders(vec![PendingNewBorder {
+                border_id: 200,
+                side_a: PendingPortRef::Pending {
+                    commutation_id: cid,
+                    agent_slot: 0,
+                    port_slot: 1,
+                },
+                side_b: PendingPortRef::Pending {
+                    commutation_id: cid,
+                    agent_slot: 1,
+                    port_slot: 2,
+                },
+                worker_a: 0,
+                worker_b: 1,
+            }]);
+
+            // Round N+2: only side_a's mint arrives.
+            let res1 = graph.register_minted_agents(
+                0,
+                &[MintedAgent {
+                    request_id: encode_request_id(cid, 0),
+                    minted_agent_id: 50,
+                }],
+            );
+            assert!(res1.is_ok(), "got {res1:?}");
+            assert_eq!(
+                graph.pending_new_borders.len(),
+                1,
+                "side_b still Pending — border must stay queued"
+            );
+            assert!(!graph.borders.contains_key(&200));
+            assert_eq!(graph.resolved_mints.get(&(cid as u32, 0)), Some(&50));
+
+            // Round N+3: side_b's mint arrives.
+            let res2 = graph.register_minted_agents(
+                0,
+                &[MintedAgent {
+                    request_id: encode_request_id(cid, 1),
+                    minted_agent_id: 51,
+                }],
+            );
+            assert!(res2.is_ok(), "got {res2:?}");
+            assert!(graph.pending_new_borders.is_empty());
+            let state = graph.borders.get(&200).unwrap();
+            assert_eq!(state.side_a, PortRef::AgentPort(50, 1));
+            assert_eq!(state.side_b, PortRef::AgentPort(51, 2));
+        }
+
+        // UT-0398-06 — DC-0398-B: duplicate request_id LENIENT; last-wins.
+        #[test]
+        fn ut_0398_06_register_minted_agents_duplicate_request_id_is_lenient() {
+            let mut graph = empty_graph(2);
+            let cid = 7u64;
+            graph.enqueue_pending_borders(vec![pnb_pending_a_concrete_b(
+                300,
+                cid,
+                0,
+                0,
+                PortRef::FreePort(999),
+                0,
+                1,
+            )]);
+
+            let dup_req = encode_request_id(cid, 0);
+            let mints = vec![
+                MintedAgent {
+                    request_id: dup_req,
+                    minted_agent_id: 60,
+                },
+                MintedAgent {
+                    request_id: dup_req,
+                    minted_agent_id: 61,
+                },
+            ];
+            let res = graph.register_minted_agents(0, &mints);
+            assert!(res.is_ok(), "LENIENT: duplicate request_id must not error");
+            assert_eq!(graph.resolved_mints.get(&(cid as u32, 0)), Some(&61));
+            assert_eq!(
+                graph.borders.get(&300).unwrap().side_a,
+                PortRef::AgentPort(61, 0),
+                "canonical (second) mint wins"
+            );
+        }
+
+        // UT-0398-07 — R48: stray request_id → ProtocolViolation.
+        #[test]
+        fn ut_0398_07_register_minted_agents_stray_request_id_returns_protocol_violation() {
+            let mut graph = empty_graph(2);
+            graph.enqueue_pending_borders(vec![pnb_pending_a_concrete_b(
+                400,
+                /* cid */ 7,
+                0,
+                0,
+                PortRef::FreePort(888),
+                0,
+                1,
+            )]);
+
+            // Stray: commutation_id=99 never requested.
+            let stray_req = encode_request_id(99, 0);
+            let mints = vec![MintedAgent {
+                request_id: stray_req,
+                minted_agent_id: 70,
+            }];
+            let res = graph.register_minted_agents(3, &mints);
+
+            match res {
+                Err(GridError::ProtocolViolation(msg)) => {
+                    assert!(msg.contains("R48"), "missing R48 anchor: {msg}");
+                    assert!(
+                        msg.contains("worker 3"),
+                        "missing worker attribution: {msg}"
+                    );
+                    assert!(msg.contains("stray"), "missing 'stray' anchor: {msg}");
+                }
+                other => panic!("expected ProtocolViolation, got {other:?}"),
+            }
+
+            // State unchanged: pending_new_borders intact, borders empty.
+            assert_eq!(graph.pending_new_borders.len(), 1);
+            assert!(graph.borders.is_empty());
+        }
+
+        // UT-0398-08 — DC-B6 preserve-existing-border: PendingNewBorder
+        // with a border_id that already exists in self.borders replaces
+        // via remove_border + add_border_states.
+        #[test]
+        fn ut_0398_08_register_minted_agents_dc_b6_preserve_existing_border_path() {
+            let mut graph = empty_graph(2);
+
+            // Seed an existing border at id=500.
+            graph.add_border_states(vec![AddBorderEntry {
+                border_id: 500,
+                side_a: PortRef::FreePort(500),
+                side_b: PortRef::FreePort(501),
+                worker_a: 0,
+                worker_b: 1,
+            }]);
+            assert!(graph.borders.contains_key(&500));
+
+            // Enqueue PendingNewBorder with SAME border_id 500.
+            let cid = 7u64;
+            graph.enqueue_pending_borders(vec![pnb_pending_a_concrete_b(
+                500, // same as existing
+                cid,
+                0,
+                1,
+                PortRef::FreePort(888),
+                0,
+                1,
+            )]);
+
+            let res = graph.register_minted_agents(
+                0,
+                &[MintedAgent {
+                    request_id: encode_request_id(cid, 0),
+                    minted_agent_id: 70,
+                }],
+            );
+            assert!(res.is_ok(), "got {res:?}");
+
+            // New entry replaces old; old FreePort(500) side gone.
+            let state = graph
+                .borders
+                .get(&500)
+                .expect("border 500 must still exist post-replace");
+            assert_eq!(state.side_a, PortRef::AgentPort(70, 1));
+            assert_eq!(state.side_b, PortRef::FreePort(888));
+
+            // worker_borders[0] / [1] each contain 500 at least once.
+            // Per `remove_border`'s documented contract (§4.2 note:
+            // "worker_borders entries are intentionally left stale; any
+            // consumer of `worker_borders` must cross-check against
+            // `borders`"), stale entries from the pre-replace state MAY
+            // remain; what matters is that the post-replace id IS
+            // reachable via the index. `add_border_states` panics on
+            // duplicate `border_id` in `self.borders` — not in
+            // `self.worker_borders` — so staleness here is harmless.
+            assert!(
+                graph.worker_borders[0].contains(&500),
+                "worker_borders[0] must point at 500 post-replace"
+            );
+            assert!(
+                graph.worker_borders[1].contains(&500),
+                "worker_borders[1] must point at 500 post-replace"
+            );
         }
     }
 }

@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use crate::error::GridError;
-use crate::merge::border_graph::BorderDelta;
+use crate::merge::border_graph::{BorderDelta, MintedAgent};
 use crate::merge::border_resolver::RoundStartDispatch;
 use crate::partition::{Partition, PartitionPlan, WorkerId};
 
@@ -185,6 +185,22 @@ pub(crate) struct RoundResultPayload {
     pub(crate) border_deltas: Vec<BorderDelta>,
     pub(crate) stats: WorkerRoundStats,
     pub(crate) has_border_activity: bool,
+    /// SPEC-19 §3.3 R26 / DC-B5 (TASK-0398 — D-004 closure): the
+    /// worker-side mint echo. Each entry pairs the coordinator-issued
+    /// `request_id` (encoded via
+    /// [`crate::merge::border_resolver::encode_request_id`]) with the
+    /// AgentId the worker allocated from its `id_range`. The
+    /// coordinator's round-N+2 finalizer
+    /// [`crate::merge::BorderGraph::register_minted_agents`] consumes
+    /// this field to resolve `PendingPortRef::Pending` tokens in
+    /// `pending_new_borders` and promote fully-resolved entries to
+    /// `AddBorderEntry`s via `add_border_states`.
+    ///
+    /// Closes the MF-003 gap flagged by TASK-0395's sub-agent during
+    /// DEV of 2026-04-23: wire-level `Message::RoundResult.minted_agents`
+    /// (shipped 2.26-A) used to be silently dropped by the pure-core
+    /// bridge; this field reinstates the echo.
+    pub(crate) minted_agents: Vec<MintedAgent>,
 }
 
 /// SPEC-19 R20, R21 (TASK-0384, DC-C2 option (c) ratified 2026-04-17):

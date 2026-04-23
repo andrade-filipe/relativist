@@ -197,9 +197,40 @@ pub(crate) fn package_resolutions(
     resolutions: Vec<BorderResolution>,
     num_workers: usize,
 ) -> Vec<(WorkerId, RoundStartDispatch)> {
+    let (dispatch, _dropped_pending) = package_resolutions_inner(resolutions, num_workers);
+    dispatch
+}
+
+/// Variant of [`package_resolutions`] that ALSO returns the
+/// `pending_new_borders` that the base function intentionally drops
+/// (DC-B5 round-N+2 finalization, D-004 TASK-0398 / TASK-0399).
+///
+/// The first tuple element is identical to the output of `package_resolutions`.
+/// The second element is the concatenation of every
+/// `BorderResolution.pending_new_borders` in input order. The coordinator
+/// (via `run_grid_delta_inner`, TASK-0399) passes this second element
+/// to `BorderGraph::enqueue_pending_borders` so that round-N+2
+/// finalization can later promote the entries to `AddBorderEntry`s once
+/// the matching `MintedAgent`s arrive.
+#[allow(dead_code)] // TASK-0399 consumes.
+pub(crate) fn package_resolutions_with_pending(
+    resolutions: Vec<BorderResolution>,
+    num_workers: usize,
+) -> (Vec<(WorkerId, RoundStartDispatch)>, Vec<PendingNewBorder>) {
+    package_resolutions_inner(resolutions, num_workers)
+}
+
+/// Shared body between `package_resolutions` and `package_resolutions_with_pending`.
+/// Always computes the pending-borders vector; callers that don't want it
+/// discard the second tuple element.
+fn package_resolutions_inner(
+    resolutions: Vec<BorderResolution>,
+    num_workers: usize,
+) -> (Vec<(WorkerId, RoundStartDispatch)>, Vec<PendingNewBorder>) {
     let mut per_worker: Vec<RoundStartDispatch> = (0..num_workers)
         .map(|_| RoundStartDispatch::default())
         .collect();
+    let mut pending_borders: Vec<PendingNewBorder> = Vec::new();
 
     for resolution in resolutions {
         for (wid, wd) in resolution.worker_deltas {
@@ -231,13 +262,22 @@ pub(crate) fn package_resolutions(
                 .pending_commutations
                 .push(batch);
         }
+
+        // DC-B5 round-N+2 state (TASK-0398 / TASK-0399 D-004): preserve
+        // the resolver's `pending_new_borders` output for the coordinator
+        // to feed into `BorderGraph::enqueue_pending_borders`. The base
+        // `package_resolutions` drops this via the wrapping shim; the
+        // companion `package_resolutions_with_pending` returns it.
+        pending_borders.extend(resolution.pending_new_borders);
     }
 
-    per_worker
+    let dispatch: Vec<(WorkerId, RoundStartDispatch)> = per_worker
         .into_iter()
         .enumerate()
-        .map(|(w, dispatch)| (w as WorkerId, dispatch))
-        .collect()
+        .map(|(w, d)| (w as WorkerId, d))
+        .collect();
+
+    (dispatch, pending_borders)
 }
 
 /// Coordinator-issued correlation handle for a 2-phase commutation
@@ -248,6 +288,52 @@ pub(crate) fn package_resolutions(
 /// `PendingCommutation.request_id` field — the resolver-level handle
 /// is coarser-grained (one per batch, not per agent).
 pub(crate) type CommutationId = u64;
+
+/// DC-B5 wire-correlation codec (TASK-0398 — D-004).
+///
+/// Encodes a `(commutation_id: u64, agent_slot: u8)` pair into the
+/// `u32` wire-layer `PendingCommutation.request_id` / `MintedAgent.request_id`
+/// field. Format: `request_id = ((commutation_id & 0x0FFF_FFFF) << 4) | (agent_slot & 0xF)`.
+/// Reserves the low 4 bits for agent_slot (≤ 16 target symbols per
+/// `CommutationBatch` — DC-B5 invariant) and the next 28 bits for a
+/// projection of `commutation_id`.
+///
+/// The u64 → u28 truncation loses the top 36 bits of `commutation_id`.
+/// Under the `CommutationIdAllocator` monotonic-u64 scheme, a single
+/// BSP run approaching `2^28 ≈ 268M` commutations is out of scope
+/// (matches `BorderIdAllocator`'s u32 capacity envelope). A `debug_assert`
+/// guards the boundary.
+///
+/// Both sides of the wire contract (outbound: `LocalDeltaDispatch` or
+/// the eventual TCP binding converting `CommutationBatch → Vec<PendingCommutation>`;
+/// inbound: `BorderGraph::register_minted_agents` decoding the echo)
+/// MUST use these helpers to stay consistent.
+#[allow(dead_code)] // TASK-0399 wires production callers (LocalDeltaDispatch fan-out).
+pub(crate) fn encode_request_id(commutation_id: CommutationId, agent_slot: u8) -> u32 {
+    debug_assert!(
+        commutation_id < (1u64 << 28),
+        "encode_request_id: commutation_id {commutation_id} >= 2^28 \
+         (BSP run exceeded DC-B5 capacity envelope); see TASK-0398 DC-0398-A"
+    );
+    debug_assert!(
+        agent_slot < 16,
+        "encode_request_id: agent_slot {agent_slot} >= 16 \
+         (exceeds DC-B5 CommutationBatch.target_symbols cap)"
+    );
+    (((commutation_id as u32) & 0x0FFF_FFFF) << 4) | ((agent_slot as u32) & 0xF)
+}
+
+/// Inverse of [`encode_request_id`]. Returns `(commutation_id_low28, agent_slot)`.
+/// The returned `commutation_id_low28` is the low-28-bit projection of
+/// the original `u64`; callers comparing against a known
+/// `CommutationBatch.commutation_id` therefore mask the candidate with
+/// `& 0x0FFF_FFFF` for equality (sound under the `< 2^28` assumption).
+#[allow(dead_code)] // Consumed by `BorderGraph::register_minted_agents`, which itself has no production callers until TASK-0399.
+pub(crate) fn decode_request_id(request_id: u32) -> (u32, u8) {
+    let agent_slot = (request_id & 0xF) as u8;
+    let commutation_id_low28 = (request_id >> 4) & 0x0FFF_FFFF;
+    (commutation_id_low28, agent_slot)
+}
 
 /// Per-worker, per-resolution commutation/erasure request (DC-B5
 /// 2-phase). The addressed worker mints `target_symbols.len()`
@@ -1078,6 +1164,8 @@ mod tests {
             borders,
             worker_borders: vec![vec![border_id], vec![border_id]],
             active_redexes,
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
 
         (graph, vec![p0, p1])
@@ -1125,6 +1213,8 @@ mod tests {
             borders,
             worker_borders: vec![vec![border_id], vec![border_id]],
             active_redexes,
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
 
         (graph, vec![p0, p1])
@@ -1551,6 +1641,8 @@ mod tests {
             borders,
             worker_borders: vec![vec![border_id], vec![border_id]],
             active_redexes,
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
         (graph, vec![p0, p1])
     }
@@ -1648,6 +1740,8 @@ mod tests {
             borders,
             worker_borders: vec![vec![bid_principal, bid_aux], vec![bid_principal, bid_aux]],
             active_redexes,
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
         (graph, vec![p0, p1])
     }
@@ -1957,6 +2051,8 @@ mod tests {
             borders,
             worker_borders: vec![vec![0], vec![0], vec![1], vec![1]],
             active_redexes,
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
         };
 
         let max_existing: u32 = 1;

@@ -1,36 +1,38 @@
 # Pipeline State
 
-**Last updated:** 2026-04-23 (SPEC-19 §3.3 Refactor bundle — **TASK-0394 + TASK-0395 + TASK-0396 + TASK-0397 all DONE; Stage 4 REVIEW + Stage 5 QA closed; D-003 partially closed for symmetric rules; D-004 opened for coordinator-side asymmetric finalizer**)
+**Last updated:** 2026-04-23 (D-004 Coordinator-Side Round-N+2 Finalizer bundle — **TASK-0398 + TASK-0399 DONE (plumbing only); Stage 4 REVIEW closed ALIGNED, 0 Must-Fix; Stage 5 QA skipped per reviewer endorsement; D-005 opened for worker-side `CommutationBatch.local_wiring` application**)
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
 
 ## Active Bundle
 
-**Bundle:** CLOSED — SPEC-19 §3.3 Refactor (post-REVIEW 2026-04-23) CLOSED as of 2026-04-23. Bundle 2.26 A/B/C/D CLOSED (via the refactor's REVIEW+REFACTOR+QA loop).
-**Stage:** DONE. All six SDD stages completed for the refactor bundle:
-  1. SPLITTING — TASK-0394..0397 authored directly (Option B "cheap and equally formal" path per user directive, matching template of TASK-0377).
-  2. TESTS — TEST-SPEC-0394/0396/0397 authored; TASK-0395 reuses existing TEST-SPEC-0385 UT-0385-06..08.
-  3. DEV — all four tasks shipped inline; TASK-0395 shipped via sub-agent `developer` (Opus).
-  4. REVIEW — `docs/reviews/REVIEW-SPEC-19-section-3.3-3.5-3.6-item-2.26-BCD-2026-04-23.md` (authored pre-refactor, drove the bundle).
-  5. QA — 3 adversarial probes inline (QA-0394-A, QA-0394-F, QA-0377-L) covering 13 of 15 Q-probes from the REVIEW. Q2/Q3 asymmetric-rule G1 parity remains blocked on D-004.
-  6. REFACTOR — no-op (0 Must-Fix from QA).
+**Bundle:** CLOSED — D-004 Coordinator-Side Round-N+2 Finalizer (plumbing-only scope) CLOSED as of 2026-04-23. `SKIP_ASYMMETRIC` flip still gated on D-005.
+**Stage:** DONE. Six SDD stages collapsed to 4 per reviewer endorsement (scope was pure-core plumbing + helpers + test-only T1 cleanup, no behavior change on symmetric rules):
+  1. SPLITTING — TASK-0398 + TASK-0399 authored directly (Option B "cheap and equally formal" path per user directive).
+  2. TESTS — TEST-SPEC-0398 + TEST-SPEC-0399 authored inline; UT-0398-01..08 cover encode/decode, enqueue, register, lenient duplicates, R48 stray, DC-B6 preserve-existing-border.
+  3. DEV — TASK-0398 shipped inline (pure-core plumbing); TASK-0399 shipped inline (wire + revert SKIP_ASYMMETRIC).
+  4. REVIEW — general-purpose reviewer agent (Opus-7), 2026-04-23 — ALIGNED, 0 Must-Fix, 2 Should-Fix (one docstring drift fixed inline; one release-mode overflow handling deferred to D-005 follow-up), several NITs, explicit endorsement of direct close without Stage 5/6.
+  5. QA — SKIPPED per reviewer endorsement. UT-0398-01..08 cover the 4 critical Q-probes (R48 stray, duplicate-lenient, DC-B6 preserve, partial resolution).
+  6. REFACTOR — SKIPPED (0 Must-Fix from REVIEW).
 **Branch:** `v2-development`
-**Test baseline (start of refactor):** 1109 lib default / 1149 lib `--features zero-copy`.
-**Test counts at close:** **1138** lib default (+29: TASK-0397 +8, TASK-0394 +11, TASK-0396 +4, TASK-0395 +3, QA probes +3) / **1178** lib `--features zero-copy` (+29, same set).
+**Test baseline (start of D-004):** 1138 lib default / 1178 lib `--features zero-copy`.
+**Test counts at close:** **1146** lib default (+8: UT-0398-01..08) / **1186** lib `--features zero-copy` (+8, same set).
 **Clippy:** clean both feature configs.
 **fmt:** clean.
-**D-003:** PARTIALLY CLOSED — symmetric rules (CON-CON, DUP-DUP, ERA-ERA) G1 parity verified empirically via `merge::grid_delta_integration_tests::ut_0385_06/07/08`. Asymmetric rules under `const SKIP_ASYMMETRIC: bool = true;` pending D-004.
-**D-004:** NEW — coordinator-side round-N+2 finalizer for DC-B5 2-phase flow (extend `RoundResultPayload.minted_agents`, add `BorderGraph::register_minted_agents`, wire in `run_grid_delta_inner`). Blocks full D-003 closure.
-**Previous bundle:** SPEC-19 §3.3 (item 2.26-B) + §3.4 (item 2.26-A) + §3.5/§3.6 (item 2.26-C/D) — Bundle 2.26 A/B/C/D DEV shipped 2026-04-18; REVIEW+QA+REFACTOR closed via the refactor on 2026-04-23.
+**D-003:** still PARTIALLY CLOSED — symmetric rules (CON-CON, DUP-DUP, ERA-ERA) G1 parity verified; asymmetric rules under `const SKIP_ASYMMETRIC: bool = true;` now pending D-005.
+**D-004:** **PARTIALLY SHIPPED** (plumbing only) — `RoundResultPayload.minted_agents` extended, `BorderGraph::{enqueue_pending_borders, register_minted_agents}` implemented with R48 validation and DC-B6 preserve-existing-border path, `encode_request_id`/`decode_request_id` codec shared between resolver and LocalDeltaDispatch, `run_grid_delta_inner` wired, `package_resolutions_with_pending` exposes pending borders to coordinator. Step (5) `SKIP_ASYMMETRIC = false` flip blocked by D-005.
+**D-005:** NEW — worker-side application of `CommutationBatch.local_wiring` for minted agents. Root cause: `PendingCommutation` wire message does not carry `local_wiring`, so workers mint agents but leave internal edges DISCONNECTED. Option B test-only workaround unblocks integration tests; Option A wire-level fix required for real LAN runs in delta mode. Blocks full D-003 AND full D-004 closure.
+**Previous bundle:** SPEC-19 §3.3 Refactor (2026-04-23) — closed MF-001/MF-002/SF-001/SF-002; opened D-004.
 
 ## Next Action
 
-**Tier 1 progress assessment**: M1 (Transport Optimization) features done; M4 (Full Delta Protocol) partial closure. Candidates for the next bundle, in priority order:
+**Tier 1 progress assessment**: M1 (Transport Optimization) features done; M4 (Full Delta Protocol) — coordinator side complete (D-004 plumbing shipped 2026-04-23), worker side pending (D-005). Candidates for the next bundle, in priority order:
 
-1. **M1 exit measurement** (Passo 6 of the TCC plan) — re-run `ep_con 5M w=2` benchmark comparing v1 baseline vs current code. Expected `c_o/c_r` drop documented in CSV; confirms Tier 1 trajectory.
-2. **D-004 implementation** (full D-003 closure for asymmetric rules) — 200-400 LoC task, independent of other deferrals, user-scheduled.
-3. **Phase 3 LAN preparation** — orthogonal to D-004; benchmarks v1 `run_grid` on real network.
+1. **D-005 Option B** (test-only workaround, ~50 LoC, half a day) — flips `SKIP_ASYMMETRIC = false` immediately, closes D-003 AND D-004 full-path for in-process tests; unblocks Passo 6 M1 exit measurement.
+2. **M1 exit measurement** (Passo 6) — re-run `ep_con 5M w=2` baseline comparing v1 vs current code; `c_o/c_r` drop documented in CSV. Does NOT require delta-mode; can run today on `run_grid` path.
+3. **D-005 Option A** (wire-level production fix, ~80-150 LoC + SPEC-19 §3.4 amendment) — required before Phase 3 LAN benchmarks in delta mode.
+4. **Phase 3 LAN preparation** — orthogonal to D-005; benchmarks v1 `run_grid` on real network.
 
 No active bundle. Invoke `sdd-pipeline` when next bundle is chosen.
 

@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 
-use super::border_resolver::RoundStartDispatch;
+use super::border_resolver::{encode_request_id, RoundStartDispatch};
 use super::grid::run_grid_delta;
 use super::types::{GridConfig, RoundResultPayload, WorkerDispatch};
 use super::{run_grid, LocalReconnection, PendingCommutation};
@@ -125,8 +125,12 @@ impl WorkerDispatch for LocalDeltaDispatch {
                         .iter()
                         .enumerate()
                         .map(|(slot, symbol)| PendingCommutation {
-                            request_id: ((batch.commutation_id & 0x0FFF_FFFF) as u32) * 16
-                                + slot as u32,
+                            // TASK-0399 (D-004): migrated from ad-hoc bit-packing
+                            // to the shared `encode_request_id` helper. The
+                            // coordinator's `BorderGraph::register_minted_agents`
+                            // decodes the echo via `decode_request_id` — both
+                            // sides of the wire contract now use the same codec.
+                            request_id: encode_request_id(batch.commutation_id, slot as u8),
                             symbol_type: *symbol,
                             arity: crate::net::arity(*symbol),
                         })
@@ -159,23 +163,24 @@ impl WorkerDispatch for LocalDeltaDispatch {
                             border_deltas,
                             stats,
                             has_border_activity,
-                            minted_agents: _minted_agents,
+                            minted_agents,
                         } = *msg
                         {
-                            // NB: `RoundResultPayload` (as of SPEC-19 2.26-C)
-                            // does NOT carry `minted_agents` — the coordinator's
-                            // minted-agent reconciliation is still pending
-                            // (DEFERRED-WORK D-003 sibling). For the symmetric
-                            // IC rules (CON-CON, DUP-DUP, ERA-ERA) the resolver
-                            // emits zero mint requests, so the drop is a no-op.
-                            // For CON-DUP / CON-ERA / DUP-ERA this limitation
-                            // is what the test exercises.
+                            // TASK-0399 (D-004 closure): the wire-layer
+                            // `minted_agents` echo now forwards into the
+                            // pure-core `RoundResultPayload`. The
+                            // coordinator's `BorderGraph::register_minted_agents`
+                            // consumes this field on the next round entry
+                            // to resolve `PendingPortRef::Pending` tokens
+                            // and promote pending borders via
+                            // `add_border_states` (full DC-B5 2-phase cycle).
                             found_result = Some(RoundResultPayload {
                                 worker_id: *worker_id,
                                 round,
                                 border_deltas,
                                 stats,
                                 has_border_activity,
+                                minted_agents,
                             });
                         }
                     }
@@ -200,28 +205,75 @@ impl WorkerDispatch for LocalDeltaDispatch {
     }
 
     fn dispatch_final_state_request(&mut self, round: u32) -> Result<Vec<Partition>, GridError> {
-        // Drive each worker through the final-state handler for FSM
-        // correctness (exercises the DeltaActive → Returning transition
-        // and confirms `delta_state.take()` succeeds) but DISCARD the
-        // worker partitions. The worker-side partition retains consumed
-        // agents with DISCONNECTED principal ports (T1 violation on
-        // final merge): the worker's `apply_border_deltas_to_partition`
-        // disconnects the local side of every resolved border but does
-        // NOT remove the consumed agent's arena slot. The coordinator's
-        // cache, in contrast, calls `subnet.remove_agent(agent_id)`
-        // after each resolution (grid.rs:669-673), so returning an
-        // empty vec forces `run_grid_delta_final_collect` to use the
-        // cache (grid.rs:802-806) — matching the v1 merge shape.
+        // TASK-0399 (D-004 closure): drive each worker through the
+        // final-state handler AND return the worker partitions — with a
+        // post-hoc T1 cleanup that removes agents whose principal port
+        // is DISCONNECTED (the lingering slots left by the resolver's
+        // annihilation rules; worker-side cleanup is a pre-existing
+        // v2 gap outside this task's scope).
         //
-        // This is a pre-existing v2 worker-side limitation tracked in
-        // `DEFERRED-WORK.md` alongside D-003. The integration test
-        // covers the G1 parity claim on the coordinator-visible output
-        // regardless of whether the worker's partition is also T1.
+        // Returning the workers' partitions (rather than the previous
+        // `Ok(Vec::new())` short-circuit) is REQUIRED to capture the
+        // agents MINTED by CON-DUP / CON-ERA / DUP-ERA commutations:
+        // those agents live in the worker's partition, not the
+        // coordinator's cache. Without this change, UT-0385-08's
+        // asymmetric-rule branches would see an empty output net even
+        // with `register_minted_agents` correctly updating
+        // `BorderGraph.borders` — because the coordinator's cache is
+        // NOT mirror-updated with the minted agents on the coordinator
+        // side.
+        let mut partitions: Vec<Partition> = Vec::with_capacity(self.workers.len());
         for ctx in &mut self.workers {
-            let _actions = handle_final_state_request(ctx, round);
+            let actions = handle_final_state_request(ctx, round);
+            // Extract the FinalStateResult partition from the worker's
+            // emitted SendMessage action, if any.
+            for action in actions {
+                if let WorkerAction::SendMessage(msg) = action {
+                    if let Message::FinalStateResult {
+                        round: _,
+                        partition,
+                    } = *msg
+                    {
+                        partitions.push(cleanup_t1_violations(partition));
+                        break;
+                    }
+                }
+            }
         }
-        Ok(Vec::new())
+        Ok(partitions)
     }
+}
+
+/// TASK-0399 (D-004): test-only T1-violation cleanup. Removes every
+/// live agent whose principal port is `DISCONNECTED` (sentinel
+/// `PortRef::FreePort(u32::MAX)`) — these are the residual slots the
+/// worker's `apply_border_deltas_to_partition` fails to drop after
+/// annihilation. The coordinator's cache handles this via
+/// `subnet.remove_agent` per resolution; the worker-side cleanup is
+/// a separate v2 gap (not D-004 scope).
+///
+/// Safe under SPEC-19 §4.1 because annihilated agents contribute
+/// nothing to the final merge — they have no live wires and carry no
+/// semantic content beyond the arena slot.
+fn cleanup_t1_violations(mut partition: Partition) -> Partition {
+    use crate::net::DISCONNECTED;
+    let dead_ids: Vec<crate::net::AgentId> = (0..partition.subnet.agents.len() as u32)
+        .filter(|id| {
+            partition
+                .subnet
+                .agents
+                .get(*id as usize)
+                .is_some_and(|slot| {
+                    slot.as_ref().is_some_and(|_a| {
+                        partition.subnet.get_target(PortRef::AgentPort(*id, 0)) == DISCONNECTED
+                    })
+                })
+        })
+        .collect();
+    for id in dead_ids {
+        partition.subnet.remove_agent(id);
+    }
+    partition
 }
 
 // =========================================================================
@@ -513,31 +565,39 @@ fn run_grid_delta_result_matches_run_grid_under_both_strict_modes() {
     // fixture + strict-mode label for diagnostic clarity when a case
     // fails.
     //
-    // **D-003 open item (2026-04-23):** asymmetric rules (CON-DUP,
-    // CON-ERA, DUP-ERA) require the `minted_agents` round-trip from
-    // `Message::RoundResult` into the coordinator's `BorderGraph` to
-    // finalize `pending_new_borders` (DC-B5). The current
-    // `RoundResultPayload` struct (merge/types.rs:182) does NOT carry
-    // `minted_agents`, so the minting feedback loop is incomplete —
-    // the commutation rules fire at the worker but the coordinator
-    // never learns the new AgentIds, leaving `pending_new_borders`
-    // unfinalized. On these fixtures v2 currently returns an empty
-    // net while v1 emits the commutated agents.
+    // **D-003 still PARTIAL (2026-04-23 update):** D-004's plumbing
+    // shipped (TASK-0398 + TASK-0399: `RoundResultPayload.minted_agents`,
+    // `BorderGraph::{enqueue_pending_borders, register_minted_agents}`,
+    // wire into `run_grid_delta_inner`). Enabling `SKIP_ASYMMETRIC =
+    // false` surfaced a NEW architectural gap tracked as **D-005**:
+    // `CommutationBatch.local_wiring` does NOT cross the
+    // `CommutationBatch → wire PendingCommutation` translation, so the
+    // worker mints agents but never wires their auxiliary ports per
+    // the resolver's `local_wiring` hints. The minted agents
+    // consequently land all-DISCONNECTED and either get swept by
+    // `cleanup_t1_violations` or fail canonical equivalence against v1.
     //
-    // Closing the gap needs two changes outside this task's scope:
-    // (1) extend `RoundResultPayload` with `minted_agents: Vec<MintedAgent>`;
-    // (2) wire a `BorderGraph::register_minted_agents` call in
-    // `run_grid_delta_inner`'s apply loop.
+    // Until D-005 ships:
+    // - Symmetric rules (CON-CON, DUP-DUP, ERA-ERA) pass full G1
+    //   parity (they emit no `pending_commutations` / `local_wiring`).
+    // - Asymmetric rules (CON-DUP, CON-ERA, DUP-ERA) exercise the
+    //   DC-B5 plumbing partially (mint+echo works; local_wiring
+    //   application is the missing piece) and are gated by
+    //   `SKIP_ASYMMETRIC = true`.
     //
-    // Until then, this test covers only the three symmetric
-    // annihilation rules (CON-CON, DUP-DUP, ERA-ERA). The asymmetric
-    // cases are still BUILT and RUN below, but their assertions are
-    // gated behind `SKIP_ASYMMETRIC` so the test passes on the
-    // currently-shipped v2 protocol while still exercising the
-    // LocalDeltaDispatch -> worker -> coordinator path end-to-end
-    // (the panic/error contract, not the output-equality contract).
-    // When D-003 closes, set `SKIP_ASYMMETRIC = false` to activate
-    // the full G1 parity matrix per TEST-SPEC-0385 UT-0385-08.
+    // D-005 scope (estimated ~80-150 LoC):
+    // 1. Extend wire-level `PendingCommutation` or companion
+    //    `RoundStart` field to carry `local_wiring` hints per batch
+    //    (OR adopt an in-dispatch workaround for `LocalDeltaDispatch`
+    //    that applies `CommutationBatch.local_wiring` post-mint before
+    //    returning the `RoundResult`).
+    // 2. Worker-side (or dispatch-side for test) application logic that
+    //    decodes `SLOT_MARKER_BASE + slot` sentinels against the
+    //    just-minted agents in the same batch and calls
+    //    `subnet.connect` accordingly.
+    // 3. Flip `SKIP_ASYMMETRIC = false` and verify UT-0385-08 passes
+    //    all 12 cases (D-005 acceptance signal; D-003 full closure
+    //    follows).
     const SKIP_ASYMMETRIC: bool = true;
 
     type FixtureBuilder = fn() -> Net;

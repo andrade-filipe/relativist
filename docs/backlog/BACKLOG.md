@@ -370,6 +370,17 @@ Triggered by two Must-Fix items and two Should-Fix items identified during the u
 **Stage 5 QA probes** added inline post-DEV (Option B rigor pass): `qa_0394_a_duplicate_request_id_in_pending_commutations_is_lenient`, `qa_0394_f_exhaustion_check_treats_next_id_equals_end_as_exhausted`, `qa_0377_l_pure_core_guard_panics_on_synthetic_forbidden_import`. Covers 13 of 15 Q-probes from the REVIEW artifact; Q2/Q3 asymmetric-rule G1 parity remain open per D-004.
 **Gates:** `cargo test --workspace --lib` 1138/1178 green, `cargo clippy --workspace --all-targets -- -D warnings` clean both feature configs, `cargo fmt --check` clean.
 
+## D-004 — Coordinator-Side Round-N+2 Finalizer (post-refactor 2026-04-23)
+
+Bundle source: `docs/DEFERRED-WORK.md` D-004 row (opened 2026-04-23 during DEV of TASK-0395). Closes D-003 fully when shipped. Scope: extend `RoundResultPayload` with `minted_agents`, add `BorderGraph::{enqueue_pending_borders, register_minted_agents}`, wire into `run_grid_delta_inner`, flip `const SKIP_ASYMMETRIC: bool = false;`. Destrava Passo 6 M1 exit measurement for all 6 IC rules.
+
+| Task | Description | Priority | Status | Depends | Size |
+|------|-------------|----------|--------|---------|------|
+| TASK-0398 | Plumbing pure-core: RoundResultPayload.minted_agents; BorderGraph state + methods (enqueue_pending_borders, register_minted_agents); encode/decode_request_id helpers; package_resolutions_with_pending | P0 | **DONE** (2026-04-23) | 2.26-B (shipped), TASK-0394 (shipped), TASK-0395 (shipped) | M |
+| TASK-0399 | Integration: wire into run_grid_delta_inner; migrate LocalDeltaDispatch; **REDUCED SCOPE** — plumbing wiring + LocalDeltaDispatch forwarding + `cleanup_t1_violations` helper shipped; `SKIP_ASYMMETRIC` flip blocked on newly-discovered D-005 (CommutationBatch.local_wiring not on wire); `SKIP_ASYMMETRIC = true` retained with 34-line D-005 scoped comment in test file. | P0 | **DONE** (plumbing only; flip deferred to D-005) 2026-04-23 | TASK-0398 | M |
+
+**Bundle acceptance signal (ORIGINAL):** UT-0385-08 passes all 12 parameterized cases (6 fixtures × 2 strict modes) with canonical net-equivalence + total_interactions parity — **NOT MET** due to D-005 structural gap discovered during DEV. **Revised close signal:** TASK-0398 + TASK-0399 plumbing shipped, 1146/1186 test baselines green, REVIEW ALIGNED with 0 Must-Fix. DEFERRED-WORK D-003 remains PARTIAL; D-004 marked PARTIALLY SHIPPED; D-005 row added. Full G1 parity proof waits on D-005 Option A or B.
+
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 
 | ID | Title | Priority | Status | Depends | Complexity |

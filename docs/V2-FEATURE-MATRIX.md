@@ -41,7 +41,7 @@ These features directly attack the 80% distribution overhead and 20% transport o
 | 2.24 | Zero-Copy Archive (rkyv on hot path) | PLANNED (DEFERRED-WORK.md D-002) | SPEC-18 | Medium-High | ~600 | 3–5d | -50–80% deserialize CPU | 2.23 (wire format migration) |
 | 2.25 | Same-Host Fast Path (UDS / shared memory) | **DONE** (commit c360fe5, 2026-04-15) | SPEC-17 | Medium | ~500 | 4–6d | Eliminates TCP loopback overhead | None |
 | 2.35 | Delta-Based Merge (BorderGraph, lightweight resolution) | **DONE** (R8-R19 pure-core shipped 2026-04-17; R13-R15 coordinator dispatch + R20-R36 wire deferred to 2.26) | SPEC-19 | High | ~800 | 1–2w | Eliminates merge memory peak | None (design with 2.26) |
-| 2.26 | Delta-Only Protocol (stateful workers, border deltas) | **PARTIAL** (bundle A/B/C/D shipped 2026-04-18; refactor 2026-04-23 closed MF-001/MF-002 for symmetric rules CON-CON/DUP-DUP/ERA-ERA; asymmetric rules CON-DUP/CON-ERA/DUP-ERA deferred to D-004 — coordinator-side `minted_agents` consumption) | SPEC-19 | Very High | ~1600 | 2–4w | -90% per-round wire cost | 2.34, 2.35 (shared BorderGraph concept) |
+| 2.26 | Delta-Only Protocol (stateful workers, border deltas) | **PARTIAL** (bundle A/B/C/D shipped 2026-04-18; refactor 2026-04-23 closed MF-001/MF-002 for symmetric rules CON-CON/DUP-DUP/ERA-ERA; D-004 coordinator-side plumbing shipped 2026-04-23 via TASK-0398+TASK-0399; asymmetric rules CON-DUP/CON-ERA/DUP-ERA flip now deferred to D-005 — worker-side `CommutationBatch.local_wiring` application) | SPEC-19 | Very High | ~1600 | 2–4w | -90% per-round wire cost | 2.34, 2.35 (shared BorderGraph concept) |
 
 **Implementation order:** 2.22 → 2.23 → 2.34 → 2.24 → 2.25 → 2.35 → 2.26
 
@@ -192,7 +192,7 @@ Features that are research projects in their own right or require months of work
 | **M1** Transport Optimization | SPEC-17, SPEC-18 | 2.22 → 2.23 → 2.24 | 2–3w | tcp_localhost/seq ratio drops from 3.48x to ~1.5–2.0x |
 | **M2** Elastic Grid Basics | SPEC-20 | 2.1 → 2.2 → 2.3 | 2–3w | Workers join/leave between rounds, 690+ tests green |
 | **M3** Delta Foundation | SPEC-19 partial | 2.34 → 2.35 → 2.25 | 3–5w | Coordinator-free rounds observable on `cascade_cross` |
-| **M4** Full Delta Protocol | SPEC-19 complete | 2.26 | 3–5w | `ep_con 5M w=2` speedup > 1.0 (BREAK-EVEN) — **PARTIAL (2026-04-23):** symmetric-rule G1 parity verified (CON-CON/DUP-DUP/ERA-ERA); full BREAK-EVEN benchmark blocked on D-004 (asymmetric-rule coordinator-side finalizer) |
+| **M4** Full Delta Protocol | SPEC-19 complete | 2.26 | 3–5w | `ep_con 5M w=2` speedup > 1.0 (BREAK-EVEN) — **PARTIAL (2026-04-23):** symmetric-rule G1 parity verified (CON-CON/DUP-DUP/ERA-ERA); D-004 coordinator-side round-N+2 finalizer plumbing shipped 2026-04-23; full BREAK-EVEN benchmark now blocked on D-005 (worker-side `CommutationBatch.local_wiring` application) |
 | **M5** Memory Efficiency | SPEC-21, SPEC-22 | 2.33 → 2.28 → 2.27 → 2.30 | 2–3w | `ep_con 100M` runs on 2GB coordinator |
 | **M6** Complementary | — | 2.37, 2.38, 2.7, ... | as time allows | UX improvements shipped |
 | **M7** Advanced Memory & Generation | SPEC-23, SPEC-25, SPEC-21 amend | 2.15 → 2.29 → 2.36 | 4–6w | Compact memory reduces footprint 30%+; recipe gen for `ep_annihilation` works |

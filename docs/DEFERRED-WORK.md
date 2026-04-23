@@ -57,12 +57,12 @@ silently forgotten when their unblocker lands.
 | **Shipped (Stage 1)** | R8, R9, R10, R11, R12, R15 part 3, R16, R17, R18, R19 — `BorderGraph` pure data structure (2026-04-17). |
 | **Shipped (Stage 2, bundle 2.26 A/B/C/D)** | R20-R36 wire extensions + resolver + BSP loop + stateful-worker lifecycle (2026-04-18). |
 | **Shipped (Stage 3, refactor 2026-04-23)** | **MF-001 closure** (TASK-0394): worker-side R23/R26 completion — `local_reconnections` + `pending_commutations → minted_agents` 2-phase echo. **MF-002 closure** (TASK-0395): G1 parity integration tests `grid_delta_integration_tests::ut_0385_06/07/08`. **Symmetric rules (CON-CON, DUP-DUP, ERA-ERA) empirically verified** via `LocalDeltaDispatch`-driven round-trip, asserting `canonicalize(out_delta) == canonicalize(out_v1)` and `metrics.total_interactions == metrics_v1.total_interactions` in both `strict_bsp = true` and `strict_bsp = false` matrices. |
-| **Still deferred** | **Asymmetric rules (CON-DUP, CON-ERA, DUP-ERA)** cross-partition G1 parity — blocked on coordinator-side round-N+2 finalizer for the DC-B5 2-phase flow (new row **D-004**). In `tests/grid_delta_integration_tests.rs` these fixtures run under `const SKIP_ASYMMETRIC: bool = true;` which asserts convergence only (not net equivalence). Flipping the constant is the re-enable gate. |
-| **Unblocker** | **D-004** — extend `RoundResultPayload` with `minted_agents` + add `BorderGraph::register_minted_agents` + wire call in `run_grid_delta_inner`. |
+| **Still deferred** | **Asymmetric rules (CON-DUP, CON-ERA, DUP-ERA)** cross-partition G1 parity — D-004 plumbing shipped 2026-04-23 (coordinator-side round-N+2 finalizer) but flip of `SKIP_ASYMMETRIC` still blocked by **D-005** (CommutationBatch.local_wiring does not cross the wire, so minted agents land fully disconnected on the worker). In `tests/grid_delta_integration_tests.rs` these fixtures continue to run under `const SKIP_ASYMMETRIC: bool = true;` which asserts convergence only (not net equivalence). |
+| **Unblocker** | **D-005** — propagate `CommutationBatch.local_wiring` across the `PendingCommutation` wire contract (or equivalent LocalDeltaDispatch workaround) so worker-side `Net::wire_agents` materialises the agent-internal edges for minted agents. D-004's coordinator-side plumbing (2026-04-23) is already in place waiting. |
 | **Acceptance signal — partial** | Symmetric-rule parity: 3 of 6 IC rules verified (UT-0385-06/07/08 symmetric branches, both strict modes). |
 | **Acceptance signal — full** | All 6 rules verified; `SKIP_ASYMMETRIC = false`. |
 | **Created** | 2026-04-17 |
-| **Status** | **PARTIALLY CLOSED** 2026-04-23 — symmetric-rule branch shipped. Asymmetric branch waiting on D-004. |
+| **Status** | **PARTIALLY CLOSED** 2026-04-23 — symmetric-rule branch shipped; D-004 coordinator plumbing shipped 2026-04-23; asymmetric flip now waiting on D-005. |
 
 **Action when D-004 ships:**
 1. Set `SKIP_ASYMMETRIC = false` in `relativist-core/src/merge/grid_delta_integration_tests.rs`.
@@ -85,13 +85,39 @@ silently forgotten when their unblocker lands.
 | **Acceptance signal** | `cargo test --workspace --lib` retains ≥ 1138 passing (post-refactor-2026-04-23 baseline), UT-0385-08 runs all 6 fixtures × 2 strict modes under `SKIP_ASYMMETRIC = false`, canonicalized net equivalence AND `metrics.total_interactions` parity hold on every case. After this: D-003 closes fully. |
 | **Files to revisit** | `relativist-core/src/merge/types.rs` (`RoundResultPayload` struct), `relativist-core/src/merge/border_graph.rs` (`register_minted_agents`), `relativist-core/src/merge/grid.rs` (`run_grid_delta_inner` wire), `relativist-core/src/merge/grid_delta_integration_tests.rs` (`LocalDeltaDispatch` forwarding + `SKIP_ASYMMETRIC` flip). |
 | **Created** | 2026-04-23 (during DEV of TASK-0395, post-REVIEW-2026-04-23 bundle close) |
-| **Status** | OPEN — independent of other deferrals; scheduled at user discretion. |
+| **Status** | **PARTIALLY SHIPPED** 2026-04-23 via TASK-0398 + TASK-0399. Steps (1)-(4) done: `RoundResultPayload.minted_agents` extended, `BorderGraph::register_minted_agents` + `enqueue_pending_borders` implemented with R48 validation and DC-B6 preserve-existing-border path, `encode_request_id`/`decode_request_id` codec shared between resolver and LocalDeltaDispatch, `run_grid_delta_inner` wired, `package_resolutions_with_pending` exposes pending borders to coordinator. 8 UT-0398-01..08 green. Step (5) `SKIP_ASYMMETRIC` flip **blocked by newly-discovered D-005** (CommutationBatch.local_wiring does not cross the wire; minted agents land disconnected). |
 
-**Action when D-004 starts:**
-1. Create `TASK-04XX` with scope = steps (1)-(5) above in a single ticket (they are tightly coupled).
-2. Follow the 6-stage SDD pipeline: SPLITTING → TESTS → DEV → REVIEW → QA → REFACTOR.
-3. Step (5) flips the canary; it doubles as the D-003 full-closure gate.
-4. Close this row AND close D-003 after step (5) is green.
+**Action when D-005 ships:**
+1. Flip `SKIP_ASYMMETRIC = false` in `relativist-core/src/merge/grid_delta_integration_tests.rs`.
+2. Re-run `cargo test --workspace --lib` and verify UT-0385-08 passes on all 6 fixtures under both strict modes.
+3. Move D-003 AND this row to "Resolved Deferrals" with the commit hash.
+4. (Optional) Address the two SHOULD-FIX follow-ups noted in 2026-04-23 review: (a) tighten `register_minted_agents` docstring re: unchanged state on `Err` **[done inline 2026-04-23]**; (b) consider release-mode `GridError::ProtocolViolation` instead of `debug_assert!` in `encode_request_id` under the unlikely >2^28 commutations per run regime.
+
+---
+
+### D-005 — Worker-side application of `CommutationBatch.local_wiring` for minted agents
+
+| Field | Value |
+|-------|-------|
+| **Source spec** | SPEC-19 §3.3 R23 / DC-B5 / DC-B6 (2026-04-23 DEV discovery of TASK-0399) |
+| **Requirements deferred** | Worker-side application of the agent-internal wiring emitted by the resolver alongside the minted `AgentId`s. Specifically, when a worker receives a `Message::PendingCommutation` and mints agents from its `partition.id_range`, it must also apply each `(slot_a, port_a, slot_b, port_b)` tuple from `CommutationBatch.local_wiring` via `partition.subnet.wire_agents(...)` so that the minted agents' internal edges are materialised before `Message::RoundResult` is returned. Currently the wire protocol does not carry `local_wiring`; only `mint_count` and a single `border_info` reach the worker. |
+| **Shipped instead** | D-004 plumbing (coordinator-side round-N+2 finalizer, TASK-0398+TASK-0399) is fully in place: the coordinator correctly resolves `PendingPortRef::Pending` tokens against echoed `MintedAgent`s and promotes fully-resolved `PendingNewBorder`s to `AddBorderEntry`s via `BorderGraph::add_border_states`. However, the minted agents arrive DISCONNECTED (no internal edges) because the worker never receives the wiring instructions. Net result: `SKIP_ASYMMETRIC = true` remains in the integration test file. |
+| **Unblocker** | None — direct implementation task. Option A (preferred, wire-level fix): extend `Message::PendingCommutation` and/or introduce a new `AssignCommutation` wire message carrying `local_wiring: Vec<(u8, u8, u8, u8)>`; worker applies via a new `BorderResolver::apply_local_wiring` equivalent method post-mint. Option B (test-only workaround): have `LocalDeltaDispatch` stash `CommutationBatch.local_wiring` keyed by `commutation_id` at resolver-output time and apply it during `dispatch_round_start` before composing the mint echo; production workers remain unchanged and the wire contract does not grow. Option B unblocks the integration tests immediately; Option A is required for real distributed runs. |
+| **Why deferred** | Discovered during DEV of TASK-0399 (post-wire of `register_minted_agents`). The initial test run with `SKIP_ASYMMETRIC = false` reached `register_minted_agents` successfully but produced empty/disconnected output nets for CON-DUP / CON-ERA / DUP-ERA because `local_wiring` was dropped at resolver-to-wire serialisation. The gap is pre-existing in SPEC-19 §3.3 (R23 defines `local_wiring` as part of `CommutationBatch` but §3.4 wire encoding for `PendingCommutation` omits the field). D-004 plumbing is correct and isolated; fixing D-005 is orthogonal. |
+| **What the fix needs (Option A, production-grade)** | (1) Spec amendment in `specs/SPEC-19.md` §3.4 to add `local_wiring` to `PendingCommutation` wire encoding. (2) Wire type in `relativist-core/src/protocol/types.rs` extended. (3) `relativist-core/src/worker.rs` — consume `local_wiring`, call `partition.subnet.wire_agents(PortRef::AgentPort(minted_id_a, port_a), PortRef::AgentPort(minted_id_b, port_b))` for each tuple. (4) LocalDeltaDispatch forwarding. (5) Flip `SKIP_ASYMMETRIC = false`. |
+| **What the fix needs (Option B, test-only)** | (1) `LocalDeltaDispatch` stores `local_wiring` keyed by `commutation_id` when building `PendingCommutation` from `CommutationBatch`. (2) In `dispatch_round_start` mint loop, after `alloc_agent`, apply wiring on the subnet. (3) Flip `SKIP_ASYMMETRIC = false`. Production `worker.rs` untouched. |
+| **Estimated effort** | Option A: ~80-150 LoC + spec amendment, 1-2 days. Option B: ~50 LoC test-only, half a day. Recommended path: ship Option B first to unblock full G1 parity proof, then Option A when real LAN distribution benchmarks demand it. |
+| **Acceptance signal** | UT-0385-08 passes on all 6 fixtures × 2 strict modes with `SKIP_ASYMMETRIC = false`, canonicalized net equivalence AND `metrics.total_interactions` parity hold on every case. After this: D-003 closes fully AND D-004 closes fully. |
+| **Files to revisit** | `relativist-core/src/merge/border_resolver.rs` (`CommutationBatch.local_wiring` source), `relativist-core/src/merge/grid_delta_integration_tests.rs` (`LocalDeltaDispatch` + `SKIP_ASYMMETRIC`), `relativist-core/src/protocol/types.rs` + `relativist-core/src/worker.rs` if Option A. |
+| **Created** | 2026-04-23 (during DEV of TASK-0399, post-TASK-0398 plumbing) |
+| **Status** | OPEN — independent of other deferrals; scheduled at user discretion. Recommended path: Option B next, Option A before Phase 3 LAN benchmarks in delta mode. |
+
+**Action when D-005 starts:**
+1. Decide Option A vs B (Option B is the cheap test-only unblocker; Option A is the production fix).
+2. If Option A, amend SPEC-19 §3.4 first (spec-critic round optional given surgical scope).
+3. Implement in a single ticket following the 6-stage SDD pipeline.
+4. Step (3)/(Option B step 3) flips the canary; it doubles as the D-003 AND D-004 full-closure gate.
+5. Close D-003, D-004, AND this row after the canary is green.
 
 ---
 
