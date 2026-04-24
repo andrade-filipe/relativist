@@ -11,14 +11,14 @@ Relativist is a distributed Interaction Combinator reducer for Grid Computing, w
 
 - **v1:** frozen on branch `v1-feature-complete` (tag `v0.10.0-bench`). DO NOT modify.
 - **v2:** active development on branch `v2-development`.
-- **Tests:** 690 passing (`cargo test`). This number must never decrease.
-- **Specs:** 17 specs (SPEC-00 through SPEC-16) in `specs/`
-- **Benchmarks:** 4490 executions, 0 correctness failures (Phase 1 + Phase 2 frozen)
+- **Tests:** 1181 default / 1224 `--features zero-copy` on `v2-development` (690 frozen on `v1-feature-complete`). The v1 floor of 690 must never be regressed.
+- **Specs:** 28 specs (SPEC-00 through SPEC-27) in `specs/`. v1 implements SPEC-00..16; v2 adds SPEC-17..27 (transport abstraction, wire format v2, delta protocol, elastic grid, streaming, arena, compact memory, WAN, recipe gen, GUI, encoder API).
+- **Benchmarks:** 4490 executions, 0 correctness failures (Phase 1 + Phase 2 frozen at v1 baseline)
 
 ## Build & Test
 
 ```bash
-cargo test                        # run all tests (expect 690+ passing)
+cargo test                        # run all tests (expect 1181+ on v2-development; 690 floor on v1-feature-complete)
 cargo clippy -- -D warnings       # lint (must be clean)
 cargo fmt --check                 # formatting (must pass)
 cargo build --release             # release build
@@ -74,36 +74,40 @@ Every feature follows a 6-stage pipeline. **No stage can be skipped.**
 6. REFACTOR   (developer)       — apply fixes, verify all tests pass
 ```
 
-Pipeline state tracked in `docs/pipeline-state.md`. Invoke the `sdd-pipeline` agent to see current state and next action.
+Active pipeline state tracked in `docs/next-steps.md` (historical entries move to `docs/progress.md` after a bundle ships). Invoke the `sdd-pipeline` agent to see current state and next action.
 
 ## Agent System
 
 | Agent | Role | Writes to |
 |-------|------|-----------|
-| **sdd-pipeline** | Orchestrator — reads state, tells you what to do next | `docs/pipeline-state.md` |
+| **sdd-pipeline** | Orchestrator — reads state, tells you what to do next | `docs/next-steps.md` |
 | pesquisador | Context curator — researches specs/docs/code, produces focused briefings | `docs/briefings/` |
 | task-splitter | Break spec into atomic tasks (<200 LoC each) | `docs/backlog/` |
 | test-generator | Write test specifications (NOT code) | `docs/tests/` |
 | developer | TDD implementation — **ONLY agent that writes code** | `src/`, `tests/` |
 | reviewer | Code quality + architecture review | review output |
 | qa | Adversarial bug hunting | bug reports |
-| spec-critic | Adversarial spec review (before implementation) | `docs/spec-reviews/` |
+| spec-critic | Adversarial spec review Round 1/3 (before implementation) | `docs/spec-reviews/` |
+| **especialista-specs** | Spec author and Round 2+ defender — ONLY agent that writes to `specs/` | `specs/`, `docs/spec-reviews/` (closure logs only) |
 | task-updater | Align tasks after spec revision | `docs/backlog/` |
+| cicd | CI/CD pipeline maintenance | `.github/workflows/`, `Dockerfile` |
+| opensource | Open-source project hygiene | `README.md`, `LICENCE`, `.github/` |
 
 ## Key Files
 
-- `specs/` — all 17 formal specifications (ENGLISH only)
-- `docs/progress.md` — implementation state
-- `docs/pipeline-state.md` — current pipeline stage (maintained by sdd-pipeline)
-- `docs/backlog/BACKLOG.md` — all tasks with status
+- `specs/` — all 28 formal specifications (ENGLISH only)
+- `docs/INDEX.md` — master documentation index (entry point for navigation)
+- `docs/progress.md` — implementation history (PAST/COMPLETED only)
+- `docs/next-steps.md` — active pipeline state and future work (maintained by sdd-pipeline)
+- `docs/backlog/BACKLOG.md` — all tasks with status (completed task files in `docs/backlog/archive/`)
 - `docs/ROADMAP.md` — v2+ features, break-even analysis (section 2.40)
-- `docs/DEVELOPMENT-PIPELINE.md` — pipeline definition
+- `docs/WORKFLOWS.md` — unified development, spec-review, and git workflows
 - `results/locked/v1_local_baseline/` — frozen benchmark data (DO NOT modify)
 
 ## v2 Development Rules
 
 1. All work on `v2-development` branch (or feature branches from it)
-2. Every change must pass all 690 existing v1 tests — zero regression
+2. Every change must pass all 690 v1 tests (floor) plus the current v2 baseline (1181 default / 1224 zero-copy) — zero regression
 3. New features follow ROADMAP.md priorities
 4. Every change follows the 6-stage SDD pipeline
 5. Specs MUST be written before implementation (Theory -> Specs -> Code)

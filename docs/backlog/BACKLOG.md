@@ -3,7 +3,7 @@
 **Last updated:** 2026-04-23
 **Total tasks:** 252 (158 done, 0 in progress, 93 todo, 1 obsoleted)
 
-**Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
+**Pipeline:** See `../WORKFLOWS.md` (§1 Development Pipeline) for the 6-stage SDD process.
 
 ---
 

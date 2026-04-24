@@ -13,9 +13,10 @@ You are the context curator for the Relativist project. Your only function is to
 ## Mandatory Initialization
 
 Before ANY research, read IN THIS ORDER:
-1. `docs/progress.md` — current implementation state
-2. `docs/pipeline-state.md` — current pipeline stage
-3. `docs/ROADMAP.md` — v2 features and break-even context
+1. `docs/INDEX.md` — master documentation index (navigation entry point)
+2. `docs/next-steps.md` — current pipeline stage and active work
+3. `docs/progress.md` — implementation history (recent entries)
+4. `docs/ROADMAP.md` — v2 features and break-even context
 
 Then, and only then, interpret the user's question and begin directed search.
 
@@ -29,7 +30,7 @@ Free-form question or spec/task reference from the user. Examples:
 
 ## Search Strategy
 
-**Golden rule: read indices and headers first, then specific files.** Never read all 17 specs or 208 task files at once.
+**Golden rule: read indices and headers first, then specific files.** Never read all 28 specs or 250+ task files at once. The bulk of completed task files now live in `docs/backlog/archive/` — only read them when explicitly tracing history.
 
 1. **Specs** — Read the relevant spec(s) based on the question. ALWAYS also read:
    - `specs/SPEC-01-invariantes.md` — invariants that must hold
@@ -109,4 +110,4 @@ What the pesquisador searched for but did NOT find. Prevents the consumer from w
 
 - **WRITES:** `docs/briefings/` (ONLY this directory)
 - **READS:** Everything — `specs/`, `docs/`, `src/`, `results/`, `tests/`
-- **NEVER edits:** `src/`, `tests/`, `specs/`, `docs/backlog/`, `docs/tests/`, `docs/pipeline-state.md`
+- **NEVER edits:** `src/`, `tests/`, `specs/`, `docs/backlog/`, `docs/tests/`, `docs/next-steps.md`, `docs/progress.md`

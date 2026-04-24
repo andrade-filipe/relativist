@@ -8,12 +8,25 @@
 
 ### Active Bundle
 
-NEXT: M1 exit measurement or Phase 3 LAN preparation (queued, awaiting user decision between M1 measurement and Phase 3 LAN prep)
+**v2 Pre-DEV Spec Pipeline (Waves 1–5, no code)** — opened 2026-04-24 by user directive: replicate the v1 success pattern by driving every pending v2 spec through Stage 0 (Spec Review) + Stage 1 (TASK-SPLITTER) + Stage 2 (TEST-GENERATOR) BEFORE any DEV. When this bundle closes, the backlog will hold ~80–150 new TODO tasks each with a TEST-SPEC ready, so Stage 3 (DEV) can run continuously without design stalls.
 
-**M1 exit measurement (Passo 6):** `ep_con 5M w=2` baseline v1 vs current `run_grid`; `c_o/c_r` drop to CSV. Feeds break-even analysis (section 2.40 of `docs/ROADMAP.md`).
-**Phase 3 LAN preparation (orthogonal):** uses v1 `run_grid` on real networked machines; no new specs needed for v1 code.
+**Authoritative plan:** `C:\Users\Filipe\.claude\plans\kind-shimmying-harbor.md` (read this first; do not duplicate its contents here).
 
-No tasks decomposed yet. Awaiting user directive.
+**Waves (per-spec workflow: PESQUISADOR coherence brief → spec-critic Round 1 → especialista-specs Round 2 → [Round 3 if needed] → task-splitter → test-generator → tracking + commit):**
+
+| Wave | Spec(s) | Tier / Milestone | Status |
+|------|---------|------------------|--------|
+| 1 | SPEC-20 Elastic Grid | Tier 2 / M2 | NOT STARTED — already at Round 2 CONDITIONAL_PASS; needs Round 3 + Stage 1 + Stage 2 |
+| 2 | SPEC-22 Arena Mgmt → SPEC-21 Streaming Generation | Tier 3 / M5 | NOT STARTED |
+| 3 | SPEC-25 Recipe Gen → SPEC-27 R26-R28 (deferred D-001 — plan tasks/tests now per user directive) | Tier 5 / M10+M7 | NOT STARTED |
+| 4 | SPEC-26 §3.2-§3.6 GUI App (workspace §3.1 already shipped) | Tier 5 / M11 | NOT STARTED |
+| 5 | SPEC-23 Compact Memory → SPEC-24 WAN Deployment | Tier 5 / M9 | NOT STARTED |
+
+**Out of scope this bundle:** any DEV (`src/` edits), any v1 changes, the article (`tcc_pt_br.tex`), and Tier 4 features without SPEC ID (2.7, 2.8, 2.11, 2.17, 2.37, 2.38).
+
+**Test counts unchanged during this bundle:** baseline 1181 default / 1224 `--features zero-copy` (this is documentation-only work).
+
+**On Wave close:** sdd-pipeline appends a closure entry to `progress.md` (date, spec, qty tasks, qty test-specs, NFs closed, commit hash) and removes the wave row from this table. When the last wave closes, this Active Bundle entry is replaced with whichever DEV bundle the user selects next.
 
 ---
 
