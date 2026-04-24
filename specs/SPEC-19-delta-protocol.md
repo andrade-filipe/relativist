@@ -6,7 +6,7 @@
 **ROADMAP items:** 2.26 (Delta-Only Protocol with Stateful Workers), 2.34 (Coordinator-Free Round), 2.35 (Delta-Based Merge with BorderGraph)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
 **Discussions consumed:** DISC-005 v2 (cross-boundary protocol), DISC-006 v2 (communication overhead, break-even analysis), DISC-008 v2 (serialization as operational cost)
-**Arguments consumed:** ARG-001 (central argument, P1-P6), ARG-002 (partitioning, C1-C3), ARG-003 (merge protocol completeness), ARG-004 (viability, overhead decomposition)
+**Arguments consumed:** ARG-001 (central argument, P1-P6), ARG-002 (partitioning, C1-C3), ARG-003 (merge protocol completeness), ARG-004 (viability, overhead decomposition), **ARG-005** (delta border completeness; closes §8 OQ-1 / R38 / R39 / R40 — added 2026-04-24). See `codigo/relativist/docs/theory-bridge.md` for absolute paths.
 **Briefings consumed:** BRIEF-20260415-v2-codebase-assessment (Sections 1, 3, 4.2, 6), BRIEF-20260415-v2-fundamentacao-teorica (Gap 1, P2/P3 analysis, Tier 4)
 **External references:** Pregel (Malewicz et al. 2010), Giraph (Ching et al. 2015), LCC-BSP (Frontiers of CS 2018), Haeupler et al. (CMU, round-optimal distributed graph algorithms)
 
@@ -1169,6 +1169,18 @@ The delta protocol's correctness depends on the claim that the distributed state
 
 **Until DISC-011 and ARG-005 are completed, the delta protocol's design (this spec) is valid but its correctness proof is incomplete.** The spec can be implemented and empirically validated (Section 7, T6-T10 provide strong empirical evidence), but the formal argument is a separate work item.
 
+**Status (2026-04-24): CLOSED.**
+- DISC-011 v2 written: `C:\Users\Filipe\Desktop\TCC_interaction_combinators_for_grid_computing\discussoes\exploracoes\DISC-011-v2-distributed-state-decomposition.md`
+- ARG-005 written: `C:\Users\Filipe\Desktop\TCC_interaction_combinators_for_grid_computing\discussoes\argumentos\ARG-005-delta-border-completeness.md`
+- Strength: Moderado-Forte (same class as ARG-001/ARG-003)
+- Gates closed: R38 (G1 reformulated), R39 (incremental ≡ exhaustive border detection via D3a-d), R40 (D6 termination preserved via T7 + progress guarantee)
+- Three new premises introduced: P7 (C-DEL1, delta-reporting completeness), P8 (C-DEL2, delta-reporting soundness), P9 (determinism of `reconstruct`); plus E-FAIL1 as a scope condition.
+- Theorem (INV-REC) proved by induction on rounds with four sub-obligations covering: (1) internal-only reductions, (2) cross-partition border redexes (4 sub-cases including emergent), (3) cascade propagation, (4) DC-B5 1-round-latency state with `pending` component. Degenerate n=1 case and coordinator-free rounds also covered explicitly.
+- Empirical signature still pending: tests T6-T16 of this spec (SPEC-19) execution
+- See `codigo/relativist/docs/theory-bridge.md` for the full bridge to TCC-root artifacts.
+
+**Rationale for "CLOSED" despite empirical pendency:** the formal argument is complete and reviewed (DISC-011 went through 2 rounds of adversarial ping-pong before consolidating into v2; ARG-005 follows). Empirical validation is a SEPARATE concern (covered by Stage 5 QA when the implementation runs). The OQ being CLOSED means no further theoretical work blocks Stage 1 onwards.
+
 **OQ-2. Delta semantics for CON-DUP border expansion.**
 
 When a border redex involves CON-DUP commutation, 4 new agents are created. Two of these agents replace the original CON in one partition, and two replace the original DUP in the other partition. The new agents may have auxiliary ports that need to be connected across partitions (creating new border wires). The coordinator must:
@@ -1241,5 +1253,6 @@ to v2 benchmarks.
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-04-24 | especialista-em-specs (post-DEBATEDOR) | **ARG-005 CLOSED.** §8 OQ-1 marked CLOSED with the new "Status (2026-04-24)" subsection (R38/R39/R40 gates released). Frontmatter "Arguments consumed:" updated to include ARG-005. Added cross-reference to `codigo/relativist/docs/theory-bridge.md`. **No semantic changes to any requirement R-NN.** This is purely a status-tracking update reflecting completed theoretical work. Source artifacts: `discussoes/argumentos/ARG-005-delta-border-completeness.md`, `discussoes/exploracoes/DISC-011-v2-distributed-state-decomposition.md`, `discussoes/exploracoes/DISC-013-arg-005-disambiguation.md`. |
 | 2026-04-17 | spec-critic 2.26-B + especialista-em-specs | Amended R23 (add `local_reconnections`, `pending_commutations`), R26 (add `minted_agents`), R31 row for `RoundStart` (+2 fields), R32 row for `RoundResult` (+1 field), R33 (add `LocalReconnection`, `PendingCommutation`, `MintedAgent` structs). Added R48 (Agent ID allocation coordination invariant). Added OQ-7 (2-phase echo latency tradeoff). Ratifies DC-B3 and DC-B5 from the 2.26-B spec-review verdict. |
 | 2026-04-23 | spec-critic D-005 + especialista-em-specs | Amended `PendingCommutation` wire encoding to carry `local_wiring: Vec<LocalWiringHint>` (Shape A from SPEC-REVIEW-19 §3.4; `(u8, u8, u8, u8)` rejected as lossy). Added `LocalWiringHint` struct mirroring the resolver's `(u8, u8, PortRef)` triple one-to-one. Added R23a (slot-to-AgentId substitution, per-request scope, mint-then-wire ordering, in-round reducibility of minted sibling principal pairs). Amended R24 (five-step sub-order inside step 1, R24.1.6a/b/c mint-wire-echo, sanctioned primitive `Net::connect`). Added R33b (sanctioned application primitive; `Net::wire_agents` explicitly forbidden). Added R33c (`ProtocolError::MalformedLocalWiringReason` with 6 cases; 5 MUST-reject + 1 SHOULD-warn). Added R48a (stray slot-marker guard, symmetric to R48 worker-side). Added R48b (empty `local_wiring` is legal). Bumped `PROTOCOL_VERSION` 2->3 (R37). Amended R34 (`rkyv` coverage + `--features zero-copy` baseline 1186 -> 1192) and R35 (wire-opt exemption does NOT apply to `local_wiring` hot path). Resolves SPEC-REVIEW-19 §3.4 D-005 (2 CRITICAL + 4 HIGH + 4 MEDIUM + 2 LOW). Round 2 redraft (2026-04-23): resolved SPEC-REVIEW-19-REREVIEW NF-001 by replacing `PendingCommutation.{symbol_type, arity}` with `target_symbols: Vec<Symbol>` (Shape A), rewriting R24.1.6a to mint slot `k` from `pc.target_symbols[k]` directly, and propagating the rename through R23a clause 3, R33c cases 1/3 (`arity` -> `symbol_count`), R34 alignment audit, and R48a; NF-002 by pinning symmetric `PROTOCOL_VERSION` validation in R37; NF-003 by adding R23a clause 6 (HashSet-based duplicate pre-pass before any `Net::connect`); NF-004 by rejecting empty `target_symbols` via new `MalformedLocalWiringReason::ZeroArity` (R33c case 7). NF-005 deferred to sdd-pipeline. |
