@@ -548,9 +548,53 @@ fn run_grid_delta_inner(
         // loop's existing error branch (metrics.converged = false +
         // degenerate net return). Per-result call preserves the guilty
         // worker attribution in the ProtocolViolation message (DC-0399-A).
+        // D-005 F-C1/F-C2/F-C3: collect the `(border_id, BorderState)`
+        // pairs promoted this round. The coordinator mirrors each pair
+        // into its local `partitions_vec` cache AND plumbs the per-worker
+        // `(bid, local_side)` entries into the NEXT round's
+        // `RoundStartDispatch.new_borders` so worker partitions observe
+        // the newly-wired principal ports before convergence. Without
+        // this loop, minted CON-DUP / CON-ERA / DUP-ERA principals land
+        // as `DISCONNECTED` and every downstream consumer drops them (see
+        // REVIEW-D-005-2026-04-24.md §"Root cause").
+        let mut promoted_this_round: Vec<(u32, crate::merge::BorderState)> = Vec::new();
         for result in &results {
-            border_graph.register_minted_agents(result.worker_id, &result.minted_agents)?;
+            let promoted =
+                border_graph.register_minted_agents(result.worker_id, &result.minted_agents)?;
+            promoted_this_round.extend(promoted);
         }
+        // NOTE (2026-04-24): the coordinator's `partitions_vec` is NOT
+        // updated with the promoted (bid, side) wires here because the
+        // minted agents referenced by `BorderState.side_*` live in the
+        // WORKERS' arenas, not the coordinator cache. Calling
+        // `Net::connect(AgentPort(mint_id, 0), FreePort(bid))` on the
+        // coordinator-side subnet would index into an arena slot that
+        // does not own the minted agent → T1 / arena mis-write. The
+        // coordinator cache is only consulted as a last-resort fallback
+        // in `run_grid_delta_final_collect` when the transport returns
+        // an empty `Vec<Partition>`; real transports (TCP + the
+        // `LocalDeltaDispatch` harness) always return the worker's
+        // freshly-mutated partition, which carries the minted agents.
+        let promoted_new_borders_by_worker =
+            promoted_borders_to_per_worker_new_borders(&promoted_this_round, num_workers);
+        // F-H6: intra-worker Lafont-FreePort borders cannot survive
+        // merge's border-restoration step (merge needs BOTH workers to
+        // carry the border id in their `free_port_index`). Bypass the
+        // border entirely: emit a direct `local_reconnections` pair to
+        // the worker AND evict the spurious border_id from the
+        // coordinator's `BorderGraph` so merge step 2/3 copies the
+        // Lafont FreePort through intact.
+        let (promoted_intra_local_reconnects, spurious_intra_border_ids) =
+            promoted_intra_worker_lafont_wires(&promoted_this_round, num_workers);
+        for bid in &spurious_intra_border_ids {
+            border_graph.remove_border(*bid);
+        }
+        // D-005 F-H8: when this round promoted any border, workers have
+        // not yet applied the promoted principal-port wires (they ship
+        // via next round's `new_borders`). Forcing one more dispatch
+        // round guarantees worker partitions observe the promotion
+        // before the final merge reassembles the net.
+        let promotion_forces_next_round = !promoted_this_round.is_empty();
 
         let t_merge = Instant::now();
         for result in &results {
@@ -594,7 +638,18 @@ fn run_grid_delta_inner(
             .push(pre_resolve_redex_count);
 
         // ---- DC-C3 strict branch: check convergence BEFORE resolution. ----
-        if config.strict_bsp && check_delta_convergence(&results, &border_graph) {
+        // D-005 F-H8: skip the convergence short-circuit on a round that
+        // just promoted pending borders — workers still need to apply the
+        // promoted `new_borders` entries in their partitions before the
+        // final merge can see the minted principal ports wired up. The
+        // "post-resolve" predicate variant is safe here because the strict
+        // branch runs BEFORE resolution and its `graph_has_no_redexes`
+        // conjunct is authoritative: if no principal-pair border exists,
+        // resolution would be a no-op this round.
+        if config.strict_bsp
+            && !promotion_forces_next_round
+            && check_delta_convergence_post_resolve(&results, &border_graph)
+        {
             metrics
                 .border_reduce_time_per_round
                 .push(t_border.elapsed());
@@ -635,10 +690,24 @@ fn run_grid_delta_inner(
 
         // ---- DC-C3 lenient branch: check convergence AFTER resolution. ----
         // If the resolver emptied the graph AND workers were quiet this
-        // round, the net is in Global Normal Form.
-        if !config.strict_bsp && check_delta_convergence(&results, &border_graph) {
-            metrics.converged = true;
-            break;
+        // round, the net is in Global Normal Form. D-005 F-H8: skip the
+        // short-circuit on a round that just promoted pending borders (see
+        // strict-branch comment above). When the resolver produced zero
+        // `resolutions` for this round AND workers are all locally quiet,
+        // the stricter "inert-remote" predicate catches post-promotion
+        // rounds where every principal-port border is inert and no
+        // further work ever ships.
+        if !config.strict_bsp && !promotion_forces_next_round {
+            let resolver_was_quiet = border_interactions_this_round == 0;
+            let converged = if resolver_was_quiet {
+                check_delta_convergence_post_resolve(&results, &border_graph)
+            } else {
+                check_delta_convergence(&results, &border_graph)
+            };
+            if converged {
+                metrics.converged = true;
+                break;
+            }
         }
 
         // Build next round's dispatch payload from the resolutions and
@@ -652,9 +721,10 @@ fn run_grid_delta_inner(
         // into `border_graph.enqueue_pending_borders` so the next-round
         // `register_minted_agents` call (above, after dispatch_round_start)
         // can promote fully-resolved entries via `add_border_states`.
-        let (packaged, pending_new_borders) =
+        let (mut packaged, pending_new_borders) =
             package_resolutions_with_pending(resolutions, num_workers);
         border_graph.enqueue_pending_borders(pending_new_borders);
+
         for (worker_id, payload) in &packaged {
             if let Some(cached) = partitions_vec.get_mut(*worker_id as usize) {
                 // IC rule semantics: every resolved principal-port border
@@ -694,6 +764,25 @@ fn run_grid_delta_inner(
                 for agent_id in agents_to_remove {
                     cached.subnet.remove_agent(agent_id);
                 }
+            }
+        }
+
+        // D-005 F-C3 (2026-04-24): append per-worker promoted-border
+        // entries to the NEXT round's `RoundStartDispatch.new_borders` so
+        // each worker's `handle_round_start` wires the freshly-minted
+        // principal port to `FreePort(border_id)`. This MUST run AFTER
+        // the coordinator-side cache-apply loop above: the promoted
+        // targets reference AgentIds minted inside the WORKERS' arenas,
+        // not the coordinator-side `partitions_vec` — applying them to
+        // the coordinator cache would index into a slot owned by a
+        // different (or nonexistent) agent and corrupt T1. Only the
+        // worker-facing `pending_dispatch` payload receives them.
+        for (worker_id, payload) in packaged.iter_mut() {
+            if let Some(extras) = promoted_new_borders_by_worker.get(&(*worker_id)) {
+                payload.new_borders.extend(extras.iter().copied());
+            }
+            if let Some(extras) = promoted_intra_local_reconnects.get(&(*worker_id)) {
+                payload.local_reconnections.extend(extras.iter().copied());
             }
         }
         pending_dispatch = packaged;
@@ -748,6 +837,270 @@ pub(crate) fn check_delta_convergence(
     let all_no_local_redexes = results.iter().all(|r| r.stats.local_redexes == 0);
     let graph_has_no_redexes = border_graph.detect_border_redexes().is_empty();
     all_no_border_activity && all_no_local_redexes && graph_has_no_redexes
+}
+
+/// D-005 F-H8 (2026-04-24): stricter variant of [`check_delta_convergence`]
+/// that also returns `true` when workers report `has_border_activity = true`
+/// BUT every principal-port border in the coordinator's `BorderGraph` has
+/// a non-principal remote side (i.e. pairs with a Lafont/concrete
+/// `FreePort` — a permanently inert border per IC R5). Used by the
+/// round-loop AFTER the resolver has drained all active redexes, so any
+/// residual `has_border_activity` flag can only describe the inert-
+/// principal state produced by CON-DUP / CON-ERA / DUP-ERA promotions.
+///
+/// Callers must have already run the resolver pass for the round. Calling
+/// this BEFORE resolution risks early convergence — the OLD 3-conjunct
+/// [`check_delta_convergence`] is the correct predicate for pre-resolution
+/// checks (strict-mode R4 branch).
+pub(crate) fn check_delta_convergence_post_resolve(
+    results: &[crate::merge::types::RoundResultPayload],
+    border_graph: &crate::merge::border_graph::BorderGraph,
+) -> bool {
+    let all_no_local_redexes = results.iter().all(|r| r.stats.local_redexes == 0);
+    let graph_has_no_redexes = border_graph.detect_border_redexes().is_empty();
+    if !(all_no_local_redexes && graph_has_no_redexes) {
+        return false;
+    }
+    if results.iter().all(|r| !r.has_border_activity) {
+        return true;
+    }
+    every_border_has_inert_remote(border_graph)
+}
+
+/// D-005 F-H8 helper (2026-04-24): returns `true` iff at least one
+/// border in `border_graph.borders` has a principal-port endpoint AND
+/// every such border pairs that principal port with a non-principal
+/// remote side (FreePort or aux AgentPort). The predicate encodes the
+/// post-promotion CON-DUP / CON-ERA / DUP-ERA state where the minted
+/// agent's principal port is permanently wired to a concrete Lafont
+/// `FreePort` on the remote side — a border that can NEVER fire under
+/// R5 (principal-principal-only redex rule).
+///
+/// The "at least one principal-port border" guard distinguishes the
+/// genuine post-promotion state from an empty BorderGraph (which
+/// vacuously satisfies the "all inert remote" predicate but provides no
+/// evidence that convergence is safe). When no border has a principal
+/// port at all, the caller falls back to the stricter legacy predicate.
+pub(crate) fn every_border_has_inert_remote(
+    border_graph: &crate::merge::border_graph::BorderGraph,
+) -> bool {
+    let mut saw_principal_port = false;
+    for state in border_graph.borders.values() {
+        let a_principal = matches!(state.side_a, crate::net::PortRef::AgentPort(_, 0));
+        let b_principal = matches!(state.side_b, crate::net::PortRef::AgentPort(_, 0));
+        if a_principal || b_principal {
+            saw_principal_port = true;
+        }
+        // Both sides principal would have been caught by
+        // `detect_border_redexes` in the caller's pre-check; seeing it
+        // here would break the contract. Under well-formed input this
+        // branch is unreachable but we guard defensively.
+        if a_principal && b_principal {
+            return false;
+        }
+    }
+    saw_principal_port
+}
+
+/// D-005 F-C2 (2026-04-24): per-worker side-routing of promoted borders
+/// as prescribed by QA F-C2 / F-H6. Given a slice of promoted
+/// `(border_id, BorderState)` pairs, applies each pair's `side_a` to
+/// `partitions_vec[state.worker_a]` and `side_b` to
+/// `partitions_vec[state.worker_b]`, with intra-worker collapse when
+/// `worker_a == worker_b` (F-H6) and self-sentinel suppression when
+/// a side equals `FreePort(border_id)` itself.
+///
+/// NOTE — this helper is NOT called on production coordinator caches in
+/// `run_grid_delta_inner` because the `BorderState.side_*` targets
+/// reference minted AgentIds that live inside the WORKERS' arenas, not
+/// the coordinator's in-memory `partitions_vec`. Applying them would
+/// mis-index the coordinator cache. The helper is exercised exclusively
+/// by unit tests that construct synthetic worker partitions with
+/// matching `id_range` and minted-agent slots, verifying the side-
+/// routing math is correct end-to-end.
+#[cfg(test)]
+pub(crate) fn apply_promoted_borders_to_cache(
+    partitions_vec: &mut [crate::partition::Partition],
+    promoted: &[(u32, crate::merge::BorderState)],
+) {
+    use crate::merge::helpers::apply_border_deltas_to_partition;
+    for (bid, state) in promoted {
+        // Worker A always gets side_a.
+        if let Some(cached) = partitions_vec.get_mut(state.worker_a as usize) {
+            if !is_self_sentinel(*bid, state.side_a) {
+                apply_border_deltas_to_partition(cached, &[], &[], &[(*bid, state.side_a)]);
+            }
+        }
+        if state.worker_a == state.worker_b {
+            // Intra-worker border: apply side_b to the same worker.
+            if let Some(cached) = partitions_vec.get_mut(state.worker_a as usize) {
+                if !is_self_sentinel(*bid, state.side_b) {
+                    apply_border_deltas_to_partition(cached, &[], &[], &[(*bid, state.side_b)]);
+                }
+            }
+        } else if let Some(cached) = partitions_vec.get_mut(state.worker_b as usize) {
+            if !is_self_sentinel(*bid, state.side_b) {
+                apply_border_deltas_to_partition(cached, &[], &[], &[(*bid, state.side_b)]);
+            }
+        }
+    }
+}
+
+/// D-005 F-H6 guard: a `PortRef::FreePort(x)` targeting the same
+/// `border_id` as the one we are promoting would have
+/// `Net::connect(FreePort(x), FreePort(x))` trip the self-sentinel
+/// `debug_assert_ne!`. Such entries represent the SAME sentinel on both
+/// ends of the wire — already represented by the sibling side's index
+/// entry — so skipping is correct.
+fn is_self_sentinel(border_id: u32, port: crate::net::PortRef) -> bool {
+    matches!(port, crate::net::PortRef::FreePort(x) if x == border_id)
+}
+
+/// D-005 F-C3 (2026-04-24): derive per-worker `new_borders` entries from
+/// a set of promoted `(border_id, BorderState)` pairs, for inclusion in
+/// the NEXT round's `RoundStartDispatch.new_borders`.
+///
+/// Routing rules:
+/// - **Cross-worker promotion** (`worker_a != worker_b`): worker_a
+///   receives `(bid, side_a)`, worker_b receives `(bid, side_b)`.
+/// - **Intra-worker promotion where BOTH sides are AgentPort** (F-H6
+///   aux-aux cross inside the minting worker): worker_a receives both
+///   `(bid, side_a)` AND `(bid, side_b)` — the worker will later wire
+///   them together through merge's border restoration.
+/// - **Intra-worker promotion where ONE side is FreePort** (the
+///   common CON-DUP / CON-ERA / DUP-ERA case where an external
+///   principal targets a Lafont/boundary FreePort on the minting
+///   worker): the `(bid, principal_side)` pair is plumbed as usual,
+///   BUT the FreePort side is skipped — otherwise merge would see only
+///   one worker carrying the border id and drop the wire via its
+///   erasure branch, stranding the minted agent's principal at
+///   DISCONNECTED. The separate `promoted_intra_worker_lafont_wires`
+///   helper emits the Lafont-side wire as a direct
+///   `local_reconnections` entry for that worker.
+/// - Self-sentinel entries (`FreePort(border_id)` equal to the current
+///   `border_id`) are suppressed in all branches to avoid
+///   `Net::connect`'s `debug_assert_ne!` self-wire guard.
+///
+/// Returns a `HashMap<WorkerId, Vec<(u32, PortRef)>>` keyed by worker id.
+/// Workers with no promoted entries are absent from the map.
+pub(crate) fn promoted_borders_to_per_worker_new_borders(
+    promoted: &[(u32, crate::merge::BorderState)],
+    num_workers: usize,
+) -> std::collections::HashMap<crate::partition::WorkerId, Vec<(u32, crate::net::PortRef)>> {
+    use crate::net::PortRef;
+    let mut out: std::collections::HashMap<
+        crate::partition::WorkerId,
+        Vec<(u32, crate::net::PortRef)>,
+    > = std::collections::HashMap::new();
+    for (bid, state) in promoted {
+        let intra_worker = state.worker_a == state.worker_b;
+        let a_free = matches!(state.side_a, PortRef::FreePort(_));
+        let b_free = matches!(state.side_b, PortRef::FreePort(_));
+
+        // Side A — emit unless self-sentinel OR intra-worker + side A is
+        // the Lafont FreePort (handled via local_reconnections helper).
+        if (state.worker_a as usize) < num_workers
+            && !is_self_sentinel(*bid, state.side_a)
+            && !(intra_worker && a_free && !b_free)
+        {
+            out.entry(state.worker_a)
+                .or_default()
+                .push((*bid, state.side_a));
+        }
+
+        // Side B — emit to worker_b on cross-worker, or to worker_a on
+        // intra-worker aux-aux (both AgentPort). Skip when intra-worker
+        // and side_b is a Lafont FreePort.
+        if !is_self_sentinel(*bid, state.side_b) {
+            if intra_worker {
+                if !b_free && (state.worker_a as usize) < num_workers {
+                    out.entry(state.worker_a)
+                        .or_default()
+                        .push((*bid, state.side_b));
+                }
+                // Intra-worker + b is Lafont FreePort: handled by
+                // `promoted_intra_worker_lafont_wires`.
+            } else if (state.worker_b as usize) < num_workers {
+                out.entry(state.worker_b)
+                    .or_default()
+                    .push((*bid, state.side_b));
+            }
+        }
+    }
+    out
+}
+
+/// D-005 F-H6 (2026-04-24): derive per-worker `local_reconnections`
+/// entries for intra-worker promoted borders whose side_b is a Lafont
+/// (or concrete) `FreePort`. Each such promotion represents a direct
+/// `side_a_principal ↔ side_b_freeport` wire that should NOT surface as
+/// a merge-time border — merge's `borders` step requires both workers
+/// to carry the same border_id in their `free_port_index`, and an
+/// intra-worker-only border with a FreePort remote trips the
+/// `(Some, None)` erasure branch and strands the principal port at
+/// DISCONNECTED. We bypass the border entirely by wiring the pair via
+/// `local_reconnections`, and we remove the now-spurious border from
+/// the coordinator's `BorderGraph` so merge does not try to restore it.
+///
+/// Returns `(per_worker_reconnections, bids_to_drop)`:
+/// - `per_worker_reconnections[w]`: pairs of `(local_port, target)` for
+///   worker `w`'s `RoundStartDispatch.local_reconnections`.
+/// - `bids_to_drop`: border_ids the caller should evict from
+///   `BorderGraph.borders` AND from `border_graph.worker_borders` /
+///   `border_graph.active_redexes` via `BorderGraph::remove_border`.
+///
+/// Cross-worker and intra-worker-aux-aux promotions return empty lists
+/// via this helper.
+/// Per-worker map of `(local_port, target_port)` reconnection pairs
+/// emitted by `promoted_intra_worker_lafont_wires`. Keyed by
+/// `WorkerId`, values land in `RoundStartDispatch.local_reconnections`.
+pub(crate) type IntraWorkerLafontReconnectMap = std::collections::HashMap<
+    crate::partition::WorkerId,
+    Vec<(crate::net::PortRef, crate::net::PortRef)>,
+>;
+
+pub(crate) fn promoted_intra_worker_lafont_wires(
+    promoted: &[(u32, crate::merge::BorderState)],
+    num_workers: usize,
+) -> (IntraWorkerLafontReconnectMap, Vec<u32>) {
+    use crate::net::PortRef;
+    let mut per_worker: std::collections::HashMap<
+        crate::partition::WorkerId,
+        Vec<(PortRef, PortRef)>,
+    > = std::collections::HashMap::new();
+    let mut drop_ids: Vec<u32> = Vec::new();
+    for (bid, state) in promoted {
+        if state.worker_a != state.worker_b {
+            continue;
+        }
+        if (state.worker_a as usize) >= num_workers {
+            continue;
+        }
+        let a_free = matches!(state.side_a, PortRef::FreePort(_));
+        let b_free = matches!(state.side_b, PortRef::FreePort(_));
+        // Case 1: one FreePort + one AgentPort → wire directly.
+        // Case 2: both FreePort → wire directly (both are Lafont).
+        // Case 3: both AgentPort → aux-aux cross, handled by the
+        //         border route; skip here.
+        if a_free || b_free {
+            let (local, target) = match (a_free, b_free) {
+                // Exactly one free: put the AgentPort side as "local".
+                (false, true) => (state.side_a, state.side_b),
+                (true, false) => (state.side_b, state.side_a),
+                // Both free: either side works as "local"; pick side_a.
+                (true, true) => (state.side_a, state.side_b),
+                _ => unreachable!(),
+            };
+            if local != target {
+                per_worker
+                    .entry(state.worker_a)
+                    .or_default()
+                    .push((local, target));
+            }
+            drop_ids.push(*bid);
+        }
+    }
+    (per_worker, drop_ids)
 }
 
 /// SPEC-19 R30 (TASK-0388): check whether `run_grid_delta`'s round loop
@@ -3799,6 +4152,214 @@ mod tests {
         assert_eq!(
             metrics.delta_max_rounds_hit, None,
             "v1 run_grid MUST leave delta_max_rounds_hit at its default (None)"
+        );
+    }
+
+    // =================================================================
+    // D-005 Option A Stage 6 new UTs (2026-04-24, QA matrix #3/#4/#5/#8).
+    // =================================================================
+
+    // UT-D005-03 (QA F-H6 / E3): intra-worker promotion where
+    // `worker_a == worker_b` and side_b is a Lafont FreePort must NOT
+    // emit `side_b` into `new_borders` for the same worker (that would
+    // overwrite the `free_port_index` entry and strand the principal at
+    // merge). The helper should emit ONLY `(bid, side_a)` via
+    // `promoted_borders_to_per_worker_new_borders`, and the Lafont
+    // wire should surface via `promoted_intra_worker_lafont_wires`.
+    #[test]
+    fn ut_d005_03_reg_minted_agents_intra_worker_promotion_single_apply() {
+        let promoted = vec![(
+            100,
+            crate::merge::BorderState {
+                border_id: 100,
+                side_a: crate::net::PortRef::AgentPort(5, 0),
+                side_b: crate::net::PortRef::FreePort(200),
+                worker_a: 0,
+                worker_b: 0,
+                is_redex: false,
+            },
+        )];
+        let new_borders = promoted_borders_to_per_worker_new_borders(&promoted, 2);
+        let w0 = new_borders
+            .get(&0)
+            .expect("worker 0 must receive exactly one new_borders entry");
+        assert_eq!(
+            w0.len(),
+            1,
+            "intra-worker Lafont side_b must NOT be emitted as a second new_borders entry; \
+             got {w0:?}"
+        );
+        assert_eq!(w0[0], (100, crate::net::PortRef::AgentPort(5, 0)));
+        let (local_reconnects, drop_ids) = promoted_intra_worker_lafont_wires(&promoted, 2);
+        assert_eq!(drop_ids, vec![100]);
+        let w0_lr = local_reconnects
+            .get(&0)
+            .expect("worker 0 must receive a reconnection");
+        assert_eq!(w0_lr.len(), 1);
+        assert_eq!(
+            w0_lr[0],
+            (
+                crate::net::PortRef::AgentPort(5, 0),
+                crate::net::PortRef::FreePort(200)
+            )
+        );
+    }
+
+    // UT-D005-04 (QA F-C2 / E6): true cross-worker promotion routes
+    // side_a to worker_a and side_b to worker_b — NEVER swapped,
+    // NEVER cross-injected. Uses disjoint id_ranges to expose any
+    // mis-routing as a mint-id owned by the wrong worker.
+    #[test]
+    fn ut_d005_04_reg_minted_agents_cross_worker_promotion_pairs_sides_correctly() {
+        let promoted = vec![(
+            200,
+            crate::merge::BorderState {
+                border_id: 200,
+                side_a: crate::net::PortRef::AgentPort(5, 2), // worker 0 arena
+                side_b: crate::net::PortRef::AgentPort(105, 1), // worker 1 arena
+                worker_a: 0,
+                worker_b: 1,
+                is_redex: false,
+            },
+        )];
+        let new_borders = promoted_borders_to_per_worker_new_borders(&promoted, 2);
+        let w0 = new_borders.get(&0).expect("worker 0 must receive side_a");
+        let w1 = new_borders.get(&1).expect("worker 1 must receive side_b");
+        assert_eq!(w0, &vec![(200, crate::net::PortRef::AgentPort(5, 2))]);
+        assert_eq!(w1, &vec![(200, crate::net::PortRef::AgentPort(105, 1))]);
+
+        // Additional coverage: `apply_promoted_borders_to_cache` the
+        // helper provides parallel guarantees on synthetic partitions
+        // where arenas are pre-sized to accept the side-A / side-B
+        // mint-id slots. Verifies the side-routing math end-to-end.
+        use crate::partition::IdRange;
+        let mut partitions: Vec<Partition> = vec![
+            {
+                let mut s = Net::new();
+                // worker 0: create 6 dummy CONs to expand arena to id 5.
+                for _ in 0..6 {
+                    let _ = s.create_agent(crate::net::Symbol::Con);
+                }
+                Partition {
+                    subnet: s,
+                    worker_id: 0,
+                    free_port_index: std::collections::HashMap::new(),
+                    id_range: IdRange { start: 0, end: 100 },
+                    border_id_start: 0,
+                    border_id_end: 1000,
+                }
+            },
+            {
+                let mut s = Net::new();
+                // worker 1: create 106 dummy CONs so id 105 is owned.
+                for _ in 0..106 {
+                    let _ = s.create_agent(crate::net::Symbol::Con);
+                }
+                Partition {
+                    subnet: s,
+                    worker_id: 1,
+                    free_port_index: std::collections::HashMap::new(),
+                    id_range: IdRange {
+                        start: 100,
+                        end: 200,
+                    },
+                    border_id_start: 0,
+                    border_id_end: 1000,
+                }
+            },
+        ];
+        apply_promoted_borders_to_cache(&mut partitions, &promoted);
+        assert_eq!(
+            partitions[0].free_port_index.get(&200),
+            Some(&crate::net::PortRef::AgentPort(5, 2)),
+            "F-C2: worker 0 cache must carry side_a for border 200"
+        );
+        assert_eq!(
+            partitions[1].free_port_index.get(&200),
+            Some(&crate::net::PortRef::AgentPort(105, 1)),
+            "F-C2: worker 1 cache must carry side_b for border 200"
+        );
+    }
+
+    // UT-D005-05 (QA F-H7): `apply_border_deltas_to_partition`'s
+    // new_borders loop debug-asserts the target AgentId belongs to the
+    // partition's id_range, catching cross-worker mis-sends at dev
+    // time. Panics in debug builds; no-op in release.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "F-H7 cross-arena injection")]
+    fn ut_d005_05_apply_border_deltas_cross_arena_target_debug_asserts() {
+        use crate::merge::helpers::apply_border_deltas_to_partition;
+        use crate::partition::IdRange;
+        let mut subnet = Net::new();
+        // Create one agent at id 0 so the arena is non-empty.
+        let _ = subnet.create_agent(crate::net::Symbol::Con);
+        let mut partition = Partition {
+            subnet,
+            worker_id: 0,
+            free_port_index: std::collections::HashMap::new(),
+            id_range: IdRange { start: 0, end: 50 },
+            border_id_start: 0,
+            border_id_end: 0,
+        };
+        // Target AgentPort(200, 0) is WELL outside id_range 0..50 —
+        // indicates a cross-worker mis-send; debug_assert must fire.
+        apply_border_deltas_to_partition(
+            &mut partition,
+            &[],
+            &[],
+            &[(100, crate::net::PortRef::AgentPort(200, 0))],
+        );
+    }
+
+    // UT-D005-08 (QA F-H8): the coordinator-side
+    // `every_border_has_inert_remote` helper flags as inert any border
+    // with a principal port paired with a Lafont/concrete FreePort on
+    // the remote side — exactly the CON-DUP post-promotion state. The
+    // helper complements `detect_border_redexes` (which catches
+    // principal-principal pairs) to prove Global Normal Form under
+    // F-H8.
+    #[test]
+    fn ut_d005_08_compute_border_activity_ignores_lafont_freeport_peer() {
+        use crate::merge::border_graph::BorderGraph;
+        use crate::merge::AddBorderEntry;
+        let plan = crate::partition::PartitionPlan {
+            partitions: vec![],
+            borders: std::collections::HashMap::new(),
+        };
+        let mut graph = BorderGraph::from_partition_plan(&plan);
+        // Expand worker_borders to accommodate the two workers we'll
+        // reference in `AddBorderEntry`.
+        graph.worker_borders.resize(2, Vec::new());
+        // Seed a single border: principal-on-worker_a, Lafont FreePort
+        // on the remote — the CON-DUP post-promotion shape.
+        graph.add_border_states(vec![AddBorderEntry {
+            border_id: 500,
+            side_a: crate::net::PortRef::AgentPort(7, 0),
+            side_b: crate::net::PortRef::FreePort(200),
+            worker_a: 0,
+            worker_b: 1,
+        }]);
+        assert!(
+            graph.detect_border_redexes().is_empty(),
+            "principal-vs-FreePort border MUST NOT appear in active_redexes"
+        );
+        assert!(
+            every_border_has_inert_remote(&graph),
+            "principal-vs-Lafont-FreePort border MUST be classified inert by F-H8 helper"
+        );
+        // Contrast: add a second border with both sides principal
+        // (genuine redex); the helper must now return false.
+        graph.add_border_states(vec![AddBorderEntry {
+            border_id: 501,
+            side_a: crate::net::PortRef::AgentPort(8, 0),
+            side_b: crate::net::PortRef::AgentPort(9, 0),
+            worker_a: 0,
+            worker_b: 1,
+        }]);
+        assert!(
+            !every_border_has_inert_remote(&graph),
+            "principal-vs-principal border MUST NOT be classified inert"
         );
     }
 }

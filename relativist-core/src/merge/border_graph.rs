@@ -667,9 +667,14 @@ impl BorderGraph {
     ///
     /// # Returns
     ///
-    /// - `Ok(())` — all mints correlate to outstanding Pending tokens;
-    ///   `self.pending_new_borders` drained of fully-resolved entries;
-    ///   `self.borders` gains the promoted entries.
+    /// - `Ok(Vec<(u32, BorderState)>)` — all mints correlate to
+    ///   outstanding Pending tokens; `self.pending_new_borders` drained
+    ///   of fully-resolved entries; `self.borders` gains the promoted
+    ///   entries. The returned `Vec` enumerates the `(border_id,
+    ///   BorderState)` pairs promoted by THIS call, in input (queue)
+    ///   order. Callers route each entry's `side_a` to
+    ///   `partitions_vec[state.worker_a]` and `side_b` to
+    ///   `partitions_vec[state.worker_b]` (D-005 F-C1 fix).
     /// - `Err(GridError::ProtocolViolation)` — R48 stray request_id
     ///   detected in Phase 1 validation; ALL state is unchanged
     ///   (`self.pending_new_borders`, `self.borders`, `self.worker_borders`,
@@ -682,12 +687,11 @@ impl BorderGraph {
     /// O(|mints| + |pending_new_borders|) per call. Each outstanding
     /// `PendingPortRef::Pending` is scanned at most twice (once during
     /// R48 validation, once during substitution).
-    #[allow(dead_code)] // TASK-0399 wires production caller (run_grid_delta_inner post-dispatch).
     pub(crate) fn register_minted_agents(
         &mut self,
         worker_id: WorkerId,
         mints: &[MintedAgent],
-    ) -> Result<(), GridError> {
+    ) -> Result<Vec<(u32, BorderState)>, GridError> {
         // --- Phase 1: R48 validation pass. ---
         // For each mint, decode (commutation_id_low28, agent_slot); confirm
         // at least one outstanding PendingPortRef::Pending references that
@@ -755,11 +759,29 @@ impl BorderGraph {
         for bid in &replace_existing {
             self.remove_border(*bid);
         }
+
+        // D-005 F-C1 fix: build a snapshot of the promoted (bid, BorderState)
+        // pairs BEFORE add_border_states consumes `resolved_entries`. The
+        // caller (run_grid_delta_inner) uses this list to mirror the
+        // promoted borders into the per-worker partition caches AND plumb
+        // them into the next round's RoundStartDispatch.new_borders.
+        let mut promoted: Vec<(u32, BorderState)> = Vec::with_capacity(resolved_entries.len());
+        for entry in &resolved_entries {
+            let state = BorderState {
+                border_id: entry.border_id,
+                side_a: entry.side_a,
+                side_b: entry.side_b,
+                worker_a: entry.worker_a,
+                worker_b: entry.worker_b,
+                is_redex: is_principal_pair(entry.side_a, entry.side_b),
+            };
+            promoted.push((entry.border_id, state));
+        }
         if !resolved_entries.is_empty() {
             self.add_border_states(resolved_entries);
         }
 
-        Ok(())
+        Ok(promoted)
     }
 }
 
@@ -3292,6 +3314,76 @@ mod tests {
                 graph.worker_borders[1].contains(&500),
                 "worker_borders[1] must point at 500 post-replace"
             );
+        }
+
+        // =============================================================
+        // D-005 Option A Stage 6 new UTs (2026-04-24, QA matrix #1/#2).
+        // =============================================================
+
+        // UT-D005-01 (QA F-C1): `register_minted_agents` returns a
+        // `Vec<(u32, BorderState)>` enumerating the borders promoted by
+        // this call. Each entry mirrors the newly-inserted `self.borders`
+        // row so the caller (run_grid_delta_inner) can route side_a to
+        // worker_a's partition and side_b to worker_b's partition.
+        #[test]
+        fn ut_d005_01_reg_minted_agents_returns_promoted_borders() {
+            let mut graph = empty_graph(2);
+            let cid = 7u64;
+            graph.enqueue_pending_borders(vec![
+                pnb_pending_a_concrete_b(100, cid, 0, 1, PortRef::AgentPort(5, 0), 0, 1),
+                pnb_pending_a_concrete_b(101, cid, 1, 2, PortRef::FreePort(900), 0, 1),
+            ]);
+            let mints = vec![
+                MintedAgent {
+                    request_id: encode_request_id(cid, 0),
+                    minted_agent_id: 42,
+                },
+                MintedAgent {
+                    request_id: encode_request_id(cid, 1),
+                    minted_agent_id: 43,
+                },
+            ];
+            let promoted = graph
+                .register_minted_agents(0, &mints)
+                .expect("register_minted_agents must succeed");
+            assert_eq!(
+                promoted.len(),
+                2,
+                "promoted vec length must match number of fully-resolved borders"
+            );
+            let ids: Vec<u32> = promoted.iter().map(|(bid, _)| *bid).collect();
+            assert!(
+                ids.contains(&100) && ids.contains(&101),
+                "promoted must carry both promoted border_ids; got {ids:?}"
+            );
+            for (bid, state) in &promoted {
+                assert_eq!(state.border_id, *bid);
+                let live = graph
+                    .borders
+                    .get(bid)
+                    .expect("promoted state must mirror a live self.borders entry");
+                assert_eq!(live.side_a, state.side_a);
+                assert_eq!(live.side_b, state.side_b);
+                assert_eq!(live.worker_a, state.worker_a);
+                assert_eq!(live.worker_b, state.worker_b);
+            }
+        }
+
+        // UT-D005-02 (QA F-L1 / E1): zero mints on a round with no
+        // pending borders resolves to an empty promoted vec — the hook
+        // called on symmetric-rule rounds must be a no-op.
+        #[test]
+        fn ut_d005_02_reg_minted_agents_empty_mints_returns_empty_promoted() {
+            let mut graph = empty_graph(2);
+            // No pending_new_borders enqueued.
+            let promoted = graph
+                .register_minted_agents(0, &[])
+                .expect("empty mints on empty queue must succeed");
+            assert!(
+                promoted.is_empty(),
+                "empty mints / empty pending queue must yield empty promoted vec"
+            );
+            assert!(graph.borders.is_empty());
         }
     }
 }

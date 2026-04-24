@@ -179,9 +179,40 @@ pub(crate) fn apply_border_deltas_to_partition(
 
     // [3] Insert new borders. CON-DUP expansion at the coordinator
     // created a new cross-partition wire whose local end is `target`.
+    //
+    // D-005 F-H7 (2026-04-24): debug-assert the `target` AgentId belongs
+    // to THIS partition's arena, catching cross-worker mis-sends at dev
+    // time. A `PortRef::FreePort(_)` target is always allowed (it models
+    // Lafont/dangling sentinels or intra-worker sentinel handoffs).
+    //
+    // D-005 F-H8 tail (2026-04-24): when a promoted border arrives with
+    // an id beyond the partition's current `border_id_end`, extend the
+    // end so future `rebuild_free_port_index` passes include it (the
+    // worker's rebuild filter is `bid < border_id_end`, and a minted
+    // border id allocated post-split would otherwise be dropped,
+    // stranding the associated principal-port wire at DISCONNECTED
+    // after merge's boundary restoration).
     for (bid, target) in new_borders {
+        debug_assert!(
+            match target {
+                PortRef::AgentPort(id, _) => {
+                    let id = *id;
+                    id >= partition.id_range.start && id < partition.id_range.end
+                }
+                PortRef::FreePort(_) => true,
+            },
+            "apply_border_deltas_to_partition: new_borders target {:?} is outside worker \
+             {}'s id_range {:?} for border_id {} (F-H7 cross-arena injection)",
+            target,
+            partition.worker_id,
+            partition.id_range,
+            bid
+        );
         partition.subnet.connect(*target, PortRef::FreePort(*bid));
         partition.free_port_index.insert(*bid, *target);
+        if *bid != u32::MAX && *bid >= partition.border_id_end {
+            partition.border_id_end = bid.saturating_add(1);
+        }
     }
 }
 
