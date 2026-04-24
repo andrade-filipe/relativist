@@ -16,8 +16,8 @@ pub mod types;
 
 // Re-exports: convenience access via `crate::merge::*`
 pub use border_graph::{
-    AddBorderEntry, BorderDelta, BorderGraph, BorderState, LocalReconnection, MintedAgent,
-    PendingCommutation,
+    AddBorderEntry, BorderDelta, BorderGraph, BorderState, LocalReconnection, LocalWiringHint,
+    MintedAgent, PendingCommutation,
 };
 pub use core::merge;
 pub use grid::run_grid;

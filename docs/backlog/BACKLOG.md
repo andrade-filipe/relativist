@@ -1,7 +1,7 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-16
-**Total tasks:** 248 (158 done, 0 in progress, 89 todo, 1 obsoleted)
+**Last updated:** 2026-04-23
+**Total tasks:** 252 (158 done, 0 in progress, 93 todo, 1 obsoleted)
 
 **Pipeline:** See `DEVELOPMENT-PIPELINE.md` for the 7-stage development process.
 
@@ -380,6 +380,20 @@ Bundle source: `docs/DEFERRED-WORK.md` D-004 row (opened 2026-04-23 during DEV o
 | TASK-0399 | Integration: wire into run_grid_delta_inner; migrate LocalDeltaDispatch; **REDUCED SCOPE** — plumbing wiring + LocalDeltaDispatch forwarding + `cleanup_t1_violations` helper shipped; `SKIP_ASYMMETRIC` flip blocked on newly-discovered D-005 (CommutationBatch.local_wiring not on wire); `SKIP_ASYMMETRIC = true` retained with 34-line D-005 scoped comment in test file. | P0 | **DONE** (plumbing only; flip deferred to D-005) 2026-04-23 | TASK-0398 | M |
 
 **Bundle acceptance signal (ORIGINAL):** UT-0385-08 passes all 12 parameterized cases (6 fixtures × 2 strict modes) with canonical net-equivalence + total_interactions parity — **NOT MET** due to D-005 structural gap discovered during DEV. **Revised close signal:** TASK-0398 + TASK-0399 plumbing shipped, 1146/1186 test baselines green, REVIEW ALIGNED with 0 Must-Fix. DEFERRED-WORK D-003 remains PARTIAL; D-004 marked PARTIALLY SHIPPED; D-005 row added. Full G1 parity proof waits on D-005 Option A or B.
+
+## D-005 — Worker-Side Application of `CommutationBatch.local_wiring` (Option A — production, wire-level)
+
+Bundle source: `docs/DEFERRED-WORK.md` D-005 row (opened 2026-04-23 during DEV of TASK-0399). Stage 0 SPEC-CRITIC closed on Round 3 with SIGN-OFF (3 LOW NR3 findings non-blocking, absorbable in TASK-0400). Option A elected (production wire-level fix; Option B test-only explicitly rejected by user). Closes D-003 + D-004 + D-005 rows together when shipped. Scope: (a) refactor `PendingCommutation` to Shape A (`target_symbols: Vec<Symbol>` + `local_wiring: Vec<LocalWiringHint>`), introduce `LocalWiringHint` struct and `ProtocolError::MalformedLocalWiring { request_id, reason }` with 7-case `MalformedLocalWiringReason`, bump `PROTOCOL_VERSION` 2→3; (b) populate the wire fields from `CommutationBatch` in `package_resolutions_with_pending`; (c) implement R24.1.6a/b/c mint-then-wire at `worker.rs::handle_round_start` with R23a clause-6 HashSet pre-pass and R33c case dispatch; (d) forward the same transport through `LocalDeltaDispatch` and flip `const SKIP_ASYMMETRIC: bool = false;`.
+
+| Task | Description | Priority | Status | Depends | Size |
+|------|-------------|----------|--------|---------|------|
+| TASK-0400 | Wire struct rewrite: `PendingCommutation` Shape A + `LocalWiringHint` + `ProtocolError::MalformedLocalWiring` 7-case enum + rkyv conditional derives + `PROTOCOL_VERSION` 2→3. Absorbs NR3-001/002/003. | P0 | TODO | TASK-0398, TASK-0399 (D-004 plumbing shipped) | S |
+| TASK-0401 | Resolver-to-wire transport: extend `package_resolutions_with_pending` to populate `target_symbols` + `local_wiring` from `CommutationBatch`; optional `commutation_batch_to_pending` private helper; per-rule UTs (CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA) + order preservation. | P0 | TODO | TASK-0400 | S-M |
+| TASK-0402 | Worker-side mint-then-wire: implement R24.1.6a/b/c in `worker.rs::handle_round_start`; R23a clause-6 HashSet pre-pass; R33c case 1/2/3/5/6/7 rejection; R33c case 4 tracing::warn; R24 ordering invariant; per-case UTs + CON-DUP happy path. | P0 | TODO | TASK-0400, TASK-0401 | M |
+| TASK-0403 | LocalDeltaDispatch forwarding of `target_symbols` + `local_wiring`; flip `const SKIP_ASYMMETRIC: bool = false`; remove 34-line TASK-0399 skip-comment. **Acceptance gate for bundle: UT-0385-08 green on 12-case parameterized matrix.** | P0 | TODO | TASK-0400, TASK-0401, TASK-0402 | S |
+
+**DAG:** `TASK-0400 → TASK-0401 → TASK-0402 → TASK-0403` (strict linear).
+**Bundle acceptance signal:** UT-0385-08 parameterized matrix (6 fixtures × 2 strict modes = 12 cases) passes with `canonicalize(out_delta) == canonicalize(out_v1)` AND `metrics.total_interactions == metrics_v1.total_interactions` on every case. `cargo test --workspace --lib` ≥ 1151 default / ≥ 1192 `--features zero-copy`. Clippy + fmt clean both feature configs. **Closes D-003 + D-004 + D-005 DEFERRED-WORK rows.**
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

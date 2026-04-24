@@ -638,8 +638,8 @@ mod tests {
             }],
             pending_commutations: vec![PendingCommutation {
                 request_id: 42,
-                symbol_type: Symbol::Dup,
-                arity: 2,
+                target_symbols: vec![Symbol::Dup],
+                local_wiring: Vec::new(),
             }],
         };
         let bytes = bincode_v2::encode(&original).expect("encode");
@@ -669,8 +669,8 @@ mod tests {
                 assert_eq!(local_reconnections[0].new_target, PortRef::AgentPort(11, 1),);
                 assert_eq!(pending_commutations.len(), 1);
                 assert_eq!(pending_commutations[0].request_id, 42);
-                assert!(matches!(pending_commutations[0].symbol_type, Symbol::Dup));
-                assert_eq!(pending_commutations[0].arity, 2);
+                assert_eq!(pending_commutations[0].target_symbols, vec![Symbol::Dup]);
+                assert!(pending_commutations[0].local_wiring.is_empty());
             }
             other => panic!("expected RoundStart, got {:?}", other),
         }
@@ -785,13 +785,13 @@ mod tests {
             pending_commutations: vec![
                 PendingCommutation {
                     request_id: 100,
-                    symbol_type: Symbol::Con,
-                    arity: 1,
+                    target_symbols: vec![Symbol::Con],
+                    local_wiring: Vec::new(),
                 },
                 PendingCommutation {
                     request_id: 101,
-                    symbol_type: Symbol::Era,
-                    arity: 0,
+                    target_symbols: vec![Symbol::Era],
+                    local_wiring: Vec::new(),
                 },
             ],
         };
@@ -806,11 +806,11 @@ mod tests {
                 assert_eq!(round, 2);
                 assert_eq!(pending_commutations.len(), 2);
                 assert_eq!(pending_commutations[0].request_id, 100);
-                assert!(matches!(pending_commutations[0].symbol_type, Symbol::Con,));
-                assert_eq!(pending_commutations[0].arity, 1);
+                assert_eq!(pending_commutations[0].target_symbols, vec![Symbol::Con]);
+                assert!(pending_commutations[0].local_wiring.is_empty());
                 assert_eq!(pending_commutations[1].request_id, 101);
-                assert!(matches!(pending_commutations[1].symbol_type, Symbol::Era,));
-                assert_eq!(pending_commutations[1].arity, 0);
+                assert_eq!(pending_commutations[1].target_symbols, vec![Symbol::Era]);
+                assert!(pending_commutations[1].local_wiring.is_empty());
             }
             other => panic!("expected RoundStart, got {:?}", other),
         }

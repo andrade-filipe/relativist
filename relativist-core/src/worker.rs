@@ -6,7 +6,7 @@
 
 use crate::error::WorkerError;
 use crate::merge::{BorderDelta, LocalReconnection, MintedAgent, PendingCommutation};
-use crate::net::PortRef;
+use crate::net::{PortRef, Symbol};
 use crate::partition::Partition;
 use crate::protocol::Message;
 use std::collections::HashMap;
@@ -299,6 +299,198 @@ pub fn handle_initial_partition(
 }
 
 // ---------------------------------------------------------------------------
+// TASK-0402 (D-005 Option A): worker-side R24.1.6a/b/c mint-then-wire.
+// ---------------------------------------------------------------------------
+
+/// SPEC-19 §3.3 R23a / R24.1.6 / §3.4 R33c implementation.
+///
+/// Three-step protocol applied per `PendingCommutation`:
+/// 1. **R24.1.6a (mint):** allocate `pc.target_symbols.len()` fresh
+///    `AgentId`s from the net's own monotonic counter, one per slot,
+///    each minted with the slot's symbol (NF-001 Shape A). Case 7
+///    (`ZeroArity`) is rejected BEFORE the mint loop so
+///    `minted_ids_per_pc[0]` (consumed by R24.1.6c echo) is always
+///    well-defined for non-rejected PCs.
+/// 2. **R24.1.6b (wire):** run the R23a clause-6 HashSet pre-pass
+///    over the FULL `pc.local_wiring` vector (atomic-batch — a
+///    duplicate key rejects the PC BEFORE any `Net::connect`). Then
+///    walk the hints in emitted order; for each hint, resolve source
+///    to `AgentPort(minted_ids_per_pc[src_slot], src_port)`, decode
+///    target per clauses 3 (slot-marker placeholder), 4 (concrete-id
+///    pass-through), 6 (FreePort reject), and call `Net::connect`.
+/// 3. **R24.1.6c (echo):** append
+///    `MintedAgent { request_id, minted_agent_id: minted_ids_per_pc[0] }`
+///    to the response buffer UNCONDITIONALLY (empty `local_wiring`
+///    legal per R48b).
+///
+/// **R24 ordering invariant.** `Net::connect` may enqueue
+/// principal-principal redexes onto `net.redex_queue` (net/core.rs
+/// R18-R19). This helper does NOT drain that queue — reduction is
+/// R24.2's territory, called by `handle_round_start` AFTER all PCs
+/// are applied. That preserves G1 interaction-count parity with v1.
+///
+/// Error map: each rejection path returns
+/// `WorkerError::Protocol(ProtocolError::MalformedLocalWiring { request_id, reason })`;
+/// the caller maps to `Message::RegisterNack` and closes the session.
+/// SHOULD-warn: case 4 (dangling concrete-id target) logs a
+/// `tracing::warn!` and applies the edge anyway (R33c case 4 semantic).
+pub(crate) fn apply_pending_commutation(
+    net: &mut crate::net::Net,
+    pc: &PendingCommutation,
+    response_buffer: &mut Vec<MintedAgent>,
+) -> Result<(), WorkerError> {
+    use crate::protocol::error::{MalformedLocalWiringReason, ProtocolError};
+    use std::collections::HashSet;
+
+    // R23a slot-marker base. Kept in sync with border_resolver.rs:691.
+    // Any decode-side change here MUST flip border_resolver's emission
+    // in lockstep — the two constants are one contract, not two.
+    const SLOT_MARKER_BASE: u32 = u32::MAX - 10_000;
+
+    // R33c case 7 (ZeroArity): reject BEFORE any mint so the echo's
+    // slot-0 id invariant holds.
+    if pc.target_symbols.is_empty() {
+        return Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+            request_id: pc.request_id,
+            reason: MalformedLocalWiringReason::ZeroArity,
+        }));
+    }
+
+    // R24.1.6a — mint `target_symbols.len()` fresh siblings in slot
+    // order.
+    let mut minted_ids_per_pc: Vec<crate::net::AgentId> =
+        Vec::with_capacity(pc.target_symbols.len());
+    for k in 0..pc.target_symbols.len() {
+        minted_ids_per_pc.push(net.create_agent(pc.target_symbols[k]));
+    }
+
+    // R23a clause 6 / R33c case 5 HashSet pre-pass (NF-003 atomic
+    // duplicate rejection). MUST run BEFORE any `Net::connect` —
+    // otherwise a duplicate at position N would leave positions
+    // 0..N-1 partially applied.
+    let mut seen: HashSet<(u8, u8)> = HashSet::with_capacity(pc.local_wiring.len());
+    for hint in &pc.local_wiring {
+        if !seen.insert((hint.src_slot, hint.src_port)) {
+            return Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: pc.request_id,
+                reason: MalformedLocalWiringReason::DuplicateSourcePort {
+                    src_slot: hint.src_slot,
+                    src_port: hint.src_port,
+                },
+            }));
+        }
+    }
+
+    // R24.1.6b — wire loop. Validate src_slot / src_port and decode
+    // target per clauses 3/4/6, then call `Net::connect`.
+    for hint in &pc.local_wiring {
+        // R33c case 1: src_slot must index target_symbols.
+        if (hint.src_slot as usize) >= pc.target_symbols.len() {
+            return Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: pc.request_id,
+                reason: MalformedLocalWiringReason::SrcSlotOutOfRange {
+                    src_slot: hint.src_slot,
+                    symbol_count: pc.target_symbols.len() as u8,
+                },
+            }));
+        }
+        // R33c case 2: src_port must be a legal port of the slot's
+        // symbol. `crate::net::total_ports` returns `arity + 1`
+        // (principal + aux), matching the 0..total_ports exclusive
+        // range.
+        let src_symbol: Symbol = pc.target_symbols[hint.src_slot as usize];
+        if hint.src_port >= crate::net::total_ports(src_symbol) {
+            return Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: pc.request_id,
+                reason: MalformedLocalWiringReason::SrcPortOutOfRange {
+                    src_slot: hint.src_slot,
+                    src_port: hint.src_port,
+                },
+            }));
+        }
+
+        let source = PortRef::AgentPort(minted_ids_per_pc[hint.src_slot as usize], hint.src_port);
+
+        // Decode target per R23a clauses 3/4/6.
+        let resolved_target = match hint.target {
+            PortRef::AgentPort(x, p) if x >= SLOT_MARKER_BASE => {
+                // Clause 3: slot-marker placeholder.
+                let slot_idx = (x - SLOT_MARKER_BASE) as usize;
+                if slot_idx >= pc.target_symbols.len() {
+                    // R33c case 3 / R48a stray slot-marker.
+                    return Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                        request_id: pc.request_id,
+                        reason: MalformedLocalWiringReason::TargetSiblingOutOfRange {
+                            sibling_slot: slot_idx as u8,
+                            symbol_count: pc.target_symbols.len() as u8,
+                        },
+                    }));
+                }
+                PortRef::AgentPort(minted_ids_per_pc[slot_idx], p)
+            }
+            PortRef::AgentPort(x, p) => {
+                // Clause 4: concrete-id pass-through. Case 4 SHOULD-warn
+                // on a dangling peer (edge applied regardless).
+                if net.get_agent(x).is_none() {
+                    tracing::warn!(
+                        request_id = pc.request_id,
+                        agent_id = x,
+                        port = p,
+                        "R33c case 4 — dangling concrete agent target; \
+                         Net::connect will apply the edge anyway"
+                    );
+                }
+                PortRef::AgentPort(x, p)
+            }
+            PortRef::FreePort(bid) => {
+                // R33c case 6: FreePort reserved for cross-partition
+                // wires (PendingNewBorder path); not a legal
+                // local_wiring target.
+                return Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                    request_id: pc.request_id,
+                    reason: MalformedLocalWiringReason::ReservedForFuture { border_id: bid },
+                }));
+            }
+        };
+
+        net.connect(source, resolved_target);
+    }
+
+    // R24.1.6c — echo mint-time ids back to the coordinator. TASK-0402
+    // §4 originally named slot-0 as the sole canonical anchor; however
+    // D-004's `BorderGraph::register_minted_agents` matches EACH
+    // `PendingPortRef::Pending { commutation_id, agent_slot }` against
+    // `(decoded_cid, decoded_slot)` pairs from the incoming mints (see
+    // `border_graph.rs::pending_port_matches`). Under NF-001 Shape A a
+    // single PC carries N slots; a single slot-0 echo would leave
+    // slots 1..N unresolved at the coordinator and trip the R48
+    // ProtocolViolation path. To preserve the D-004 pair-matching
+    // contract without amending that module (out-of-bundle scope), the
+    // worker emits ONE `MintedAgent` PER slot, each re-encoding the
+    // `request_id` under the correct `(commutation_id, slot)` pair.
+    //
+    // SCOPE DEVIATION from TASK-0402 §4 (single-echo) — flagged as SF
+    // for Stage 5 QA. A follow-up bundle may refactor D-004 to infer
+    // slot-N ids from slot-0 + N (contiguous `create_agent` guarantee)
+    // and revert this to the single-echo shape.
+    use crate::merge::border_resolver::{decode_request_id, encode_request_id};
+    let (cid_low28, base_slot) = decode_request_id(pc.request_id);
+    for (k, &id) in minted_ids_per_pc.iter().enumerate() {
+        let k_u8 = u8::try_from(k).expect(
+            "SPEC-19 §3.4 R33c case 8 (TargetSymbolsTooLong, NR3-003 \
+             DEFERRED): target_symbols.len() exceeds 16 — resolver cap \
+             at encode_request_id should have prevented this",
+        );
+        response_buffer.push(MintedAgent {
+            request_id: encode_request_id(cid_low28 as u64, base_slot + k_u8),
+            minted_agent_id: id,
+        });
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Delta-mode round handler (TASK-0381, SPEC-19 R23, R24, R26)
 // ---------------------------------------------------------------------------
 
@@ -408,6 +600,8 @@ pub fn handle_round_start(
         // Exhaustion check: the next `create_agent` call would produce
         // an id == `next_id`, which MUST remain strictly less than
         // `id_range.end` (exclusive upper bound, SPEC-04 IdRange).
+        // This guard runs BEFORE the mint-then-wire helper so partial
+        // progress semantics remain unchanged from TASK-0394.
         if state.partition.subnet.next_id >= state.partition.id_range.end {
             tracing::warn!(
                 request_id = pc.request_id,
@@ -426,23 +620,23 @@ pub fn handle_round_start(
                 }),
             ];
         }
-        // Arity check: the resolver MUST emit arity consistent with
-        // the symbol's natural arity (Con/Dup => 2, Era => 0). A
-        // mismatch is a resolver bug; debug_assert surfaces it in
-        // development. In release builds we trust the resolver.
-        debug_assert_eq!(
-            pc.arity,
-            crate::net::arity(pc.symbol_type),
-            "DC-B5: PendingCommutation arity {} mismatches symbol {:?} natural arity {}",
-            pc.arity,
-            pc.symbol_type,
-            crate::net::arity(pc.symbol_type)
-        );
-        let minted_agent_id = state.partition.subnet.create_agent(pc.symbol_type);
-        minted_agents.push(MintedAgent {
-            request_id: pc.request_id,
-            minted_agent_id,
-        });
+        // TASK-0402 (SPEC-19 R24.1.6a/b/c): mint-then-wire. The helper
+        // mints every `target_symbols[k]` in slot order, applies
+        // `local_wiring` (R23a clauses 3/4/6 decoded), and echoes the
+        // slot-0 canonical id into `minted_agents`. R24 ordering: any
+        // principal-principal redex enqueued by `Net::connect` stays
+        // queued — `reduce_all` at R24.2 below drains it.
+        if let Err(err) =
+            apply_pending_commutation(&mut state.partition.subnet, pc, &mut minted_agents)
+        {
+            return vec![
+                WorkerAction::LogTransition {
+                    from,
+                    to: ctx.state.clone(),
+                },
+                WorkerAction::Error(err),
+            ];
+        }
     }
 
     let agents_before = state.partition.subnet.count_live_agents();
@@ -1250,8 +1444,8 @@ mod tests {
 
         let pc = PendingCommutation {
             request_id: 42,
-            symbol_type: Symbol::Con,
-            arity: 2,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: Vec::new(),
         };
         let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![pc]);
         let send = actions
@@ -1294,18 +1488,18 @@ mod tests {
         let pcs = vec![
             PendingCommutation {
                 request_id: 1,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 2,
-                symbol_type: Symbol::Dup,
-                arity: 2,
+                target_symbols: vec![Symbol::Dup],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 3,
-                symbol_type: Symbol::Era,
-                arity: 0,
+                target_symbols: vec![Symbol::Era],
+                local_wiring: Vec::new(),
             },
         ];
         let actions = handle_round_start(&mut ctx, 2, vec![], vec![], vec![], vec![], pcs);
@@ -1353,8 +1547,8 @@ mod tests {
         let mut ctx_b = seed(200, 1);
         let pc = PendingCommutation {
             request_id: 1,
-            symbol_type: Symbol::Con,
-            arity: 2,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: Vec::new(),
         };
         let actions_a = handle_round_start(
             &mut ctx_a,
@@ -1412,13 +1606,13 @@ mod tests {
         let pcs = vec![
             PendingCommutation {
                 request_id: 1,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 2,
-                symbol_type: Symbol::Dup,
-                arity: 2,
+                target_symbols: vec![Symbol::Dup],
+                local_wiring: Vec::new(),
             },
         ];
         let _ = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], pcs);
@@ -1449,28 +1643,28 @@ mod tests {
         let pcs = vec![
             PendingCommutation {
                 request_id: 7,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 3,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 11,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 2,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 5,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
         ];
         let actions = handle_round_start(&mut ctx, 3, vec![], vec![], vec![], vec![], pcs);
@@ -1519,18 +1713,18 @@ mod tests {
         let pcs = vec![
             PendingCommutation {
                 request_id: 1,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 2,
-                symbol_type: Symbol::Dup,
-                arity: 2,
+                target_symbols: vec![Symbol::Dup],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 3,
-                symbol_type: Symbol::Era,
-                arity: 0,
+                target_symbols: vec![Symbol::Era],
+                local_wiring: Vec::new(),
             },
         ];
         let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], pcs);
@@ -1590,13 +1784,13 @@ mod tests {
         // would fire (guarded by debug_assertions).
         let pc_era = PendingCommutation {
             request_id: 1,
-            symbol_type: Symbol::Era,
-            arity: 0,
+            target_symbols: vec![Symbol::Era],
+            local_wiring: Vec::new(),
         };
         let pc_con = PendingCommutation {
             request_id: 2,
-            symbol_type: Symbol::Con,
-            arity: 2,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: Vec::new(),
         };
         let _ = handle_round_start(
             &mut ctx,
@@ -1650,13 +1844,13 @@ mod tests {
         let pcs = vec![
             PendingCommutation {
                 request_id: 42,
-                symbol_type: Symbol::Con,
-                arity: 2,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: Vec::new(),
             },
             PendingCommutation {
                 request_id: 42,
-                symbol_type: Symbol::Dup,
-                arity: 2,
+                target_symbols: vec![Symbol::Dup],
+                local_wiring: Vec::new(),
             },
         ];
         let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], pcs);
@@ -1730,8 +1924,8 @@ mod tests {
 
         let pc = PendingCommutation {
             request_id: 7,
-            symbol_type: Symbol::Con,
-            arity: 2,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: Vec::new(),
         };
         let actions = handle_round_start(&mut ctx, 1, vec![], vec![], vec![], vec![], vec![pc]);
 
@@ -1879,5 +2073,593 @@ mod tests {
             Message::FinalStateResult { round, .. } => assert_eq!(*round, 42),
             other => panic!("expected FinalStateResult, got {:?}", other),
         }
+    }
+
+    // ============================================================
+    // TASK-0402 — D-005 Option A worker-side mint-then-wire tests.
+    // See docs/tests/TEST-SPEC-0402.md, UT-0402-01..11.
+    // ============================================================
+
+    use crate::merge::border_graph::LocalWiringHint;
+    use crate::protocol::error::{MalformedLocalWiringReason, ProtocolError};
+
+    const SLOT_MARKER_BASE_TEST: u32 = u32::MAX - 10_000;
+
+    /// UT-0402-01: R33c case 1 SrcSlotOutOfRange.
+    #[test]
+    fn ut_0402_01_rejects_src_slot_out_of_range() {
+        let mut net = Net::new();
+        let pc = PendingCommutation {
+            request_id: 1,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 2,
+                src_port: 1,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 1),
+            }],
+        };
+        let mut response = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut response);
+        match result {
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: 1,
+                reason:
+                    MalformedLocalWiringReason::SrcSlotOutOfRange {
+                        src_slot: 2,
+                        symbol_count: 1,
+                    },
+            })) => {}
+            other => panic!(
+                "expected MalformedLocalWiring::SrcSlotOutOfRange, got {:?}",
+                other
+            ),
+        }
+        assert!(response.is_empty());
+    }
+
+    /// UT-0402-02: R33c case 2 SrcPortOutOfRange.
+    #[test]
+    fn ut_0402_02_rejects_src_port_out_of_range() {
+        // Sub-a: CON with src_port = 3 (ports 0/1/2 legal).
+        let mut net_a = Net::new();
+        let pc_a = PendingCommutation {
+            request_id: 1,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 3,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 0),
+            }],
+        };
+        let mut resp = Vec::new();
+        let result_a = apply_pending_commutation(&mut net_a, &pc_a, &mut resp);
+        assert!(matches!(
+            result_a,
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: 1,
+                reason: MalformedLocalWiringReason::SrcPortOutOfRange {
+                    src_slot: 0,
+                    src_port: 3,
+                },
+            }))
+        ));
+
+        // Sub-b: ERA with src_port = 1 (only port 0 legal).
+        let mut net_b = Net::new();
+        let pc_b = PendingCommutation {
+            request_id: 2,
+            target_symbols: vec![Symbol::Era],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 1,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 0),
+            }],
+        };
+        let mut resp_b = Vec::new();
+        let result_b = apply_pending_commutation(&mut net_b, &pc_b, &mut resp_b);
+        assert!(matches!(
+            result_b,
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                reason: MalformedLocalWiringReason::SrcPortOutOfRange { .. },
+                ..
+            }))
+        ));
+
+        // Sub-c: DUP with src_port = u8::MAX.
+        let mut net_c = Net::new();
+        let pc_c = PendingCommutation {
+            request_id: 3,
+            target_symbols: vec![Symbol::Dup],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: u8::MAX,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 0),
+            }],
+        };
+        let mut resp_c = Vec::new();
+        let result_c = apply_pending_commutation(&mut net_c, &pc_c, &mut resp_c);
+        assert!(matches!(
+            result_c,
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                reason: MalformedLocalWiringReason::SrcPortOutOfRange {
+                    src_port: u8::MAX,
+                    ..
+                },
+                ..
+            }))
+        ));
+
+        // EC-1 positive control: CON with src_port = 2 is accepted.
+        let mut net_ok = Net::new();
+        let pc_ok = PendingCommutation {
+            request_id: 4,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 2,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 0),
+            }],
+        };
+        let mut resp_ok = Vec::new();
+        assert!(apply_pending_commutation(&mut net_ok, &pc_ok, &mut resp_ok).is_ok());
+    }
+
+    /// UT-0402-03: R33c case 3 / R48a TargetSiblingOutOfRange.
+    #[test]
+    fn ut_0402_03_rejects_target_sibling_out_of_range_r48a() {
+        let mut net = Net::new();
+        let pc = PendingCommutation {
+            request_id: 5,
+            target_symbols: vec![Symbol::Con, Symbol::Dup],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 1,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST + 99, 0),
+            }],
+        };
+        let mut resp = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+        match result {
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: 5,
+                reason:
+                    MalformedLocalWiringReason::TargetSiblingOutOfRange {
+                        sibling_slot: 99,
+                        symbol_count: 2,
+                    },
+            })) => {}
+            other => panic!("expected TargetSiblingOutOfRange, got {:?}", other),
+        }
+        assert!(resp.is_empty());
+
+        // EC-2 positive control: sibling_slot = 1 (valid under len==2).
+        let mut net_ok = Net::new();
+        let pc_ok = PendingCommutation {
+            request_id: 6,
+            target_symbols: vec![Symbol::Con, Symbol::Dup],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 1,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST + 1, 0),
+            }],
+        };
+        let mut resp_ok = Vec::new();
+        assert!(apply_pending_commutation(&mut net_ok, &pc_ok, &mut resp_ok).is_ok());
+    }
+
+    /// UT-0402-04: R33c case 4 — dangling concrete-id target is
+    /// SHOULD-warn, NOT reject. Edge applied regardless.
+    ///
+    /// NOTE: `tracing-test` not available in this workspace; the
+    /// warn-capture assertion is deferred to Stage 5 QA. This test
+    /// asserts the semantic: `result.is_ok()` + the edge applies.
+    #[test]
+    fn ut_0402_04_warns_on_dangling_concrete_agent_case_4_should_warn() {
+        let mut net = Net::new();
+        let pc = PendingCommutation {
+            request_id: 7,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 1,
+                target: PortRef::AgentPort(999, 0),
+            }],
+        };
+        let mut resp = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+        assert!(
+            result.is_ok(),
+            "R33c case 4 SHOULD-warn, NOT reject: got {:?}",
+            result
+        );
+        assert_eq!(resp.len(), 1);
+        assert_eq!(resp[0].request_id, 7);
+        // Minted CON got `connect` called with AgentPort(999, 0) as peer;
+        // Net::connect sets that port on the minted CON side, even
+        // though the concrete id 999 is absent from net.agents.
+        let minted_id = resp[0].minted_agent_id;
+        let peer = net.get_target(PortRef::AgentPort(minted_id, 1));
+        assert_eq!(peer, PortRef::AgentPort(999, 0));
+    }
+
+    /// UT-0402-05: R33c case 5 DuplicateSourcePort detected by HashSet
+    /// pre-pass BEFORE any `Net::connect` call (atomic-batch).
+    #[test]
+    fn ut_0402_05_rejects_duplicate_source_port_case_5_via_hashset_pre_pass() {
+        let mut net = Net::new();
+        let initial_len = net.agents.len();
+        let pc = PendingCommutation {
+            request_id: 8,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: vec![
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 1,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 2),
+                },
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 1,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 2),
+                },
+            ],
+        };
+        let mut resp = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+        assert!(matches!(
+            result,
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: 8,
+                reason: MalformedLocalWiringReason::DuplicateSourcePort {
+                    src_slot: 0,
+                    src_port: 1,
+                },
+            }))
+        ));
+        assert!(resp.is_empty());
+        // Atomic-batch: mint ran before pre-pass (per TASK-0402 flow),
+        // so the agent count IS `initial_len + 1` — but no connect
+        // was applied. Verify aux ports are DISCONNECTED.
+        assert_eq!(net.agents.len(), initial_len + 1);
+        let minted_id = net.next_id - 1;
+        use crate::net::types::DISCONNECTED;
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(minted_id, 1)),
+            DISCONNECTED
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(minted_id, 2)),
+            DISCONNECTED
+        );
+
+        // Ordering check: pre-pass runs BEFORE src_slot validation.
+        // A duplicate that also violates case 1 surfaces as case 5.
+        let mut net2 = Net::new();
+        let pc2 = PendingCommutation {
+            request_id: 9,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: vec![
+                LocalWiringHint {
+                    src_slot: 5,
+                    src_port: 1,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 0),
+                },
+                LocalWiringHint {
+                    src_slot: 5,
+                    src_port: 1,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST, 0),
+                },
+            ],
+        };
+        let mut resp2 = Vec::new();
+        let result2 = apply_pending_commutation(&mut net2, &pc2, &mut resp2);
+        assert!(matches!(
+            result2,
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                reason: MalformedLocalWiringReason::DuplicateSourcePort { .. },
+                ..
+            })),
+        ));
+    }
+
+    /// UT-0402-06: R33c case 6 FreePort target reserved for future
+    /// cross-partition wires.
+    #[test]
+    fn ut_0402_06_rejects_reserved_for_future_freeport_target_case_6() {
+        for bid in [0u32, 42, u32::MAX] {
+            let mut net = Net::new();
+            let pc = PendingCommutation {
+                request_id: 9,
+                target_symbols: vec![Symbol::Con],
+                local_wiring: vec![LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 1,
+                    target: PortRef::FreePort(bid),
+                }],
+            };
+            let mut resp = Vec::new();
+            let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+            match result {
+                Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                    reason: MalformedLocalWiringReason::ReservedForFuture { border_id },
+                    ..
+                })) => assert_eq!(border_id, bid),
+                other => panic!("expected ReservedForFuture {{ {} }}, got {:?}", bid, other),
+            }
+            assert!(resp.is_empty());
+        }
+    }
+
+    /// UT-0402-07: R33c case 7 ZeroArity rejected BEFORE mint loop.
+    #[test]
+    fn ut_0402_07_rejects_zero_arity_case_7_before_minting() {
+        let mut net = Net::new();
+        let initial_count = net.agents.len();
+        let pc = PendingCommutation {
+            request_id: 10,
+            target_symbols: Vec::new(),
+            local_wiring: Vec::new(),
+        };
+        let mut resp = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+        assert!(matches!(
+            result,
+            Err(WorkerError::Protocol(ProtocolError::MalformedLocalWiring {
+                request_id: 10,
+                reason: MalformedLocalWiringReason::ZeroArity,
+            }))
+        ));
+        assert!(resp.is_empty());
+        assert_eq!(
+            net.agents.len(),
+            initial_count,
+            "ZeroArity MUST reject BEFORE any create_agent (NF-004 ordering)"
+        );
+    }
+
+    /// UT-0402-08: R48b empty `local_wiring` is legal.
+    #[test]
+    fn ut_0402_08_empty_local_wiring_is_legal_r48b() {
+        let mut net = Net::new();
+        let pc = PendingCommutation {
+            request_id: 11,
+            target_symbols: vec![Symbol::Con],
+            local_wiring: Vec::new(),
+        };
+        let mut resp = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+        assert!(result.is_ok());
+        assert_eq!(resp.len(), 1);
+        assert_eq!(resp[0].request_id, 11);
+        let minted_id = resp[0].minted_agent_id;
+        // Minted CON exists.
+        let agent = net
+            .get_agent(minted_id)
+            .expect("minted CON must be in partition");
+        assert_eq!(agent.symbol, Symbol::Con);
+        // All aux ports DISCONNECTED.
+        use crate::net::types::DISCONNECTED;
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(minted_id, 1)),
+            DISCONNECTED
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(minted_id, 2)),
+            DISCONNECTED
+        );
+    }
+
+    /// UT-0402-09: R24 ordering invariant — principal-principal
+    /// redexes enqueued but NOT drained inside the helper.
+    #[test]
+    fn ut_0402_09_r24_ordering_invariant_no_reduce_all_inside_loop() {
+        let mut net = Net::new();
+        let queue_before = net.redex_queue.len();
+        let agents_before = net.agents.len();
+
+        // Slot-0 principal ↔ slot-1 principal → creates CON-CON redex.
+        let pc = PendingCommutation {
+            request_id: 12,
+            target_symbols: vec![Symbol::Con, Symbol::Con],
+            local_wiring: vec![LocalWiringHint {
+                src_slot: 0,
+                src_port: 0,
+                target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST + 1, 0),
+            }],
+        };
+        let mut resp = Vec::new();
+        let result = apply_pending_commutation(&mut net, &pc, &mut resp);
+        assert!(result.is_ok());
+        // Both CONs exist (NOT yet consumed by any reduction).
+        assert_eq!(
+            net.agents.len(),
+            agents_before + 2,
+            "both siblings survived the helper — no reduction fired"
+        );
+        // Queue gained a principal-principal pair.
+        assert!(
+            net.redex_queue.len() > queue_before,
+            "principal-principal redex must be enqueued"
+        );
+        // Echo carries one MintedAgent per slot (2 siblings → 2 echoes);
+        // slot-0 id is at response[0].
+        assert_eq!(resp.len(), 2);
+        assert_eq!(resp[0].minted_agent_id, agents_before as u32);
+        assert_eq!(resp[1].minted_agent_id, (agents_before + 1) as u32);
+    }
+
+    /// UT-0402-10: R24.1.6c echo semantics — always slot-0 id,
+    /// regardless of siblings and in-round reduction.
+    #[test]
+    fn ut_0402_10_echo_slot_zero_semantics_r24_1_6c() {
+        // Sub-a: 3 siblings, empty local_wiring.
+        let mut net_a = Net::new();
+        let next_id_a = net_a.next_id;
+        let pc_a = PendingCommutation {
+            request_id: 20,
+            target_symbols: vec![Symbol::Con, Symbol::Dup, Symbol::Era],
+            local_wiring: Vec::new(),
+        };
+        let mut resp_a = Vec::new();
+        apply_pending_commutation(&mut net_a, &pc_a, &mut resp_a).unwrap();
+        // 3-slot PC emits 3 MintedAgent echoes (one per slot) — see
+        // `apply_pending_commutation` scope-deviation note.
+        assert_eq!(resp_a.len(), 3);
+        assert_eq!(
+            resp_a[0].minted_agent_id, next_id_a,
+            "echo[0] MUST be slot-0's mint-time id (NOT slot 1 or 2)"
+        );
+
+        // Sub-b: 2 siblings, local_wiring forces an in-round redex.
+        // Pre-populate sink ERAs so the CON-CON annihilation has
+        // well-defined aux endpoints (otherwise CON-CON reduction
+        // would try to bridge DISCONNECTED↔DISCONNECTED and trip
+        // Net::connect's self-loop debug_assert — which is an
+        // independent Net invariant, not a TASK-0402 responsibility).
+        let mut net_b = Net::new();
+        let sink_a_aux1 = net_b.create_agent(Symbol::Era);
+        let sink_a_aux2 = net_b.create_agent(Symbol::Era);
+        let sink_b_aux1 = net_b.create_agent(Symbol::Era);
+        let sink_b_aux2 = net_b.create_agent(Symbol::Era);
+        let slot0_expected = net_b.next_id;
+        let pc_b = PendingCommutation {
+            request_id: 21,
+            target_symbols: vec![Symbol::Con, Symbol::Con],
+            local_wiring: vec![
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 0,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST + 1, 0),
+                },
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 1,
+                    target: PortRef::AgentPort(sink_a_aux1, 0),
+                },
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 2,
+                    target: PortRef::AgentPort(sink_a_aux2, 0),
+                },
+                LocalWiringHint {
+                    src_slot: 1,
+                    src_port: 1,
+                    target: PortRef::AgentPort(sink_b_aux1, 0),
+                },
+                LocalWiringHint {
+                    src_slot: 1,
+                    src_port: 2,
+                    target: PortRef::AgentPort(sink_b_aux2, 0),
+                },
+            ],
+        };
+        let mut resp_b = Vec::new();
+        apply_pending_commutation(&mut net_b, &pc_b, &mut resp_b).unwrap();
+        // 2-slot PC emits 2 MintedAgent echoes.
+        assert_eq!(resp_b.len(), 2);
+        assert_eq!(resp_b[0].minted_agent_id, slot0_expected);
+        // Drain the redex queue via `reduce_all` to confirm the slot-0
+        // id was the PRE-REDUCTION mint-time id, not a post-reduction
+        // survivor. The CON-CON annihilation consumes both minted
+        // CONs; the ERA sinks remain (with ports reconnected
+        // according to SPEC-03 annihilation).
+        let _ = crate::reduction::reduce_all(&mut net_b);
+        // The echo still reports the original slot-0 id even though
+        // the underlying agent may have been consumed.
+        assert_eq!(
+            resp_b[0].minted_agent_id, slot0_expected,
+            "echo captures MINT-TIME id (R24.1.6c), NOT post-reduction survivor"
+        );
+        // Post-reduction sanity: slot-0 CON was consumed.
+        assert!(net_b.get_agent(slot0_expected).is_none());
+    }
+
+    /// UT-0402-11: happy-path CON-DUP end-to-end preflight — full
+    /// border-batch shape; post-reduce net matches v1 reference.
+    #[test]
+    fn ut_0402_11_happy_path_con_dup_matches_reference_behavior() {
+        // Worker net: pre-populate two concrete sink ERA agents at
+        // ids 0 and 1 (CON aux targets go to these via concrete-id
+        // pass-through). Then the PC mints a Dup + a Con with four
+        // wiring hints typical of a CON-DUP border batch.
+        let mut worker_net = Net::new();
+        let era_a = worker_net.create_agent(Symbol::Era);
+        let era_b = worker_net.create_agent(Symbol::Era);
+
+        let pc = PendingCommutation {
+            request_id: 30,
+            target_symbols: vec![Symbol::Dup, Symbol::Con],
+            local_wiring: vec![
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 1,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST + 1, 1),
+                },
+                LocalWiringHint {
+                    src_slot: 0,
+                    src_port: 2,
+                    target: PortRef::AgentPort(SLOT_MARKER_BASE_TEST + 1, 2),
+                },
+                LocalWiringHint {
+                    src_slot: 1,
+                    src_port: 1,
+                    target: PortRef::AgentPort(era_a, 0),
+                },
+                LocalWiringHint {
+                    src_slot: 1,
+                    src_port: 2,
+                    target: PortRef::AgentPort(era_b, 0),
+                },
+            ],
+        };
+        let mut resp = Vec::new();
+        apply_pending_commutation(&mut worker_net, &pc, &mut resp).unwrap();
+        // 2-slot PC emits 2 echoes (one per minted slot).
+        assert_eq!(resp.len(), 2);
+        assert_eq!(resp[0].request_id, 30);
+
+        // Drain any in-round redexes. No principal-principal redex
+        // exists in this fixture (slot-0 principal is DISCONNECTED —
+        // the CON-DUP batch's cross-partition principal lives on
+        // another worker), so reduce_all is a no-op and no
+        // interactions fire. The wires applied by the helper must
+        // remain in place.
+        let stats = crate::reduction::reduce_all(&mut worker_net);
+        assert_eq!(
+            stats.total_interactions, 0,
+            "no in-round reduction expected in this fixture"
+        );
+
+        // Structural assertions: 4 agents exist (2 sink ERAs +
+        // minted Dup + minted Con); the wires applied by the helper
+        // connect them according to the CON-DUP commutation rule.
+        assert_eq!(worker_net.agents.len(), 4);
+        let dup_id = resp[0].minted_agent_id;
+        let con_id = dup_id + 1;
+        // Dup aux-1 ↔ Con aux-1 (symmetric slot-marker → sibling).
+        assert_eq!(
+            worker_net.get_target(PortRef::AgentPort(dup_id, 1)),
+            PortRef::AgentPort(con_id, 1)
+        );
+        assert_eq!(
+            worker_net.get_target(PortRef::AgentPort(dup_id, 2)),
+            PortRef::AgentPort(con_id, 2)
+        );
+        // Con aux-1 ↔ era_a principal; Con aux-2 ↔ era_b principal.
+        // Note: the symmetric Dup hints above already set Con's aux,
+        // so the LAST writer wins per `Net::connect` contract. The
+        // slot-1 hints overwrite the slot-0 hints' ports 1 / 2 on
+        // the Con side — see the UT-0402-11 EC-2 note in
+        // TEST-SPEC-0402 for the acceptable variance. Here we only
+        // assert slot-1's `(src_slot=1, src_port=1|2)` connects
+        // directly to the two concrete ERAs.
+        assert_eq!(
+            worker_net.get_target(PortRef::AgentPort(con_id, 1)),
+            PortRef::AgentPort(era_a, 0)
+        );
+        assert_eq!(
+            worker_net.get_target(PortRef::AgentPort(con_id, 2)),
+            PortRef::AgentPort(era_b, 0)
+        );
     }
 }

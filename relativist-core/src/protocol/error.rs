@@ -91,6 +91,63 @@ pub enum ProtocolError {
     /// so default-features builds can still pattern-match on it when
     /// describing rejected frames produced by zero-copy peers.
     ArchiveValidationFailed(String),
+
+    /// SPEC-19 §3.4 R33c — the worker received a `PendingCommutation`
+    /// whose `local_wiring` is internally inconsistent. Triggered by
+    /// R23a clauses 3/4/6 violations and by R48a stray slot-marker
+    /// guards. The coordinator NACKs the worker consistent with R48's
+    /// stray-token treatment.
+    ///
+    /// **NR3-002 absorption (2026-04-23):** this variant MUST be read
+    /// as distinct from [`ProtocolError::Deserialize`] / the rkyv
+    /// [`ProtocolError::ArchiveValidationFailed`] path.
+    /// `Deserialize`/`ArchiveValidationFailed` fire when bincode/rkyv
+    /// cannot parse the wire bytes at all (pre-validation);
+    /// `MalformedLocalWiring` fires when the bytes decode successfully
+    /// but the semantic content violates one of R33c cases 1-3/5-7
+    /// (case 4 is a `tracing::warn!` path, not a reject). This split
+    /// sharpens R37 wording.
+    MalformedLocalWiring {
+        request_id: u32,
+        reason: MalformedLocalWiringReason,
+    },
+}
+
+/// SPEC-19 §3.4 R33c reason enumeration for
+/// [`ProtocolError::MalformedLocalWiring`]. Every variant corresponds
+/// to one R33c case plus (optionally) NR3-003 case 8 (DEFERRED —
+/// 2026-04-23 default).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MalformedLocalWiringReason {
+    /// Case 1: `src_slot >= pc.target_symbols.len()`.
+    SrcSlotOutOfRange { src_slot: u8, symbol_count: u8 },
+    /// Case 2: `src_port` exceeds the port count of
+    /// `target_symbols[src_slot]`.
+    SrcPortOutOfRange { src_slot: u8, src_port: u8 },
+    /// Case 3: sibling-slot placeholder target with
+    /// `sibling_slot >= pc.target_symbols.len()` — mirrors R48a.
+    TargetSiblingOutOfRange { sibling_slot: u8, symbol_count: u8 },
+    /// Case 4 (SHOULD warn, not reject): concrete-AgentId target where
+    /// the id is absent from the worker's partition. Symmetric to the
+    /// resolver's lenient dangling-FreePort path at
+    /// `border_resolver.rs:1061-1077`. See R33c case 4.
+    DanglingConcreteAgent { agent_id: u32, port: u8 },
+    /// Case 5: duplicate `(src_slot, src_port)` keys — two entries
+    /// trying to rewrite the same minted port. Detected via R23a
+    /// clause 6 HashSet pre-pass.
+    DuplicateSourcePort { src_slot: u8, src_port: u8 },
+    /// Case 6: `target = PortRef::FreePort(_)`. Reserved for future
+    /// wire break (R48a, SC-008).
+    ReservedForFuture { border_id: u32 },
+    /// Case 7: `pc.target_symbols` is empty (NF-004). Rejected before
+    /// R24.1.6a allocation so `minted_ids_per_pc[0]` (consumed by
+    /// R24.1.6c echo) is always well-defined.
+    ZeroArity,
+    // TODO: NR3-003 defer — optional 8th case `TargetSymbolsTooLong
+    // { len: u8 }` mirroring the coordinator-side 16-symbol cap at
+    // `border_resolver.rs:318-322`. The resolver-side assert already
+    // bounds the field; worker-side re-validation is defensive only,
+    // not semantically required under G1. Flag as SF for Stage 5 QA.
 }
 
 impl std::fmt::Display for ProtocolError {
@@ -135,6 +192,13 @@ impl std::fmt::Display for ProtocolError {
             }
             Self::ArchiveValidationFailed(reason) => {
                 write!(f, "rkyv archive validation failed: {}", reason)
+            }
+            Self::MalformedLocalWiring { request_id, reason } => {
+                write!(
+                    f,
+                    "malformed local_wiring in request_id={}: {:?}",
+                    request_id, reason
+                )
             }
         }
     }

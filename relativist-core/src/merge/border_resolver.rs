@@ -71,7 +71,9 @@
 // `#[allow(dead_code)]` + a line pointing to the follow-up task, the
 // same precedent used for `BorderGraph::worker_borders` in
 // `border_graph.rs` (line ~111, R23 reverse index).
-use crate::merge::border_graph::{AddBorderEntry, BorderDelta, BorderGraph, BorderState};
+use crate::merge::border_graph::{
+    AddBorderEntry, BorderDelta, BorderGraph, BorderState, LocalWiringHint, PendingCommutation,
+};
 use crate::net::{AgentId, PortRef, Symbol};
 use crate::partition::types::{Partition, WorkerId};
 
@@ -356,6 +358,54 @@ pub(crate) struct CommutationBatch {
     pub(crate) worker: WorkerId,
     pub(crate) target_symbols: Vec<Symbol>,
     pub(crate) local_wiring: Vec<(u8, u8, PortRef)>,
+}
+
+/// TASK-0401 (D-005 Option A): convert an internal `CommutationBatch`
+/// to the wire-layer [`PendingCommutation`] (NF-001 Shape A).
+///
+/// This is the single source of truth for the `CommutationBatch →
+/// PendingCommutation` transport; both the real TCP-send path (future
+/// work) and the in-process `LocalDeltaDispatch` test harness
+/// (`grid_delta_integration_tests.rs`, TASK-0403) MUST call this helper
+/// instead of inlining the conversion — Option A of TASK-0403's
+/// wire/test-path unification.
+///
+/// Semantics:
+/// - Emits EXACTLY ONE `PendingCommutation` per batch (fan-out
+///   collapse; one PC carries the full `target_symbols` vector).
+/// - `request_id` is fixed to
+///   `encode_request_id(batch.commutation_id, 0)` — slot-0 canonical
+///   correlation anchor per R24.1.6c; the coordinator's
+///   `BorderGraph::register_minted_agents` decodes on the same slot.
+/// - `target_symbols` is a byte-verbatim clone (NF-001 Shape A).
+/// - `local_wiring` is a byte-verbatim 1-to-1 mapping from the
+///   `(u8, u8, PortRef)` tuple shape to the nominal `LocalWiringHint`
+///   shape, preserving emission order (R23a determinism guarantee).
+///   No filtering, no deduplication, no sorting — the worker's
+///   pre-pass owns rejection (R33c, TASK-0402).
+#[allow(dead_code)] // Consumed by TASK-0403 (LocalDeltaDispatch) + the future TCP send path.
+pub(crate) fn commutation_batch_to_pending(batch: &CommutationBatch) -> PendingCommutation {
+    // NF-004: the resolver is believed to never emit empty target_symbols
+    // under G1-correct execution (R33c case 7 / ZeroArity is the worker
+    // hard-reject counterpart). In release builds we trust the resolver;
+    // in debug builds the assert surfaces any such bug at its origin.
+    debug_assert!(
+        !batch.target_symbols.is_empty(),
+        "NF-004: resolver must never emit empty target_symbols (SPEC-19 R33c case 7)"
+    );
+    PendingCommutation {
+        request_id: encode_request_id(batch.commutation_id, 0),
+        target_symbols: batch.target_symbols.clone(),
+        local_wiring: batch
+            .local_wiring
+            .iter()
+            .map(|&(src_slot, src_port, target)| LocalWiringHint {
+                src_slot,
+                src_port,
+                target,
+            })
+            .collect(),
+    }
 }
 
 /// Reference to a port that may not yet have a concrete `AgentId`
@@ -2572,6 +2622,228 @@ mod tests {
 
         let packaged = package_resolutions(vec![r], 2);
         assert_eq!(packaged.len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // TASK-0401 — D-005 Option A: `commutation_batch_to_pending` helper
+    // per-rule transport fidelity tests. See docs/tests/TEST-SPEC-0401.md,
+    // UT-0401-01..06. Verifies the resolver→wire conversion preserves
+    // `target_symbols` + `local_wiring` byte-for-byte + fan-out collapse
+    // (one PC per batch).
+    // -----------------------------------------------------------------
+
+    /// UT-0401-01: CON-DUP batch → single PC carrying full
+    /// `target_symbols` + every `local_wiring` hint in emission order.
+    #[test]
+    fn ut_0401_01_commutation_batch_to_pending_con_dup() {
+        let (mut graph, partitions) =
+            build_two_partition_asymmetric_fixture(Symbol::Con, Symbol::Dup, 0);
+        let mut border_alloc = BorderIdAllocator::from_graph(&graph);
+        let mut commutation_alloc = CommutationIdAllocator::new();
+        let r = resolve_border_redex(
+            &mut graph,
+            &partitions,
+            0,
+            &mut border_alloc,
+            &mut commutation_alloc,
+        );
+
+        // CON-DUP emits two batches (one per worker).
+        assert_eq!(r.pending_commutations.len(), 2);
+        for batch in &r.pending_commutations {
+            let pc = commutation_batch_to_pending(batch);
+            // Fan-out collapse: one PC per batch, full target_symbols
+            // vector.
+            assert_eq!(pc.target_symbols, batch.target_symbols);
+            assert!(!pc.target_symbols.is_empty());
+            // local_wiring is a 1-to-1 order-preserving copy.
+            assert_eq!(pc.local_wiring.len(), batch.local_wiring.len());
+            for (hint, tuple) in pc.local_wiring.iter().zip(batch.local_wiring.iter()) {
+                assert_eq!(hint.src_slot, tuple.0);
+                assert_eq!(hint.src_port, tuple.1);
+                assert_eq!(hint.target, tuple.2);
+            }
+            // request_id at slot-0 (R24.1.6c canonical anchor).
+            assert_eq!(
+                pc.request_id,
+                encode_request_id(batch.commutation_id, 0),
+                "TASK-0401: request_id must encode slot-0 anchor"
+            );
+        }
+    }
+
+    /// UT-0401-02: CON-ERA batch → single PC with `target_symbols ==
+    /// [Era, Era]` and local_wiring preserved.
+    #[test]
+    fn ut_0401_02_commutation_batch_to_pending_con_era() {
+        let (mut graph, partitions) = build_con_era_aux_border_fixture(Symbol::Con, 0, 7);
+        let mut border_alloc = BorderIdAllocator::from_graph(&graph);
+        let mut commutation_alloc = CommutationIdAllocator::new();
+        let r = resolve_border_redex(
+            &mut graph,
+            &partitions,
+            0,
+            &mut border_alloc,
+            &mut commutation_alloc,
+        );
+
+        assert_eq!(r.pending_commutations.len(), 1);
+        let batch = &r.pending_commutations[0];
+        assert_eq!(batch.target_symbols, vec![Symbol::Era, Symbol::Era]);
+        let pc = commutation_batch_to_pending(batch);
+        assert_eq!(pc.target_symbols, vec![Symbol::Era, Symbol::Era]);
+        assert_eq!(pc.local_wiring.len(), batch.local_wiring.len());
+        for (hint, tuple) in pc.local_wiring.iter().zip(batch.local_wiring.iter()) {
+            assert_eq!(hint.src_slot, tuple.0);
+            assert_eq!(hint.src_port, tuple.1);
+            assert_eq!(hint.target, tuple.2);
+        }
+        assert_eq!(pc.request_id, encode_request_id(batch.commutation_id, 0));
+    }
+
+    /// UT-0401-03: DUP-ERA batch → same shape as CON-ERA.
+    #[test]
+    fn ut_0401_03_commutation_batch_to_pending_dup_era() {
+        let (mut graph, partitions) = build_con_era_aux_border_fixture(Symbol::Dup, 0, 7);
+        let mut border_alloc = BorderIdAllocator::from_graph(&graph);
+        let mut commutation_alloc = CommutationIdAllocator::new();
+        let r = resolve_border_redex(
+            &mut graph,
+            &partitions,
+            0,
+            &mut border_alloc,
+            &mut commutation_alloc,
+        );
+
+        assert_eq!(r.pending_commutations.len(), 1);
+        let batch = &r.pending_commutations[0];
+        assert_eq!(batch.target_symbols, vec![Symbol::Era, Symbol::Era]);
+        let pc = commutation_batch_to_pending(batch);
+        assert_eq!(pc.target_symbols, vec![Symbol::Era, Symbol::Era]);
+        assert_eq!(pc.local_wiring.len(), batch.local_wiring.len());
+        assert_eq!(pc.request_id, encode_request_id(batch.commutation_id, 0));
+    }
+
+    /// UT-0401-04: symmetric rules (CON-CON, DUP-DUP, ERA-ERA) emit
+    /// ZERO `CommutationBatch` entries; no PCs reach the wire. The
+    /// absence is the canonical G1 regression canary.
+    #[test]
+    fn ut_0401_04_symmetric_rules_emit_no_pending_commutations() {
+        for sym in [Symbol::Con, Symbol::Dup, Symbol::Era] {
+            let (mut graph, partitions) = build_two_partition_same_symbol_fixture(sym, 0);
+            let mut border_alloc = BorderIdAllocator::from_graph(&graph);
+            let mut commutation_alloc = CommutationIdAllocator::new();
+            let r = resolve_border_redex(
+                &mut graph,
+                &partitions,
+                0,
+                &mut border_alloc,
+                &mut commutation_alloc,
+            );
+            assert_eq!(
+                r.pending_commutations.len(),
+                0,
+                "symmetric rule {:?} MUST NOT emit pending commutations",
+                sym
+            );
+            let packaged = package_resolutions(vec![r], 2);
+            let pc_count_on_wire: usize = packaged
+                .iter()
+                .map(|(_, d)| {
+                    d.pending_commutations
+                        .iter()
+                        .map(|b| {
+                            // Transport path would convert each batch;
+                            // since the list is empty this is a trivial
+                            // guard — pc_count_on_wire stays 0.
+                            let _pc = commutation_batch_to_pending(b);
+                            1
+                        })
+                        .sum::<usize>()
+                })
+                .sum();
+            assert_eq!(
+                pc_count_on_wire, 0,
+                "symmetric rule {:?} MUST produce zero wire PCs",
+                sym
+            );
+        }
+    }
+
+    /// UT-0401-05: synthetic 3-slot batch preserves `local_wiring`
+    /// order and each tuple's `target` byte-for-byte. Exercises both
+    /// slot-marker placeholder AND concrete-id target categories.
+    #[test]
+    fn ut_0401_05_commutation_batch_to_pending_preserves_local_wiring_order_verbatim() {
+        let batch = CommutationBatch {
+            commutation_id: 7,
+            worker: 0,
+            target_symbols: vec![Symbol::Con, Symbol::Con, Symbol::Con],
+            local_wiring: vec![
+                (2, 1, PortRef::AgentPort(SLOT_MARKER_BASE, 2)),
+                (0, 2, PortRef::AgentPort(99, 0)),
+                (1, 1, PortRef::AgentPort(SLOT_MARKER_BASE + 2, 1)),
+            ],
+        };
+        let pc = commutation_batch_to_pending(&batch);
+        assert_eq!(pc.local_wiring.len(), 3);
+        assert_eq!(pc.local_wiring[0].src_slot, 2);
+        assert_eq!(pc.local_wiring[0].src_port, 1);
+        assert_eq!(
+            pc.local_wiring[0].target,
+            PortRef::AgentPort(SLOT_MARKER_BASE, 2)
+        );
+        assert_eq!(pc.local_wiring[1].src_slot, 0);
+        assert_eq!(pc.local_wiring[1].src_port, 2);
+        assert_eq!(pc.local_wiring[1].target, PortRef::AgentPort(99, 0));
+        assert_eq!(pc.local_wiring[2].src_slot, 1);
+        assert_eq!(pc.local_wiring[2].src_port, 1);
+        assert_eq!(
+            pc.local_wiring[2].target,
+            PortRef::AgentPort(SLOT_MARKER_BASE + 2, 1)
+        );
+        assert_eq!(
+            pc.target_symbols,
+            vec![Symbol::Con, Symbol::Con, Symbol::Con]
+        );
+        assert_eq!(pc.request_id, encode_request_id(7, 0));
+
+        // EC-2: empty local_wiring → empty hints (R48b legal on wire).
+        let empty_batch = CommutationBatch {
+            commutation_id: 11,
+            worker: 0,
+            target_symbols: vec![Symbol::Era],
+            local_wiring: Vec::new(),
+        };
+        let empty_pc = commutation_batch_to_pending(&empty_batch);
+        assert!(empty_pc.local_wiring.is_empty());
+    }
+
+    /// UT-0401-06: `request_id` encodes slot-0 anchor for the
+    /// coordinator's `decode_request_id` to return `agent_slot == 0`
+    /// on the round-N+2 echo match. Fan-out collapse invariant.
+    #[test]
+    fn ut_0401_06_commutation_batch_to_pending_request_id_matches_encode_slot_zero() {
+        for commutation_id in [0u64, 42u64, 0x0FFF_FFFF_u64] {
+            let batch = CommutationBatch {
+                commutation_id,
+                worker: 0,
+                target_symbols: vec![Symbol::Dup, Symbol::Con],
+                local_wiring: Vec::new(),
+            };
+            let pc = commutation_batch_to_pending(&batch);
+            assert_eq!(pc.request_id, encode_request_id(commutation_id, 0));
+            let (decoded_id, decoded_slot) = decode_request_id(pc.request_id);
+            assert_eq!(
+                decoded_slot, 0,
+                "fan-out collapse: slot MUST decode to 0 (canonical anchor)"
+            );
+            assert_eq!(
+                decoded_id as u64 & 0x0FFF_FFFF,
+                commutation_id & 0x0FFF_FFFF,
+                "commutation_id low-28 must round-trip"
+            );
+        }
     }
 
     #[test]

@@ -866,3 +866,131 @@ async fn qa_probe_q8_populated_free_port_index_round_trip() {
         "Q8 ArchivedHashMap round-trip OK"
     );
 }
+
+// -----------------------------------------------------------------
+// TASK-0400 — D-005 Option A zero-copy rkyv round-trip tests.
+// See docs/tests/TEST-SPEC-0400.md, UT-0400-07..09.
+// -----------------------------------------------------------------
+
+/// UT-0400-07: Shape A `PendingCommutation` round-trips via rkyv's
+/// validating `access` API. Exercises `Vec<Symbol>` + nested
+/// `Vec<LocalWiringHint>` archive layout (R34 rkyv gate).
+#[test]
+fn ut_0400_07_pending_commutation_rkyv_access_roundtrip_shape_a() {
+    use crate::merge::{LocalWiringHint, PendingCommutation};
+
+    let slot_marker_base = u32::MAX - 10_000;
+    let pc_in = PendingCommutation {
+        request_id: 0x1234_5678,
+        target_symbols: vec![Symbol::Dup, Symbol::Con],
+        local_wiring: vec![
+            LocalWiringHint {
+                src_slot: 0,
+                src_port: 1,
+                target: PortRef::AgentPort(slot_marker_base + 1, 2),
+            },
+            LocalWiringHint {
+                src_slot: 1,
+                src_port: 1,
+                target: PortRef::AgentPort(17, 0),
+            },
+        ],
+    };
+
+    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&pc_in).expect("serialize");
+    let archived =
+        rkyv::access::<rkyv::Archived<PendingCommutation>, rkyv::rancor::Error>(bytes.as_ref())
+            .expect("access");
+    let pc_out: PendingCommutation =
+        rkyv::deserialize::<PendingCommutation, rkyv::rancor::Error>(archived)
+            .expect("deserialize");
+    assert_eq!(pc_out, pc_in);
+    assert_eq!(pc_out.target_symbols.len(), 2);
+    assert_eq!(pc_out.local_wiring.len(), 2);
+}
+
+/// UT-0400-08: `LocalWiringHint` standalone rkyv round-trip across the
+/// three target categories (placeholder / concrete / FreePort). Wire
+/// layer is shape-agnostic about R33c case 6 — rejection is a worker
+/// semantic responsibility (TASK-0402).
+#[test]
+fn ut_0400_08_local_wiring_hint_rkyv_access_roundtrip() {
+    use crate::merge::LocalWiringHint;
+
+    let slot_marker_base = u32::MAX - 10_000;
+    let hints = vec![
+        LocalWiringHint {
+            src_slot: 0,
+            src_port: 1,
+            target: PortRef::AgentPort(slot_marker_base, 0),
+        },
+        LocalWiringHint {
+            src_slot: 1,
+            src_port: 2,
+            target: PortRef::AgentPort(123, 0),
+        },
+        LocalWiringHint {
+            src_slot: 0,
+            src_port: 2,
+            target: PortRef::FreePort(999),
+        },
+    ];
+
+    for h_in in &hints {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(h_in).expect("serialize");
+        let archived =
+            rkyv::access::<rkyv::Archived<LocalWiringHint>, rkyv::rancor::Error>(bytes.as_ref())
+                .expect("access");
+        let h_out: LocalWiringHint =
+            rkyv::deserialize::<LocalWiringHint, rkyv::rancor::Error>(archived)
+                .expect("deserialize");
+        assert_eq!(&h_out, h_in);
+        assert_eq!(h_out.src_slot, h_in.src_slot);
+        assert_eq!(h_out.src_port, h_in.src_port);
+        assert_eq!(h_out.target, h_in.target);
+    }
+}
+
+/// UT-0400-09: rkyv `bytecheck` path rejects a corrupted archive
+/// (length-prefix flipped inside `target_symbols` Vec). SPEC-18 Q1
+/// contract extension to Shape A (R34 bytecheck gate).
+#[test]
+fn ut_0400_09_pending_commutation_rkyv_bytecheck_rejects_corrupted_length_byte() {
+    use crate::merge::{LocalWiringHint, PendingCommutation};
+
+    let pc_in = PendingCommutation {
+        request_id: 7,
+        target_symbols: vec![Symbol::Dup, Symbol::Con],
+        local_wiring: vec![LocalWiringHint {
+            src_slot: 0,
+            src_port: 1,
+            target: PortRef::AgentPort(5, 0),
+        }],
+    };
+    let clean = rkyv::to_bytes::<rkyv::rancor::Error>(&pc_in).expect("serialize");
+    // Baseline: clean archive validates successfully.
+    let ok_access =
+        rkyv::access::<rkyv::Archived<PendingCommutation>, rkyv::rancor::Error>(clean.as_ref());
+    assert!(ok_access.is_ok(), "baseline clean archive must validate");
+
+    // Flip every candidate byte in the archive; at least one MUST
+    // trigger `rkyv::access` to return Err. The relative-pointer /
+    // length-prefix positions are deterministic but version-dependent;
+    // we probe each offset and assert at least one rejects. This
+    // guards the bytecheck path even if internal layout shifts.
+    let mut any_rejected = false;
+    for idx in 0..clean.len() {
+        let mut corrupted: Vec<u8> = clean.as_ref().to_vec();
+        corrupted[idx] ^= 0xFF;
+        let result = rkyv::access::<rkyv::Archived<PendingCommutation>, rkyv::rancor::Error>(
+            corrupted.as_slice(),
+        );
+        if result.is_err() {
+            any_rejected = true;
+        }
+    }
+    assert!(
+        any_rejected,
+        "bytecheck must reject at least one single-byte corruption (SPEC-18 Q1 / R34)"
+    );
+}

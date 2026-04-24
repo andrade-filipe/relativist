@@ -132,15 +132,40 @@ This section specifies the complete stateful worker protocol (ROADMAP 2.26).
 - `resolved_borders: Vec<u32>` -- border IDs whose redexes have been resolved at the coordinator. The worker MUST remove the corresponding `FreePort` entries from its partition (the border wire no longer exists after resolution).
 - `new_borders: Vec<(u32, PortRef)>` -- new border entries created by CON-DUP expansion at the coordinator. The worker MUST add corresponding `FreePort` entries to its partition.
 - `local_reconnections: Vec<LocalReconnection>` -- internal port reconnections (DC-B3) that the worker must apply to its stored partition. Each entry is `(agent_id, port, new_target)`, meaning "the port `port` of agent `agent_id` is now connected to `new_target`; update the local port array accordingly." These arise when a CON-DUP border-redex resolution at the coordinator produces new agents whose auxiliary ports must be rewired to existing local agents in the worker's partition (non-border internal reconnections that neither `border_deltas`, `resolved_borders`, nor `new_borders` can express).
-- `pending_commutations: Vec<PendingCommutation>` -- AgentId allocation requests (DC-B5). Each entry is `(request_id, symbol_type, arity)`, meaning "allocate 1 new AgentId for a new `symbol_type` agent of the given `arity` and echo it back in the next `RoundResult.minted_agents` paired with this `request_id`." The worker MUST allocate from its own reserved `id_range` (SPEC-04) and MUST NOT treat the minted agents as reducible in the round in which they are created if their principal port is a `FreePort(new_bid)` (consistent with DC-B4 border pinning).
+- `pending_commutations: Vec<PendingCommutation>` -- AgentId allocation requests (DC-B5). Each entry carries `(request_id, target_symbols, local_wiring)` where `target_symbols: Vec<Symbol>` (defined in §3.4 R33, NF-001 Shape A) lists the per-slot symbols of the `target_symbols.len()` siblings the worker MUST mint, and `local_wiring: Vec<LocalWiringHint>` (defined in §3.4 R33) carries the intra-worker edges that the worker MUST apply to those freshly minted agent(s) after allocation, using slot-marker placeholders (see R23a) for sibling references inside the same `PendingCommutation`. Each request means "allocate `target_symbols.len()` new AgentIds (slot `k` minted as a `target_symbols[k]` agent of its native arity), apply the `local_wiring` edges on those agents' ports, and echo the slot-0 minted id back in the next `RoundResult.minted_agents` paired with this `request_id`." The worker MUST allocate from its own reserved `id_range` (SPEC-04) and MUST NOT treat the minted agents as reducible in the round in which they are created if their principal port is a `FreePort(new_bid)` (consistent with DC-B4 border pinning). The FreePort-pinning clause gates ONLY targets of kind `FreePort`; principal-principal redexes between minted siblings produced by `local_wiring` are in-round reducible (see R23a clause 5).
+**(MUST)**
+
+**R23a. Slot-to-AgentId substitution and ordering (DC-B5 local wiring).**
+
+The `local_wiring` vector inside each `PendingCommutation` uses a compact per-request slot namespace that the worker MUST resolve to concrete `AgentId` values before calling `Net::connect` (§3.4 R33b). The following five clauses specify the substitution algorithm:
+
+1. **Per-request scope.** `local_wiring` slots are local to the owning `PendingCommutation` (they name siblings inside one `CommutationBatch`). Slots are NOT global to the round. A slot index `s` in batch A has no relationship to slot `s` in batch B. The worker MUST NOT cross-reference slot namespaces across different `PendingCommutation` entries in the same `RoundStart`.
+2. **Mint-then-wire ordering.** For each `PendingCommutation` in `RoundStart.pending_commutations`, the worker MUST allocate all `arity` sibling `AgentId` values (via `Net::create_agent`, consuming from the worker's `IdRange` monotonically) BEFORE applying any entry of that request's `local_wiring`. The per-request mint vector `minted_ids_per_pc[k]` holds the `AgentId` allocated for slot `k` of that request.
+3. **Slot-marker decoding.** For every `LocalWiringHint { src_slot, src_port, target }` where `target = PortRef::AgentPort(x, p)` with `x >= SLOT_MARKER_BASE`, the worker MUST replace `x` with `minted_ids_per_pc[x - SLOT_MARKER_BASE]` before calling `connect`. If `(x - SLOT_MARKER_BASE) >= pc.target_symbols.len()` the worker MUST reject with `ProtocolError::MalformedLocalWiring` (R33c case 3, symmetric to R48a).
+4. **Concrete-AgentId pass-through.** For every `LocalWiringHint { src_slot, src_port, target }` where `target = PortRef::AgentPort(x, p)` with `x < SLOT_MARKER_BASE`, the worker MUST treat `x` as a concrete live `AgentId` in its own partition and pass it unchanged to `connect`. The worker MAY (debug-only) assert that the agent exists in `partition.subnet`; SHOULD-warn (do not reject) on a dangling live id, for symmetry with the resolver's lenient dangling-FreePort path in `border_resolver::emit_erasure_principal`.
+5. **In-round reducibility of minted-to-minted principal pairs.** When `local_wiring` connects two minted principal ports (case (a) below), `Net::connect` enqueues the active pair on the local redex queue (`net/core.rs:198-200`). The worker MUST process these redexes in the same round inside `reduce_all` (R24.2). This is consistent with CON-DUP being the only agent-count-increasing rule and with T4 strong confluence: in-round consumption of a minted sibling pair collapses to the same normal form as deferring it. The FreePort-pinning clause in R23 does NOT apply here because the pinned case targets border FreePorts, not local principal pairs.
+6. **Duplicate-key detection site (NF-003).** Before the first call to `Net::connect` for a given `PendingCommutation`, the worker MUST construct a `HashSet<(u8, u8)>` over `(hint.src_slot, hint.src_port)` tuples for every entry in `pc.local_wiring`. On insert collision the worker MUST reject with `MalformedLocalWiringReason::DuplicateSourcePort` (R33c case 5) BEFORE any wiring is applied. This ensures a malformed batch is never partially applied -- `Net::connect`'s last-write-wins semantics would otherwise silently mask the duplicate. The check is a pure local pre-pass with no interaction with `reduce_all`.
+
+**R23a determinism guarantee.** The entries in `local_wiring` MUST be applied sequentially in the emitted order. `bincode`'s default `Vec<T>` encoding preserves element order, so this is a spec pin (not a wire-format change). The resolver emits `local_wiring` in the deterministic order of `CommutationBatch` construction (`border_resolver.rs:820-866` for CON-DUP, `:1023-1080` for CON-ERA/DUP-ERA); the worker MUST NOT reorder. A reordered `local_wiring` is a protocol violation and MUST be rejected via R33c case 5 when detectable (e.g., duplicate `(src_slot, src_port)` keys after canonicalization), per the pre-pass site pinned in R23a clause 6.
+
 **(MUST)**
 
 **R24.** At each delta round, the worker MUST:
-1. Apply the received border deltas to its stored partition (update port connections, add/remove FreePort entries).
-2. Run `reduce_all` on the stored partition.
+1. Apply the received `RoundStart` instructions to its stored partition in the following strict sub-order:
+   1. Apply `border_deltas` (update port connections on existing border FreePorts).
+   2. Remove `resolved_borders` (drop the corresponding `FreePort` entries).
+   3. Insert `new_borders` (add the coordinator-minted FreePort entries).
+   4. Apply `local_reconnections` (DC-B3) on pre-existing agents.
+   5. For each `PendingCommutation pc` in `pending_commutations` (DC-B5), execute the three-step mint-then-wire protocol:
+      - **R24.1.6a (mint):** allocate `pc.target_symbols.len()` fresh `AgentId` values from the worker's `IdRange` via `Net::create_agent`. For each `PendingCommutation pc`, the agent at slot `k` MUST be minted with symbol `pc.target_symbols[k]` taken directly from the wire payload (NF-001 Shape A); the worker MUST NOT attempt to reconstruct slot symbols from resolver-side batch layouts. Store the minted ids in `minted_ids_per_pc` in slot order.
+      - **R24.1.6b (wire):** apply `pc.local_wiring` in the emitted order (R23a). For each `LocalWiringHint`, compute the source `PortRef::AgentPort(minted_ids_per_pc[hint.src_slot], hint.src_port)`, decode the target per R23a clause 3 or 4, and call `Net::connect(source, target)`. This is the sole sanctioned primitive for applying `local_wiring`; `Net` does NOT expose a `wire_agents` method and Stage 1 MUST NOT add one.
+      - **R24.1.6c (echo):** append `MintedAgent { request_id: pc.request_id, minted_agent_id: minted_ids_per_pc[0] }` to the response buffer. The echoed id is the mint-time id (pre-reduction). Even if `reduce_all` (R24.2) consumes the minted agent within the same round, the echoed id MUST be the one allocated in R24.1.6a. D-004's `register_minted_agents` depends on this semantics.
+2. Run `reduce_all` on the stored partition (existing behaviour).
 3. Rebuild the `free_port_index` (SPEC-05 R20-R22).
 4. Compute border deltas: for each `border_id` in its `free_port_index`, if the port connected to `FreePort(border_id)` has changed since the last report, emit a delta `(border_id, new_endpoint)`.
-5. Send a `RoundResult` with the computed deltas and stats.
+5. Send a `RoundResult` with the computed deltas, the echoed `minted_agents`, and stats.
+
+**R24 ordering invariant.** The five sub-steps of step 1 above MUST run to completion before step 2 (`reduce_all`). In particular, `Net::connect` inside R24.1.6b may enqueue principal-principal redexes between minted siblings; these redexes MUST NOT be drained until R24.2. This preserves R21's single-round semantics and R38's recoverability argument: the distributed intermediate state at the start of R24.2 is isomorphic to the sequential state after the coordinator applied the equivalent `CommutationBatch` centrally.
 **(MUST)**
 
 **R25.** The worker MUST track the previous state of each border port to compute deltas. The worker MUST maintain a `previous_border_state: HashMap<u32, PortRef>` that records the last-reported endpoint for each border ID. After `reduce_all` and `rebuild_free_port_index`, the worker compares the current `free_port_index` against `previous_border_state` to identify changes. Only changed entries are emitted as deltas. **(MUST)**
@@ -170,7 +195,7 @@ This section defines the new `Message` variants required by the delta protocol. 
 | Discriminant | Variant | Direction | Payload |
 |:---:|---------|:---------:|---------|
 | 7 | `InitialPartition` | C->W | `round: u32` (always 0), `partition: Partition` |
-| 8 | `RoundStart` | C->W | `round: u32`, `border_deltas: Vec<BorderDelta>`, `resolved_borders: Vec<u32>`, `new_borders: Vec<(u32, PortRef)>`, `local_reconnections: Vec<LocalReconnection>` (DC-B3), `pending_commutations: Vec<PendingCommutation>` (DC-B5) |
+| 8 | `RoundStart` | C->W | `round: u32`, `border_deltas: Vec<BorderDelta>`, `resolved_borders: Vec<u32>`, `new_borders: Vec<(u32, PortRef)>`, `local_reconnections: Vec<LocalReconnection>` (DC-B3), `pending_commutations: Vec<PendingCommutation>` (DC-B5, each PC carries `local_wiring: Vec<LocalWiringHint>` -- see R33) |
 | 10 | `FinalStateRequest` | C->W | `round: u32` |
 
 **(MUST)**
@@ -211,41 +236,150 @@ pub struct LocalReconnection {
 }
 
 /// DC-B5: AgentId allocation request sent from coordinator to worker via RoundStart.
-/// Workers allocate a fresh AgentId per request and echo it back in RoundResult.minted_agents.
+/// Workers allocate one or more fresh AgentIds per request (one per sibling slot
+/// inside the batch), apply `local_wiring` edges, and echo the slot-0 minted id
+/// back in `RoundResult.minted_agents`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "zero-copy", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct PendingCommutation {
     /// Correlation ID, unique within this round -- coordinator picks.
     pub request_id: u32,
-    /// Symbol type for the new agent (CON, DUP, ERA).
-    pub symbol_type: Symbol,
-    /// Arity of the new agent (0 for ERA, 1 for CON/DUP principal, etc.).
-    pub arity: u8,
+    /// Per-slot symbols for the siblings the worker MUST mint for this request
+    /// (NF-001 Shape A). Slot `k` is minted as a `target_symbols[k]` agent; the
+    /// vector mirrors the resolver's `CommutationBatch.target_symbols` 1-to-1.
+    /// Replaces the pre-NF-001 `(symbol_type, arity)` pair, which lost slot
+    /// 1..N symbols on heterogeneous CON-DUP mints (`target_symbols ==
+    /// [Dup, Con]`). Length is bounded by 16 via the `encode_request_id`
+    /// assertion at `border_resolver.rs:318-322` (slot-marker namespace
+    /// reservation); the effective `arity` of the request is
+    /// `target_symbols.len()` and is always >= 1 (see R33 NF-004 clause).
+    pub target_symbols: Vec<Symbol>,
+    /// Intra-worker edges the worker MUST apply to the minted sibling(s) after
+    /// allocation and before `reduce_all`. Entries reference siblings by
+    /// slot-marker (see R23a) or concrete local AgentIds. `FreePort` targets
+    /// are reserved and rejected via R33c (see R48a and SC-008).
+    pub local_wiring: Vec<LocalWiringHint>,
+}
+```
+
+**`target_symbols.len() == 0` is a protocol violation (NF-004).** Every `PendingCommutation` MUST mint at least one sibling; `target_symbols` MUST be non-empty. The worker MUST reject an empty `target_symbols` with `MalformedLocalWiringReason::ZeroArity` (R33c case 7). Rationale: the resolver never emits a zero-sibling batch (every rule in §3.2 mints >= 1 agent); R24.1.6c's `MintedAgent` echo assumes `minted_ids_per_pc[0]` is well-defined; and the symmetry with R48b (which legalizes empty `local_wiring` but NOT empty `target_symbols`) keeps the "0-mint, N-wire" degenerate case out of the wire grammar.
+
+```rust
+/// DC-B5: one intra-worker edge the worker MUST apply to a freshly minted
+/// sibling agent inside a `PendingCommutation`. Mirrors the resolver's
+/// `(u8, u8, PortRef)` emission shape 1-to-1, preserving the slot-marker
+/// placeholder encoding used by the resolver when the concrete worker
+/// AgentId is not yet known (`border_resolver.rs:820-866`).
+///
+/// The `(u8, u8, u8, u8)` four-byte shape is EXPLICITLY PROHIBITED: `AgentId`
+/// is `u32`, so a one-byte id field would truncate any live agent id >= 256
+/// into an adjacent id, producing silent misrouting of the minted agent's
+/// port in every production fixture (`id_range.start` is typically in the
+/// hundreds already). Keeping `target: PortRef` matches the resolver field
+/// at `border_resolver.rs:358` without lossy re-encoding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "zero-copy", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct LocalWiringHint {
+    /// Slot index of the minted sibling whose port is the source of this edge.
+    /// Range `[0, pc.target_symbols.len())` of the owning `PendingCommutation`
+    /// (R33c case 1).
+    pub src_slot: u8,
+    /// Port on the minted sibling: 0 = principal, 1..=sibling_arity = aux.
+    /// Range validation per R33c case 2.
+    pub src_port: u8,
+    /// Target endpoint. Three target categories are distinguished at the
+    /// receiving worker (R23a):
+    /// (a) **sibling-slot placeholder** -- `AgentPort(SLOT_MARKER_BASE + s, p)`
+    ///     where `s` identifies another sibling of the same request. Decoded
+    ///     per R23a clause 3. ALLOWED.
+    /// (b) **concrete local agent** -- `AgentPort(live_id, p)` with
+    ///     `live_id < SLOT_MARKER_BASE` identifying a pre-existing agent in
+    ///     the worker's partition. Pass-through per R23a clause 4. ALLOWED.
+    /// (c) **FreePort** -- `FreePort(bid)`. RESERVED; rejected via R33c case 6.
+    ///     All cross-partition edges MUST be expressed as `PendingNewBorder`
+    ///     on the containing `BorderResolution`, never as `local_wiring`
+    ///     (see R48a and SC-008).
+    pub target: PortRef,
 }
 
 /// DC-B5: Worker's response to a PendingCommutation request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "zero-copy", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct MintedAgent {
     /// Matches the PendingCommutation.request_id from the RoundStart.
     pub request_id: u32,
-    /// The AgentId the worker has allocated for this request.
+    /// The AgentId the worker has allocated for slot 0 of this request
+    /// (mint-time id, not post-reduction id; see R24.1.6c and SC-010).
     pub minted_agent_id: AgentId,
 }
 ```
-**(MUST)**
 
-**R34.** All new message variants MUST satisfy the same serialization requirements as existing variants: serde + bincode (SPEC-06 R4, R11), round-trip identity (SPEC-06 R14), and CRC32 integrity (SPEC-06 R6-R10). **(MUST)**
+**R33b. Sanctioned application primitive.** The worker MUST apply every entry of `PendingCommutation.local_wiring` via `Net::connect(source, target)` (`net/core.rs:177-200`). `Net::connect` is already documented as O(1), idempotent under the bidirectional-edge invariant, and automatic redex-queue aware (principal-principal pairs enqueue to `redex_queue`, consistent with R23a clause 5). Stage 1 MUST NOT introduce a new `Net::wire_agents` primitive; any such introduction is an architectural breach of the surgical scope of D-005. Note that `Net::connect`'s `FreePort`-redirect bookkeeping branch (`net/core.rs:186-194`) cannot be triggered by `local_wiring` because FreePort targets are rejected at R33c case 6, not applied.
 
-**R35.** The `InitialPartition` and `FinalStateResult` variants carry full `Partition` payloads and MUST benefit from all wire optimizations: `CompactSubnet` encoding (SPEC-04), bincode v2 varint encoding (SPEC-18 R1-R3), and optional LZ4 compression (SPEC-18 R8-R11). **(MUST)**
+**R33c. Error path.** The worker MUST reject a `PendingCommutation` whose `local_wiring` is internally inconsistent with a new `ProtocolError::MalformedLocalWiring { request_id: u32, reason: MalformedLocalWiringReason }`. The `reason` enum MUST enumerate at minimum the following seven cases (`symbol_count` below is a shorthand for `pc.target_symbols.len()`):
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MalformedLocalWiringReason {
+    /// Case 1 (MUST reject): `src_slot >= pc.target_symbols.len()` -- names
+    /// a sibling slot that the request did not declare.
+    SrcSlotOutOfRange { src_slot: u8, symbol_count: u8 },
+    /// Case 2 (MUST reject): `src_port` exceeds the port count of the
+    /// symbol at `src_slot` (CON=2, DUP=2, ERA=0; principal port = index 0).
+    SrcPortOutOfRange { src_slot: u8, src_port: u8 },
+    /// Case 3 (MUST reject): sibling-slot placeholder target with
+    /// `sibling_slot >= pc.target_symbols.len()` -- mirrors R48a (stray
+    /// slot-marker).
+    TargetSiblingOutOfRange { sibling_slot: u8, symbol_count: u8 },
+    /// Case 4 (SHOULD warn, not reject): concrete-AgentId target where the
+    /// id is absent from the worker's partition. Symmetric to the resolver's
+    /// lenient dangling-FreePort path at `border_resolver.rs:1061-1077`.
+    /// Reported via `tracing::warn!`; the edge is applied anyway and logged.
+    DanglingConcreteAgent { agent_id: AgentId, port: u8 },
+    /// Case 5 (MUST reject): duplicate `(src_slot, src_port)` keys in the
+    /// same request -- two entries trying to rewrite the same minted port.
+    /// `Net::connect`'s last-write-wins semantics would silently mask this.
+    /// Detection site pinned by R23a clause 6 (HashSet pre-pass).
+    DuplicateSourcePort { src_slot: u8, src_port: u8 },
+    /// Case 6 (MUST reject): `target = PortRef::FreePort(_)`. RESERVED for
+    /// future wire break; today all cross-partition edges MUST surface as
+    /// `PendingNewBorder` on the containing `BorderResolution` (see R48a,
+    /// SC-008).
+    ReservedForFuture { border_id: u32 },
+    /// Case 7 (MUST reject): `pc.target_symbols` is empty (NF-004). Every
+    /// `PendingCommutation` MUST mint at least one sibling; a zero-mint
+    /// request is a protocol violation. Rejected before R24.1.6a allocation
+    /// so `minted_ids_per_pc[0]` (consumed by R24.1.6c echo) is always
+    /// well-defined for non-rejected requests.
+    ZeroArity,
+}
+```
+
+Case 4 is a WARN (not a reject) for symmetry with the resolver-side leniency. Cases 1, 2, 3, 5, 6, 7 are hard rejects: the worker MUST abort the round, emit `RegisterNack { reason: MalformedLocalWiring(...) }`, and the coordinator MUST treat this as a protocol violation consistent with R48's stray-token rule (NACK the worker).
+
+**(MUST for cases 1, 2, 3, 5, 6, 7 reject; SHOULD for case 4 warn)**
+
+**R34.** All new message variants MUST satisfy the same serialization requirements as existing variants: serde + bincode (SPEC-06 R4, R11), round-trip identity (SPEC-06 R14), and CRC32 integrity (SPEC-06 R6-R10). This requirement extends verbatim to `LocalWiringHint` and the updated `PendingCommutation`. In particular: (a) `LocalWiringHint` MUST derive `#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]` under `--features zero-copy` and pass `bytecheck`/`CheckBytes` validation via `rkyv::access` (SPEC-18 Q1); the same derive MUST be applied to `PendingCommutation` (already present) and the per-slot `Symbol` element type carried inside `target_symbols: Vec<Symbol>` (NF-001 Shape A) -- `Symbol` is a `#[repr(u8)]` enum, so its archived form is 1-byte-aligned and the enclosing `Vec<Symbol>` does not perturb the existing 4-byte alignment imposed by `PortRef` inside `LocalWiringHint`; (b) the alignment audit of `Partition` archived size (SPEC-18 Q5) MUST be re-baselined because `(u8, u8, PortRef)` forces 4-byte alignment via the `u32` payload inside `PortRef`, whereas the rejected `(u8, u8, u8, u8)` shape would have been 1-byte aligned; (c) the `--features zero-copy` test baseline on close of D-005 MUST be at least 1192 (up from 1186), adding at minimum: +1 round-trip test for `LocalWiringHint`, +1 corrupt-bytes rejection test, +1 slot-marker substitution integration test, +3 tests for `MalformedLocalWiringReason` cases 1, 2/3, and 5 (case 6 is covered by R48a's test; case 4 is a warn, not an error path; case 7 ZeroArity SHOULD add +1 rejection test). **(MUST)**
+
+**R35.** The `InitialPartition` and `FinalStateResult` variants carry full `Partition` payloads and MUST benefit from all wire optimizations: `CompactSubnet` encoding (SPEC-04), bincode v2 varint encoding (SPEC-18 R1-R3), and optional LZ4 compression (SPEC-18 R8-R11). The R35 exemption carving out wire optimization from `InitialPartition`/`FinalStateResult` does NOT apply to `RoundStart.pending_commutations.local_wiring`: that field lives on the hot path of every delta round and MUST participate in all SPEC-18 R20-R27 rkyv optimizations in the same way as `border_deltas` and `resolved_borders`. **(MUST)**
 
 **R36.** The `RoundStart` and `RoundResult` variants carry only border deltas and stats. These payloads are expected to be small (single-digit percent of partition size for most workloads). LZ4 compression SHOULD still be applied when the payload exceeds the compression threshold (SPEC-18 R9), but for typical delta payloads below the threshold, compression SHOULD be skipped. **(SHOULD)**
 
-**R37.** The discriminant assignments in R31 and R32 MUST be coordinated with SPEC-18. If SPEC-18 assigns different discriminants to these variants, SPEC-19 defers to the coordinated numbering. The requirement is that all delta protocol variants are appended at the end of the enum (SPEC-06 R5) and assigned stable discriminants. **(MUST)**
+**R37.** The discriminant assignments in R31 and R32 MUST be coordinated with SPEC-18. If SPEC-18 assigns different discriminants to these variants, SPEC-19 defers to the coordinated numbering. The requirement is that all delta protocol variants are appended at the end of the enum (SPEC-06 R5) and assigned stable discriminants. Additionally, because the D-005 amendment grows `PendingCommutation` with a new `Vec<LocalWiringHint>` field (bincode does NOT tolerate missing trailing fields on the decode side -- it returns a deserialization error), the wire protocol version MUST be bumped: `PROTOCOL_VERSION` at `protocol/coordinator.rs:570` MUST increment from `2` to `3`. The existing `HandshakeAck` rejection path (`protocol/coordinator.rs:66-81`) already handles version mismatch by closing the connection with a `RegisterNack`; no additional migration code is required. Production cost is zero: v1 is frozen, v2 is dev-branch only, no over-the-wire v2 coordinator currently exists. The version check fires symmetrically (NF-002): a worker connecting with `protocol_version == N` to a coordinator whose `PROTOCOL_VERSION == M != N` is rejected during `Register` regardless of which side is older. Both sides validate against their own `PROTOCOL_VERSION` constant. No v2 coordinator can reach `PendingCommutation` decode with a v3 worker (or vice versa) because `Register` is the first message of every session; mid-session bincode-decode failures on the new trailing `Vec<LocalWiringHint>` field therefore cannot occur in production, and implementers MUST NOT add defensive decode-retry paths for that case. **(MUST)**
 
 **R48. Agent ID allocation coordination invariant (DC-B5).**
 
 The coordinator MUST allocate `request_id` values from a monotonically increasing counter scoped to the BSP run (not per-round). Each worker MUST allocate AgentId values from its own reserved AgentId range (SPEC-05 partitions the AgentId space by partition index; workers MUST NOT overlap the coordinator-reserved range `u32::MAX - 10_000 .. u32::MAX`, which is reserved for future use). The coordinator MUST treat a `MintedAgent` response whose `request_id` does not match any outstanding `PendingCommutation` as a protocol violation (nack the worker). **(MUST)**
 
 *Note on numbering: this requirement is labelled R48 because R44-R47 were already assigned to §3.6 and §3.7 at the time of the initial SPEC-19 draft. The amendment owner (DC-B5) originally named this "R44"; the binding identifier is R48. All cross-references in task bundles, reviews, and amendment memos referring to "R44 (DC-B5)" MUST be read as R48.*
+
+**R48a. Stray slot-marker guard in `local_wiring` (DC-B5, SC-007).**
+
+The worker MUST reject, with `ProtocolError::MalformedLocalWiring { reason: MalformedLocalWiringReason::TargetSiblingOutOfRange { sibling_slot, symbol_count } }` (R33c case 3), any `PendingCommutation` whose `local_wiring` contains a sibling-slot placeholder target `PortRef::AgentPort(x, _)` with `x >= SLOT_MARKER_BASE` and `(x - SLOT_MARKER_BASE) >= pc.target_symbols.len()`. This is the wire-layer symmetric of R48's coordinator-side stray-token guard on `MintedAgent.request_id`: the resolver's `encode_request_id` assertion (`border_resolver.rs:318-322`) protects the resolver-output boundary, and R48a protects the worker-input boundary. The resolver's slot-marker namespace is capped at 16 per batch via DC-B5's `CommutationBatch.target_symbols` length bound; any `sibling_slot` at or above `pc.target_symbols.len()` is a resolver bug or a corrupted wire, never a legal emission. **(MUST)**
+
+**R48b. Empty `local_wiring` is legal (DC-B5, SC-011).**
+
+A `PendingCommutation` MAY carry an empty `local_wiring` vector. An empty `local_wiring` means the minted agent(s) of this request have no intra-worker edges to apply (for example, a CON-ERA/DUP-ERA resolution where both aux targets of the consumed agent were `FreePort` values that the resolver routed to `PendingNewBorder` instead, per SC-008). The worker MUST NOT treat empty `local_wiring` as an error. This parallels R26's pairing rule where `minted_agents` MUST echo every `PendingCommutation` including those with empty wiring. **(MUST)**
 
 ### 3.5 Invariant Amendments
 
@@ -1108,3 +1242,4 @@ to v2 benchmarks.
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-04-17 | spec-critic 2.26-B + especialista-em-specs | Amended R23 (add `local_reconnections`, `pending_commutations`), R26 (add `minted_agents`), R31 row for `RoundStart` (+2 fields), R32 row for `RoundResult` (+1 field), R33 (add `LocalReconnection`, `PendingCommutation`, `MintedAgent` structs). Added R48 (Agent ID allocation coordination invariant). Added OQ-7 (2-phase echo latency tradeoff). Ratifies DC-B3 and DC-B5 from the 2.26-B spec-review verdict. |
+| 2026-04-23 | spec-critic D-005 + especialista-em-specs | Amended `PendingCommutation` wire encoding to carry `local_wiring: Vec<LocalWiringHint>` (Shape A from SPEC-REVIEW-19 §3.4; `(u8, u8, u8, u8)` rejected as lossy). Added `LocalWiringHint` struct mirroring the resolver's `(u8, u8, PortRef)` triple one-to-one. Added R23a (slot-to-AgentId substitution, per-request scope, mint-then-wire ordering, in-round reducibility of minted sibling principal pairs). Amended R24 (five-step sub-order inside step 1, R24.1.6a/b/c mint-wire-echo, sanctioned primitive `Net::connect`). Added R33b (sanctioned application primitive; `Net::wire_agents` explicitly forbidden). Added R33c (`ProtocolError::MalformedLocalWiringReason` with 6 cases; 5 MUST-reject + 1 SHOULD-warn). Added R48a (stray slot-marker guard, symmetric to R48 worker-side). Added R48b (empty `local_wiring` is legal). Bumped `PROTOCOL_VERSION` 2->3 (R37). Amended R34 (`rkyv` coverage + `--features zero-copy` baseline 1186 -> 1192) and R35 (wire-opt exemption does NOT apply to `local_wiring` hot path). Resolves SPEC-REVIEW-19 §3.4 D-005 (2 CRITICAL + 4 HIGH + 4 MEDIUM + 2 LOW). Round 2 redraft (2026-04-23): resolved SPEC-REVIEW-19-REREVIEW NF-001 by replacing `PendingCommutation.{symbol_type, arity}` with `target_symbols: Vec<Symbol>` (Shape A), rewriting R24.1.6a to mint slot `k` from `pc.target_symbols[k]` directly, and propagating the rename through R23a clause 3, R33c cases 1/3 (`arity` -> `symbol_count`), R34 alignment audit, and R48a; NF-002 by pinning symmetric `PROTOCOL_VERSION` validation in R37; NF-003 by adding R23a clause 6 (HashSet-based duplicate pre-pass before any `Net::connect`); NF-004 by rejecting empty `target_symbols` via new `MalformedLocalWiringReason::ZeroArity` (R33c case 7). NF-005 deferred to sdd-pipeline. |

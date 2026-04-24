@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 
-use super::border_resolver::{encode_request_id, RoundStartDispatch};
+use super::border_resolver::{commutation_batch_to_pending, RoundStartDispatch};
 use super::grid::run_grid_delta;
 use super::types::{GridConfig, RoundResultPayload, WorkerDispatch};
 use super::{run_grid, LocalReconnection, PendingCommutation};
@@ -116,25 +116,19 @@ impl WorkerDispatch for LocalDeltaDispatch {
             // `request_id` per mint slot via `commutation_id * 16 + slot`
             // — 16 > max target_symbols.len() in practice (balanced
             // CON-DUP = 2, CON-ERA / DUP-ERA = 2) so no collisions.
+            // TASK-0403 (D-005 Option A close — 2026-04-23 §9): route the
+            // resolver's `CommutationBatch` payloads through the shared
+            // `commutation_batch_to_pending` helper (TASK-0401). Single
+            // source of truth — both this in-process test harness and
+            // the future TCP send path emit byte-identical
+            // `PendingCommutation`s with full `target_symbols` +
+            // `local_wiring` populated. Option A eliminates the wire
+            // vs. test-path drift that TASK-0403 Option B would have
+            // introduced.
             let pending_commutations: Vec<PendingCommutation> = payload
                 .pending_commutations
                 .iter()
-                .flat_map(|batch| {
-                    batch
-                        .target_symbols
-                        .iter()
-                        .enumerate()
-                        .map(|(slot, symbol)| PendingCommutation {
-                            // TASK-0399 (D-004): migrated from ad-hoc bit-packing
-                            // to the shared `encode_request_id` helper. The
-                            // coordinator's `BorderGraph::register_minted_agents`
-                            // decodes the echo via `decode_request_id` — both
-                            // sides of the wire contract now use the same codec.
-                            request_id: encode_request_id(batch.commutation_id, slot as u8),
-                            symbol_type: *symbol,
-                            arity: crate::net::arity(*symbol),
-                        })
-                })
+                .map(commutation_batch_to_pending)
                 .collect();
 
             let ctx = &mut self.workers[*worker_id as usize];
@@ -565,40 +559,15 @@ fn run_grid_delta_result_matches_run_grid_under_both_strict_modes() {
     // fixture + strict-mode label for diagnostic clarity when a case
     // fails.
     //
-    // **D-003 still PARTIAL (2026-04-23 update):** D-004's plumbing
-    // shipped (TASK-0398 + TASK-0399: `RoundResultPayload.minted_agents`,
-    // `BorderGraph::{enqueue_pending_borders, register_minted_agents}`,
-    // wire into `run_grid_delta_inner`). Enabling `SKIP_ASYMMETRIC =
-    // false` surfaced a NEW architectural gap tracked as **D-005**:
-    // `CommutationBatch.local_wiring` does NOT cross the
-    // `CommutationBatch → wire PendingCommutation` translation, so the
-    // worker mints agents but never wires their auxiliary ports per
-    // the resolver's `local_wiring` hints. The minted agents
-    // consequently land all-DISCONNECTED and either get swept by
-    // `cleanup_t1_violations` or fail canonical equivalence against v1.
-    //
-    // Until D-005 ships:
-    // - Symmetric rules (CON-CON, DUP-DUP, ERA-ERA) pass full G1
-    //   parity (they emit no `pending_commutations` / `local_wiring`).
-    // - Asymmetric rules (CON-DUP, CON-ERA, DUP-ERA) exercise the
-    //   DC-B5 plumbing partially (mint+echo works; local_wiring
-    //   application is the missing piece) and are gated by
-    //   `SKIP_ASYMMETRIC = true`.
-    //
-    // D-005 scope (estimated ~80-150 LoC):
-    // 1. Extend wire-level `PendingCommutation` or companion
-    //    `RoundStart` field to carry `local_wiring` hints per batch
-    //    (OR adopt an in-dispatch workaround for `LocalDeltaDispatch`
-    //    that applies `CommutationBatch.local_wiring` post-mint before
-    //    returning the `RoundResult`).
-    // 2. Worker-side (or dispatch-side for test) application logic that
-    //    decodes `SLOT_MARKER_BASE + slot` sentinels against the
-    //    just-minted agents in the same batch and calls
-    //    `subnet.connect` accordingly.
-    // 3. Flip `SKIP_ASYMMETRIC = false` and verify UT-0385-08 passes
-    //    all 12 cases (D-005 acceptance signal; D-003 full closure
-    //    follows).
-    const SKIP_ASYMMETRIC: bool = true;
+    // D-005 Option A closed 2026-04-23 (TASK-0400..0403). The
+    // `CommutationBatch → PendingCommutation` transport
+    // (`commutation_batch_to_pending`, TASK-0401) preserves
+    // `target_symbols` + `local_wiring`, and the worker's
+    // `apply_pending_commutation` (TASK-0402, R24.1.6a/b/c) applies
+    // the hints before `reduce_all`. `SKIP_ASYMMETRIC` now flips to
+    // `false`; UT-0385-08 exercises 6 fixtures × 2 strict modes = 12
+    // cases across all six IC rules (the D-005 bundle acceptance gate).
+    const SKIP_ASYMMETRIC: bool = false;
 
     type FixtureBuilder = fn() -> Net;
     let fixtures: &[(&str, FixtureBuilder, bool)] = &[

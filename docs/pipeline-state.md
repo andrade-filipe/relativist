@@ -1,13 +1,37 @@
 # Pipeline State
 
-**Last updated:** 2026-04-23 (D-004 Coordinator-Side Round-N+2 Finalizer bundle — **TASK-0398 + TASK-0399 DONE (plumbing only); Stage 4 REVIEW closed ALIGNED, 0 Must-Fix; Stage 5 QA skipped per reviewer endorsement; D-005 opened for worker-side `CommutationBatch.local_wiring` application**)
+**Last updated:** 2026-04-23 (D-005 Option A Stages 0-3 SHIPPED; Stage 4 REVIEW queued on the 1/12 CON-DUP asymmetric failure. Three rounds of spec-critic closed Stage 0 SIGN-OFF. Stage 1 TASK-SPLITTER decomposed into TASK-0400..0403 (strict linear DAG). Stage 2 TEST-GENERATOR produced 26 mandatory UTs + optional PTs across TEST-SPEC-0400..0403. Stage 3 DEV shipped: 13 src files modified, 4 new TASK/TEST-SPEC markdowns, spec amendment landed. Test counts: **1168 / 1211** (+22 / +25 over D-004 baseline 1146/1186). Clippy + fmt clean both configs. Gate 11/12 green; 1 failure on `UT-0385-08 CON-DUP strict=false` — v1 produces the expected 4-agent commutation residue (2 Con + 2 Dup cross-wired to border FreePorts), v2 delta yields empty net via `run_grid_delta_final_collect`. Symmetric rules all green. Stage 4 REVIEW narrows to `run_grid_delta_final_collect` / `dispatch_final_state_request` / `merge::core::merge` / `cleanup_t1_violations` diagnostic.)
 **Maintained by:** sdd-pipeline agent (do not edit manually)
 
 ---
 
 ## Active Bundle
 
-**Bundle:** CLOSED — D-004 Coordinator-Side Round-N+2 Finalizer (plumbing-only scope) CLOSED as of 2026-04-23. `SKIP_ASYMMETRIC` flip still gated on D-005.
+**Bundle:** **D-005 Option A — Worker-side application of `CommutationBatch.local_wiring` for minted agents (production, wire-level)**
+**Stage:** 4 — REVIEW (queued on the 1/12 CON-DUP asymmetric failure; diagnostic-first review)
+**Opened:** 2026-04-23 (immediately post-D-004 close, commit `89492db`)
+**Option elected:** A (production). Option B (test-only) explicitly rejected by user: would produce throw-away plumbing; Option A fixes the real wire+worker bug once, and keeps G1 asymmetric parity proof rooted in the same codepath a LAN worker would run — central for the TCC thesis claim.
+
+**Stage 0 — SPEC-CRITIC (DONE 2026-04-23, 3 rounds):**
+- **R1 (BLOCK, 12 findings):** `docs/spec-reviews/SPEC-REVIEW-19-section-3.4-D-005-2026-04-23.md`. SC-001..SC-012 spanning encoding ambiguity, slot-marker range collision, wire-to-memory mapping, rkyv-zero-copy interaction, error-path coverage, missing invariants. All 12 closed by specialista-em-specs Round 2 redraft (inline spec edits to §3.3 R23a, §3.4 R31-R36, §3.6 R48/R48a/R48b).
+- **R2 (BLOCK, 5 new findings):** `docs/spec-reviews/SPEC-REVIEW-19-section-3.4-D-005-2026-04-23-REREVIEW.md`. NF-001 CRITICAL (`target_symbols` reconstruction gap), NF-002 HIGH (HandshakeAck bidirectionality), NF-003 MEDIUM (HashSet detection site for duplicate wiring), NF-004 MEDIUM (arity==0 handling — new `ZeroArity` case), NF-005 LOW (pipeline-state housekeeping). All 5 closed by Round 3 redraft — spec extended with R37 (`ProtocolError::MalformedLocalWiring` + 7-case enum) and R33c case taxonomy.
+- **R3 (SIGN-OFF):** `docs/spec-reviews/SPEC-REVIEW-19-section-3.4-D-005-2026-04-23-REREVIEW-R3.md`. 0 CRITICAL / 0 HIGH new. NF-001 propagation audited across 10 call-sites (zero legacy `pc.symbol_type` / `pc.arity` refs remain). `Symbol` already has `#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]` at `relativist-core/src/net/types.rs:34-38` — build safe under `--features zero-copy`. **3 LOW NR3 findings non-blocking** (absorbable in Stage 3 DEV or next spec-touch):
+  - NR3-001: prose edit `arity` → `pc.target_symbols.len()` in one R23a clause.
+  - NR3-002: R37 wording sharpen — explicit mention of `ProtocolError::DeserializationFailed` vs `MalformedLocalWiring` dispatch boundary.
+  - NR3-003: optional 8th enum case `MalformedLocalWiringReason::TargetSymbolsTooLong` (coordinator-side bound guard).
+
+**Spec in effect:** `specs/SPEC-19-delta-protocol.md` §3.3 R23/R23a/R24, §3.4 R31-R37, §3.6 R48/R48a/R48b. `PendingCommutation` Shape A: `{ request_id, target_symbols: Vec<Symbol>, local_wiring: Vec<LocalWiringHint> }`. `PROTOCOL_VERSION` bump 2→3 mandated by R37.
+
+**Acceptance gate (identical to D-003/D-004 full closure):** UT-0385-08 passes on all 6 fixtures × 2 strict modes with `SKIP_ASYMMETRIC = false`; `canonicalize(out_delta) == canonicalize(out_v1)` AND `metrics.total_interactions == metrics_v1.total_interactions` on every case. `cargo test --workspace --lib` ≥ **1146** default / ≥ **1186** `--features zero-copy`. Clippy + fmt clean both feature configs.
+**Files expected to touch:** `relativist-core/src/protocol/types.rs` (Shape A refactor + new error variant + version bump) · `relativist-core/src/merge/border_resolver.rs` (resolver-to-wire transport) · `relativist-core/src/worker.rs` (mint-then-wire in `handle_round_start`) · `relativist-core/src/merge/grid_delta_integration_tests.rs` (LocalDeltaDispatch forwarding + `SKIP_ASYMMETRIC=false` flip) · (read-only reference) `relativist-core/src/net/types.rs` (Symbol rkyv derives L34-38) · `relativist-core/src/net/core.rs` (`Net::connect`).
+**Branch:** `v2-development`
+**Test baseline (start of D-005):** 1146 lib default / 1186 lib `--features zero-copy`.
+
+---
+
+## Prior Bundle (archived — reference for traceability)
+
+**Bundle:** CLOSED — D-004 Coordinator-Side Round-N+2 Finalizer (plumbing-only scope) CLOSED as of 2026-04-23. `SKIP_ASYMMETRIC` flip gated on D-005.
 **Stage:** DONE. Six SDD stages collapsed to 4 per reviewer endorsement (scope was pure-core plumbing + helpers + test-only T1 cleanup, no behavior change on symmetric rules):
   1. SPLITTING — TASK-0398 + TASK-0399 authored directly (Option B "cheap and equally formal" path per user directive).
   2. TESTS — TEST-SPEC-0398 + TEST-SPEC-0399 authored inline; UT-0398-01..08 cover encode/decode, enqueue, register, lenient duplicates, R48 stray, DC-B6 preserve-existing-border.
@@ -27,14 +51,26 @@
 
 ## Next Action
 
-**Tier 1 progress assessment**: M1 (Transport Optimization) features done; M4 (Full Delta Protocol) — coordinator side complete (D-004 plumbing shipped 2026-04-23), worker side pending (D-005). Candidates for the next bundle, in priority order:
+**Stage 0 gate passed 2026-04-23.** Spec signed off on Round 3. 3 LOW NR3 findings (NR3-001/002/003) explicitly marked non-blocking — absorbable in Stage 3 DEV or in a future spec-touch (see Active Bundle block above for NR3 details).
 
-1. **D-005 Option B** (test-only workaround, ~50 LoC, half a day) — flips `SKIP_ASYMMETRIC = false` immediately, closes D-003 AND D-004 full-path for in-process tests; unblocks Passo 6 M1 exit measurement.
-2. **M1 exit measurement** (Passo 6) — re-run `ep_con 5M w=2` baseline comparing v1 vs current code; `c_o/c_r` drop documented in CSV. Does NOT require delta-mode; can run today on `run_grid` path.
-3. **D-005 Option A** (wire-level production fix, ~80-150 LoC + SPEC-19 §3.4 amendment) — required before Phase 3 LAN benchmarks in delta mode.
-4. **Phase 3 LAN preparation** — orthogonal to D-005; benchmarks v1 `run_grid` on real network.
+**Next agent:** `task-splitter` (Stage 1, decompose spec into atomic tasks).
 
-No active bundle. Invoke `sdd-pipeline` when next bundle is chosen.
+**Invocation scope:** Decompose SPEC-19 §3.3 R23/R23a/R24 + §3.4 R31-R37 + §3.6 R48/R48a/R48b + §9 Change Log into atomic tasks (<200 LoC each) forming a DAG. Target decomposition (splitter may adjust):
+
+1. **TASK-0400** (~40-60 LoC): Wire struct rewrite. Refactor `protocol/types.rs::PendingCommutation` → Shape A; add `LocalWiringHint` struct; add `ProtocolError::MalformedLocalWiring { request_id, reason }` + 7-case `MalformedLocalWiringReason` enum; derive rkyv conditionally; bump `PROTOCOL_VERSION` 2→3; round-trip tests (bincode default + rkyv zero-copy). Absorbs NR3-001 (prose), NR3-002 (R37 error-path wording), NR3-003 (optional 8th `TargetSymbolsTooLong` case).
+2. **TASK-0401** (~60-80 LoC): Resolver-to-wire transport. Extend `border_resolver.rs` `CommutationBatch`→`PendingCommutation` conversion (likely via `package_resolutions_with_pending`) to populate `target_symbols` + `local_wiring`. Pure transport, zero new resolver logic. UTs per rule (CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA).
+3. **TASK-0402** (~80-100 LoC): Worker-side mint-then-wire. Implement R24.1.6a/b/c in `worker.rs::handle_round_start`: (a) allocate `target_symbols.len()` agents; (b) apply `local_wiring` via `Net::connect` post-mint with R23a clause 6 HashSet pre-pass, clause 3 slot-marker decoding, clause 4 concrete-id pass-through, R33c cases 1/2/3/5/6/7 rejection; (c) echo `MintedAgent { request_id, minted_agent_id: slot_0 }`. Protect R24 ordering invariant (no `reduce_all` drain until step 2). UT per R33c case.
+4. **TASK-0403** (~30-50 LoC): LocalDeltaDispatch forwarding + canary. Update `grid_delta_integration_tests.rs::LocalDeltaDispatch` to propagate `target_symbols` + `local_wiring` from resolver into wire PC; flip `const SKIP_ASYMMETRIC: bool = false`. **Gate: UT-0385-08 green on 6 fixtures × 2 strict modes.**
+
+**DAG:** `TASK-0400 → TASK-0401 → TASK-0402 → TASK-0403` (strict linear — each consumes the preceding). TASK-0403 is the bundle acceptance gate.
+
+**Splitter inputs:** `specs/SPEC-19-delta-protocol.md` §3.3 + §3.4 + §3.6 + §9 · `docs/DEFERRED-WORK.md` D-005 row (lines 98-121) · all 3 spec-review artifacts (R1/R2/R3) for historical context and NR3 absorption notes · `relativist-core/src/merge/border_resolver.rs` · `relativist-core/src/protocol/types.rs` · `relativist-core/src/worker.rs` (`handle_round_start` mint loop) · `relativist-core/src/merge/grid_delta_integration_tests.rs` (`LocalDeltaDispatch`, `SKIP_ASYMMETRIC`) · `relativist-core/src/net/core.rs` (`Net::connect`) · `relativist-core/src/net/types.rs` (Symbol rkyv L34-38).
+
+**Output:** `docs/backlog/TASK-0400.md` .. `TASK-0403.md` + `docs/backlog/BACKLOG.md` entries. Each TASK file: acceptance criteria, files to touch, DAG links, LoC estimate, NR3 absorption notes.
+
+**Queued after D-005 closes:**
+1. M1 exit measurement (Passo 6): `ep_con 5M w=2` baseline v1 vs current `run_grid`; `c_o/c_r` drop to CSV.
+2. Phase 3 LAN preparation (orthogonal — uses v1 `run_grid`).
 
 ## Stage 5 QA Summary (SPEC-18 §3.5 / item 2.24)
 

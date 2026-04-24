@@ -521,7 +521,7 @@ mod tests {
         assert!(matches!(msg, Message::Register(_)));
 
         let nack = Message::RegisterNack(RegisterNackPayload {
-            reason: "protocol version mismatch: expected 2, got 1".into(),
+            reason: "protocol version mismatch: expected 3, got 1".into(),
         });
         send_frame(&mut stream, &nack).await.unwrap();
 

@@ -181,27 +181,87 @@ pub struct LocalReconnection {
 }
 
 /// Coordinator → worker AgentId allocation request carried on
-/// `Message::RoundStart` (SPEC-19 §3.3 R23, §3.4 R33, R48, DC-B5 —
-/// 2026-04-17 amendment).
+/// `Message::RoundStart` (SPEC-19 §3.3 R23/R23a, §3.4 R33/R33c, §3.6 R48/R48a/R48b,
+/// DC-B5 — NF-001 Shape A amendment, 2026-04-23 §9 Change Log).
 ///
-/// Phase 1 of the 2-phase AgentId allocation flow: the coordinator
-/// asks the worker to mint one fresh `AgentId` from the worker's own
-/// `id_range` (SPEC-04) for a new agent of shape `(symbol_type, arity)`.
-/// The worker echoes the minted id back via `MintedAgent` on the next
-/// `Message::RoundResult`, correlated by `request_id`.
+/// Phase 1 of the 2-phase AgentId allocation flow under NF-001 Shape A:
+/// the coordinator asks the worker to mint ONE fresh `AgentId` per slot
+/// in `target_symbols` from the worker's own `id_range` (SPEC-04), then
+/// apply the intra-worker edges in `local_wiring` to those freshly minted
+/// siblings. The worker echoes `minted_ids_per_pc[0]` (slot-0 canonical
+/// anchor) back via `MintedAgent` on the next `Message::RoundResult`,
+/// correlated by `request_id`.
+///
+/// NF-001 Shape A rationale: the pre-NF-001 `(symbol_type, arity)` pair
+/// silently lost per-slot symbol information on heterogeneous CON-DUP
+/// mints (`target_symbols == [Dup, Con]`); the worker could not
+/// reconstruct slot-0 vs slot-1 symbols. Shape A stores the full
+/// `Vec<Symbol>` so heterogeneous mints are lossless.
 ///
 /// `request_id` values are allocated by the coordinator from a
 /// monotonically increasing counter scoped to the BSP run (R48); the
 /// worker MUST NOT overlap the coordinator-reserved AgentId range
 /// `u32::MAX - 10_000 .. u32::MAX`.
+///
+/// Field order is `(request_id, target_symbols, local_wiring)` and
+/// matches R23's prose ordering — reordering is a silent wire break.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct PendingCommutation {
     /// Correlation id, unique within this BSP run (R48).
     pub request_id: u32,
-    /// Symbol type for the new agent (CON, DUP, ERA).
-    pub symbol_type: Symbol,
-    /// Arity of the new agent (0 for ERA; 2 for CON/DUP — two aux ports).
-    pub arity: u8,
+    /// Per-slot symbols for the siblings the worker MUST mint for this
+    /// request (NF-001 Shape A, SPEC-19 §3.4 R33). Slot `k` is minted
+    /// as a `target_symbols[k]` agent of its native arity. Vector length
+    /// MUST be >= 1 (R33c case 7 ZeroArity) and is bounded by 16 via the
+    /// resolver's `encode_request_id` assertion
+    /// (`border_resolver.rs:318-322`).
+    pub target_symbols: Vec<Symbol>,
+    /// Intra-worker edges the worker MUST apply to the minted sibling(s)
+    /// after allocation and before `reduce_all` (SPEC-19 §3.3 R23a).
+    /// Entries reference siblings by slot-marker (R23a clause 3) or
+    /// concrete local AgentIds (R23a clause 4). `FreePort` targets are
+    /// reserved (R33c case 6, R48a, SC-008). Empty is legal (R48b).
+    pub local_wiring: Vec<LocalWiringHint>,
+}
+
+/// DC-B5: one intra-worker edge the worker MUST apply to a freshly
+/// minted sibling agent inside a `PendingCommutation`. Mirrors the
+/// resolver's `(u8, u8, PortRef)` emission shape 1-to-1, preserving the
+/// slot-marker placeholder encoding used by the resolver when the
+/// concrete worker AgentId is not yet known
+/// (`border_resolver.rs:820-866` for CON-DUP, `:1023-1080` for
+/// CON-ERA/DUP-ERA).
+///
+/// The `(u8, u8, u8, u8)` four-byte shape is EXPLICITLY PROHIBITED:
+/// `AgentId` is `u32`, so a one-byte id field would truncate any live
+/// agent id >= 256 into an adjacent id, producing silent misrouting of
+/// the minted agent's port in every production fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct LocalWiringHint {
+    /// Slot index of the minted sibling whose port is the source of
+    /// this edge. Range `[0, pc.target_symbols.len())` (R33c case 1).
+    pub src_slot: u8,
+    /// Port on the minted sibling: 0 = principal, 1..=sibling_arity =
+    /// aux. Range validation per R33c case 2.
+    pub src_port: u8,
+    /// Target endpoint. Three target categories are distinguished at
+    /// the receiving worker (R23a):
+    /// (a) **sibling-slot placeholder** — `AgentPort(SLOT_MARKER_BASE + s, p)`
+    ///     per R23a clause 3. ALLOWED.
+    /// (b) **concrete local agent** — `AgentPort(live_id, p)` with
+    ///     `live_id < SLOT_MARKER_BASE`. Pass-through per R23a clause 4.
+    ///     ALLOWED.
+    /// (c) **FreePort** — `FreePort(bid)`. RESERVED; rejected via R33c
+    ///     case 6 (see R48a and SC-008).
+    pub target: PortRef,
 }
 
 /// Worker → coordinator response to a `PendingCommutation`, carried on
@@ -209,16 +269,21 @@ pub struct PendingCommutation {
 /// DC-B5 — 2026-04-17 amendment).
 ///
 /// Pairs the coordinator-issued `request_id` with the worker-allocated
-/// `AgentId`. The coordinator treats an unmatched `request_id` as a
-/// protocol violation (R48).
+/// slot-0 `AgentId` (NF-001 Shape A canonical anchor, R24.1.6c). The
+/// coordinator treats an unmatched `request_id` as a protocol violation
+/// (R48).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct MintedAgent {
     /// Matches the `PendingCommutation.request_id` from the paired
     /// `Message::RoundStart` (R48 correlation key).
     pub request_id: u32,
-    /// The `AgentId` the worker has allocated for this request. MUST NOT
-    /// overlap the coordinator-reserved range
-    /// `u32::MAX - 10_000 .. u32::MAX` (R48).
+    /// The slot-0 `AgentId` the worker has allocated for this request
+    /// (mint-time id, pre-reduction — R24.1.6c). MUST NOT overlap the
+    /// coordinator-reserved range `u32::MAX - 10_000 .. u32::MAX` (R48).
     pub minted_agent_id: AgentId,
 }
 
@@ -1917,13 +1982,14 @@ mod tests {
         assert_eq!(decoded, rec);
     }
 
-    /// DC-B5: `PendingCommutation` round-trips under bincode v2.
+    /// DC-B5: `PendingCommutation` round-trips under bincode v2
+    /// (NF-001 Shape A — TASK-0400 regression canary).
     #[test]
     fn test_pending_commutation_bincode_roundtrip() {
         let pc = PendingCommutation {
             request_id: 42,
-            symbol_type: Symbol::Dup,
-            arity: 2,
+            target_symbols: vec![Symbol::Dup],
+            local_wiring: Vec::new(),
         };
         let bytes = crate::protocol::bincode_v2::encode(&pc)
             .expect("PendingCommutation must encode under bincode v2");
@@ -1944,6 +2010,205 @@ mod tests {
         let decoded: MintedAgent = crate::protocol::bincode_v2::decode_value(&bytes)
             .expect("MintedAgent must decode under bincode v2");
         assert_eq!(decoded, ma);
+    }
+
+    // -----------------------------------------------------------------
+    // TASK-0400 — D-005 Option A wire struct rewrite tests (NF-001 Shape A).
+    // See docs/tests/TEST-SPEC-0400.md, UT-0400-01..06. UT-0400-07..09 land
+    // in `protocol/zero_copy_tests.rs` (gated `#[cfg(feature = "zero-copy")]`).
+    // -----------------------------------------------------------------
+
+    /// UT-0400-01: Shape A `PendingCommutation` (heterogeneous CON-DUP)
+    /// round-trips under bincode v2 with per-slot symbols AND
+    /// `LocalWiringHint` entries preserved in emission order.
+    #[test]
+    fn ut_0400_01_pending_commutation_bincode_roundtrip_shape_a_heterogeneous_con_dup() {
+        let slot_marker_base = u32::MAX - 10_000;
+        for request_id in [0u32, 0x1234_5678, u32::MAX] {
+            let pc_in = PendingCommutation {
+                request_id,
+                target_symbols: vec![Symbol::Dup, Symbol::Con],
+                local_wiring: vec![
+                    LocalWiringHint {
+                        src_slot: 0,
+                        src_port: 1,
+                        target: PortRef::AgentPort(slot_marker_base + 1, 2),
+                    },
+                    LocalWiringHint {
+                        src_slot: 1,
+                        src_port: 1,
+                        target: PortRef::AgentPort(17, 0),
+                    },
+                ],
+            };
+            let bytes = crate::protocol::bincode_v2::encode(&pc_in).expect("encode");
+            let pc_out: PendingCommutation =
+                crate::protocol::bincode_v2::decode_value(&bytes).expect("decode");
+            assert_eq!(pc_out, pc_in);
+            assert_eq!(pc_out.target_symbols.len(), 2);
+            assert_eq!(pc_out.target_symbols[0], Symbol::Dup);
+            assert_eq!(pc_out.target_symbols[1], Symbol::Con);
+            assert_eq!(pc_out.local_wiring.len(), 2);
+            match pc_out.local_wiring[0].target {
+                PortRef::AgentPort(x, _) => {
+                    assert!(x >= slot_marker_base, "placeholder pass-through");
+                }
+                other => panic!("expected AgentPort placeholder, got {:?}", other),
+            }
+            match pc_out.local_wiring[1].target {
+                PortRef::AgentPort(17, 0) => {}
+                other => panic!("expected concrete AgentPort(17, 0), got {:?}", other),
+            }
+        }
+    }
+
+    /// UT-0400-02: minimal ERA `PendingCommutation` with empty
+    /// `local_wiring` (R48b empty-legal) round-trips.
+    #[test]
+    fn ut_0400_02_pending_commutation_bincode_roundtrip_minimal_era() {
+        let pc_in = PendingCommutation {
+            request_id: 42,
+            target_symbols: vec![Symbol::Era],
+            local_wiring: Vec::new(),
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&pc_in).expect("encode");
+        let pc_out: PendingCommutation =
+            crate::protocol::bincode_v2::decode_value(&bytes).expect("decode");
+        assert_eq!(pc_out, pc_in);
+        assert_eq!(pc_out.target_symbols, vec![Symbol::Era]);
+        assert!(pc_out.local_wiring.is_empty());
+    }
+
+    /// UT-0400-03: 16-symbol cap homogeneous round-trip stress test.
+    /// EC-1: wire does NOT enforce the cap (resolver-side only).
+    #[test]
+    fn ut_0400_03_pending_commutation_bincode_roundtrip_max_cap_homogeneous_16() {
+        let pc_in = PendingCommutation {
+            request_id: 100,
+            target_symbols: vec![Symbol::Con; 16],
+            local_wiring: Vec::new(),
+        };
+        let bytes = crate::protocol::bincode_v2::encode(&pc_in).expect("encode");
+        let pc_out: PendingCommutation =
+            crate::protocol::bincode_v2::decode_value(&bytes).expect("decode");
+        assert_eq!(pc_out, pc_in);
+        assert_eq!(pc_out.target_symbols.len(), 16);
+        assert!(pc_out.target_symbols.iter().all(|s| *s == Symbol::Con));
+
+        // EC-1: wire is shape-agnostic about the 17-symbol boundary.
+        let pc_over = PendingCommutation {
+            request_id: 101,
+            target_symbols: vec![Symbol::Con; 17],
+            local_wiring: Vec::new(),
+        };
+        let bytes_over = crate::protocol::bincode_v2::encode(&pc_over).expect("encode over");
+        let pc_over_out: PendingCommutation =
+            crate::protocol::bincode_v2::decode_value(&bytes_over).expect("decode over");
+        assert_eq!(pc_over_out.target_symbols.len(), 17);
+    }
+
+    /// UT-0400-04: all 7 `MalformedLocalWiringReason` variants survive a
+    /// serde bincode round-trip independently. ProtocolError itself is
+    /// NOT Serialize/PartialEq (existing io::Error and bincode::error
+    /// wrappers), so this test serializes the reason payload directly
+    /// (scope adjustment vs. TEST-SPEC text, flagged as SF for Stage 5
+    /// QA) and asserts the matched `ProtocolError::MalformedLocalWiring
+    /// { request_id, reason }` Display phrase separately.
+    #[test]
+    fn ut_0400_04_malformed_local_wiring_reason_all_seven_cases_serde_roundtrip() {
+        // R19 pure-core: reference the variants via full paths rather
+        // than `use crate::protocol::*;` (the file-level pure-core
+        // source scan rejects `use crate::protocol` imports — see
+        // `border_graph_source_respects_r19_pure_core_invariant`).
+        type Reason = crate::protocol::error::MalformedLocalWiringReason;
+        type PErr = crate::protocol::error::ProtocolError;
+
+        let cases = vec![
+            Reason::SrcSlotOutOfRange {
+                src_slot: 5,
+                symbol_count: 2,
+            },
+            Reason::SrcPortOutOfRange {
+                src_slot: 0,
+                src_port: 7,
+            },
+            Reason::TargetSiblingOutOfRange {
+                sibling_slot: 99,
+                symbol_count: 2,
+            },
+            Reason::DanglingConcreteAgent {
+                agent_id: 123_456,
+                port: 1,
+            },
+            Reason::DuplicateSourcePort {
+                src_slot: 0,
+                src_port: 1,
+            },
+            Reason::ReservedForFuture { border_id: 42 },
+            Reason::ZeroArity,
+        ];
+
+        for reason_in in &cases {
+            let bytes = crate::protocol::bincode_v2::encode(reason_in).expect("encode reason");
+            let reason_out: Reason =
+                crate::protocol::bincode_v2::decode_value(&bytes).expect("decode reason");
+            assert_eq!(&reason_out, reason_in, "reason round-trip");
+
+            // NR3-002: wrap and check Display contains canonical phrase
+            // + the embedded request_id (distinguishes from
+            // ProtocolError::Deserialize / ArchiveValidationFailed).
+            for rid in [0u32, 42u32, u32::MAX] {
+                let err = PErr::MalformedLocalWiring {
+                    request_id: rid,
+                    reason: reason_out.clone(),
+                };
+                let s = format!("{}", err);
+                assert!(
+                    s.contains("malformed local_wiring"),
+                    "missing canonical phrase: {}",
+                    s
+                );
+                assert!(
+                    s.contains(&format!("request_id={}", rid)),
+                    "missing request_id={}: {}",
+                    rid,
+                    s
+                );
+                assert!(matches!(
+                    err,
+                    PErr::MalformedLocalWiring { request_id, .. } if request_id == rid
+                ));
+            }
+        }
+    }
+
+    /// UT-0400-05: `PROTOCOL_VERSION == 3` sentinel at the wire-layer
+    /// call site. Pins the TASK-0400 bump for downstream bundles.
+    /// Qualified path: `use crate::protocol::*` would trip R19
+    /// source-scan pure-core invariant.
+    #[test]
+    fn ut_0400_05_protocol_version_equals_three_sentinel() {
+        assert_eq!(
+            crate::protocol::coordinator::PROTOCOL_VERSION,
+            3,
+            "PROTOCOL_VERSION must be 3 after TASK-0400 (SPEC-19 R37, D-005)"
+        );
+    }
+
+    /// UT-0400-06: `MintedAgent` regression canary after rkyv derive
+    /// propagation. bincode path must remain byte-identical.
+    #[test]
+    fn ut_0400_06_minted_agent_bincode_roundtrip_regression_canary() {
+        for minted_agent_id in [0u32, 42u32, u32::MAX - 10_001] {
+            let ma_in = MintedAgent {
+                request_id: 0xABCD_1234,
+                minted_agent_id,
+            };
+            let bytes = crate::protocol::bincode_v2::encode(&ma_in).expect("encode");
+            let ma_out: MintedAgent =
+                crate::protocol::bincode_v2::decode_value(&bytes).expect("decode");
+            assert_eq!(ma_out, ma_in);
+        }
     }
 
     // -----------------------------------------------------------------

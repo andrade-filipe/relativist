@@ -644,10 +644,13 @@ mod adversarial_probes {
         }
     }
 
-    /// Q4 — `PendingCommutation.arity = u8::MAX` round-trips without
-    /// implicit truncation.
+    /// Q4 — `PendingCommutation` (NF-001 Shape A, TASK-0400) round-trips
+    /// `request_id = u32::MAX` and a multi-slot `target_symbols` vector
+    /// without truncation. Replaces the pre-Shape-A `arity = u8::MAX`
+    /// probe (`arity` field no longer exists; slot count is derived from
+    /// `target_symbols.len()`).
     #[tokio::test]
-    async fn q4_pending_commutation_arity_u8_max_roundtrip() {
+    async fn q4_pending_commutation_shape_a_roundtrip_boundary() {
         let original = Message::RoundStart {
             round: 0,
             border_deltas: Vec::new(),
@@ -656,8 +659,8 @@ mod adversarial_probes {
             local_reconnections: Vec::new(),
             pending_commutations: vec![PendingCommutation {
                 request_id: u32::MAX,
-                symbol_type: Symbol::Dup,
-                arity: u8::MAX,
+                target_symbols: vec![Symbol::Dup, Symbol::Con],
+                local_wiring: Vec::new(),
             }],
         };
         let bytes = bincode_v2::encode(&original).expect("encode");
@@ -669,7 +672,11 @@ mod adversarial_probes {
             } => {
                 assert_eq!(pending_commutations.len(), 1);
                 assert_eq!(pending_commutations[0].request_id, u32::MAX);
-                assert_eq!(pending_commutations[0].arity, u8::MAX);
+                assert_eq!(
+                    pending_commutations[0].target_symbols,
+                    vec![Symbol::Dup, Symbol::Con]
+                );
+                assert!(pending_commutations[0].local_wiring.is_empty());
             }
             other => panic!("expected RoundStart, got {:?}", other),
         }
