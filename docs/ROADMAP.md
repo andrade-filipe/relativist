@@ -1,5 +1,7 @@
 # Roadmap
 
+> **NOTE:** For active implementation status, priorities, and milestones, see `next-steps.md`. This document provides the architectural rationale and detailed theoretical descriptions.
+
 This document lists features explicitly excluded from v1 (SPEC-13, R49-R50) and future architectural evolutions. Items marked with **(confluence-enabled)** are made possible specifically by the strong confluence property of Interaction Combinators -- they would be incorrect or require complex consensus in systems without this guarantee.
 
 ---

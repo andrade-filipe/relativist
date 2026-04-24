@@ -1,7 +1,9 @@
-# Progress — Relativist Software Implementation
+# Progress & History — Relativist Software Implementation
+
+> **CRITICAL LLM INSTRUCTION:** This file is for **PAST/COMPLETED work only**. Active work, current pipeline state, and future milestones live exclusively in `next-steps.md`.
 
 **Last updated:** 2026-04-24 (D-005 Option A CLOSED in commit `a431320` on `v2-development` — **12/12 G1 parity gate GREEN**, both iteration orders, both feature configs)
-**Updated by:** **D-005 Option A Stages 4-6 CLOSED**. Stage 4 REVIEW (`docs/reviews/REVIEW-D-005-2026-04-24.md`) pinpointed root cause H5 ("coordinator never tells workers about promoted borders") with code citations; refuted H1-H4 from the orchestration plan. Stage 5 QA (`docs/qa/QA-D-005-2026-04-24.md`) enumerated 3 CRITICAL + 3 HIGH + 3 MEDIUM + 4 LOW findings and a 12-UT test matrix. Stage 6 REFACTOR addressed all 6 CRITICAL/HIGH items: CRIT-1 changed `BorderGraph::register_minted_agents` signature to return `Result<Vec<(u32, BorderState)>, GridError>` enumerating promoted borders (F-C1); CRIT-2 added `apply_promoted_borders_to_cache` + `promoted_borders_to_per_worker_new_borders` helpers with strict worker-a/side-a / worker-b/side-b routing and self-sentinel guards (F-C2 + F-H6); CRIT-3 plumbed per-worker `new_borders` into the next round's `RoundStartDispatch` via in-band append (F-C3); F-H7 added `debug_assert!` on cross-arena target injection in `apply_border_deltas_to_partition`; F-H8 added `check_delta_convergence_post_resolve` + `every_border_has_inert_remote` helpers that treat principal-port borders with a Lafont-concrete remote as inert, plus a `promotion_forces_next_round` short-circuit guard that defers convergence one round so workers observe promoted wires before final merge; F-H8 tail extends `partition.border_id_end` when a promoted border arrives out-of-range so `rebuild_free_port_index` keeps the entry; F-H6 tail adds `promoted_intra_worker_lafont_wires` helper that emits intra-worker Lafont promotions as direct `local_reconnections` and evicts the spurious border_id from `border_graph.borders` so merge does not attempt to restore a one-sided wire. 12 new UTs per QA matrix (UT-D005-01..12) landed across `border_graph.rs`, `grid.rs`, `grid_delta_integration_tests.rs`. Test counts: **1181 lib default** / **1224 lib `--features zero-copy`** (+13 / +13 over D-005 Stages 0-3 baseline, crossing the QA thresholds ≥1180 / ≥1223). UT-0385-08 green on both iteration orders (`[false, true]` and `[true, false]`). Clippy + fmt clean both configs. D-003 + D-004 + D-005 now CLOSED — cascade dependency cleared.
+**Updated by:** **D-005 Option A Stages 4-6 CLOSED**. Stage 4 REVIEW (`docs/reviews/REVIEW-D-005-2026-04-24.md`) pinpointed root cause H5 ("coordinator never tells workers about promoted borders") with code citations; refuted H1-H4 from the orchestration plan. Stage 5 QA (`docs/qa/QA-D-005-2026-04-24.md`) enumerated 3 CRITICAL + 3 HIGH + 3 MEDIUM + 4 LOW findings and a 12-UT test matrix. Stage 6 REFACTOR addressed all 6 CRITICAL/HIGH items: CRIT-1 changed `BorderGraph::register_minted_agents` signature to return `Result<Vec<(u32, BorderState)>, GridError>` enumerating promoted borders (F-C1); CRIT-2 added `apply_promoted_borders_to_cache` + `promoted_borders_to_per_worker_new_borders` helpers with strict worker-a/side-a / worker-b/side-b routing and self-sentinel guards (F-C2 + F-H6); CRIT-3 plumbed per-worker `new_borders` into the next round's `RoundStartDispatch` via in-band append (F-C3); F-H7 added `debug_assert!` on cross-arena target injection in `apply_border_deltas_to_partition`; F-H8 added `check_delta_convergence_post_resolve` + `every_border_has_inert_remote` helpers that treat principal-port borders with a Lafont-concrete remote as inert, plus a `promotion_forces_next_round` short-circuit guard that defers convergence one round so workers observe promoted wires before final merge; F-H8 tail extends `partition.border_id_end` when a promoted border arrives out-of-range so `rebuild_free_port_index` keeps the entry; F-H6 tail adds `promoted_intra_worker_lafont_wires` helper that emits intra-worker Lafont promotions as direct `local_reconnections` and evicts the spurious border_id from `border_graph.borders` so merge does not attempt to restore a one-sided wire. 12 new UTs per QA matrix (UT-D005-01..12) landed across `border_graph.rs`, `grid.rs`, `grid_delta_integration_tests.rs`. Test counts: **1181 lib default** / **1224 lib `--features zero-copy`** (+13 / +13 over D-005 Stages 0-3 baseline, crossing the QA thresholds ≥1180 / ≥1223). UT-0385-08 green on bo... [truncated]
 
 **Previous update (2026-04-23):** D-005 Option A Stages 0-3 SHIPPED — 11/12 G1 parity gate green; 1 asymmetric case open for Stage 4+
 **Updated by:** **D-005 Option A — Worker-side application of `CommutationBatch.local_wiring` for minted agents (production, wire-level) — Stages 0-3 DONE**. Three-round adversarial spec review (R1 BLOCK 12 findings → R2 BLOCK 5 NFs → R3 SIGN-OFF) landed the SPEC-19 §3.4 Shape A amendment: `PendingCommutation { request_id, target_symbols: Vec<Symbol>, local_wiring: Vec<LocalWiringHint> }`, new `ProtocolError::MalformedLocalWiring { request_id, reason }` with `MalformedLocalWiringReason` enum (7 cases), `PROTOCOL_VERSION` bump 2→3, R23a clauses 1-6 (mint-then-wire ordering + HashSet pre-pass), R24.1.6a/b/c echo semantics, R48a stray slot-marker guard, R48b empty-wiring legality. Four tasks decomposed (TASK-0400 wire structs, TASK-0401 resolver-to-wire transport via `commutation_batch_to_pending`, TASK-0402 worker mint-then-wire in `apply_pending_commutation`, TASK-0403 `LocalDeltaDispatch` forwarding + `SKIP_ASYMMETRIC=false` flip). Test counts: **1168 lib default** / **1211 lib `--features zero-copy`** (+22 / +25 over D-004 baseline). Clippy + fmt clean both feature configs.
@@ -22,7 +24,7 @@
 
 ---
 
-## Current State
+## Current State (Milestones & Fases)
 
 | Phase | Status | Detail |
 |-------|--------|--------|
@@ -32,8 +34,8 @@
 | Open decisions | 8/8 RESOLVED | See PESQ-023 (Decision Matrix) |
 | Open-source setup | COMPLETE | LICENCE, README, CONTRIBUTING, GitHub templates (.github/) |
 | Rust scaffolding | COMPLETE | Cargo.toml, src/ (10 modules + CLI skeleton + error types), compiles clean |
-| Docker | COMPLETE | Dockerfile (multi-stage), docker-compose.yml, .dockerignore |
-| CI/CD | COMPLETE | .github/workflows/ci.yml (fmt, clippy, test, build), docker.yml (tag push) |
+| Docker | COMPLETE | Dockerfile (multi-stage: rust:slim build → debian:bookworm-slim runtime) |
+| CI/CD | COMPLETE | .github/workflows/ci.yml (fmt, clippy, test, build release) |
 | Git workflow | COMPLETE | docs/GIT-WORKFLOW.md (GitHub Flow, conventional commits, SSH auth) |
 | Development pipeline | DEFINED | 6 agents + DEVELOPMENT-PIPELINE.md + backlog structure |
 | Human Check | COMPLETE | Blocos 1-8 reviewed. All OQs resolved across SPEC-01, 02, 07 |
@@ -60,117 +62,62 @@
 
 ---
 
-## Resolved Decisions (from PESQ-023)
+## Archived Pipeline State History (Transferred from pipeline-state.md)
 
-| # | Decision | Resolution |
-|---|----------|-----------|
-| D1 | Workspace structure | Single crate + feature flags |
-| D2 | Error handling | thiserror |
-| D3 | Feature flags | tls, metrics, otel |
-| D4 | Security model | 3-tier (none / token / token+TLS) |
-| D5 | Observability | tracing + prometheus-client + OTel (optional) |
-| D6 | Testing strategy | proptest + in-memory grid + Transport trait |
-| D7 | Module structure | 10 modules, core/infra split |
-| D8 | Programming model | BSP (Bulk Synchronous Parallel) |
+## Prior Bundle (archived — reference for traceability)
 
----
-
-## Next Steps (in order)
-
-### 1. Write end-to-end specs
-All research is complete. Each spec has its primary PESQ inputs identified:
-
-- [x] **SPEC-13: System Architecture** — Draft v1 complete. 50 requirements (R1-R50). Consumes PESQ-010/012/013/023/024.
-- [x] **SPEC-10: Security** — Draft v1 complete. 34 requirements (R1-R34). Consumes PESQ-005/017/018/019/023 (D4).
-- [x] **SPEC-11: Observability** — Draft v1 complete. 37 requirements (R1-R37). Consumes PESQ-003/014/015/016/023 (D5).
-- [x] **SPEC-12: User I/O & Examples** — Draft v1 complete. 52 requirements (R1-R52), 9 test requirements (T1-T9). Consumes PESQ-002/024, AC-005.
-
-### 2. Infrastructure setup (COMPLETE)
-
-#### Rust scaffolding ✓
-- [x] Cargo.toml with metadata and all dependencies (serde, bincode, clap, tokio, rayon, etc.)
-- [x] src/lib.rs with 10 module declarations
-- [x] src/main.rs with clap CLI skeleton (4 subcommands)
-- [x] src/error.rs with RelError enum (thiserror)
-- [x] 9 module stubs (net, reduction, partition, merge, protocol, config, security, observability, io)
-- [x] benches/benchmarks.rs (criterion placeholder)
-
-#### Docker ✓
-- [x] Dockerfile (multi-stage: rust:slim build → debian:bookworm-slim runtime)
-- [x] docker-compose.yml (coordinator + N workers via NUM_WORKERS)
-- [x] .dockerignore
-
-#### CI/CD ✓
-- [x] .github/workflows/ci.yml (fmt, clippy, test, build release)
-- [x] .github/workflows/docker.yml (build on tag push v*)
-- [x] .github/ISSUE_TEMPLATE/bug.md
-- [x] .github/ISSUE_TEMPLATE/feature.md
-- [x] .github/PULL_REQUEST_TEMPLATE.md
-
-#### Git workflow ✓
-- [x] docs/GIT-WORKFLOW.md (GitHub Flow, conventional commits)
-- [x] SSH authentication configured (git@github.com:andrade-filipe/relativist.git)
-
-### 3. Repository setup (COMPLETE)
-- [x] Created github.com/andrade-filipe/relativist
-- [x] Specs, research, agents migrated to repo
-- [x] CI/CD workflows in place
-- [x] Referenced from TCC repo as submodule
+**Bundle:** CLOSED — D-005 Option A — Worker-side application of `CommutationBatch.local_wiring` for minted agents (production, wire-level). CLOSED 2026-04-24, commit `a431320`.
+**Stage:** DONE. Six SDD stages completed in full (no stage collapsed):
+  0. SPEC-CRITIC — 3 rounds (2026-04-23). R1: 12 findings, all closed. R2: 5 new findings, all closed. R3: SIGN-OFF (0 CRITICAL / 0 HIGH). 3 LOW NR3 findings (NR3-001/002/003) explicitly marked non-blocking and deferred — require a future spec-critic touch on SPEC-19 §3.3 R23a / §3.4 R37. Stage 0 artefacts: `docs/spec-reviews/SPEC-REVIEW-19-section-3.4-D-005-2026-04-23.md`, `docs/spec-reviews/SPEC-REVIEW-19-section-3.4-D-005-2026-04-23-REREVIEW.md`, `docs/spec-reviews/SPEC-REVIEW-19-section-3.4-D-005-2026-04-23-REREVIEW-R3.md`.
+  1. SPLITTING — TASK-0400..0403 (strict linear DAG): wire struct rewrite, resolver-to-wire transport, worker mint-then-wire, LocalDeltaDispatch forwarding + gate flip.
+  2. TESTS — 26 mandatory UTs + optional PTs across TEST-SPEC-0400..0403. Gate: UT-0385-08 12/12 green on 6 fixtures × 2 strict modes × 2 feature configs.
+  3. DEV — 13 src files modified. Spec amendment landed (PROTOCOL_VERSION 2→3, Shape A PendingCommutation, MalformedLocalWiring enum). Test counts on ship: **1168 / 1211** (+22/+25 over D-004 baseline 1146/1186). Gate 11/12 green (1 CON-DUP asymmetric failure remained at Stage 3 close, resolved in Stage 6).
+  4. REVIEW (diagnostic-first) — `docs/reviews/REVIEW-D-005-2026-04-24.md` / `docs/plans/2026-04-24-d-005-stage-4-6-con-dup-diagnosis.md`. Diagnosis plan produced for `run_grid_delta_final_collect` / `dispatch_final_state_request` / `merge::core::merge` / `cleanup_t1_violations`. QA NIT F-L3 (SPEC-19 R23b gap) surfaced — deferred to a future spec-critic round.
+  5. QA — `docs/qa/QA-D-005-2026-04-24.md`. 13 findings total; all classified and resolved or deferred. NIT F-L3 (R23b gap) explicitly DEFERRED to next spec-critic pass. No unresolved CRITICAL or HIGH findings.
+  6. REFACTOR — 12 new UTs added (UT-0385-08 coverage expansion). All Must-Fix and Should-Fix items applied. Gate: **UT-0385-08 12/12 green** on both iteration orders, both feature configs (default + `--features zero-copy`). Final test counts: **1181 default / 1224 zero-copy** (+13/+13 over Stage 3 ship). Clippy + fmt clean both configs.
+**Branch:** `v2-development`
+**Test baseline (start of D-005):** 1146 lib default / 1186 lib `--features zero-copy`.
+**Test counts at close:** **1181** lib default (+35 total over D-004 baseline) / **1224** lib `--features zero-copy` (+38 total).
+**Clippy:** clean both feature configs.
+**fmt:** clean.
+**Acceptance gate result:** PASS — UT-0385-08 12/12 green. `canonicalize(out_delta) == canonicalize(out_v1)` AND `metrics.total_interactions == metrics_v1.total_interactions` on all 6 fixtures × 2 strict modes.
+**Cascade closures:** D-003 (symmetric rules G1 parity, fully verified via `SKIP_ASYMMETRIC=false`) and D-004 (coordinator-side round-N+2 finalizer, all steps including `SKIP_ASYMMETRIC` flip) cascade-closed upon D-005 gate passing. DEFERRED-WORK.md updated by HK-A in parallel.
+**NR3 deferrals (non-blocking, require future spec-critic):**
+  - NR3-001: prose edit `arity` → `pc.target_symbols.len()` in one R23a clause.
+  - NR3-002: R37 wording sharpen — explicit mention of `ProtocolError::DeserializationFailed` vs `MalformedLocalWiring` dispatch boundary.
+  - NR3-003: optional 8th enum case `MalformedLocalWiringReason::TargetSymbolsTooLong` (coordinator-side bound guard).
+**QA NIT deferred:** F-L3 (SPEC-19 R23b gap — prose does not fully specify the wire validation ordering for zero-arity commutation case) — deferred to next spec-critic round on SPEC-19 §3.3.
+**Previous bundle:** D-004 Coordinator-Side Round-N+2 Finalizer (2026-04-23).
 
 ---
 
-## Implementation Order (after preparation)
-
-Once all specs are finalized and infrastructure is ready:
-
-| Phase | Specs | Modules | Tests |
-|-------|-------|---------|-------|
-| 1. Core types | SPEC-02 | net/ | N1-N17 |
-| 2. Reduction | SPEC-03 | reduction/ | RE1-RE21 |
-| 3. Partition | SPEC-04 | partition/ | P1-P21 |
-| 4. Grid cycle | SPEC-05 | merge/ | I1-I11 |
-| 5. Protocol | SPEC-06 | protocol/ | (protocol tests) |
-| 6. CLI + Config | SPEC-07 | config/, main.rs | (CLI tests) |
-| 7. Security | SPEC-10 | security/ | (security tests) |
-| 8. Observability | SPEC-11 | observability/ | (metrics tests) |
-| 9. I/O + Examples | SPEC-12 | io/ | (I/O tests) |
-| 10. Benchmarks | SPEC-09 | benches/ | F1-F5 |
-
----
-
-## Roadmap (NOT in v1)
-
-Documented for future work, not implementation scope. See **[ROADMAP.md](ROADMAP.md)** for full details, including the elastic grid architecture (coordinator-as-worker, dynamic worker joining, distributed coordination) enabled by strong confluence.
+**Bundle:** CLOSED — D-004 Coordinator-Side Round-N+2 Finalizer (plumbing-only scope) CLOSED as of 2026-04-23. `SKIP_ASYMMETRIC` flip gated on D-005.
+**Stage:** DONE. Six SDD stages collapsed to 4 per reviewer endorsement (scope was pure-core plumbing + helpers + test-only T1 cleanup, no behavior change on symmetric rules):
+  1. SPLITTING — TASK-0398 + TASK-0399 authored directly (Option B "cheap and equally formal" path per user directive).
+  2. TESTS — TEST-SPEC-0398 + TEST-SPEC-0399 authored inline; UT-0398-01..08 cover encode/decode, enqueue, register, lenient duplicates, R48 stray, DC-B6 preserve-existing-border.
+  3. DEV — TASK-0398 shipped inline (pure-core plumbing); TASK-0399 shipped inline (wire + revert SKIP_ASYMMETRIC).
+  4. REVIEW — general-purpose reviewer agent (Opus-7), 2026-04-23 — ALIGNED, 0 Must-Fix, 2 Should-Fix (one docstring drift fixed inline; one release-mode overflow handling deferred to D-005 follow-up), several NITs, explicit endorsement of direct close without Stage 5/6.
+  5. QA — SKIPPED per reviewer endorsement. UT-0398-01..08 cover the 4 critical Q-probes (R48 stray, duplicate-lenient, DC-B6 preserve, partial resolution).
+  6. REFACTOR — SKIPPED (0 Must-Fix from REVIEW).
+**Branch:** `v2-development`
+**Test baseline (start of D-004):** 1138 lib default / 1178 lib `--features zero-copy`.
+**Test counts at close:** **1146** lib default (+8: UT-0398-01..08) / **1186** lib `--features zero-copy` (+8, same set).
+**Clippy:** clean both feature configs.
+**fmt:** clean.
+**D-003:** still PARTIALLY CLOSED — symmetric rules (CON-CON, DUP-DUP, ERA-ERA) G1 parity verified; asymmetric rules under `const SKIP_ASYMMETRIC: bool = true;` now pending D-005.
+**D-004:** **PARTIALLY SHIPPED** (plumbing only) — `RoundResultPayload.minted_agents` extended, `BorderGraph::{enqueue_pending_borders, register_minted_agents}` implemented with R48 validation and DC-B6 preserve-existing-border path, `encode_request_id`/`decode_request_id` codec shared between resolver and LocalDeltaDispatch, `run_grid_delta_inner` wired, `package_resolutions_with_pending` exposes pending borders to coordinator. Step (5) `SKIP_ASYMMETRIC = false` flip blocked by D-005.
+**D-005:** NEW — worker-side application of `CommutationBatch.local_wiring` for minted agents. Root cause: `PendingCommutation` wire message does not carry `local_wiring`, so workers mint agents but leave internal edges DISCONNECTED. Option B test-only workaround unblocks integration tests; Option A wire-level fix required for real LAN runs in delta mode. Blocks full D-003 AND full D-004 closure.
+**Previous bundle:** SPEC-19 §3.3 Refactor (2026-04-23) — closed MF-001/MF-002/SF-001/SF-002; opened D-004.
 
 ---
 
-## Decisions Log
+## Resolved Deferrals (archive)
 
-| Date | Decision | Context |
-|------|----------|---------|
-| 2026-03-24 | MIT License | Same as Haskell prototype |
-| 2026-03-24 | Separate repository | Better for open-source visibility, contributions, CI/CD |
-| 2026-03-24 | Specs in English | Code in English, LLMs work better, closer to original papers |
-| 2026-03-24 | TIER 1 gaps in v1 | Security, observability, user I/O are basic requirements, not optional |
-| 2026-03-24 | System Architecture spec first | SPEC-13 must come before SPEC-10, 11, 12 |
-| 2026-03-26 | Single crate + feature flags | PESQ-023 D1: simpler for single developer |
-| 2026-03-26 | thiserror for errors | PESQ-023 D2: typed errors needed for transient/fatal classification |
-| 2026-03-26 | BSP programming model | PESQ-012: exact mapping to IC grid cycle |
-| 2026-03-26 | 3-tier security model | PESQ-023 D4: dev (none), private (token), production (token+TLS) |
-| 2026-03-26 | tracing + prometheus-client | PESQ-023 D5: ecosystem standard for Rust observability |
-| 2026-03-26 | Transport trait abstraction | PESQ-020/021: enables in-memory testing + future DST |
-| 2026-04-04 | Human Check complete (blocos 1-8) | All specs reviewed, OQs resolved in SPEC-01, 02, 07 |
-| 2026-04-04 | Rust scaffolding complete | Cargo.toml, 10 modules, CLI skeleton, CI/CD, Docker |
-| 2026-04-04 | HVM2-style compact repr → ROADMAP | Documented as v2 optimization (ROADMAP 2.15), not v1 scope |
-| 2026-04-04 | Task decomposition started | Phases 1-5 (SPEC-02 to SPEC-06) being split in parallel |
-| 2026-03-26 | proptest for invariants | PESQ-022: P1, P2, P3, T1-T7, D1-D6 verified by property tests |
-| 2026-04-05 | SPEC-04 adversarial review + revision | Round 1 critic (14 issues: 1 CRITICAL, 4 HIGH, 4 MEDIUM, 5 LOW). Round 2 defender: 10 ACCEPTED, 4 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: SC-001 (split/SPEC-13 FSM reconciliation), SC-005 (border_id_start/end for FreePort disambiguation), SC-004 (Scenario 2 FreePort never deleted), R15a (new), R28 (root port propagation). |
-| 2026-04-05 | SPEC-03 adversarial review + revision | Round 1 critic (12 issues: 0 CRITICAL, 2 HIGH, 4 MEDIUM, 6 LOW). Round 2 defender: 10 ACCEPTED, 2 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: R25 (self-referencing aux port guard + link helper), R26 (FreePort boundary sentinels), interact_* preconditions, R12 counter management, O(1) amortized, T2 invariant note. |
-| 2026-04-05 | SPEC-08 adversarial review + revision | Round 1 critic (17 issues: 2 CRITICAL, 5 HIGH, 5 MEDIUM, 5 LOW). Round 2 defender: 14 ACCEPTED, 3 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: scope expanded to SPEC-01-14 (60 tests from SPEC-10-14 incorporated), global test label namespace (SEC-/OBS-/UIO-/ARCH-/ENC-), I1-I11 -> INT1-INT11, R22-R24 -> R24-R26, PB13-PB16 added (T2/T3/Profile B/C), directory structure for all 11 modules, isomorphism SHOULD target (500 agents/100ms), prop_assume! for budget exhaustion, E9 relative timing. |
-| 2026-04-05 | SPEC-06 adversarial review + revision | Round 1 critic (17 issues: 2 CRITICAL, 3 HIGH, 4 MEDIUM, 8 LOW). Round 2 defender: 12 ACCEPTED, 5 PARTIALLY ACCEPTED, 0 NOT ADDRESSED. Status -> Revised v3. Key changes: SC-001 (Message enum extended to 7 variants with Register/RegisterAck/RegisterNack from SPEC-10), SC-002 (FSM R26-R28 demoted to historical, superseded by SPEC-13 R19-R25), SC-003/SC-004 (ProtocolError reconciled as canonical, Io->ConnectionLost, AuthFailed added, WorkerError/WorkerCountMismatch moved to CoordinatorError), SC-005 (NodeConfig: host+port replaced with bind:SocketAddr, NodeRole removed, default 127.0.0.1:9000), SC-006 (WorkerRoundStats 6-field), R2a (tier-dependent registration), R11 (explicit bincode config), R12 (transitive reachability), R17 (default bind), R30 (collect_timeout upgraded to MUST). |
-| 2026-04-11 | v1 frozen for TCC at `v0.10.0-bench` | Locked baseline for the paper's Phase 1+2 results; streaming/memory features (ROADMAP 2.27-2.36) classified as v2 future work. All subsequent work on `v2-development`. |
-| 2026-04-18 | SPEC-19 Delta-Only Protocol bundle 2.26 A/B/C/D DEV shipped | Four sub-bundles (2.26-A wire extensions, 2.26-B coordinator-side border-redex resolver, 2.26-C coordinator dispatch + BSP loop, 2.26-D worker lifecycle + GridConfig.delta_mode) shipped as commit `4abd70c`. Per user directive "full review at the end, when all features are implemented" — held for unified REVIEW rather than per-sub-bundle. |
-| 2026-04-23 | REVIEW unified SPEC-19 §3.3 + §3.5 + §3.6 item 2.26 B/C/D | `docs/reviews/REVIEW-SPEC-19-section-3.3-3.5-3.6-item-2.26-BCD-2026-04-23.md`. Verdict: code-quality PASS WITH NOTES; architecture ALIGNED. 2 Must-Fix (MF-001 worker R23/R26, MF-002 G1 parity test) + 5 Should-Fix. R19 pure-core invariant, DC-B1..B9 compliance matrix, 13/15 Q-probes mapped to existing tests. Triggered the Refactor bundle closed same day. |
-| 2026-04-23 | SPEC-19 §3.3 Refactor bundle CLOSED | Commit `08722e0`. Four TASKs (0394/0395/0396/0397) shipped through the 6-stage SDD pipeline with zero regression. +29 tests default / +29 zero-copy. Discovered MF-003 during TASK-0395 DEV (pure-core `RoundResultPayload` missing `minted_agents` field); tracked as **DEFERRED-WORK D-004**. D-003 PARTIALLY CLOSED — symmetric IC rules G1-parity-verified. Top-level submodule pin bumped in `5449ea7`. |
-| 2026-04-23 | Option B "cheap and equally formal" authorship | For TASK/TEST-SPEC .md files, prefer direct authorship over `task-splitter`/`test-generator` sub-agent dispatch when templates exist and scope is defined by upstream artifacts. Preserved in user-memory `feedback_direct_doc_authorship.md`. Reserve sub-agent dispatch for REVIEW (opus), QA adversarial, or code-heavy integration DEV (e.g., TASK-0395 LocalDeltaDispatch). |
-| 2026-04-23 | D-004 picked as next bundle | Tracker cross-check (DEFERRED-WORK.md + V2-FEATURE-MATRIX.md + pipeline-state.md + this progress.md) confirms D-004 is the single unblocker for full D-003 closure AND Passo 6 M1 exit measurement. Scope ~300-400 LoC across 2 atomic TASKs (TASK-0398 plumbing + TASK-0399 integration). |
+### D-002 — SPEC-18 R20-R27 (rkyv zero-copy archive path) — SHIPPED 2026-04-16
+
+| Field | Value |
+|-------|-------|
+| **Source spec** | SPEC-18 (Wire Format v2) §3.5 |
+| **Requirements shipped** | R20, R21, R22, R23, R24, R25, R26, R27 + tests T11-T14 |
+| **Resolved** | 2026-04-16 |
+| **Status** | SHIPPED — all 7 action steps from the original D-002 plan executed and verified; bundle entered Stage 4 REVIEW. |
