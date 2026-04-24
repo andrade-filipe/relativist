@@ -25,9 +25,7 @@ The legacy monolithic `USAGE_GUIDE.md` has been split into the files above. If y
 | Document | Description |
 |----------|-------------|
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Development guidelines, code style, PR workflow |
-| [GIT-WORKFLOW.md](GIT-WORKFLOW.md) | Branch and commit conventions (GitHub Flow) |
-| [DEVELOPMENT-PIPELINE.md](DEVELOPMENT-PIPELINE.md) | 6-stage development pipeline |
-| [SPEC-REVIEW-PIPELINE.md](SPEC-REVIEW-PIPELINE.md) | Adversarial spec review process |
+| [WORKFLOWS.md](WORKFLOWS.md) | Unified 6-stage development, spec review, and git pipelines |
 
 ## Formal Specifications
 
@@ -55,12 +53,12 @@ Guides cover the user-facing v2 features: [06-delta-protocol](guides/06-delta-pr
 | [benchmarks/campaigns/v1-local-baseline.md](benchmarks/campaigns/v1-local-baseline.md) | Frozen baseline reproduction |
 | [benchmarks/campaigns/v1-stress.md](benchmarks/campaigns/v1-stress.md) | Stress campaign (sizes beyond baseline) |
 | [benchmarks/campaigns/church-sum-of-squares.md](benchmarks/campaigns/church-sum-of-squares.md) | Arithmetic demo |
-| [V1-LOCAL-BASELINE-SUMMARY.md](V1-LOCAL-BASELINE-SUMMARY.md) | Phase 1 + Phase 2 key results and analysis |
-| [PHASE1-FINDINGS.md](PHASE1-FINDINGS.md) | Phase 1 detailed findings (in-process, 3800+ reps) |
-| [PHASE2-FINDINGS.md](PHASE2-FINDINGS.md) | Phase 2 detailed findings (Docker/TCP, 400 reps) |
-| [V1-LOCAL-BASELINE-ANALYSIS.md](V1-LOCAL-BASELINE-ANALYSIS.md) | Post-campaign analysis |
-| [DATA-COLLECTION-PLAN.md](DATA-COLLECTION-PLAN.md) | Benchmark data collection strategy |
-| [benchmark-relevance-analysis.md](benchmark-relevance-analysis.md) | Benchmark selection rationale |
+| [benchmarks/historical_v1/V1-LOCAL-BASELINE-SUMMARY.md](benchmarks/historical_v1/V1-LOCAL-BASELINE-SUMMARY.md) | Phase 1 + Phase 2 key results and analysis |
+| [benchmarks/historical_v1/PHASE1-FINDINGS.md](benchmarks/historical_v1/PHASE1-FINDINGS.md) | Phase 1 detailed findings (in-process, 3800+ reps) |
+| [benchmarks/historical_v1/PHASE2-FINDINGS.md](benchmarks/historical_v1/PHASE2-FINDINGS.md) | Phase 2 detailed findings (Docker/TCP, 400 reps) |
+| [benchmarks/historical_v1/V1-LOCAL-BASELINE-ANALYSIS.md](benchmarks/historical_v1/V1-LOCAL-BASELINE-ANALYSIS.md) | Post-campaign analysis |
+| [benchmarks/DATA-COLLECTION-PLAN.md](benchmarks/DATA-COLLECTION-PLAN.md) | Benchmark data collection strategy |
+| [benchmarks/benchmark-relevance-analysis.md](benchmarks/benchmark-relevance-analysis.md) | Benchmark selection rationale |
 
 Frozen data: [`results/locked/v1_local_baseline/`](../results/locked/v1_local_baseline/) — SHA-256 checksums in `manifest.md`.
 
@@ -82,10 +80,9 @@ Organized in 7 categories in [`pesquisa/`](pesquisa/). See [`pesquisa/INDICE.md`
 
 | Document | Description |
 |----------|-------------|
-| [progress.md](progress.md) | Current implementation state and phase summary |
-| [ROADMAP.md](ROADMAP.md) | v2+ roadmap (confluence-enabled features) |
-| [V2-FEATURE-MATRIX.md](V2-FEATURE-MATRIX.md) | Consolidated v2 feature inventory with milestones M1-M10 |
-| [DEFERRED-WORK.md](DEFERRED-WORK.md) | **Tracker of partially-shipped specs awaiting an unblocker** — check before closing any milestone |
+| [progress.md](progress.md) | Overall history and phase summary |
+| [ROADMAP.md](ROADMAP.md) | v2+ roadmap (theoretical descriptions) |
+| [next-steps.md](next-steps.md) | **Active planning, pipeline state & deferred work** |
 
 ## Internal (Historical)
 
