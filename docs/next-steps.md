@@ -8,25 +8,54 @@
 
 ### Active Bundle
 
-**v2 Pre-DEV Spec Pipeline (Waves 1–5, no code)** — opened 2026-04-24 by user directive: replicate the v1 success pattern by driving every pending v2 spec through Stage 0 (Spec Review) + Stage 1 (TASK-SPLITTER) + Stage 2 (TEST-GENERATOR) BEFORE any DEV. When this bundle closes, the backlog will hold ~80–150 new TODO tasks each with a TEST-SPEC ready, so Stage 3 (DEV) can run continuously without design stalls.
+**v2 Pre-DEV Spec Pipeline (Waves 1–5) — CLOSED 2026-04-25.** Wave 1 (SPEC-20, Tier 2) shipped in `ec680e4`. Wave 2 first half (SPEC-22, Tier 3) shipped in `b66f758`+`bbd976e`. Wave 2 second half (SPEC-21, Tier 3) shipped in `508e595`+`131ca26`. **Waves 3–5 (Tier 5: SPEC-25/26/27 + SPEC-23/24) DEFERRED — see "Strategic decision" below.** Records for Waves 1+2 moved to `progress.md`.
 
-**Authoritative plan:** `C:\Users\Filipe\.claude\plans\kind-shimmying-harbor.md` (read this first; do not duplicate its contents here).
+---
 
-**Waves (per-spec workflow: PESQUISADOR coherence brief → spec-critic Round 1 → especialista-specs Round 2 → [Round 3 if needed] → task-splitter → test-generator → tracking + commit):**
+### Strategic decision (2026-04-25, user directive)
 
-| Wave | Spec(s) | Tier / Milestone | Status |
-|------|---------|------------------|--------|
-| ~~1~~ | ~~SPEC-20 Elastic Grid~~ | ~~Tier 2 / M2~~ | **DONE 2026-04-24** — closed in commit `ec680e4`; record moved to `progress.md`. |
-| ~~2~~ | ~~SPEC-22~~ + ~~SPEC-21~~ Streaming Generation | Tier 3 / M5 | **DONE 2026-04-25 (pending commit)** — Stage 0 closed in `508e595`. Stage 1: 36 atomic tasks `TASK-0510..0554` + Phase F `TASK-0565/0567/0568/0575-0578/0588-0591`; BACKLOG.md SPEC-21 section + coverage matrix authored (gap-fill run after rate-limit recovery). Stage 2: 49 TEST-SPECs (35 plumbing TEST-SPEC-05XX + 14 spec-catalog T1..T14) + INDEX update. Defensive PROTOCOL_VERSION pattern propagated (TEST-SPEC-0511, 0575, 0576). 5 inadvertent gaps surfaced (non-blocking): IT-0577-T11-02 exact-count needs TASK-0578 reconciliation; IT-0588 blocked on SPEC-19 impl; IT-0578-T14-01 wall-clock-sensitive (known T14 limit); UT-0568-09 gated on SC-020 (TCC-root REF-NNN); PREVIOUS_LIVE_VERSION capture mechanism unification owed. After commit, move row to progress.md and trigger Wave 3. |
-| 3 | SPEC-25 Recipe Gen → SPEC-27 R26-R28 (deferred D-001 — plan tasks/tests now per user directive) | Tier 5 / M10+M7 | NOT STARTED |
-| 4 | SPEC-26 §3.2-§3.6 GUI App (workspace §3.1 already shipped) | Tier 5 / M11 | NOT STARTED |
-| 5 | SPEC-23 Compact Memory → SPEC-24 WAN Deployment | Tier 5 / M9 | NOT STARTED |
+**Implement Tier 2 + Tier 3 first; defer Tier 4 + Tier 5 decisions until after Tier 2+3 are shipped.**
 
-**Out of scope this bundle:** any DEV (`src/` edits), any v1 changes, the article (`tcc_pt_br.tex`), and Tier 4 features without SPEC ID (2.7, 2.8, 2.11, 2.17, 2.37, 2.38).
+| Tier | Status | Rationale |
+|------|--------|-----------|
+| Tier 1 | ✅ DONE — frozen at `a431320` (D-005 Option A 12/12 G1 parity green) | Pre-bundle baseline. |
+| **Tier 2** (Elastic Grid) | ⏭ **NEXT — DEV phase** | SPEC-20 `Reviewed v2`, 36 tasks + 62 TEST-SPECs ready. Bundles D-006/D-007/D-008. |
+| **Tier 3** (Memory Efficiency) | ⏭ **AFTER Tier 2** | SPEC-21 + SPEC-22 both `Reviewed v2`, 72 tasks + 97 TEST-SPECs ready. Bundles D-009..D-013. |
+| Tier 4 (UX/Deploy) | 🛑 DECISION DEFERRED | Requires authoring 4–6 NEW specs (SPEC-28..32 + SPEC-14 amendment). User will decide priority/subset after Tier 2+3 ship. Master plan §5 notes "subset-shippable: D-014+D-015+D-017+D-018, defer D-016+D-019 to v3" as a fallback. |
+| Tier 5 | 🛑 DECISION DEFERRED | After Tier 2+3+(maybe 4) ship; pick by remaining time. Master plan §7 recommends 2.39 GUI + 2.29 Recipe Gen if forced to choose 2 items. |
 
-**Test counts unchanged during this bundle:** baseline 1181 default / 1224 `--features zero-copy` (this is documentation-only work).
+**Skipped from the original Pre-DEV bundle plan:** Wave 3 (SPEC-25 Recipe Gen → SPEC-27 R26-R28), Wave 4 (SPEC-26 §3.2-§3.6 GUI), Wave 5 (SPEC-23 Compact Memory → SPEC-24 WAN). All four specs/spec-amendments belong to Tier 5; the Pre-DEV pipeline can be resumed for them after Tier 2+3 ship if the user re-prioritizes.
 
-**On Wave close:** sdd-pipeline appends a closure entry to `progress.md` (date, spec, qty tasks, qty test-specs, NFs closed, commit hash) and removes the wave row from this table. When the last wave closes, this Active Bundle entry is replaced with whichever DEV bundle the user selects next.
+---
+
+### Active Bundle — Tier 2 + Tier 3 DEV (Stage 3+)
+
+**Opened:** 2026-04-25 by user directive to ship Tier 2 + Tier 3 sequentially before reconsidering Tier 4/5.
+
+**Authoritative plan:** `C:\Users\Filipe\.claude\plans\kind-shimmying-harbor.md` (master) + `docs/plans/2026-04-24-tier-4-master-plan.md` §2 (Tier 2 bundles) + §3 (Tier 3 bundles).
+
+**Per-bundle workflow:** Stage 3 DEV (developer, TDD RED→GREEN→REFACTOR) → Stage 4 REVIEW (reviewer) → Stage 5 QA (qa) → Stage 6 REFACTOR (developer applies fixes) → tracking + commit.
+
+| Phase | Bundle | Spec | Scope | Status |
+|-------|--------|------|-------|--------|
+| 1 (Tier 2) | D-006 | SPEC-20 §3.1 (R1-R7) | Coordinator-as-worker (hybrid node); `worker_id=0`; K_eff = K+1; ~250 prod + ~80 test LoC | **NEXT** |
+| 1 (Tier 2) | D-007 | SPEC-20 §3.2 | Dynamic worker joining; Join Window; ~500 prod + ~150 test LoC | TODO (after D-006) |
+| 1 (Tier 2) | D-008 | SPEC-20 §3.3 | Dynamic worker departure; retained-partition re-dispatch; ~600 prod + ~200 test LoC | TODO (after D-007) |
+| 2 (Tier 3) | D-009 | SPEC-22 §1/§3 | Arena recycling free-list; ~150 prod + ~80 test LoC | TODO |
+| 2 (Tier 3) | D-010 | SPEC-21 §3 | Streaming partition strategy trait + RoundRobin; ~400 prod + ~100 test LoC | TODO |
+| 2 (Tier 3) | D-011 | SPEC-21 §4 | Streaming net generation (producer-consumer); ~500 prod + ~150 test LoC | TODO (after D-010) |
+| 2 (Tier 3) | D-012 | SPEC-21 §5 | Chunked generation + incremental partitioning end-to-end; ~600 prod + ~200 test LoC | TODO (after D-010+D-011) |
+| 2 (Tier 3) | D-013 | SPEC-22 §4 | Sparse net representation; ~600 prod + ~200 test LoC | TODO (independent) |
+
+**Test floor invariant:** 1181 default / 1224 `--features zero-copy` MUST never regress. Each DEV bundle MAY add tests (and SHOULD per the test-spec contract); the floor only goes up, never down.
+
+**Phase gates:**
+- **Gate 1 (Tier 2 done):** D-006+D-007+D-008 merged; integration test "K=2 → join → K=3, then leave → K=2" passes; G1 parity preserved with K_eff. Then proceed to Phase 2.
+- **Gate 2 (Tier 3 done):** All 5 Tier 3 bundles merged; chunked `ep_annihilation(10M)` peak coordinator memory scales with `chunk_size` not `total_agents`. Then **user reconsiders Tier 4 + Tier 5 priorities.**
+
+**Out of scope this bundle:** Tier 4 spec authoring, Tier 5 features, the article (`tcc_pt_br.tex`), v1 modifications.
+
+**On bundle close:** sdd-pipeline (or orchestrator) appends a closure entry to `progress.md` per bundle (commit hash, test counts before/after, LoC delta) and updates this Active Bundle table.
 
 ---
 
