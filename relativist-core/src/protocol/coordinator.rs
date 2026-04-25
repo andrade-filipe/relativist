@@ -2,6 +2,16 @@
 //!
 //! Implements the coordinator side of the distributed grid loop:
 //! accept workers, distribute partitions, collect results, shutdown.
+//!
+//! ## SPEC-06 R25 amendment (SPEC-20 §3.8 A1)
+//!
+//! SPEC-06 R25 mandates that the coordinator abort the grid loop when a
+//! worker connection is lost. SPEC-20 §3.8 A1 narrows this rule with a
+//! conditional clause: *unless `GridConfig.elastic_departure = true`*, in
+//! which case the `WaitingForResults × ConnectionLost(id)` and the
+//! `WaitingForResults × PhaseTimeout(id)` transitions route to the elastic
+//! recovery path (reclaim state, remove worker from `W_active`). The default
+//! `elastic_departure = false` preserves v1 byte-identical behavior (TASK-0413).
 
 use std::time::{Duration, Instant};
 
@@ -13,9 +23,207 @@ use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
 use super::types::{Message, RegisterAckPayload, RegisterNackPayload};
 use crate::merge::{drain_stale_redexes, merge, GridConfig, GridMetrics, WorkerRoundStats};
-use crate::partition::{split, Partition, PartitionStrategy};
+use crate::partition::{split, Partition, PartitionStrategy, WorkerId};
 use crate::reduction::reduce_all;
 use crate::security::AuthToken;
+
+// ---------------------------------------------------------------------------
+// SPEC-06 R25 / SPEC-20 §3.8 A1 — elastic departure branching helpers
+// ---------------------------------------------------------------------------
+
+/// Identifies which FSM event triggered the elastic recovery path.
+///
+/// Carried by [`ConnectionLossOutcome::RecoveryTriggered`] so that
+/// TASK-0438's call site can dispatch the correct `CoordinatorEvent`
+/// variant without relying on surrounding call context (avoids temporal
+/// coupling — each outcome value is self-describing, per SPEC-20 §4.1.3).
+///
+/// | Variant | SPEC-20 row | FSM event |
+/// |---------|-------------|-----------|
+/// | `ConnectionLost` | R19 | `WorkerConnectionLost(worker_id)` |
+/// | `PhaseTimeout`   | R18 | `PhaseTimeout(worker_id)` |
+#[allow(dead_code)]
+// production call site lands when run_coordinator is wired (TASK-0438); GridConfig field lands separately (TASK-0415).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DepartureEventKind {
+    /// TCP connection closed unexpectedly (SPEC-20 §3.3 R19).
+    ConnectionLost,
+    /// `collect_timeout` elapsed for the worker (SPEC-20 §3.3 R18).
+    PhaseTimeout,
+}
+
+/// Outcome of the SPEC-06 R25 / SPEC-20 §3.8 A1 connection-loss branch.
+///
+/// When `elastic_departure = false`, connection loss is fatal (v1 R25).
+/// When `elastic_departure = true`, the coordinator suppresses the abort and
+/// emits a recovery event into the FSM path (SPEC-20 §3.3 R18-R19). The heavy
+/// lifting (reclaim, re-dispatch) lives in TASK-0438 and TASK-0443; this task
+/// provides the conditional gate only (TASK-0413).
+#[allow(dead_code)]
+// production call site lands when run_coordinator is wired (TASK-0438); GridConfig field lands separately (TASK-0415).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ConnectionLossOutcome {
+    /// `elastic_departure = false` — abort the run and propagate the error.
+    /// Byte-identical to the pre-SPEC-20 SPEC-06 R25 behavior.
+    Abort(String),
+    /// `elastic_departure = true` — suppress the abort; the coordinator
+    /// routes to the FSM recovery path instead (SPEC-20 §3.3 R18-R19).
+    ///
+    /// `kind` identifies which FSM event to emit (TASK-0438 dispatch).
+    /// TASK-0438's call site MUST use `kind` to select the correct
+    /// `CoordinatorEvent` variant and MUST NOT re-read surrounding context.
+    RecoveryTriggered {
+        worker_id: WorkerId,
+        kind: DepartureEventKind,
+    },
+}
+
+/// Applies the SPEC-06 R25 / SPEC-20 §3.8 A1 conditional clause to a
+/// connection-loss event.
+///
+/// - `elastic_departure = false`: returns `ConnectionLossOutcome::Abort`
+///   carrying the error description (v1 R25, unchanged).
+/// - `elastic_departure = true`: emits a `tracing::warn!` (this is the
+///   canonical log record — call sites SHOULD NOT also log the underlying
+///   I/O error to avoid double-logging), records the
+///   `WorkerConnectionLost(worker_id)` event placeholder, and returns
+///   `ConnectionLossOutcome::RecoveryTriggered { kind: DepartureEventKind::ConnectionLost }`.
+///   The actual reclaim logic is implemented by TASK-0438.
+///
+/// # Arguments
+///
+/// * `worker_id` — [`WorkerId`] of the worker whose connection was lost.
+///   Using `WorkerId` (u32) directly avoids a `usize → u32` truncation that
+///   would otherwise be silently lossy on 64-bit hosts (QA-002).
+/// * `error_description` — human-readable description of the I/O failure.
+///   Consumed by [`to_owned()`]; this helper is panic-free given a legal
+///   `&str` argument.
+///   <!-- TODO: consider `Cow<'_, str>` for elastic-stress hot paths (QA-008) -->
+/// * `elastic_departure` — the `GridConfig.elastic_departure` flag
+///   (SPEC-20 §3.4 R33; added to `GridConfig` by TASK-0415).
+///
+/// # Observability
+///
+/// On the elastic path this helper emits one `tracing::warn!` event.
+/// Call sites SHOULD NOT log the underlying I/O error separately — the
+/// helper's emission is the canonical record. On the v1 (abort) path the
+/// helper has no side effects; the caller is responsible for logging.
+///
+/// # Default-value contract
+///
+/// SPEC-20 §3.4 R33a mandates `GridConfig::default().elastic_departure == false`
+/// (v1 fatal-on-disconnect preserved). TASK-0415 implementers MUST verify
+/// the polarity with an explicit `default()` test. See QA-TASK-0413 QA-007.
+///
+/// # Concurrency
+///
+/// This helper is pure and may be called from multiple tasks concurrently.
+/// The `tracing::warn!` emission is serialized by the global subscriber;
+/// log-line order may not match return-value dispatch order under contention.
+#[allow(dead_code)] // production call site lands when run_coordinator is wired (TASK-0438); GridConfig field lands separately (TASK-0415).
+pub(crate) fn handle_connection_loss(
+    worker_id: WorkerId,
+    error_description: &str,
+    elastic_departure: bool,
+) -> ConnectionLossOutcome {
+    if elastic_departure {
+        // SPEC-20 §3.8 A1: elastic path — suppress abort, emit recovery event.
+        // SPEC-06 R25 "unless elastic_departure = true" conditional clause.
+        tracing::warn!(
+            worker_id,
+            error = error_description,
+            "Worker connection lost during execution — elastic departure enabled; \
+             routing to recovery path (SPEC-20 §3.3 R19, TASK-0413). \
+             Reclaim logic pending TASK-0438."
+        );
+        // TODO(TASK-0438): emit CoordinatorEvent::WorkerConnectionLost(worker_id)
+        // into the FSM transition table here. For now this is a warn-only placeholder.
+        ConnectionLossOutcome::RecoveryTriggered {
+            worker_id,
+            kind: DepartureEventKind::ConnectionLost,
+        }
+    } else {
+        // SPEC-06 R25 (default, v1 behavior): fatal — abort the run.
+        ConnectionLossOutcome::Abort(error_description.to_owned()) // TODO: consider Cow<'_, str> for elastic-stress paths (QA-008)
+    }
+}
+
+// Structurally symmetric with handle_connection_loss above (TASK-0413 design note):
+// the only differences are the tracing message content, the Abort format string,
+// and the DepartureEventKind variant. When TASK-0438 wires the FSM, both branches
+// must emit their respective CoordinatorEvent variants; the symmetry must be preserved.
+/// Applies the SPEC-06 R25 / SPEC-20 §3.8 A1 conditional clause to a
+/// `PhaseTimeout` event in the `WaitingForResults` state.
+///
+/// - `elastic_departure = false`: returns `ConnectionLossOutcome::Abort`
+///   (v1 `WaitingForResults × PhaseTimeout → Error` transition, SPEC-13 R21).
+/// - `elastic_departure = true`: emits `tracing::warn!` (this is the
+///   canonical log record — call sites SHOULD NOT also log the timeout
+///   separately to avoid double-logging), records the
+///   `PhaseTimeout(worker_id)` event placeholder (SPEC-20 §3.3 R18,
+///   amends SPEC-13 R21), and returns
+///   `ConnectionLossOutcome::RecoveryTriggered { kind: DepartureEventKind::PhaseTimeout }`.
+///
+/// # Arguments
+///
+/// * `worker_id` — [`WorkerId`] of the timed-out worker. Using `WorkerId`
+///   (u32) directly avoids a silent `usize → u32` truncation on 64-bit hosts.
+/// * `elapsed` — the duration that elapsed before the timeout fired.
+/// * `elastic_departure` — the `GridConfig.elastic_departure` flag.
+///
+/// # Format string stability
+///
+/// The `Abort(String)` returned on the v1 path has the format
+/// `"phase timeout after {N}s"` where `{N}` is `Duration::as_secs_f64()`
+/// formatted with `{:.2}` precision. This format is contractual for upstream
+/// log aggregators and is pinned by UT-0413-04 / UT-0413-08. Do not change
+/// without a coordinated update to those tests and any log-parsing consumers.
+///
+/// # Observability
+///
+/// On the elastic path this helper emits one `tracing::warn!` event.
+/// Call sites SHOULD NOT log the timeout separately — the helper's emission
+/// is the canonical record. On the v1 (abort) path the helper has no side
+/// effects; the caller is responsible for logging.
+///
+/// # Default-value contract
+///
+/// SPEC-20 §3.4 R33a mandates `GridConfig::default().elastic_departure == false`
+/// (v1 fatal-on-timeout preserved). TASK-0415 implementers MUST verify the
+/// polarity with an explicit `default()` test. See QA-TASK-0413 QA-007.
+///
+/// # Concurrency
+///
+/// This helper is pure and may be called from multiple tasks concurrently.
+/// The `tracing::warn!` emission is serialized by the global subscriber;
+/// log-line order may not match return-value dispatch order under contention.
+#[allow(dead_code)] // production call site lands when run_coordinator is wired (TASK-0438); GridConfig field lands separately (TASK-0415).
+pub(crate) fn handle_phase_timeout(
+    worker_id: WorkerId,
+    elapsed: Duration,
+    elastic_departure: bool,
+) -> ConnectionLossOutcome {
+    if elastic_departure {
+        // SPEC-20 §3.8 A1: elastic path — suppress abort, emit recovery event.
+        // Amends SPEC-13 R21 WaitingForResults × PhaseTimeout → Error.
+        tracing::warn!(
+            worker_id,
+            elapsed_secs = elapsed.as_secs_f64(),
+            "Worker phase timeout — elastic departure enabled; \
+             routing to recovery path (SPEC-20 §3.3 R18, TASK-0413). \
+             Reclaim logic pending TASK-0438."
+        );
+        // TODO(TASK-0438): emit CoordinatorEvent::PhaseTimeout(worker_id)
+        // into the FSM transition table here. For now this is a warn-only placeholder.
+        ConnectionLossOutcome::RecoveryTriggered {
+            worker_id,
+            kind: DepartureEventKind::PhaseTimeout,
+        }
+    } else {
+        // SPEC-13 R21 (default, v1 behavior): fatal phase timeout.
+        ConnectionLossOutcome::Abort(format!("phase timeout after {:.2}s", elapsed.as_secs_f64()))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 0: Accept workers (TASK-0088)
@@ -368,6 +576,7 @@ pub async fn run_coordinator(
         let merge_plan = crate::partition::PartitionPlan {
             partitions: reduced_partitions,
             borders: plan.borders,
+            next_border_id: plan.next_border_id,
         };
         let (mut merged_net, border_redex_count) = merge(merge_plan);
         metrics.border_redexes_per_round.push(border_redex_count);
@@ -420,7 +629,7 @@ mod tests {
     use super::*;
     use crate::merge::WorkerRoundStats;
     use crate::net::{Net, PortRef, Symbol};
-    use crate::partition::{ContiguousIdStrategy, IdRange, Partition, WorkerId};
+    use crate::partition::{ContiguousIdStrategy, IdRange, Partition};
     use crate::protocol::channel::ChannelTransport;
     use crate::protocol::config::TransportConfig;
     use crate::protocol::tcp::TcpTransport;
@@ -1241,5 +1450,349 @@ mod tests {
                 that belongs to §3.4 (item 2.26). R7 violation."
             );
         }
+    }
+
+    // =========================================================================
+    // TASK-0413: SPEC-06 R25 amendment — elastic_departure conditional clause
+    // (SPEC-20 §3.8 A1)
+    // =========================================================================
+
+    // UT-0413-01: handle_connection_loss with elastic_departure = false returns
+    // Abort (v1 R25 default path preserved — byte-identical backward compat).
+    #[test]
+    fn test_handle_connection_loss_elastic_false_returns_abort() {
+        let outcome = handle_connection_loss(0, "connection reset by peer", false);
+        match outcome {
+            ConnectionLossOutcome::Abort(desc) => {
+                assert!(
+                    desc.contains("connection reset by peer"),
+                    "Abort description must carry the original error, got: {desc}"
+                );
+            }
+            ConnectionLossOutcome::RecoveryTriggered { .. } => {
+                panic!(
+                    "elastic_departure = false MUST return Abort (SPEC-06 R25 v1 path), \
+                     got RecoveryTriggered"
+                );
+            }
+        }
+    }
+
+    // UT-0413-02: handle_connection_loss with elastic_departure = true returns
+    // RecoveryTriggered with the correct worker_id and kind (A1 amendment path).
+    #[test]
+    fn test_handle_connection_loss_elastic_true_returns_recovery_triggered() {
+        let outcome = handle_connection_loss(3, "broken pipe", true);
+        match outcome {
+            ConnectionLossOutcome::RecoveryTriggered { worker_id, kind } => {
+                assert_eq!(
+                    worker_id, 3,
+                    "RecoveryTriggered must carry the worker_id (SPEC-20 §3.3 R19)"
+                );
+                assert_eq!(
+                    kind,
+                    DepartureEventKind::ConnectionLost,
+                    "connection-loss helper must set kind = ConnectionLost (SPEC-20 §3.3 R19)"
+                );
+            }
+            ConnectionLossOutcome::Abort(_) => {
+                panic!(
+                    "elastic_departure = true MUST return RecoveryTriggered \
+                     (SPEC-20 §3.8 A1), got Abort"
+                );
+            }
+        }
+    }
+
+    // UT-0413-03: handle_connection_loss false-branch is truly byte-identical to
+    // the pre-amendment v1 path — the error description is propagated verbatim.
+    #[test]
+    fn test_handle_connection_loss_false_branch_propagates_description_verbatim() {
+        let desc = "io error: connection timed out";
+        let outcome = handle_connection_loss(0, desc, false);
+        assert!(
+            matches!(&outcome, ConnectionLossOutcome::Abort(s) if s == desc),
+            "v1 path MUST propagate error description verbatim (backward compat)"
+        );
+    }
+
+    // UT-0413-04: handle_phase_timeout with elastic_departure = false returns
+    // Abort (SPEC-13 R21 WaitingForResults × PhaseTimeout → Error, v1 path).
+    // Also verifies the format-string prefix contract (QA-005): the prefix
+    // "phase timeout after" is pinned; log aggregators key on it.
+    #[test]
+    fn test_handle_phase_timeout_elastic_false_returns_abort() {
+        let elapsed = Duration::from_secs(600);
+        let outcome = handle_phase_timeout(1, elapsed, false);
+        match outcome {
+            ConnectionLossOutcome::Abort(desc) => {
+                assert!(
+                    desc.contains("600"),
+                    "Abort description must mention elapsed time, got: {desc}"
+                );
+                assert!(
+                    desc.starts_with("phase timeout after"),
+                    "format-string prefix is contractual (QA-005); got: {desc}"
+                );
+            }
+            ConnectionLossOutcome::RecoveryTriggered { .. } => {
+                panic!(
+                    "elastic_departure = false MUST return Abort for PhaseTimeout \
+                     (SPEC-13 R21 v1 path), got RecoveryTriggered"
+                );
+            }
+        }
+    }
+
+    // UT-0413-05: handle_phase_timeout with elastic_departure = true returns
+    // RecoveryTriggered with correct worker_id and kind (SPEC-20 §3.8 A1
+    // amends SPEC-13 R21 PhaseTimeout path).
+    #[test]
+    fn test_handle_phase_timeout_elastic_true_returns_recovery_triggered() {
+        let elapsed = Duration::from_secs(30);
+        let outcome = handle_phase_timeout(2, elapsed, true);
+        match outcome {
+            ConnectionLossOutcome::RecoveryTriggered { worker_id, kind } => {
+                assert_eq!(
+                    worker_id, 2,
+                    "RecoveryTriggered must carry worker_id (SPEC-20 §3.3 R18)"
+                );
+                assert_eq!(
+                    kind,
+                    DepartureEventKind::PhaseTimeout,
+                    "phase-timeout helper must set kind = PhaseTimeout (SPEC-20 §3.3 R18)"
+                );
+            }
+            ConnectionLossOutcome::Abort(_) => {
+                panic!(
+                    "elastic_departure = true MUST return RecoveryTriggered for \
+                     PhaseTimeout (SPEC-20 §3.8 A1), got Abort"
+                );
+            }
+        }
+    }
+
+    // UT-0413-06: ConnectionLossOutcome variants are distinct and implement
+    // Debug + PartialEq (required for test ergonomics and FSM wiring in TASK-0438).
+    // Also verifies DepartureEventKind is part of the equality check.
+    #[test]
+    fn test_connection_loss_outcome_derives_debug_partial_eq() {
+        let a1 = ConnectionLossOutcome::Abort("err".to_owned());
+        let a2 = ConnectionLossOutcome::Abort("err".to_owned());
+        let r1 = ConnectionLossOutcome::RecoveryTriggered {
+            worker_id: 0,
+            kind: DepartureEventKind::ConnectionLost,
+        };
+        let r2 = ConnectionLossOutcome::RecoveryTriggered {
+            worker_id: 0,
+            kind: DepartureEventKind::ConnectionLost,
+        };
+        let r3 = ConnectionLossOutcome::RecoveryTriggered {
+            worker_id: 1,
+            kind: DepartureEventKind::ConnectionLost,
+        };
+        let r4 = ConnectionLossOutcome::RecoveryTriggered {
+            worker_id: 0,
+            kind: DepartureEventKind::PhaseTimeout,
+        };
+
+        assert_eq!(a1, a2, "identical Abort variants must be equal");
+        assert_eq!(r1, r2, "identical RecoveryTriggered variants must be equal");
+        assert_ne!(r1, r3, "different worker_id MUST not be equal");
+        assert_ne!(r1, r4, "different DepartureEventKind MUST not be equal");
+        assert_ne!(a1, r1, "Abort and RecoveryTriggered MUST not be equal");
+
+        // Debug must be non-empty.
+        assert!(!format!("{:?}", a1).is_empty());
+        assert!(!format!("{:?}", r1).is_empty());
+    }
+
+    // UT-0413-07: handle_connection_loss worker_id = 0 is accepted (first worker).
+    // Regression guard: id 0 is a valid WorkerId and must not be treated
+    // as a special "no worker" sentinel.
+    #[test]
+    fn test_handle_connection_loss_worker_id_zero_is_valid() {
+        let outcome = handle_connection_loss(0, "reset", true);
+        assert!(
+            matches!(
+                outcome,
+                ConnectionLossOutcome::RecoveryTriggered {
+                    worker_id: 0,
+                    kind: DepartureEventKind::ConnectionLost
+                }
+            ),
+            "worker_id = 0 must be a valid recovery target"
+        );
+    }
+
+    // UT-0413-08: handle_phase_timeout produces distinct Abort descriptions for
+    // different elapsed durations (ensures the elapsed time is embedded).
+    #[test]
+    fn test_handle_phase_timeout_false_embeds_elapsed_duration() {
+        let short = handle_phase_timeout(0, Duration::from_secs(10), false);
+        let long = handle_phase_timeout(0, Duration::from_secs(600), false);
+        match (short, long) {
+            (ConnectionLossOutcome::Abort(s), ConnectionLossOutcome::Abort(l)) => {
+                assert_ne!(
+                    s, l,
+                    "different elapsed durations must produce distinct Abort descriptions"
+                );
+            }
+            _ => panic!("elastic_departure = false must always return Abort for phase timeout"),
+        }
+    }
+
+    // UT-0413-09 (SPEC-06 R25 backward-compat invariant): with
+    // elastic_departure = false, BOTH handle_connection_loss and
+    // handle_phase_timeout return Abort — the run MUST abort on
+    // any connection failure. This is the carry-over from TASK-0410
+    // lessons: the default path must be byte-identical to v1.
+    #[test]
+    fn test_r25_default_path_always_aborts() {
+        let conn_outcome = handle_connection_loss(0, "any error", false);
+        let timeout_outcome = handle_phase_timeout(0, Duration::from_secs(1), false);
+        assert!(
+            matches!(conn_outcome, ConnectionLossOutcome::Abort(_)),
+            "SPEC-06 R25: elastic_departure=false connection loss MUST abort"
+        );
+        assert!(
+            matches!(timeout_outcome, ConnectionLossOutcome::Abort(_)),
+            "SPEC-13 R21: elastic_departure=false phase timeout MUST abort"
+        );
+    }
+
+    // UT-0413-10 (SPEC-20 §3.8 A1 elastic path invariant): with
+    // elastic_departure = true, BOTH handle_connection_loss and
+    // handle_phase_timeout return RecoveryTriggered — the run MUST
+    // NOT abort, instead routing to the FSM recovery path. The kind
+    // field must reflect the originating event type.
+    #[test]
+    fn test_a1_elastic_path_always_recovers() {
+        let conn_outcome = handle_connection_loss(5, "connection dropped", true);
+        let timeout_outcome = handle_phase_timeout(5, Duration::from_millis(500), true);
+        assert!(
+            matches!(
+                conn_outcome,
+                ConnectionLossOutcome::RecoveryTriggered {
+                    worker_id: 5,
+                    kind: DepartureEventKind::ConnectionLost
+                }
+            ),
+            "SPEC-20 §3.8 A1: elastic_departure=true connection loss MUST trigger recovery \
+             with kind=ConnectionLost"
+        );
+        assert!(
+            matches!(
+                timeout_outcome,
+                ConnectionLossOutcome::RecoveryTriggered {
+                    worker_id: 5,
+                    kind: DepartureEventKind::PhaseTimeout
+                }
+            ),
+            "SPEC-20 §3.8 A1: elastic_departure=true phase timeout MUST trigger recovery \
+             with kind=PhaseTimeout"
+        );
+    }
+
+    // UT-0413-13 (EC-A boundary): WorkerId::MAX is accepted without truncation.
+    // Regression guard for QA-002: switching to WorkerId (u32) eliminates the
+    // usize → u32 silent truncation that would have occurred at the TASK-0438
+    // call site under 64-bit hosts.
+    #[test]
+    fn test_handle_connection_loss_worker_id_max_is_accepted() {
+        let outcome = handle_connection_loss(u32::MAX, "reset", true);
+        assert!(
+            matches!(
+                outcome,
+                ConnectionLossOutcome::RecoveryTriggered {
+                    worker_id: u32::MAX,
+                    kind: DepartureEventKind::ConnectionLost
+                }
+            ),
+            "WorkerId(u32::MAX) must be accepted verbatim; got: {outcome:?}"
+        );
+    }
+
+    // UT-0413-14 (EC-D boundary): Duration::MAX does not panic and produces a
+    // well-formed (if surprising) Abort string. as_secs_f64() saturates to
+    // f64::INFINITY near Duration::MAX; the format string must not panic.
+    #[test]
+    fn test_handle_phase_timeout_duration_max_does_not_panic() {
+        let outcome = handle_phase_timeout(0, Duration::MAX, false);
+        match outcome {
+            ConnectionLossOutcome::Abort(desc) => {
+                // The format string must be non-empty and start with the contractual prefix.
+                assert!(
+                    desc.starts_with("phase timeout after"),
+                    "Duration::MAX Abort must still carry contractual prefix; got: {desc}"
+                );
+            }
+            ConnectionLossOutcome::RecoveryTriggered { .. } => {
+                panic!("elastic_departure = false with Duration::MAX must still return Abort");
+            }
+        }
+    }
+
+    // UT-0413-15 (EC-H precision boundary): elapsed just below 10s rounds to
+    // "10.00s" with {:.2} formatting. Verifies that the {:.2} precision is
+    // applied consistently at the rounding boundary (QA-005 format stability).
+    #[test]
+    fn test_handle_phase_timeout_precision_boundary_rounds_correctly() {
+        // 9_999 ms = 9.999 s → {:.2} → "10.00"
+        let outcome = handle_phase_timeout(0, Duration::from_millis(9_999), false);
+        match outcome {
+            ConnectionLossOutcome::Abort(desc) => {
+                assert!(
+                    desc.starts_with("phase timeout after"),
+                    "precision boundary Abort must carry contractual prefix; got: {desc}"
+                );
+                assert!(
+                    desc.contains("10.00"),
+                    "9.999s must round to 10.00 under {{:.2}} precision; got: {desc}"
+                );
+            }
+            ConnectionLossOutcome::RecoveryTriggered { .. } => {
+                panic!("elastic_departure = false must return Abort for precision boundary");
+            }
+        }
+    }
+
+    // UT-0413-11: integration test gated until TASK-0415 lands the
+    // GridConfig.elastic_departure field. When that field is present,
+    // run_coordinator with elastic_departure = true and a disconnecting
+    // worker MUST NOT return a ProtocolError::ConnectionLost — it must
+    // complete (or recover) instead.
+    //
+    // This test is intentionally #[ignore]-gated: it would not compile until
+    // GridConfig gains the `elastic_departure` field (TASK-0415 blocker).
+    #[tokio::test]
+    #[ignore = "depends on TASK-0415 GridConfig.elastic_departure field"]
+    async fn test_run_coordinator_elastic_departure_true_suppresses_connection_loss() {
+        // When TASK-0415 lands, construct:
+        //   let grid_config = GridConfig { elastic_departure: true, ..GridConfig::default() };
+        // Then simulate a worker that disconnects mid-run and assert that
+        // run_coordinator does NOT return Err(ProtocolError::ConnectionLost).
+        unimplemented!("enable once GridConfig.elastic_departure field lands (TASK-0415)");
+    }
+
+    // UT-0413-12: verifies that the R25 DEFAULT PATH (elastic_departure = false)
+    // is unchanged by TASK-0413. Gated #[ignore] because run_coordinator does not
+    // yet call handle_connection_loss / handle_phase_timeout — that wiring is
+    // pending the downstream dispatcher task (TASK-0438).
+    // GridConfig.elastic_departure field (TASK-0415) is NOT the blocker here;
+    // the default GridConfig already has elastic_departure = false once that
+    // field lands. Remove the #[ignore] when run_coordinator's collect_results
+    // path branches on elastic_departure.
+    #[tokio::test]
+    #[ignore = "blocked by run_coordinator wiring, not GridConfig shape (TASK-0438)"]
+    async fn test_run_coordinator_elastic_departure_false_connection_loss_aborts() {
+        // When TASK-0438 wires run_coordinator to call handle_connection_loss,
+        // verify:
+        //   1. Build a ChannelTransport with 1 worker that disconnects after Accept.
+        //   2. run_coordinator with default GridConfig (elastic_departure = false).
+        //   3. Assert result is Err(ProtocolError::ConnectionLost(_)).
+        unimplemented!(
+            "enable once run_coordinator is wired to handle_connection_loss (TASK-0438)"
+        );
     }
 }

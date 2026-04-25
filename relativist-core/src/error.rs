@@ -53,6 +53,31 @@ pub enum PartitionError {
 
     #[error("partition invariant violated: {0}")]
     InvariantViolation(String),
+
+    /// SPEC-20 §3.8 A3 (R18a) — returned by `PartitionPlan::allocate_border_ids`
+    /// when `count > u32::MAX - next_border_id` (NF-006 closure).
+    ///
+    /// # Wire serde note (QA-007)
+    ///
+    /// `PartitionError` is not serialized over the wire today (it is a
+    /// coordinator-local Rust error, not a `Message` variant). If a future
+    /// task adds a wire-borne payload that carries a `PartitionError`
+    /// (e.g., `RoundResult::partition_error: Option<PartitionError>`),
+    /// `Serialize`/`Deserialize` derives must be added to ALL variants at
+    /// that time. The `u32` fields in `BorderIdSpaceExhausted` and
+    /// `NewRangeTooSmall` are trivially serializable when needed.
+    #[error("border_id space exhausted: requested {requested} ids but only {available} remain")]
+    BorderIdSpaceExhausted { requested: u32, available: u32 },
+
+    /// SPEC-20 §3.8 A4 (R19a) — returned by `remap_partition_ids`
+    /// when `partition.agent_count() > new_range.len()` (NF-006 closure).
+    #[error(
+        "new_range too small: partition has {partition_size} agents but range holds only {range_size}"
+    )]
+    NewRangeTooSmall {
+        partition_size: u32,
+        range_size: u32,
+    },
 }
 
 /// Errors from the merge subsystem.
@@ -249,6 +274,14 @@ mod tests {
             Box::new(ReductionError::InvariantViolation("test".into())),
             Box::new(PartitionError::TooFewAgents { agents: 1, k: 4 }),
             Box::new(PartitionError::InvariantViolation("test".into())),
+            Box::new(PartitionError::BorderIdSpaceExhausted {
+                requested: 10,
+                available: 5,
+            }),
+            Box::new(PartitionError::NewRangeTooSmall {
+                partition_size: 4,
+                range_size: 2,
+            }),
             Box::new(MergeError::UnresolvedBorder(99)),
             Box::new(MergeError::InvariantViolation("test".into())),
             Box::new(CoordinatorError::NoWorkers),

@@ -34,6 +34,7 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
     let PartitionPlan {
         partitions,
         borders,
+        ..
     } = plan;
 
     // --- Step 1: Compute capacity (R8) ---

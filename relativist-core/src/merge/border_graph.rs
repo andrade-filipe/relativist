@@ -884,6 +884,7 @@ mod tests {
         PartitionPlan {
             partitions: built,
             borders,
+            ..Default::default()
         }
     }
 

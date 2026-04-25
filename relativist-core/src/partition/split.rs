@@ -78,6 +78,10 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
     let plan = PartitionPlan {
         partitions,
         borders: wire_class.borders,
+        // Initialize cursor to border_id_end so that allocate_border_ids
+        // never collides with IDs already assigned during this split
+        // (SPEC-20 §3.8 A3, R18a).
+        next_border_id: wire_class.border_id_end,
     };
 
     // Step 7: Debug assertions for C1, C2, C3 (SPEC-04 R10)
@@ -109,6 +113,7 @@ fn trivial_plan(net: Net) -> PartitionPlan {
     PartitionPlan {
         partitions: vec![partition],
         borders: HashMap::new(),
+        next_border_id: 0,
     }
 }
 

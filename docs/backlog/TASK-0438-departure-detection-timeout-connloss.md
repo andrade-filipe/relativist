@@ -43,6 +43,16 @@ R18: if a worker does not return its current-round result within `collect_timeou
 
 - **Per-worker vs aggregate timeout**: R18 mandates per-worker detection (not a single aggregate timer).
 
+## Stage 6 follow-up from TASK-0413
+
+When wiring `handle_connection_loss` / `handle_phase_timeout` into `run_coordinator`,
+remove the three `#[allow(dead_code)]` attributes from
+`relativist-core/src/protocol/coordinator.rs` (on `DepartureEventKind`, and on the two
+helpers) — they were necessary as Phase-A placeholders but become stale after this wiring
+lands (QA-011 from QA-TASK-0413-2026-04-25).
+
+Also remove the `#[allow(dead_code)]` on `ConnectionLossOutcome` at the same time.
+
 ## DAG Links
 
 - **Predecessors:** TASK-0413, TASK-0414, TASK-0426, TASK-0436.

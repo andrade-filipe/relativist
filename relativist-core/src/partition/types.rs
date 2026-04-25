@@ -1,12 +1,35 @@
 //! Core types for net partitioning (SPEC-04 Section 4.1).
 
 use std::collections::HashMap;
+use std::ops::Range;
 
+use crate::error::PartitionError;
 use crate::net::{AgentId, Net, PortRef};
 
 /// Identifier of a worker in the grid.
 /// Values from 0 to n-1, where n is the number of workers.
 pub type WorkerId = u32;
+
+/// Reason a worker is leaving the grid (SPEC-20 R21, R22a, R22b).
+///
+/// Relocated from `coordinator.rs` per SPEC-13 R28 (shared types must live
+/// below the protocol layer so both `coordinator` and `protocol/` can import
+/// without circularity). TASK-0418 will add `Serialize`/`Deserialize` here and
+/// import via `crate::partition::LeaveKind`.
+///
+/// # API stability
+///
+/// `#[non_exhaustive]` is set so that downstream matchers are forced to include
+/// a wildcard arm when new leave reasons are added. Do not reorder variants —
+/// declaration order is part of the public ABI.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LeaveKind {
+    /// Worker returns its current-round result first, then departs (R22a).
+    AfterResult,
+    /// Worker cannot complete the current round; departs immediately (R22b).
+    Urgent,
+}
 
 /// An exclusive range of AgentIds reserved for a worker.
 /// The worker may generate new IDs in the interval [start, end).
@@ -20,6 +43,41 @@ pub struct IdRange {
     pub start: AgentId,
     /// Last AgentId in the range (exclusive).
     pub end: AgentId,
+}
+
+impl IdRange {
+    /// Returns the number of IDs in the range `[start, end)`.
+    ///
+    /// Returns `0` for both the empty-range case (`start == end`) and the
+    /// inverted-range case (`start > end`). These two cases are semantically
+    /// distinct: an empty range is a well-formed zero-length allocation;
+    /// an inverted range (`start > end`) is a construction error.
+    /// A `debug_assert!` fires in debug builds if the range is inverted
+    /// (RV-002 / QA-005).
+    pub fn len(self) -> u32 {
+        debug_assert!(
+            self.start <= self.end,
+            "IdRange is inverted: start={} > end={}; this is a construction error (RV-002)",
+            self.start,
+            self.end,
+        );
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Returns `true` if the range contains no IDs (`start >= end`).
+    ///
+    /// Note: an inverted range (`start > end`) also returns `true` here, but
+    /// that case is a construction error; a `debug_assert!` in `len()` fires
+    /// for it in debug builds (RV-002 / QA-005).
+    pub fn is_empty(self) -> bool {
+        debug_assert!(
+            self.start <= self.end,
+            "IdRange is inverted: start={} > end={}; this is a construction error (RV-002)",
+            self.start,
+            self.end,
+        );
+        self.start >= self.end
+    }
 }
 
 /// A partition: sub-net assigned to a worker (SPEC-04 Section 4.1).
@@ -69,6 +127,29 @@ pub struct Partition {
     pub border_id_end: u32,
 }
 
+impl Partition {
+    /// Returns the number of live agents in this partition's subnet.
+    ///
+    /// Used by `remap_partition_ids` (SPEC-20 §3.8 A4) to validate that
+    /// `new_range.len() >= agent_count()` before renumbering.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// A `debug_assert!` fires in debug builds if the live agent count
+    /// exceeds `u32::MAX`, which would cause a silent truncation and
+    /// break the `remap_partition_ids` precondition check (RV-004 / QA-009).
+    pub fn agent_count(&self) -> u32 {
+        let n = self.subnet.count_live_agents();
+        debug_assert!(
+            n <= u32::MAX as usize,
+            "Partition::agent_count: agent count {} exceeds u32::MAX; \
+             remap_partition_ids precondition check will be wrong (RV-004)",
+            n
+        );
+        n as u32
+    }
+}
+
 /// The complete partitioning plan (SPEC-04 Section 4.1).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PartitionPlan {
@@ -79,6 +160,102 @@ pub struct PartitionPlan {
     /// Records the two endpoints of each wire that was cut.
     /// Used by the merge protocol (SPEC-05) to restore connections.
     pub borders: HashMap<u32, (PortRef, PortRef)>,
+
+    /// Cursor for the dynamic border-id allocator (SPEC-20 §3.8 A3, R18a).
+    ///
+    /// Tracks the next available border ID for `allocate_border_ids`.
+    /// Initialized from `border_id_end` after `split()` so that new allocations
+    /// never collide with border IDs already assigned during the split.
+    /// When `split()` builds a `PartitionPlan`, it sets this field to
+    /// `wire_class.border_id_end`.
+    pub next_border_id: u32,
+}
+
+impl Default for PartitionPlan {
+    /// Default plan: no partitions, no borders, cursor starts at 0.
+    ///
+    /// Construction sites that build a `PartitionPlan` purely for `merge()`
+    /// consumption (which ignores `next_border_id`) should prefer struct-update
+    /// syntax: `PartitionPlan { partitions, borders, ..Default::default() }`.
+    /// This confines future field-addition churn to a single location (RV-003).
+    ///
+    /// Sites that will call `allocate_border_ids` MUST supply an explicit
+    /// `next_border_id` derived from the preceding `split()`'s
+    /// `wire_class.border_id_end` — do not rely on this default for those paths.
+    fn default() -> Self {
+        Self {
+            partitions: Vec::new(),
+            borders: HashMap::new(),
+            next_border_id: 0,
+        }
+    }
+}
+
+impl PartitionPlan {
+    /// Constructs an empty `PartitionPlan` with a specific `next_border_id` cursor.
+    ///
+    /// # Naming note
+    ///
+    /// `with_next_border_id` follows the constructor-with-named-argument pattern
+    /// rather than the `Builder::with_field` mutating-builder pattern — it always
+    /// creates a **new empty plan**, not a modified existing one (QA-008 / RV-006).
+    ///
+    /// # Usage
+    ///
+    /// Used in tests when a known cursor offset is required (e.g., to simulate a
+    /// plan that has already consumed some border IDs before the test begins).
+    /// Reserved for the coordinator's departure-recovery path (TASK-0440/0443,
+    /// SPEC-20 §4.2.2) once that path lands — not yet called in production code.
+    #[allow(dead_code)] // no non-test callers until TASK-0440/0443 land (QA-008)
+    pub fn with_next_border_id(next_border_id: u32) -> Self {
+        Self {
+            partitions: Vec::new(),
+            borders: HashMap::new(),
+            next_border_id,
+        }
+    }
+
+    /// Allocates a fresh disjoint border-id range `[next_border_id, next_border_id + count)`.
+    ///
+    /// # SPEC reference
+    ///
+    /// SPEC-20 §3.8 A3 (owned by SPEC-04 next revision as R18a).
+    /// Required by SPEC-20 R24d: when a reclaimed partition re-enters the
+    /// system, the coordinator allocates a fresh `border_id` range here so
+    /// that the re-split's `FreePort` markers never collide with existing ones.
+    /// See ARG-001 P4 (ID consistency) for the confluence argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PartitionError::BorderIdSpaceExhausted { requested, available }`
+    /// when `count > u32::MAX - next_border_id` (NF-006 closure).
+    /// The cursor is **not** advanced on error.
+    ///
+    /// # Overflow guard
+    ///
+    /// A `debug_assert!` fires in debug builds if the cursor has somehow
+    /// already reached `u32::MAX` before entry. This mirrors the QA-001
+    /// finding on TASK-0410 (merged_next_id == u32::MAX boundary).
+    pub fn allocate_border_ids(&mut self, count: u32) -> Result<Range<u32>, PartitionError> {
+        // available = u32::MAX - next_border_id; no overflow possible (u32::MAX >= next_border_id).
+        let available = u32::MAX - self.next_border_id;
+
+        if count > available {
+            // Cursor is NOT advanced on error (atomic allocation guarantee).
+            return Err(PartitionError::BorderIdSpaceExhausted {
+                requested: count,
+                available,
+            });
+        }
+
+        let start = self.next_border_id;
+        // Safe: count <= available = u32::MAX - start, so start + count <= u32::MAX.
+        // (The available-bound check above already enforces this; no further runtime guard needed.)
+        let end = start + count;
+
+        self.next_border_id = end;
+        Ok(start..end)
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +431,7 @@ mod tests {
         let plan = PartitionPlan {
             partitions: vec![make_empty_partition()],
             borders: HashMap::new(),
+            next_border_id: 0,
         };
         assert_eq!(plan.partitions.len(), 1);
         assert!(plan.borders.is_empty());
@@ -265,6 +443,7 @@ mod tests {
         let plan = PartitionPlan {
             partitions: vec![],
             borders: HashMap::new(),
+            next_border_id: 0,
         };
         let cloned = plan.clone();
         assert!(cloned.partitions.is_empty());
@@ -279,6 +458,7 @@ mod tests {
         let plan = PartitionPlan {
             partitions: vec![],
             borders,
+            next_border_id: 0,
         };
         let (a, b) = plan.borders[&1];
         assert_eq!(a, PortRef::AgentPort(0, 1));
@@ -291,6 +471,7 @@ mod tests {
         let plan = PartitionPlan {
             partitions: vec![make_empty_partition()],
             borders: HashMap::new(),
+            next_border_id: 0,
         };
         let bytes = crate::protocol::bincode_v2::encode(&plan).unwrap();
         let restored: PartitionPlan = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
@@ -304,6 +485,7 @@ mod tests {
         let plan = PartitionPlan {
             partitions: vec![],
             borders: HashMap::new(),
+            next_border_id: 0,
         };
         assert!(plan.partitions.is_empty());
         assert!(plan.borders.is_empty());

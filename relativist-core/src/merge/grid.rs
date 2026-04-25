@@ -1195,7 +1195,10 @@ fn run_grid_delta_final_collect(
         sorted
     };
 
-    let plan = reconstruct_partition_plan_from_collected(partitions, &border_graph);
+    // Pass 0 explicitly: merge() destructures PartitionPlan with `..` and
+    // ignores next_border_id on the final-collect path.  The explicit 0
+    // documents that no further allocate_border_ids call will follow.
+    let plan = reconstruct_partition_plan_from_collected(partitions, &border_graph, Vec::new(), 0);
     let t_merge = Instant::now();
     let (merged_net, _border_redex_count) = super::core::merge(plan);
     metrics.merge_time_per_round.push(t_merge.elapsed());
@@ -1205,17 +1208,69 @@ fn run_grid_delta_final_collect(
 /// SPEC-19 R29, TASK-0387: compose a `PartitionPlan` from the collected
 /// `Vec<Partition>` plus the coordinator's remaining `BorderGraph`.
 ///
+/// SPEC-20 §3.8 A8 (TASK-0412): extended to accept `reclaimed_partitions`
+/// (optional; empty `Vec` preserves the original 2-argument behaviour
+/// byte-for-byte).
+///
 /// Invariants:
-/// - `partitions` is sorted ascending by `worker_id` (SPEC-04 / R29
-///   expect `partitions[i].worker_id == i`).
+/// - The combined `surviving ∪ reclaimed` partition list is sorted ascending
+///   by `worker_id` before `PartitionPlan` construction (SPEC-04 / SPEC-20
+///   R11a). Under the v1 BSP pipeline `worker_id == partition_index`; under
+///   SPEC-20 elastic mode worker_ids may be sparse (e.g., `{0, 1, 5, 7}`).
+///   **Caller must ensure `worker_id`s are unique across the union** —
+///   duplicates produce build-dependent merge ordering. The sort used is
+///   `sort_by_key` (stable); do **NOT** switch to `sort_unstable_by_key`
+///   because that would make the merge non-deterministic when two partitions
+///   share the same `worker_id` (last-writer-wins in `merge` step 2 would
+///   become build-dependent, violating SPEC-01 G1).
 /// - `borders` is populated from every surviving `BorderGraph` entry
 ///   as `(side_a, side_b)`. Empty `BorderGraph` → empty map → final
 ///   merge is a pure union of agents.
+/// - When `reclaimed_partitions` is non-empty, their `worker_id` values
+///   MUST be disjoint from those in `partitions` (SPEC-20 A8 / D4).
+///
+/// # Test-baseline contract
+///
+/// `UT-0412-01` uses this function directly as the 2-argument legacy
+/// baseline: it calls `reconstruct_partition_plan_from_collected(…,
+/// Vec::new(), 0)` and then `merge()` to obtain the reference `Net`, then
+/// calls `reconstruct(…, Vec::new())` and asserts structural identity
+/// between the two results.  This is guaranteed by construction —  both
+/// code paths ARE identical (reconstruct is a thin wrapper that calls this
+/// same helper) — so the test's protection is against **wrapper divergence**,
+/// not against an independent implementation diverging.  If the two code
+/// paths are ever separated (e.g., `reconstruct` gets its own merge path),
+/// the test must be updated to compare against an independent structural
+/// expected value (see REVIEW-TASK-0412 SF-003).
 fn reconstruct_partition_plan_from_collected(
     mut partitions: Vec<crate::partition::Partition>,
     border_graph: &crate::merge::border_graph::BorderGraph,
+    reclaimed_partitions: Vec<crate::partition::Partition>,
+    next_border_id: u32,
 ) -> crate::partition::PartitionPlan {
+    // When reclaimed_partitions is empty this branch is elided entirely,
+    // preserving byte-identical behaviour vs the pre-A8 2-argument form.
+    if !reclaimed_partitions.is_empty() {
+        partitions.extend(reclaimed_partitions);
+    }
+    // stable_sort_required: future sort_unstable_by_key would silently
+    // introduce non-determinism when two partitions share worker_id (the
+    // last-writer-wins in merge step 2 becomes build-dependent, breaking
+    // SPEC-01 G1). Do NOT replace with sort_unstable_by_key.
     partitions.sort_by_key(|p| p.worker_id);
+    // SPEC-19 R29 / SPEC-20 R11a: after sort, worker_ids must be strictly
+    // monotone (no duplicates). Duplicate worker_ids imply AgentId-range
+    // overlap that merge() step 2 would silently corrupt (last-writer-wins).
+    #[cfg(debug_assertions)]
+    for w in partitions.windows(2) {
+        debug_assert!(
+            w[0].worker_id < w[1].worker_id,
+            "SPEC-19 R29 / SPEC-20 R11a: partition list contains duplicate \
+             worker_id {} after surviving∪reclaimed sort — AgentId-range \
+             overlap would silently corrupt the merged Net",
+            w[0].worker_id
+        );
+    }
     let mut borders = std::collections::HashMap::with_capacity(border_graph.len());
     for (border_id, state) in &border_graph.borders {
         borders.insert(*border_id, (state.side_a, state.side_b));
@@ -1223,7 +1278,153 @@ fn reconstruct_partition_plan_from_collected(
     crate::partition::PartitionPlan {
         partitions,
         borders,
+        // Caller supplies the active border-id cursor so that subsequent
+        // `allocate_border_ids` calls never collide with border IDs already
+        // issued during the originating split (SPEC-20 §3.8 A3, RV-001).
+        // For the final-collect path the cursor is unused by `merge()`, so
+        // passing 0 is harmless but must be explicit to document the intent.
+        // Departure-recovery callers (TASK-0440/0443) MUST pass the cursor
+        // from the active PartitionPlan (e.g., `plan.next_border_id`).
+        next_border_id,
     }
+}
+
+/// Build a `Net` from coordinator `BorderGraph` state and worker partition
+/// snapshots (SPEC-19 R38, amended by SPEC-20 §3.8 A8).
+///
+/// Semantics: `surviving_partitions ∪ reclaimed_partitions` forms the
+/// complete input partition set. The disjointness of the union's live
+/// `AgentId` sets is the **caller's** precondition (SPEC-20 R30 / A4
+/// guarantee this by renumbering reclaimed partitions via
+/// `remap_partition_ids` before this call). When `reclaimed_partitions`
+/// is empty, behaviour is identical to the pre-A8 2-argument baseline
+/// (SPEC-19 R38 regression guarantee).
+///
+/// # Precondition
+///
+/// - The `id_range` of every partition in
+///   `surviving_partitions ∪ reclaimed_partitions` must be pairwise
+///   non-overlapping (SPEC-20 §3.8 A8 / D4 / `merge::core::merge` step 2
+///   invariant). This is checked unconditionally (NOT debug-gated) via a
+///   direct `id_range`-overlap scan — **`assert!` fires in release builds**.
+///   Callers that build partitions outside the BSP pipeline MUST ensure
+///   their `id_range` fields are pairwise disjoint before calling this
+///   function. The BSP pipeline guarantees this via `remap_partition_ids`
+///   (SPEC-20 R30 / A4).
+/// - Every partition's `redex_queue` must contain only stale redexes (R9).
+///   Reclaimed partitions retrieved from `retained_initial` or
+///   `retained_last_acked` snapshots taken **before** local reduction MUST
+///   be locally reduced via `reduce_all(&mut subnet)` BEFORE calling
+///   `reconstruct`, OR the caller MUST invoke a full-scan redex rediscovery
+///   on the merged `Net` immediately after `reconstruct` returns. Failure
+///   to do so produces a silent R41 violation (QA-004).
+///
+/// # R7a (hybrid mode)
+///
+/// Under SPEC-20 hybrid mode, `WorkerId = 0` is reserved for the
+/// coordinator self-partition (R7a). In hybrid mode the reclaimed
+/// partitions correspond to *departing workers* and their `worker_id`
+/// values MUST be >= 1 (monotonic per R11). EC-1 uses `worker_id = 0`
+/// in the reclaimed slot to represent the non-hybrid permissive clause;
+/// Phase-B integrators writing hybrid-mode tests MUST NOT treat EC-1 as
+/// a precedent for hybrid-mode reclaimed-worker assignment.
+///
+/// # Invariants preserved
+///
+/// - **D3** (Border Completeness) — inherited from the subsequent
+///   `merge()` call.
+/// - **D4** (ID Uniqueness) — enforced by `id_range` overlap assert (always
+///   active, not debug-gated). See `merge::core::merge` step 2 for the
+///   last-writer-wins behaviour that this assert protects against.
+///
+/// # See also
+///
+/// - SPEC-19 §3.8 A8 (amendment), SPEC-20 §4.2.2 delta-mode departure
+///   recovery step 4, ARG-006 P12.
+///
+/// Note: reclaimed partitions are appended to the `PartitionPlan` input
+/// rather than unioned via `Net::union` (TASK-0410/A7) — `merge()` performs
+/// the equivalent structural concatenation internally. `Net::union` would
+/// be appropriate only if the call site needs a pre-assembled `Net` before
+/// `split()`.
+#[allow(dead_code)] // wired by TASK-0443 (SPEC-20 §4.2.2 delta-mode departure recovery).
+pub(crate) fn reconstruct(
+    border_graph: &crate::merge::border_graph::BorderGraph,
+    surviving_partitions: Vec<crate::partition::Partition>,
+    reclaimed_partitions: Vec<crate::partition::Partition>,
+) -> Net {
+    // QA-001 (CRITICAL): Direct id_range overlap scan — unconditional assert!
+    // (fires in both debug AND release builds). Replaces the former
+    // worker_id-proxy debug_assert! which was: (a) debug-gated only,
+    // (b) only checked surviving-vs-reclaimed, and (c) unsound for callers
+    // constructing Partition values with distinct worker_ids but overlapping
+    // id_ranges (the proxy's blind spot — two callers with wid=0 and wid=1
+    // but both starting at AgentId 0 would pass the old proxy silently).
+    //
+    // Algorithm: collect (id_range.start, id_range.end, worker_id) from all
+    // partitions, sort by start, then verify prev.end <= curr.start for
+    // adjacent pairs. O(K log K) where K = total partition count.
+    // reconstruct is called at round boundaries, not on a hot path.
+    //
+    // Cites: SPEC-20 R30 (remap_partition_ids guarantees disjointness along
+    // the BSP pipeline), merge::core::merge step 2 invariant (last-writer-wins
+    // by AgentId index silently corrupts the Net when ranges overlap), D4.
+    {
+        let mut ranges: Vec<(u32, u32, crate::partition::WorkerId)> = surviving_partitions
+            .iter()
+            .chain(reclaimed_partitions.iter())
+            .map(|p| (p.id_range.start, p.id_range.end, p.worker_id))
+            .collect();
+        ranges.sort_unstable_by_key(|&(start, _, _)| start);
+        for pair in ranges.windows(2) {
+            let (prev_start, prev_end, prev_wid) = pair[0];
+            let (curr_start, _, curr_wid) = pair[1];
+            assert!(
+                prev_end <= curr_start,
+                "SPEC-20 A8 / R30 / merge::core::merge step 2 invariant: \
+                 id_range [{prev_start}, {prev_end}) of worker_id {prev_wid} \
+                 overlaps with id_range starting at {curr_start} of worker_id \
+                 {curr_wid}. Caller MUST call remap_partition_ids (SPEC-20 A4) \
+                 before reconstruct to ensure pairwise-disjoint AgentId ranges. \
+                 Overlapping ranges cause silent topology corruption in release \
+                 builds (last-writer-wins in merge step 2 — D4 breach).",
+            );
+        }
+        // QA-006 / SPEC-01 I3: unconditional (not debug-gated) next_id
+        // overflow guard. The merged Net's next_id = max(p.subnet.next_id)
+        // across all partitions. If any partition carries next_id == u32::MAX
+        // the merged Net has next_id == u32::MAX and the next create_agent
+        // call wraps to AgentId 0, silently overwriting whatever lives there.
+        // Reclaimed snapshots from long-running coordinators are the most
+        // likely source of exhausted next_id values.
+        let max_next_id = surviving_partitions
+            .iter()
+            .chain(reclaimed_partitions.iter())
+            .map(|p| p.subnet.next_id)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_next_id < u32::MAX,
+            "SPEC-01 I3: reconstruct would produce a Net with next_id == u32::MAX; \
+             no subsequent create_agent call is possible without AgentId overflow. \
+             Reclaimed snapshots from long-running coordinators may carry exhausted \
+             next_id values — verify the partition source."
+        );
+    }
+    // Pass 0: this helper is called by departure-recovery orchestrators
+    // (TASK-0440/0443) which consume the plan immediately via merge().
+    // The cursor is unused by merge(); a future caller that needs
+    // allocate_border_ids on the result MUST supply the active cursor
+    // instead of relying on this helper (see reconstruct_partition_plan_from_collected
+    // comment, RV-001).
+    let plan = reconstruct_partition_plan_from_collected(
+        surviving_partitions,
+        border_graph,
+        reclaimed_partitions,
+        0,
+    );
+    let (net, _border_redex_count) = super::core::merge(plan);
+    net
 }
 
 /// Optimized path for n == 1: reduce locally without partitioning (R26).
@@ -3136,10 +3337,7 @@ mod tests {
         let dispatch_ref: &mut dyn WorkerDispatch = &mut dispatch;
 
         // All three methods must be callable through the trait object.
-        let plan = PartitionPlan {
-            partitions: Vec::new(),
-            borders: HashMap::new(),
-        };
+        let plan = PartitionPlan::default();
         assert!(dispatch_ref.dispatch_initial(&plan).is_ok());
         assert!(dispatch_ref.dispatch_round_start(&[]).is_ok());
         assert!(dispatch_ref.dispatch_final_state_request(0).is_ok());
@@ -3519,6 +3717,7 @@ mod tests {
         let plan = PartitionPlan {
             partitions: vec![p0, p1],
             borders,
+            ..Default::default()
         };
         let graph = BorderGraph::from_partition_plan(&plan);
         debug_assert_eq!(
@@ -3532,11 +3731,7 @@ mod tests {
     /// Build a `BorderGraph` with zero borders. Used by UT-0386-01, 02,
     /// 05, 06, 07.
     fn empty_graph() -> BorderGraph {
-        let plan = PartitionPlan {
-            partitions: Vec::new(),
-            borders: HashMap::new(),
-        };
-        BorderGraph::from_partition_plan(&plan)
+        BorderGraph::from_partition_plan(&PartitionPlan::default())
     }
 
     // UT-0386-01 (DC-C5): every conjunct holds → Global Normal Form.
@@ -3773,7 +3968,7 @@ mod tests {
 
         let mut plan_for_graph = PartitionPlan {
             partitions: vec![p0.clone(), p1.clone()],
-            borders: HashMap::new(),
+            ..Default::default()
         };
         plan_for_graph
             .borders
@@ -3832,7 +4027,8 @@ mod tests {
         let p0 = lone_con_partition(0, 100);
         let p1 = lone_con_partition(1, 200);
         let graph = empty_graph();
-        let plan = reconstruct_partition_plan_from_collected(vec![p2, p0, p1], &graph);
+        let plan =
+            reconstruct_partition_plan_from_collected(vec![p2, p0, p1], &graph, Vec::new(), 0);
         let ids: Vec<WorkerId> = plan.partitions.iter().map(|p| p.worker_id).collect();
         assert_eq!(ids, vec![0, 1, 2]);
     }
@@ -3883,6 +4079,7 @@ mod tests {
                 },
             ],
             borders,
+            ..Default::default()
         };
         let graph = BorderGraph::from_partition_plan(&plan_for_graph);
 
@@ -3905,7 +4102,7 @@ mod tests {
                 border_id_end: 31,
             },
         ];
-        let plan = reconstruct_partition_plan_from_collected(collected, &graph);
+        let plan = reconstruct_partition_plan_from_collected(collected, &graph, Vec::new(), 0);
         let keys: std::collections::HashSet<u32> = plan.borders.keys().copied().collect();
         assert_eq!(
             keys,
@@ -4323,11 +4520,8 @@ mod tests {
     fn ut_d005_08_compute_border_activity_ignores_lafont_freeport_peer() {
         use crate::merge::border_graph::BorderGraph;
         use crate::merge::AddBorderEntry;
-        let plan = crate::partition::PartitionPlan {
-            partitions: vec![],
-            borders: std::collections::HashMap::new(),
-        };
-        let mut graph = BorderGraph::from_partition_plan(&plan);
+        let mut graph =
+            BorderGraph::from_partition_plan(&crate::partition::PartitionPlan::default());
         // Expand worker_borders to accommodate the two workers we'll
         // reference in `AddBorderEntry`.
         graph.worker_borders.resize(2, Vec::new());
@@ -4360,6 +4554,720 @@ mod tests {
         assert!(
             !every_border_has_inert_remote(&graph),
             "principal-vs-principal border MUST NOT be classified inert"
+        );
+    }
+
+    // =========================================================================
+    // TASK-0412 — SPEC-19 R38 amendment A8: `reconstruct` 3-argument form
+    // =========================================================================
+    //
+    // Tests for `reconstruct(border_graph, surviving_partitions,
+    // reclaimed_partitions)` (SPEC-20 §3.8 A8, SPEC-19 R38).
+    //
+    // UT-0412-01: empty reclaimed_partitions → result structurally identical to legacy 2-arg
+    // UT-0412-02: one reclaimed partition → agent count = survivors + reclaimed
+    // UT-0412-03: multiple reclaimed partitions → union of all, no duplication
+    // UT-0412-04a: worker_id collision with disjoint AgentIds → assert fires (A8) in all builds
+    // UT-0412-04b: intra-reclaimed worker_id collision → assert fires (A8) in all builds
+    // UT-0412-05: reclaimed partitions with FreePorts → D3 + wire-resolution preserved
+    // UT-0412-07: order-independence → result symbol-multisets identical regardless of input order
+    // EC-1:       all survivors empty, reclaimed non-empty → reconstructible
+    // EC-2:       both vectors empty → identical to legacy empty call
+    // EC-3:       reclaimed present but BorderGraph refs only survivors → ok
+    // EC-3a:      BorderGraph border_id present but reclaimed free_port_index skewed → pins D3
+    //
+    // Fixture disjointness contract:
+    //   `simple_era_partition(w)` uses `next_id = w * 1000` (id starts at w*1000; avoids 0
+    //    when w > 0). `lone_con_partition(w, ...)` uses `next_id = w` (starts from 0 for w=0).
+    //   Do NOT mix `simple_era_partition(0)` with `lone_con_partition(0, ...)` in the same
+    //   test — they both produce AgentId 0, causing id_range overlap that triggers the
+    //   reconstruct assert.
+
+    /// Build a `Partition` whose subnet has one ERA agent, no border FreePorts.
+    /// `worker_id * 1000` is used as the `next_id` offset to guarantee disjoint
+    /// `AgentId` ranges across all test partitions in the same run.
+    ///
+    /// # Fixture disjointness contract (QA-008)
+    ///
+    /// `simple_era_partition(w)` mints AgentId `w * 1000`.
+    /// `lone_con_partition(w, _)` mints AgentId `w` (next_id = w).
+    /// Do NOT pass `simple_era_partition(0)` together with `lone_con_partition(0, _)`
+    /// to the same `reconstruct` call — both produce AgentId 0, which triggers the
+    /// SPEC-20 A8 id_range overlap assert. Use `worker_id >= 1` for ERA partitions
+    /// that will be mixed with lone_con_partition(0, _).
+    fn simple_era_partition(worker_id: u32) -> crate::partition::Partition {
+        use crate::net::Symbol;
+        use crate::partition::IdRange;
+        let mut subnet = Net::new();
+        subnet.next_id = worker_id * 1000;
+        let a = subnet.create_agent(Symbol::Era);
+        // T1: every agent's principal port (port 0) MUST be connected.
+        // Era is a 1-port symbol; wire port 0 to a FreePort sink so the
+        // invariant is satisfied without introducing a redex partner.
+        // Using `worker_id * 1000` as the free-port id guarantees that
+        // partitions with different worker_ids use disjoint FreePort ids.
+        subnet.connect(
+            crate::net::PortRef::AgentPort(a, 0),
+            crate::net::PortRef::FreePort(worker_id * 1000),
+        );
+        crate::partition::Partition {
+            subnet,
+            worker_id,
+            free_port_index: std::collections::HashMap::new(),
+            id_range: IdRange {
+                start: worker_id * 1000,
+                end: worker_id * 1000 + 1,
+            },
+            border_id_start: 0,
+            border_id_end: 0,
+        }
+    }
+
+    // UT-0412-01: reconstruct with empty reclaimed_partitions MUST produce a
+    // Net whose live-agent count equals that produced by the 2-argument
+    // baseline (reconstruct_partition_plan_from_collected + merge with empty
+    // reclaimed). Parametrised over four independent SPEC-19 fixtures to anchor
+    // the backward-compat invariant.
+    //
+    // NOTE on "legacy" reference (SF-003): the "legacy" net is produced by calling
+    // reconstruct_partition_plan_from_collected directly + merge(). This is the SAME
+    // internal path that reconstruct() calls — both are identical by construction.
+    // The test's protection is against wrapper divergence, not independent implementation
+    // divergence. If the two code paths are ever separated, this test must be updated
+    // to compare against an independent structural expected value.
+    #[test]
+    fn reconstruct_empty_reclaimed_matches_legacy() {
+        use crate::merge::border_graph::BorderGraph;
+        use std::collections::BTreeMap;
+
+        // Helper: collect (AgentId -> Symbol) BTreeMap for structural identity check (SF-001).
+        // Using AgentId-keyed map because AgentId allocation is deterministic across both
+        // calls (both start from the same next_id values via the same helper path).
+        fn symbol_map(net: &Net) -> BTreeMap<u32, crate::net::Symbol> {
+            net.live_agents().map(|a| (a.id, a.symbol)).collect()
+        }
+
+        // Fixture A: two lone-CON workers, no borders.
+        {
+            let p0 = lone_con_partition(0, 100);
+            let p1 = lone_con_partition(1, 200);
+            let graph = empty_graph();
+
+            let plan_legacy = reconstruct_partition_plan_from_collected(
+                vec![p0.clone(), p1.clone()],
+                &graph,
+                Vec::new(),
+                0,
+            );
+            let (net_legacy, _) = merge(plan_legacy);
+            let net_new = reconstruct(&graph, vec![p0, p1], Vec::new());
+
+            // Count parity (necessary condition).
+            assert_eq!(
+                net_new.count_live_agents(),
+                net_legacy.count_live_agents(),
+                "UT-0412-01 fixture A: empty reclaimed must yield same agent count"
+            );
+            // Symbol map parity (sufficient for regression: if a code split silently
+            // diverges, AgentId→Symbol mismatches become visible here — SF-001).
+            assert_eq!(
+                symbol_map(&net_new),
+                symbol_map(&net_legacy),
+                "UT-0412-01 fixture A: symbol map must match legacy (bit-exact regression check)"
+            );
+        }
+
+        // Fixture B: single ERA partition, no borders.
+        {
+            let p0 = simple_era_partition(1); // worker_id=1 to avoid id_range=0 overlapping fixture A's wid=0
+            let graph = empty_graph();
+
+            let plan_legacy =
+                reconstruct_partition_plan_from_collected(vec![p0.clone()], &graph, Vec::new(), 0);
+            let (net_legacy, _) = merge(plan_legacy);
+            let net_new = reconstruct(&graph, vec![p0], Vec::new());
+
+            assert_eq!(
+                net_new.count_live_agents(),
+                net_legacy.count_live_agents(),
+                "UT-0412-01 fixture B: single ERA, empty reclaimed must match legacy"
+            );
+            assert_eq!(
+                symbol_map(&net_new),
+                symbol_map(&net_legacy),
+                "UT-0412-01 fixture B: symbol map must match legacy"
+            );
+        }
+
+        // Fixture C: empty partition list, no borders.
+        {
+            let graph = empty_graph();
+
+            let plan_legacy =
+                reconstruct_partition_plan_from_collected(vec![], &graph, Vec::new(), 0);
+            let (net_legacy, _) = merge(plan_legacy);
+            let net_new = reconstruct(&graph, vec![], Vec::new());
+
+            assert_eq!(
+                net_new.count_live_agents(),
+                net_legacy.count_live_agents(),
+                "UT-0412-01 fixture C: empty partitions + empty reclaimed must match legacy"
+            );
+            assert_eq!(
+                symbol_map(&net_new),
+                symbol_map(&net_legacy),
+                "UT-0412-01 fixture C: symbol map must match legacy"
+            );
+        }
+
+        // Fixture D: two CON workers with one aux-aux border in BorderGraph.
+        //
+        // Mirrors the canonical pattern from UT-0387-02 (this same file,
+        // ~line 3819) and `reconstruct_partition_plan_preserves_remaining_borders`:
+        //   - both partitions wire the SAME FreePort id (77) on aux port 1,
+        //   - both `free_port_index` maps record `77 → AgentPort(_, 1)`,
+        //   - the BorderGraph is built once from this plan, and the SAME
+        //     populated partitions (cloned) are passed to both the legacy and
+        //     the new `reconstruct` calls.
+        //
+        // T1 satisfaction:
+        //   - principal port (port 0) is wired to a non-border FreePort
+        //     (50/60), copied through merge as a Lafont FreePort,
+        //   - aux port 1 is wired to FreePort(77); merge step 2 nulls it
+        //     (border id 77 is in `borders`); step 3 restores the wire
+        //     using `free_port_index`, producing AgentPort(0,1) ↔ AgentPort(1,1),
+        //   - aux port 2 is wired to a non-border FreePort (51/61),
+        //     copied through merge as a Lafont FreePort.
+        // C3 satisfaction: border_id 77 appears in p0.free_port_index and
+        // in p1.free_port_index — exactly 2 sightings.
+        {
+            use crate::net::Symbol;
+            use crate::partition::IdRange;
+
+            let mut subnet_a = Net::new();
+            subnet_a.next_id = 0;
+            let a = subnet_a.create_agent(Symbol::Con);
+            subnet_a.connect(
+                crate::net::PortRef::AgentPort(a, 0),
+                crate::net::PortRef::FreePort(50),
+            );
+            subnet_a.connect(
+                crate::net::PortRef::AgentPort(a, 1),
+                crate::net::PortRef::FreePort(77),
+            );
+            subnet_a.connect(
+                crate::net::PortRef::AgentPort(a, 2),
+                crate::net::PortRef::FreePort(51),
+            );
+            let mut idx_a = std::collections::HashMap::new();
+            idx_a.insert(77u32, crate::net::PortRef::AgentPort(a, 1));
+            let p0 = crate::partition::Partition {
+                subnet: subnet_a,
+                worker_id: 0,
+                free_port_index: idx_a,
+                id_range: IdRange { start: 0, end: 1 },
+                border_id_start: 77,
+                border_id_end: 78,
+            };
+
+            let mut subnet_b = Net::new();
+            subnet_b.next_id = 1;
+            let b = subnet_b.create_agent(Symbol::Con);
+            subnet_b.connect(
+                crate::net::PortRef::AgentPort(b, 0),
+                crate::net::PortRef::FreePort(60),
+            );
+            subnet_b.connect(
+                crate::net::PortRef::AgentPort(b, 1),
+                crate::net::PortRef::FreePort(77),
+            );
+            subnet_b.connect(
+                crate::net::PortRef::AgentPort(b, 2),
+                crate::net::PortRef::FreePort(61),
+            );
+            let mut idx_b = std::collections::HashMap::new();
+            idx_b.insert(77u32, crate::net::PortRef::AgentPort(b, 1));
+            let p1 = crate::partition::Partition {
+                subnet: subnet_b,
+                worker_id: 1,
+                free_port_index: idx_b,
+                id_range: IdRange { start: 1, end: 2 },
+                border_id_start: 77,
+                border_id_end: 78,
+            };
+
+            let mut borders = std::collections::HashMap::new();
+            borders.insert(
+                77u32,
+                (
+                    crate::net::PortRef::AgentPort(a, 1),
+                    crate::net::PortRef::AgentPort(b, 1),
+                ),
+            );
+            let plan_bg = crate::partition::PartitionPlan {
+                partitions: vec![p0.clone(), p1.clone()],
+                borders,
+                ..Default::default()
+            };
+            let graph = BorderGraph::from_partition_plan(&plan_bg);
+
+            let plan_legacy = reconstruct_partition_plan_from_collected(
+                vec![p0.clone(), p1.clone()],
+                &graph,
+                Vec::new(),
+                0,
+            );
+            let (net_legacy, _) = merge(plan_legacy);
+            let net_new = reconstruct(&graph, vec![p0, p1], Vec::new());
+
+            assert_eq!(
+                net_new.count_live_agents(),
+                net_legacy.count_live_agents(),
+                "UT-0412-01 fixture D: two workers + border, empty reclaimed must match legacy"
+            );
+            assert_eq!(
+                symbol_map(&net_new),
+                symbol_map(&net_legacy),
+                "UT-0412-01 fixture D: symbol map must match legacy (bit-exact regression check)"
+            );
+        }
+    }
+
+    // UT-0412-02: one reclaimed partition → agent count = survivors + reclaimed.
+    #[test]
+    fn reconstruct_with_one_reclaimed_partition() {
+        let p0 = lone_con_partition(0, 100); // worker 0: 1 CON agent
+        let p1 = lone_con_partition(1, 200); // worker 1: 1 CON agent
+        let r0 = simple_era_partition(2); // reclaimed worker 2: 1 ERA agent
+        let survivors_count = 2usize;
+        let r0_count = r0.subnet.count_live_agents();
+        let graph = empty_graph();
+
+        let net = reconstruct(&graph, vec![p0, p1], vec![r0]);
+
+        assert_eq!(
+            net.count_live_agents(),
+            survivors_count + r0_count,
+            "UT-0412-02: agent_count must equal survivors ({}) + reclaimed ({})",
+            survivors_count,
+            r0_count
+        );
+    }
+
+    // UT-0412-03: two disjoint reclaimed partitions → complete union, no
+    // duplication.
+    #[test]
+    fn reconstruct_with_multiple_reclaimed_partitions() {
+        let p0 = lone_con_partition(0, 100); // worker 0: 1 CON
+        let r0 = simple_era_partition(1); // reclaimed worker 1: 1 ERA
+        let r1 = simple_era_partition(2); // reclaimed worker 2: 1 ERA
+        let survivors_count = 1usize;
+        let r0_count = r0.subnet.count_live_agents();
+        let r1_count = r1.subnet.count_live_agents();
+        let graph = empty_graph();
+
+        let net = reconstruct(&graph, vec![p0], vec![r0, r1]);
+
+        let expected = survivors_count + r0_count + r1_count;
+        assert_eq!(
+            net.count_live_agents(),
+            expected,
+            "UT-0412-03: agent_count must equal survivors ({}) + r0 ({}) + r1 ({}); got {}",
+            survivors_count,
+            r0_count,
+            r1_count,
+            net.count_live_agents()
+        );
+    }
+
+    // UT-0412-04a: overlapping id_ranges fire the SPEC-20 A8 assert in ALL builds
+    // (debug AND release), because the new precondition check is unconditional.
+    //
+    // This test used to be gated on #[cfg(debug_assertions)] when the old code used
+    // a debug_assert! proxy on worker_id. The proxy has been replaced with a direct
+    // id_range overlap scan wrapped in assert! (QA-001). The test is now un-gated.
+    //
+    // Fixture: p0 (worker 0, id_range=[0,1)) and r_collide (worker 0, id_range=[0,1))
+    // have identical id_ranges — overlap is [0,1), which fires the assert.
+    #[test]
+    fn reconstruct_panics_on_overlapping_id_ranges_all_builds() {
+        use std::panic::AssertUnwindSafe;
+
+        let p0 = lone_con_partition(0, 100); // wid=0, id_range=[0,1)
+                                             // Reclaimed partition also has worker_id 0 AND id_range=[0,1) — genuine
+                                             // id_range overlap (the precondition this assert was always meant to guard).
+        let r_collide = lone_con_partition(0, 500); // wid=0, id_range=[0,1) — OVERLAP
+        let graph = empty_graph();
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            // Clone graph to avoid capturing a mutable reference across the unwind.
+            reconstruct(&graph, vec![p0], vec![r_collide]);
+        }));
+
+        assert!(
+            result.is_err(),
+            "UT-0412-04a: overlapping id_ranges MUST panic in ALL builds (assert!, not debug_assert!)"
+        );
+        if let Err(e) = result {
+            let msg = if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = e.downcast_ref::<&str>() {
+                (*s).to_owned()
+            } else {
+                String::new()
+            };
+            // Tightened from "A8 || A7": the new assert! cites SPEC-20 A8 specifically
+            // (A7 is Net::union, not in this call path). Any regression that changes
+            // the message must update this assertion intentionally.
+            assert!(
+                msg.contains("A8"),
+                "UT-0412-04a: panic message MUST cite SPEC-20 A8; got: {msg}"
+            );
+        }
+    }
+
+    // UT-0412-04b: intra-reclaimed worker_id collision fires the post-sort
+    // monotonicity debug_assert in the helper (debug builds only).
+    //
+    // Two reclaimed partitions with the same worker_id but disjoint id_ranges:
+    //   r0: wid=5, id_range=[5000,5001)
+    //   r1: wid=5, id_range=[6000,6001)
+    // The id_range overlap assert does NOT fire (ranges are disjoint). However,
+    // after sort_by_key(worker_id), both share wid=5 — the helper's strict-
+    // monotonicity debug_assert fires.
+    //
+    // In release builds the wid duplicate passes silently (no id_range overlap,
+    // no monotonicity assert) — this pins the fact that wid-disjointness is the
+    // caller's responsibility (SPEC-20 R11).
+    #[test]
+    #[cfg(debug_assertions)]
+    fn reconstruct_panics_on_intra_reclaimed_worker_id_collision_debug_build() {
+        use crate::partition::IdRange;
+        use std::panic::AssertUnwindSafe;
+
+        // r0 and r1 have the same worker_id (5) but disjoint id_ranges.
+        // simple_era_partition(5) → wid=5, id_range=[5000,5001).
+        let r0 = simple_era_partition(5);
+        // Build r1 manually: wid=5 (same as r0), id_range=[6000,6001) (disjoint).
+        let mut subnet_r1 = Net::new();
+        subnet_r1.next_id = 6000;
+        let era_r1 = subnet_r1.create_agent(crate::net::Symbol::Era);
+        subnet_r1.connect(
+            crate::net::PortRef::AgentPort(era_r1, 0),
+            crate::net::PortRef::FreePort(6000),
+        );
+        let r1 = crate::partition::Partition {
+            subnet: subnet_r1,
+            worker_id: 5, // same worker_id as r0 — triggers monotonicity assert
+            free_port_index: std::collections::HashMap::new(),
+            id_range: IdRange {
+                start: 6000,
+                end: 6001,
+            },
+            border_id_start: 0,
+            border_id_end: 0,
+        };
+        let graph = empty_graph();
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            reconstruct(&graph, vec![], vec![r0, r1]);
+        }));
+
+        assert!(
+            result.is_err(),
+            "UT-0412-04b: intra-reclaimed wid collision MUST panic in debug builds \
+             (post-sort monotonicity debug_assert in helper)"
+        );
+    }
+
+    // UT-0412-05: reclaimed partition whose FreePort side matches a BorderGraph
+    // entry → merge resolves the border wire; D3 preserved.
+    #[test]
+    fn reconstruct_with_reclaimed_preserves_border_completeness() {
+        use crate::net::Symbol;
+        use crate::partition::IdRange;
+
+        // Build p0: one CON agent; principal port wired to FreePort(bid=1).
+        let mut subnet_p0 = Net::new();
+        subnet_p0.next_id = 0;
+        let a0 = subnet_p0.create_agent(Symbol::Con);
+        subnet_p0.connect(
+            crate::net::PortRef::AgentPort(a0, 0),
+            crate::net::PortRef::FreePort(1),
+        );
+        subnet_p0.connect(
+            crate::net::PortRef::AgentPort(a0, 1),
+            crate::net::PortRef::FreePort(10),
+        );
+        subnet_p0.connect(
+            crate::net::PortRef::AgentPort(a0, 2),
+            crate::net::PortRef::FreePort(11),
+        );
+        let mut fpi_p0 = std::collections::HashMap::new();
+        fpi_p0.insert(1u32, crate::net::PortRef::AgentPort(a0, 0));
+        let p0 = crate::partition::Partition {
+            subnet: subnet_p0,
+            worker_id: 0,
+            free_port_index: fpi_p0,
+            id_range: IdRange { start: 0, end: 1 },
+            border_id_start: 1,
+            border_id_end: 2,
+        };
+
+        // Build r0 (reclaimed): one CON agent; principal port wired to FreePort(bid=1)
+        // — the other side of the same border.
+        let mut subnet_r0 = Net::new();
+        subnet_r0.next_id = 1000;
+        let b0 = subnet_r0.create_agent(Symbol::Con);
+        subnet_r0.connect(
+            crate::net::PortRef::AgentPort(b0, 0),
+            crate::net::PortRef::FreePort(1),
+        );
+        subnet_r0.connect(
+            crate::net::PortRef::AgentPort(b0, 1),
+            crate::net::PortRef::FreePort(20),
+        );
+        subnet_r0.connect(
+            crate::net::PortRef::AgentPort(b0, 2),
+            crate::net::PortRef::FreePort(21),
+        );
+        let mut fpi_r0 = std::collections::HashMap::new();
+        fpi_r0.insert(1u32, crate::net::PortRef::AgentPort(b0, 0));
+        let r0 = crate::partition::Partition {
+            subnet: subnet_r0,
+            worker_id: 1,
+            free_port_index: fpi_r0,
+            id_range: IdRange {
+                start: 1000,
+                end: 1001,
+            },
+            border_id_start: 1,
+            border_id_end: 2,
+        };
+
+        // BorderGraph with border_id=1 connecting a0 and b0.
+        let mut borders_bg = std::collections::HashMap::new();
+        borders_bg.insert(
+            1u32,
+            (
+                crate::net::PortRef::AgentPort(a0, 0),
+                crate::net::PortRef::AgentPort(b0, 0),
+            ),
+        );
+        let plan_bg = crate::partition::PartitionPlan {
+            partitions: vec![p0.clone(), r0.clone()],
+            borders: borders_bg,
+            ..Default::default()
+        };
+        let graph = crate::merge::border_graph::BorderGraph::from_partition_plan(&plan_bg);
+
+        let net = reconstruct(&graph, vec![p0], vec![r0]);
+
+        // D3 (agent presence): both agents live in the merged net.
+        assert_eq!(
+            net.count_live_agents(),
+            2,
+            "UT-0412-05: both surviving and reclaimed agents must be present after merge"
+        );
+        // NTH-004 / D3 (wire resolution): the border wire must be resolved — neither
+        // a0 port 0 nor b0 port 0 should remain as a FreePort after merge.
+        // Both CON agents have AgentId a0=0 (from p0, next_id=0) and b0=1000 (from r0).
+        let target_a0_p0 = net.get_target(crate::net::PortRef::AgentPort(a0, 0));
+        let target_b0_p0 = net.get_target(crate::net::PortRef::AgentPort(b0, 0));
+        assert_eq!(
+            target_a0_p0,
+            crate::net::PortRef::AgentPort(b0, 0),
+            "UT-0412-05: border_id=1 must resolve a0.port[0] → b0.port[0] (D3 wire resolution)"
+        );
+        assert_eq!(
+            target_b0_p0,
+            crate::net::PortRef::AgentPort(a0, 0),
+            "UT-0412-05: border_id=1 must resolve b0.port[0] → a0.port[0] (D3 wire resolution, symmetry)"
+        );
+        // Confirm neither side is a dangling FreePort (the claim in the comment is now verified).
+        assert!(
+            !matches!(target_a0_p0, crate::net::PortRef::FreePort(_)),
+            "UT-0412-05: a0.port[0] must NOT be a FreePort after merge (D3 completeness)"
+        );
+        assert!(
+            !matches!(target_b0_p0, crate::net::PortRef::FreePort(_)),
+            "UT-0412-05: b0.port[0] must NOT be a FreePort after merge (D3 completeness)"
+        );
+    }
+
+    // EC-1: survivors empty, reclaimed non-empty → all reclaimed agents present.
+    // NOTE (QA-007 / R7a): In this test, worker_id=0 in the reclaimed slot is used
+    // under SPEC-20 R7a's permissive clause (non-hybrid mode). In hybrid mode,
+    // worker_id=0 is reserved for the coordinator self-partition and MUST NOT appear
+    // in the reclaimed partition list. Phase-B integrators writing hybrid-mode tests
+    // MUST NOT use worker_id=0 in reclaimed slots as a pattern learned from this test.
+    #[test]
+    fn reconstruct_ec1_survivors_empty_reclaimed_nonempty() {
+        let r0 = simple_era_partition(0);
+        let r0_count = r0.subnet.count_live_agents();
+        let graph = empty_graph();
+
+        let net = reconstruct(&graph, vec![], vec![r0]);
+
+        assert_eq!(
+            net.count_live_agents(),
+            r0_count,
+            "EC-1: all-reclaimed must produce agent count == r0.count"
+        );
+    }
+
+    // EC-2: both vectors empty → empty net.
+    #[test]
+    fn reconstruct_ec2_both_vectors_empty() {
+        let graph = empty_graph();
+        let net = reconstruct(&graph, vec![], vec![]);
+        assert_eq!(
+            net.count_live_agents(),
+            0,
+            "EC-2: both empty must yield an empty net"
+        );
+    }
+
+    // EC-3: reclaimed present but BorderGraph has no references to it →
+    // reconstruct succeeds; reclaimed agents appear as disconnected components.
+    #[test]
+    fn reconstruct_ec3_reclaimed_present_border_graph_refs_only_survivors() {
+        let p0 = lone_con_partition(0, 100);
+        let r0 = simple_era_partition(1);
+        let survivors_count = 1usize;
+        let r0_count = r0.subnet.count_live_agents();
+        let graph = empty_graph();
+
+        let net = reconstruct(&graph, vec![p0], vec![r0]);
+
+        assert_eq!(
+            net.count_live_agents(),
+            survivors_count + r0_count,
+            "EC-3: reclaimed agents not referenced by BorderGraph must still be present"
+        );
+    }
+
+    // EC-3a (QA-005): BorderGraph contains a border_id that is NOT present in
+    // ANY partition's free_port_index. This pins the current D3 behaviour when the
+    // BorderGraph and reclaimed partition's free_port_index are out of sync (e.g.,
+    // border_id rebase per SPEC-20 R24d applied to the graph but not to the reclaimed
+    // partition's free_port_index).
+    //
+    // Current behaviour (pinned, not fixed): merge step 3 silently drops the border
+    // (both sides produce None → (None,None) arm). The merged net still contains both
+    // agents (they are copied in step 2), but the border wire is not restored.
+    // This test documents and pins that behaviour so a future fix is intentional.
+    //
+    // Construction note: BorderGraph is built via struct literal (bypassing
+    // from_partition_plan) because from_partition_plan enforces SPEC-19 C3 — it
+    // requires every declared border_id to appear in exactly 2 partitions'
+    // free_port_index.  Here we deliberately want a border that is absent from both
+    // partitions so that the (None, None) arm of reconstruct step 3 is exercised.
+    #[test]
+    fn reconstruct_ec3a_border_graph_border_id_not_in_free_port_index() {
+        use crate::merge::border_graph::BorderState;
+
+        // p0: CON agent at id=0, no border FreePorts registered in free_port_index.
+        let p0 = lone_con_partition(0, 100);
+
+        // r0: ERA agent at id=2000, also no border FreePorts.
+        let r0 = simple_era_partition(2);
+
+        // Build a BorderGraph that claims border_id=99 exists, even though neither
+        // partition's free_port_index mentions it.  This represents the stale/rebased
+        // border scenario described in SPEC-20 R24d.
+        //
+        // We construct directly (struct literal) to avoid from_partition_plan's C3
+        // assertion, which would correctly reject this state as malformed.
+        let graph = crate::merge::border_graph::BorderGraph {
+            borders: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    99u32,
+                    BorderState {
+                        border_id: 99,
+                        side_a: crate::net::PortRef::AgentPort(0u32, 0),
+                        side_b: crate::net::PortRef::AgentPort(2000u32, 0),
+                        worker_a: 0,
+                        worker_b: 1,
+                        is_redex: false,
+                    },
+                );
+                m
+            },
+            // Both workers list border 99 in their reverse index.
+            worker_borders: vec![vec![99], vec![99]],
+            active_redexes: std::collections::HashSet::new(),
+            pending_new_borders: Vec::new(),
+            resolved_mints: std::collections::HashMap::new(),
+        };
+
+        let net = reconstruct(&graph, vec![p0], vec![r0]);
+
+        // Both agents are present (step 2 copies them unconditionally).
+        assert_eq!(
+            net.count_live_agents(),
+            2,
+            "EC-3a: both agents must be present in merged net even when border_id is stale"
+        );
+        // The border wire was silently dropped (step 3 (None,None) arm) because
+        // neither partition's free_port_index carries border_id=99.
+        // p0's CON agent (id=0) port 0 target: NOT resolved to AgentPort(2000, 0) —
+        // it remains as a FreePort (the original connection from lone_con_partition).
+        // This pins the current behaviour: if this changes, the test fails deliberately.
+        let target = net.get_target(crate::net::PortRef::AgentPort(0, 0));
+        assert_ne!(
+            target,
+            crate::net::PortRef::AgentPort(2000, 0),
+            "EC-3a: stale border_id=99 MUST NOT be silently restored (current behaviour: border dropped)"
+        );
+    }
+
+    // UT-0412-07 (QA-009): reconstruct is order-independent — presenting
+    // surviving and reclaimed in any order must produce structurally identical nets.
+    //
+    // Verifies that sort_by_key(worker_id) in the helper correctly normalises
+    // input order. A future optimisation that skips the sort for pre-sorted inputs
+    // would silently break this property if inputs happen to be unsorted.
+    #[test]
+    fn reconstruct_is_order_independent() {
+        use std::collections::BTreeMap;
+
+        let p0 = lone_con_partition(0, 100);
+        let p1 = lone_con_partition(1, 200);
+        let r0 = simple_era_partition(2);
+        let r1 = simple_era_partition(3);
+        let graph = empty_graph();
+
+        // Call A: surviving = [p0, p1], reclaimed = [r0, r1] (sorted order)
+        let net_a = reconstruct(
+            &graph,
+            vec![p0.clone(), p1.clone()],
+            vec![r0.clone(), r1.clone()],
+        );
+
+        // Call B: surviving = [p1, p0], reclaimed = [r1, r0] (reversed order)
+        let net_b = reconstruct(&graph, vec![p1, p0], vec![r1, r0]);
+
+        // Count parity.
+        assert_eq!(
+            net_a.count_live_agents(),
+            net_b.count_live_agents(),
+            "UT-0412-07: order-reversed call must yield the same agent count"
+        );
+
+        // Symbol map parity: both nets must have the same (AgentId -> Symbol) map.
+        // Since both calls operate on the same partitions (just reordered), and the
+        // helper normalises order via sort_by_key, the resulting AgentId sets and
+        // symbols must be identical.
+        let symbols_a: BTreeMap<u32, crate::net::Symbol> =
+            net_a.live_agents().map(|a| (a.id, a.symbol)).collect();
+        let symbols_b: BTreeMap<u32, crate::net::Symbol> =
+            net_b.live_agents().map(|a| (a.id, a.symbol)).collect();
+        assert_eq!(
+            symbols_a,
+            symbols_b,
+            "UT-0412-07: reconstruct must be order-independent (symbol map identical for reversed input)"
         );
     }
 }
