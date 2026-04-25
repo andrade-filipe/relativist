@@ -69,6 +69,15 @@ impl Default for Net {
 
 impl Net {
     /// Creates an empty Net with no agents, wires, or redexes.
+    ///
+    /// # Naming
+    ///
+    /// SPEC-20 §3.8 A7 calls this value "the empty net" and uses it as
+    /// the identity element of [`Net::union`]. There is exactly **one**
+    /// public constructor for this value (`Net::new()`); earlier drafts
+    /// shipped a `Net::empty()` alias which was removed for API
+    /// minimality (RV-001). Spec text that reads `a.union(Net::empty())`
+    /// is realised in code as `a.union(Net::new())`.
     pub fn new() -> Self {
         Self {
             agents: Vec::new(),
@@ -310,6 +319,219 @@ impl Net {
     pub fn from_bytes(bytes: &[u8]) -> Result<Net, crate::error::NetError> {
         crate::protocol::bincode_v2::decode_value(bytes)
             .map_err(|e| crate::error::NetError::Deserialize(e.to_string()))
+    }
+
+    /// Structural concatenation of two nets under a disjoint-`AgentId`
+    /// precondition (SPEC-20 §3.8 A7; consumed by SPEC-20 §4.2.2 v1-mode
+    /// step 4 and delta-mode step 4 to compose reclaimed partitions with
+    /// surviving partitions before the re-split). See ARG-006 P12 for
+    /// the confluence justification of the surrounding mixed-trace
+    /// recovery cycle.
+    ///
+    /// # Semantics
+    ///
+    /// `union` is **strictly cheaper than [`merge`]** because it does
+    /// **not** consult `FreePort` cross-references between `self` and
+    /// `other`. Border `FreePort` entries from both sides are preserved
+    /// verbatim in the result. Any cross-net `FreePort` matches are left
+    /// to the subsequent `split()` call, which reallocates border IDs
+    /// and rebuilds the `PartitionPlan` via the standard SPEC-04
+    /// mechanism.
+    ///
+    /// # Field handling
+    ///
+    /// - `agents` and `ports`: agents from both nets are placed at their
+    ///   original `AgentId` positions in the result; arrays are resized
+    ///   to `max(self.next_id, other.next_id) * PORTS_PER_SLOT`. Slots
+    ///   not claimed by either side stay `None` / `DISCONNECTED`.
+    /// - `redex_queue`: the two queues are concatenated **in
+    ///   self-then-other order**. Downstream determinism (T1–T4) holds
+    ///   because the queue's processing order is reduction-strategy-
+    ///   defined, not insertion-order-defined; the queue is a hint, not
+    ///   a schedule. Stale entries are filtered at dequeue time per
+    ///   SPEC-02 R17.
+    /// - `next_id`: `max(self.next_id, other.next_id)`.
+    /// - `root`: **follows `self`**. The right-hand net's root is dropped;
+    ///   downstream split/merge re-establishes the canonical observation
+    ///   point. This is documented as `union_root_follows_self` in
+    ///   SPEC-20 §3.8 A7 and asserted by UT-0410-06. When `other.root`
+    ///   is `Some(p)` and self-side wins, the dropped `other.root` does
+    ///   NOT leave dangling redirect targets in `freeport_redirects`
+    ///   because (per A7) borders are valued at agent-port pairs, not
+    ///   roots. The dropped root reference is structurally inert
+    ///   (QA-009).
+    /// - `freeport_redirects`: union of the two maps via
+    ///   `HashMap::extend` — if a key collides, **`other` wins**. The
+    ///   map is keyed by `border_id` (`u32`), NOT by `AgentId`, so the
+    ///   disjoint-`AgentId` precondition does **not** prevent border-id
+    ///   collisions. Such collisions are expected: under SPEC-20 §3.8
+    ///   A7 the union's role is structural concatenation; border-id
+    ///   conflicts are transient because the next `split()` call
+    ///   (SPEC-04) re-allocates fresh border ids per partition.
+    ///   Callers that require border-id determinism MUST follow
+    ///   `Net::union` with `split()` before any further operation
+    ///   (QA-003).
+    ///
+    /// # Precondition
+    ///
+    /// The caller MUST guarantee that the live-`AgentId` sets of `self`
+    /// and `other` are disjoint. SPEC-20 §4.2.2 establishes this via
+    /// `remap_partition_ids` (A4) + `compute_id_ranges` (R13) before the
+    /// call. Violation panics under `debug_assertions` with a message
+    /// citing SPEC-20 A7 and the offending id; release builds run
+    /// faster but produce a corrupted net (caller bug).
+    ///
+    /// Per SPEC-20 §4.2.2 the only call site invokes `Net::union` after
+    /// `remap_partition_ids` (SPEC-04 A4) has guaranteed disjoint ranges
+    /// **by construction**. Release builds rely on this construction-by-
+    /// contract; if a runtime check is needed, validate at the call
+    /// site before invoking `union` (QA-007).
+    ///
+    /// # Preconditions
+    ///
+    /// - Live `AgentId` sets of `self` and `other` are disjoint
+    ///   (see above).
+    /// - `max(self.next_id, other.next_id) < u32::MAX`. The result's
+    ///   `next_id` equals that maximum, and the next `create_agent`
+    ///   call increments it; reaching `u32::MAX` would wrap to `0` and
+    ///   silently violate D4 (ID Uniqueness). The caller is responsible
+    ///   for keeping the `AgentId` space below `u32::MAX`. Violation is
+    ///   surfaced as a debug-only panic at the union site
+    ///   (QA-001).
+    ///
+    /// # Invariants preserved
+    ///
+    /// - **I1, I2** (per-agent slot validity) — by construction.
+    /// - **D4** (ID Uniqueness) — caller's precondition (disjoint ids
+    ///   and `next_id < u32::MAX` headroom).
+    /// - **D3** (Border Completeness) — deferred to the subsequent
+    ///   `split()` call, per SPEC-20 §4.2.2.
+    ///
+    /// # Observability
+    ///
+    /// `Net::union` is a hot path during SPEC-20 §4.2.2 departure
+    /// recovery. Metric / tracing emission is the **call site's**
+    /// responsibility (RV-007); this function is a pure structural
+    /// primitive and intentionally has no internal logging.
+    ///
+    /// # Future API
+    ///
+    /// Future variants such as `union_with_resolution` or
+    /// `union_disjoint_partitions` may live alongside this baseline;
+    /// `Net::union` is the minimal SPEC-20 §3.8 A7 surface (QA-010).
+    ///
+    /// # See also
+    ///
+    /// - SPEC-20 §11 (Change Log entry for §3.8 A7 introduction)
+    /// - SPEC-02 §3.8 A7 (pending — ESPECIALISTA EM SPECS owes a
+    ///   SPEC-02 v4 revision; QA-011)
+    pub fn union(self, other: Net) -> Net {
+        // SPEC-22 D-009 will add `free_list: VecDeque<AgentId>` — the
+        // destructure pattern below MUST be updated when that field
+        // lands (RV-005).
+        // Decompose so we own each field; avoids borrow contention.
+        let Net {
+            agents: agents_a,
+            ports: ports_a,
+            redex_queue: mut redex_a,
+            next_id: next_id_a,
+            root: root_a,
+            freeport_redirects: mut redirects_a,
+        } = self;
+        let Net {
+            agents: agents_b,
+            ports: ports_b,
+            redex_queue: redex_b,
+            next_id: next_id_b,
+            root: _root_b_dropped,
+            freeport_redirects: redirects_b,
+        } = other;
+
+        let merged_next_id = std::cmp::max(next_id_a, next_id_b);
+
+        // QA-001: u32::MAX headroom check. If `merged_next_id` is at
+        // u32::MAX, the next create_agent call would wrap next_id back
+        // to 0 and reuse AgentId 0, silently breaching D4. The caller
+        // is responsible for keeping the AgentId space below u32::MAX
+        // (SPEC-20 §3.8 A7 precondition).
+        debug_assert!(
+            merged_next_id < u32::MAX,
+            "Net::union: merged_next_id at u32::MAX would overflow next create_agent (D4 breach); SPEC-20 §3.8 A7 caller is responsible for keeping AgentId space below u32::MAX"
+        );
+
+        let agent_capacity = merged_next_id as usize;
+        let port_capacity = agent_capacity * PORTS_PER_SLOT;
+
+        // Resize to the merged capacity so every AgentId in either net
+        // has a valid slot. We do not shrink — `agents_a.len()` may
+        // exceed `next_id_a` if a previous remove_agent left dead slots.
+        // QA-004: include agents_b.len() in the bound too, so a
+        // right-side arena that grew past its own next_id (e.g. by a
+        // dead tail) is preserved unchanged.
+        let agents_target_len = std::cmp::max(
+            std::cmp::max(agents_a.len(), agents_b.len()),
+            agent_capacity,
+        );
+        let ports_target_len =
+            std::cmp::max(ports_a.len(), std::cmp::max(ports_b.len(), port_capacity));
+
+        let mut agents = agents_a;
+        agents.resize(agents_target_len, None);
+
+        let mut ports = ports_a;
+        ports.resize(ports_target_len, DISCONNECTED);
+
+        // Place every live agent from `other` at its `AgentId` index.
+        // Under the disjoint precondition, every target slot in `agents`
+        // is currently `None`; we surface a violation as a debug panic
+        // pointing at the offending id (UT-0410-07).
+        for (idx, slot) in agents_b.into_iter().enumerate() {
+            if let Some(agent) = slot {
+                debug_assert!(
+                    agents[idx].is_none(),
+                    "SPEC-20 A7: Net::union precondition violated — overlapping AgentId {}",
+                    idx
+                );
+                agents[idx] = Some(agent);
+            }
+        }
+
+        // Copy `other`'s port slots into the result. Under the disjoint-
+        // `AgentId` precondition, every index `idx` that corresponds to
+        // an `other`-owned agent has `ports_a[idx] == DISCONNECTED`
+        // (RV-004 / QA-005), because `agents_a[idx]` was `None` and
+        // `set_port` is the only writer of that slot. Tail-residue
+        // indices beyond `ports_a.len()` were just resized to
+        // `DISCONNECTED` above, so the same invariant holds. We only
+        // WRITE non-DISCONNECTED targets to avoid overwriting `self`'s
+        // wires for ids unique to `self`.
+        for (idx, target) in ports_b.into_iter().enumerate() {
+            if target != DISCONNECTED && idx < ports.len() {
+                debug_assert!(
+                    ports[idx] == DISCONNECTED,
+                    "SPEC-20 A7: Net::union port-copy invariant violated — \
+                     ports[{}] already set to {:?} but `other` wants {:?}; \
+                     this implies AgentId overlap that the agent-loop \
+                     debug_assert should have caught earlier",
+                    idx,
+                    ports[idx],
+                    target
+                );
+                ports[idx] = target;
+            }
+        }
+
+        redex_a.extend(redex_b);
+        redirects_a.extend(redirects_b);
+
+        Net {
+            agents,
+            ports,
+            redex_queue: redex_a,
+            next_id: merged_next_id,
+            root: root_a,
+            freeport_redirects: redirects_a,
+        }
     }
 }
 
