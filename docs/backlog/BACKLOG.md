@@ -703,6 +703,182 @@ Predecessor amendments first (Phase A: 0460 → 0461/0462 → 0463 → 0464; 046
 - TASK-0493 SparseNet-import lint passes; TASK-0498 unsafe-free audit passes.
 - TASK-0500 v1-compatibility regression test passes (free-list-aware default `GridConfig` reproduces v2-baseline metrics on EP-Annihilation + DualTree + MixedNet benchmarks).
 
+## SPEC-21 Streaming Generation (ROADMAP 2.30 — chunked pipeline + pull dispatch)
+
+Bundle source: `specs/SPEC-21-streaming-generation.md` (Reviewed v2 — Round 2 closure landed 2026-04-25).
+Spec reviews: `docs/spec-reviews/SPEC-REVIEW-21-round-2-2026-04-25.md` (closure pass), `docs/spec-reviews/SPEC-REVIEW-21-round-1-2026-04-25.md`.
+Theory: REF-002 (Lafont 1997), AC-007 (HVM2 reduction engine — informs §4.6 install_connection border detection), AC-010 (HVM4 WNF — informs §4.9 PartitionAccumulator frame-reuse pattern), AC-014 (Bench Methodology — canonical reference for §7.4 T10 peak-memory measurement), ARG-005 (delta recoverability — informs §3.7 R37b/R37f cross-spec gates).
+Scope: 36 atomic tasks (TASK-0510..0517 Phase A amendments + TASK-0520..0524 Phase B foundation types + TASK-0530..0531 Phase C strategies + TASK-0540..0544 Phase D benchmarks + TASK-0550..0554 Phase E accumulator/orchestrator + TASK-0565/0567/0568/0575..0578/0588..0591 Phase F regression/polish/late-binding). Estimated total ~2,400 LoC production + ~2,100 LoC tests across 6 phases. Zero regression against v2 baseline (1181 default / 1224 zero-copy); v1 floor (690) MUST never regress.
+Test rows forward-referenced (Stage 2 TEST-GENERATOR consumed): 24 plumbing TEST-SPECs (TEST-SPEC-0510..0517, 0520..0524, 0530..0531, 0540..0544, 0550..0554) + 14 spec-catalog TEST-SPECs (T1..T14). Total 38 SPEC-21 TEST-SPEC files on disk.
+
+### Phase A — Predecessor-spec amendments (§3.8 A1..A8) — non-blocking, cross-spec
+
+| ID | Title | Priority | Status | Depends | Complexity | Amends |
+|----|-------|----------|--------|---------|------------|--------|
+| TASK-0510 | SPEC-04 R12 amendment — border-id allocation for streaming pipeline | P0 | TODO | none | S | SPEC-04 (A1) |
+| TASK-0511 | SPEC-06 amendment — `Message` enum gains `RequestWork` / `NoMoreWork` + PROTOCOL_VERSION sequencing | P0 | TODO | none | S | SPEC-06 (A2) |
+| TASK-0512 | SPEC-07 GridConfig amendment — three new streaming fields | P0 | TODO | none | S | SPEC-07 (A3) |
+| TASK-0513 | SPEC-09 Benchmark trait amendment — default-impl-bearing `make_net_stream` | P0 | TODO | none | S | SPEC-09 (A4) |
+| TASK-0514 | SPEC-13 amendment — coordinator + worker FSM additions for pull dispatch | P0 | TODO | none | S | SPEC-13 (A5) |
+| TASK-0515 | SPEC-22 R10b broadening amendment — `(delta_mode \|\| streaming_active)` gate | P0 | TODO | none | S | SPEC-22 (A6) |
+| TASK-0516 | SPEC-19 BorderGraph amendment — `extend_with_chunk_borders` method | P0 | TODO | none | S | SPEC-19 (A7) |
+| TASK-0517 | SPEC-04 §4.5 clarification — split() unchanged; chunked pipeline additive | P0 | TODO | none | S | SPEC-04 (A8) |
+
+### Phase B — Foundation types (R1..R3, R14, R20-R23)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0520 | `ConnectionDirective` enum (Resolved / Pending) | P0 | TODO | none | S |
+| TASK-0521 | `AgentBatch` struct (agents + connection directives) | P0 | TODO | 0520 | S |
+| TASK-0522 | `StreamingPartitionStats` (per-batch metrics; chunks_processed pipeline-owned) | P0 | TODO | 0521 | S |
+| TASK-0523 | `ChunkedPartitionResult` struct (partitions + borders + stats) | P0 | TODO | 0521, 0522, 0510 | S |
+| TASK-0524 | `StreamingPartitionStrategy` trait | P0 | TODO | 0521 | S |
+
+### Phase C — Strategies (R4..R8)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0530 | `RoundRobinStreamingStrategy` (default, R4) | P0 | TODO | 0524 | S |
+| TASK-0531 | `FennelStreamingStrategy` (advanced, R5..R6) | P1 | TODO | 0524 | M |
+
+### Phase D — Benchmark integration (R10..R15)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0540 | `Benchmark::make_net_stream` default impl + `default_chunked_iter` helper (R10/R11) | P0 | TODO | 0513, 0521, 0520 | S |
+| TASK-0541 | `ep_annihilation_stream` native streaming override (R12 MUST) | P0 | TODO | 0540, 0521, 0520 | S |
+| TASK-0542 | `dual_tree_stream` native streaming override with forward refs (R12 SHOULD, R14) | P1 | TODO | 0540, 0521, 0520 | M |
+| TASK-0544 | R15 monotonicity discipline (generator-phase contract) | P0 | TODO | 0521 | S |
+
+### Phase E — Accumulator + orchestrator (R17..R23, R29b)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0550 | `PartitionAccumulator` struct + `AccumulatorNet` (default Sparse; SC-006) | P0 | TODO | 0486, 0487 | S |
+| TASK-0551 | `add_agent` + `connect` (Sparse path) | P0 | TODO | 0550 | S |
+| TASK-0552 | `finalize` (Sparse → Dense via `to_dense(id_range)`; R23, R30) | P0 | TODO | 0550, 0551, 0490 | S |
+| TASK-0553 | `install_connection` helper (internal vs border classification; AC-007) | P0 | TODO | 0551 | S |
+| TASK-0554 | `generate_and_partition_chunked` orchestrator (T5, T6 partial, T8 partial) | P0 | TODO | 0540, 0524, 0530, 0552, 0553, 0523 | M |
+
+### Phase F — Regression / polish / late-binding (gap-fill wave)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0565 | `GridConfig` streaming fields production (chunk_size, streaming_strategy, dispatch_mode) | P0 | TODO | 0512, 0524, 0530, 0531 | S |
+| TASK-0567 | R26 short-circuit + T6/T8 isomorphism oracle (`chunk_size = u32::MAX` → split()) | P0 | TODO | 0540, 0554, 0517, 0565, 0541, 0542, 0531 | M |
+| TASK-0568 | CLI streaming flags (`--chunk-size`, `--streaming-strategy`, `--dispatch-mode`) | P1 | TODO | 0512, 0565 | S |
+| TASK-0575 | `RequestWork` / `NoMoreWork` wire variants production | P0 | TODO | 0511, 0476 | S |
+| TASK-0576 | PROTOCOL_VERSION bump production (defensive `PREVIOUS_LIVE_VERSION + 1`) | P0 | TODO | 0511, 0476, 0575 | S |
+| TASK-0577 | Coordinator FSM extension — pull-dispatch states + transitions | P0 | TODO | 0514, 0511, 0575, 0576, 0565, 0554 | L |
+| TASK-0578 | Worker FSM extension — pull-dispatch states + heterogeneous-worker simulation harness | P0 | TODO | 0514, 0511, 0575, 0576 | L |
+| TASK-0588 | `BorderGraph::extend_with_chunk_borders` call-site discipline (delta+streaming) | P0 | TODO | 0516, 0553, 0554, 0577 | M |
+| TASK-0589 | SPEC-22 R10b Strategy A (`DisableUnderDelta`) wiring under streaming | P0 | TODO | 0515, 0482, 0578, 0554 | S |
+| TASK-0590 | SPEC-22 R10b Strategy B (`BorderClean`) wiring under streaming | P1 | TODO | 0515, 0482, 0578, 0589 | M |
+| TASK-0591 | `streaming-no-recycle` cargo feature gate (alternative one-liner closure of R37b) | P2 | TODO | 0515, 0589, 0590 | S |
+
+### SPEC-21 Coverage Matrix (R-numbers + A-amendments + T-tests → tasks)
+
+Every R-number (R1..R39 inclusive of letter sub-clauses R29b, R37b/c/d/e/f/g), every §3.8 amendment (A1..A8), and every spec-catalog test (T1..T14) MUST appear in at least one task. Coverage check below.
+
+| Spec ID | Subject | Owning Task(s) |
+|---------|---------|----------------|
+| R1 | `StreamingPartitionStrategy` trait | TASK-0524 |
+| R2 | Trait stateful (`&mut self`) | TASK-0524 |
+| R3 | Trait `allocate_batch` signature | TASK-0524, TASK-0530 |
+| R4 | `RoundRobinStreamingStrategy` default (i % num_workers) | TASK-0530 |
+| R5 | `FennelStreamingStrategy` advanced (alpha-parametrized) | TASK-0531 |
+| R6 | Fennel cache O(total_agents) memory bound | TASK-0531 |
+| R7 | C1 closure (every agent assigned exactly once) | TASK-0530, TASK-0531 |
+| R8 | Determinism (same input → same assignment) | TASK-0530, TASK-0531 |
+| R9 | Pure-Core (no async/tokio/I/O) | TASK-0524, TASK-0530, TASK-0531 |
+| R10 | `Benchmark::make_net_stream` with default impl | TASK-0513 (A4), TASK-0540 |
+| R11 | `make_net` UNCHANGED (source-of-truth materialization) | TASK-0540 |
+| R12 | Each generator gains streaming variant (ep_annihilation MUST; others SHOULD) | TASK-0541, TASK-0542 |
+| R13 | ep_annihilation trivial streaming (informative) | TASK-0541 |
+| R14 | Forward references via `PendingConnection` | TASK-0520, TASK-0521, TASK-0542 |
+| R15 | Generator-phase monotonicity (strictly stronger than I3') | TASK-0544 |
+| R16 | Generator pure-Core; Iterator::next supports pull dispatch | TASK-0540, TASK-0541, TASK-0542 |
+| R17 | `generate_and_partition_chunked` orchestrator | TASK-0554 |
+| R18 | 8-step per-chunk pipeline | TASK-0554 |
+| R19 | Empty pending store assertion at end | TASK-0552, TASK-0554 |
+| R20 | `ChunkedPartitionResult` field list | TASK-0523 |
+| R21 | Structural compat with PartitionPlan (R20-R21 conversion) | TASK-0523, TASK-0567 |
+| R22 | One AgentBatch in flight invariant (peak memory bound) | TASK-0554, TASK-0552 |
+| R23 | Per-worker accumulator id-range scoping | TASK-0552 |
+| R24 | `chunk_size` configurable via GridConfig | TASK-0512 (A3), TASK-0565, TASK-0568 |
+| R25 | `streaming_strategy` selectable via GridConfig | TASK-0512 (A3), TASK-0565, TASK-0568 |
+| R26 | `chunk_size = u32::MAX` short-circuit to `split()` (closes SC-014) | TASK-0567 |
+| R27 | Invariant preservation (T1, I3', D1 extended) | TASK-0552, TASK-0554 |
+| R28 | Debug C1-C3 assertions on finalized output | TASK-0554 |
+| R29 | ID range computation identical to SPEC-04 | TASK-0552, TASK-0554 |
+| R29b | Border-id allocation (streaming path) | TASK-0510 (A1), TASK-0554 |
+| R30 | Pull-based dispatch mode | TASK-0511 (A2), TASK-0577 |
+| R31 | Two new `Message` enum variants | TASK-0511 (A2), TASK-0575 |
+| R32 | 5-step pull protocol | TASK-0577, TASK-0578 |
+| R33 | Pull preserves push invariants (R27-R29) | TASK-0577, TASK-0578, TASK-0567 |
+| R34 | `dispatch_mode` field on GridConfig | TASK-0512 (A3), TASK-0565, TASK-0568 |
+| R35 | Short-stream edge case (fewer chunks than workers) | TASK-0578 |
+| R36 | Delta+pull compatibility (SHOULD baseline; MUST under conjunction) | TASK-0577, TASK-0588 |
+| R37 | Pull throughput ≥ push under heterogeneous workers (SHOULD) | TASK-0578 |
+| R37b | G1 free-list interaction (closes SC-007) | TASK-0515 (A6), TASK-0589, TASK-0590, TASK-0591 |
+| R37c | PROTOCOL_VERSION sequencing (defensive +1) | TASK-0511 (A2), TASK-0576 |
+| R37d | BSP barrier under pull dispatch (closes SC-019) | TASK-0577 |
+| R37e | Push-mode termination scoping (closes SC-013) | TASK-0575, TASK-0577, TASK-0578 |
+| R37f | BorderGraph extension under delta+streaming (closes SC-017) | TASK-0516 (A7), TASK-0588 |
+| R37g | Pending-store memory bound `MAX_PENDING_LIFETIME` (closes SC-016) | TASK-0512 (A3, optional 4th field), TASK-0565 |
+| **§3.8 A1** (SPEC-04 R12 border-id) | Streaming-path border-id allocation | TASK-0510 |
+| **§3.8 A2** (SPEC-06 Message enum + PROTOCOL_VERSION) | RequestWork / NoMoreWork variants + version bump | TASK-0511 |
+| **§3.8 A3** (SPEC-07 GridConfig fields) | chunk_size + streaming_strategy + dispatch_mode (+ optional max_pending_lifetime) | TASK-0512 |
+| **§3.8 A4** (SPEC-09 Benchmark trait) | `make_net_stream` default-impl-bearing addition | TASK-0513 |
+| **§3.8 A5** (SPEC-13 FSM additions) | Coordinator 5 states + worker 2 states (pull-only) | TASK-0514 |
+| **§3.8 A6** (SPEC-22 R10b broadening) | `(delta_mode \|\| streaming_active)` gate | TASK-0515 |
+| **§3.8 A7** (SPEC-19 BorderGraph extension) | `extend_with_chunk_borders` method signature | TASK-0516 |
+| **§3.8 A8** (SPEC-04 §4.5 clarification) | split() unchanged; chunked pipeline additive | TASK-0517 |
+| **T1** | Round-robin assignment correctness | TASK-0530 |
+| **T2** | AgentBatch construction | TASK-0520, TASK-0521 |
+| **T3** | Forward-reference resolution | TASK-0542, TASK-0553, TASK-0554 |
+| **T4** | Empty pending store assertion | TASK-0554 |
+| **T5** | Streaming pipeline → valid partitions | TASK-0554 |
+| **T6** | Streaming-vs-batch equivalence (isomorphism) | TASK-0540, TASK-0517, TASK-0554, TASK-0567 |
+| **T7** | End-to-end reduction equivalence (post-streaming) | TASK-0542, TASK-0554, TASK-0567 (run_grid integration) |
+| **T8** | Chunk-size independence | TASK-0541, TASK-0554, TASK-0567 |
+| **T9** | Strategy independence (RR vs Fennel) | TASK-0530, TASK-0531, TASK-0554 |
+| **T10** | Peak memory measurement (one-batch-in-flight invariant) | TASK-0552, TASK-0554 (loose ceiling); strict bound deferred to future hardening task |
+| **T11** | Pull-based dispatch protocol exercise | TASK-0577, TASK-0578 |
+| **T12** | Pull-vs-push equivalence | TASK-0577, TASK-0578 |
+| **T13** | Short-stream / fewer-chunks-than-workers edge case | TASK-0577, TASK-0578 |
+| **T14** | Heterogeneous-worker simulation (pull throughput ≥ push) | TASK-0578 |
+
+**Per-amendment R-number verification:** every §3.8 amendment cites a verbatim target-spec R-number / section reference. Re-verified by task-splitter against the SPEC-21 frontmatter `Amends:` line:
+
+- A1 → SPEC-04 R12 — RESOLVES (R-number cited verbatim in SPEC-21 §3.8 A1 *Old text*).
+- A2 → SPEC-06 `Message` enum + PROTOCOL_VERSION — RESOLVES at enum-catalog granularity (SPEC-06 R5 discriminant-stability rule + R-NN PROTOCOL_VERSION clause).
+- A3 → SPEC-07 `GridConfig` struct — RESOLVES at section granularity (additive struct extension).
+- A4 → SPEC-09 R2 `Benchmark` trait — RESOLVES (R-number cited verbatim in SPEC-21 §3.8 A4 *Old text*).
+- A5 → SPEC-13 coordinator/worker FSM section — RESOLVES at section granularity (FSM state-list extension).
+- A6 → SPEC-22 R10b — RESOLVES (R-number cited verbatim in SPEC-21 §3.8 A6 *Old text*).
+- A7 → SPEC-19 §3.2 — RESOLVES at section granularity (additive method on `BorderGraph`).
+- A8 → SPEC-04 §4.5 — RESOLVES at section granularity (clarification only; `split()` unchanged).
+
+**Phase F cross-spec audit:** Phase F tasks introduce NO new amendments. They are pure regression / polish / late-binding production wiring. The cross-spec references they touch (SPEC-04 R26 short-circuit oracle in TASK-0567; SPEC-06 PROTOCOL_VERSION in TASK-0576; SPEC-13 FSM scaffolding consumed by TASK-0577/0578; SPEC-19 `extend_with_chunk_borders` consumed by TASK-0588; SPEC-22 R10b consumed by TASK-0589/0590/0591) are all GATED on Phase A amendment tasks (TASK-0510..0517) which carry the formal §3.8 amendment language. **PASS — no new amendments introduced by Phase F.**
+
+**Coverage completeness check:** every R-number (R1..R37, sub-clauses R29b/R37b-g), every §3.8 amendment (A1..A8), and every spec-catalog test (T1..T14) appears in at least one task. **PASS — no gaps.**
+
+### SPEC-21 DAG (high-level)
+
+Phase A predecessor amendments first (TASK-0510..0517 — non-blocking standalone), then foundation types (Phase B: TASK-0520 → 0521 → 0522/0523/0524), strategies (Phase C: 0530 / 0531 ← 0524), benchmark integration (Phase D: 0540 ← 0513+0521+0520; 0541/0542 ← 0540; 0544 ← 0521), accumulator + orchestrator (Phase E: 0550 ← 0486/0487 [SPEC-22]; 0551/0553 ← 0550; 0552 ← 0551+0490 [SPEC-22]; 0554 ← 0540+0524+0530+0552+0553+0523), and finally Phase F gap-fill (0565 ← 0512+0524+0530+0531; 0567 ← 0540+0554+0517+0565+0541+0542+0531; 0568 ← 0512+0565; 0575 ← 0511+0476; 0576 ← 0511+0476+0575; 0577 ← 0514+0511+0575+0576+0565+0554; 0578 ← 0514+0511+0575+0576; 0588 ← 0516+0553+0554+0577; 0589 ← 0515+0482+0578+0554; 0590 ← 0515+0482+0578+0589; 0591 ← 0515+0589+0590).
+
+### SPEC-21 Bundle gates
+
+- All 36 tasks shipped: status DONE.
+- `cargo test --workspace` ≥ 1181 default / ≥ 1224 zero-copy (zero regression on v1 floor of 690).
+- `cargo test --features streaming-no-recycle` (TASK-0591 column) passes ≥ 1181.
+- New SPEC-21 tests live under `relativist-core/src/{partition,bench,io}/streaming.rs` test modules and `relativist-core/tests/spec21_*.rs` integration files; FSM tests under `relativist-net/tests/{coordinator,worker}_pull_*.rs`.
+- Clippy + fmt clean across all feature configs.
+- TASK-0567 R26 short-circuit + T6/T8 isomorphism oracle passes.
+- TASK-0588 BorderGraph extension call-site discipline integration test passes (delta+streaming).
+- TASK-0589 / TASK-0590 R10b strategy wiring tests pass; cross-strategy isomorphism preserved.
+
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 
 | ID | Title | Priority | Status | Depends | Complexity |

@@ -189,6 +189,119 @@ Total active TEST-SPEC files (SPEC-22 sub-section): **48** (25 plumbing + 23 spe
 
 ---
 
+## SPEC-21 Streaming Generation (active bundle, Stage 2 deliverable — wave 1)
+
+Source: `specs/SPEC-21-streaming-generation.md` (Reviewed v2, Round 2 closed 2026-04-25).
+Spec review: `docs/spec-reviews/SPEC-REVIEW-21-round-2-2026-04-25.md`.
+Theory anchors: ARG-001 (G1), ARG-002 (Q5/C1-C3), ARG-005 (delta border completeness, extended), ARG-004 (feasibility profiles); AC-007 (HVM2 atomic-link), AC-010 (HVM4 frame-reuse), AC-014 (Bench Methodology). REF-TBD: FENNEL/LDG REF-NNN registration deferred per SC-020 (TCC-root cleanup). See `docs/theory-bridge.md`.
+
+### Plumbing / mechanical TEST-SPECs (numbered, one per task)
+
+**Phase A — predecessor-spec amendments (TASK-0510..0517):**
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0510-spec04-r12-border-id-amendment.md` | TASK-0510 | SPEC-04 R12 dual-path border-id policy (A1; SC-018) |
+| `TEST-SPEC-0511-spec06-message-enum-amendment.md` | TASK-0511 | RequestWork / NoMoreWork variants + PROTOCOL_VERSION bump (A2; R37c, defensive landing-order-aware) |
+| `TEST-SPEC-0512-spec07-gridconfig-amendment.md` | TASK-0512 | GridConfig fields chunk_size + streaming_strategy + dispatch_mode (A3) |
+| `TEST-SPEC-0513-spec09-benchmark-trait-amendment.md` | TASK-0513 | Benchmark::make_net_stream default-impl path (A4; SC-008) |
+| `TEST-SPEC-0514-spec13-fsm-amendment.md` | TASK-0514 | Coordinator/worker pull-mode FSM states (A5; SC-001 part 3, SC-015) |
+| `TEST-SPEC-0515-spec22-r10b-broadening-amendment.md` | TASK-0515 | SPEC-22 R10b broadening (free-list × streaming protected-tombstone discipline) (A6; SC-007) |
+| `TEST-SPEC-0516-spec19-bordergraph-extend-amendment.md` | TASK-0516 | SPEC-19 BorderGraph::extend_with_chunk_borders (A7; SC-017) |
+| `TEST-SPEC-0517-spec04-split-additive-amendment.md` | TASK-0517 | SPEC-04 split() unchanged + chunked alternative entry point (A8) |
+
+**Phase B — foundation types (TASK-0520..0524):**
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0520-connection-directive-enum.md` | TASK-0520 | ConnectionDirective enum (Resolved + Pending) |
+| `TEST-SPEC-0521-agent-batch-struct.md` | TASK-0521 | AgentBatch struct (T2 partial) |
+| `TEST-SPEC-0522-streaming-partition-stats.md` | TASK-0522 | StreamingPartitionStats (chunks_processed pipeline-owned; SC-021) |
+| `TEST-SPEC-0523-chunked-partition-result-struct.md` | TASK-0523 | ChunkedPartitionResult (R20, R21 structural compat with PartitionPlan) |
+| `TEST-SPEC-0524-streaming-partition-strategy-trait.md` | TASK-0524 | StreamingPartitionStrategy trait (R1-R3, R7-R9) |
+
+**Phase C — strategies (TASK-0530..0531):**
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0530-round-robin-streaming-strategy.md` | TASK-0530 | RoundRobinStreamingStrategy (T1) |
+| `TEST-SPEC-0531-fennel-streaming-strategy.md` | TASK-0531 | FennelStreamingStrategy (T9 partial; alpha=1.0; REF-TBD per SC-020) |
+
+**Phase D — benchmark integration (TASK-0540..0544):**
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0540-benchmark-make-net-stream-default.md` | TASK-0540 | Default-impl path equivalence (T6 partial) |
+| `TEST-SPEC-0541-ep-annihilation-stream-override.md` | TASK-0541 | ep_annihilation native streaming (T5 partial, T8 partial) |
+| `TEST-SPEC-0542-dual-tree-stream-override.md` | TASK-0542 | dual_tree forward-reference streaming (T3, T7 partial) |
+| `TEST-SPEC-0544-r15-monotonicity-discipline.md` | TASK-0544 | R15 monotonicity discipline + I3' reconciliation + CI lint |
+
+**Phase E — accumulator + orchestrator (TASK-0550..0554):**
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0550-partition-accumulator-struct.md` | TASK-0550 | PartitionAccumulator + AccumulatorNet (default Sparse; SC-006) |
+| `TEST-SPEC-0551-partition-accumulator-add-agent-connect.md` | TASK-0551 | add_agent + connect (Sparse path) |
+| `TEST-SPEC-0552-partition-accumulator-finalize.md` | TASK-0552 | finalize (Sparse → Dense via to_dense(id_range); R23, R30) |
+| `TEST-SPEC-0553-install-connection-helper.md` | TASK-0553 | install_connection (internal vs border classification; AC-007) |
+| `TEST-SPEC-0554-generate-and-partition-chunked-orchestrator.md` | TASK-0554 | generate_and_partition_chunked orchestrator (T5, T6 partial, T8 partial) |
+
+**Phase F — regression / polish / late-binding (TASK-0565..0591) — Stage 2 wave-2:**
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0565-gridconfig-streaming-fields-production.md` | TASK-0565 | GridConfig streaming fields production (R24/R25/R34, optional R37g; A3) |
+| `TEST-SPEC-0567-r26-short-circuit-and-isomorphism-oracle.md` | TASK-0567 | R26 short-circuit + T6/T8 isomorphism oracle (full integration-level closure of T6/T8) |
+| `TEST-SPEC-0568-cli-streaming-flags.md` | TASK-0568 | CLI streaming flags (`--chunk-size`, `--streaming-strategy`, `--fennel-alpha`, `--dispatch-mode`, optional `--max-pending-lifetime`) |
+| `TEST-SPEC-0575-wire-variants-production.md` | TASK-0575 | RequestWork / NoMoreWork wire variants production (R31; serde + framing + cross-version rejection) |
+| `TEST-SPEC-0576-protocol-version-bump-production.md` | TASK-0576 | PROTOCOL_VERSION bump production (R37c; defensive `PREVIOUS_LIVE_VERSION + 1`, third-in-wave landing-order-aware) |
+| `TEST-SPEC-0577-coordinator-fsm-pull-dispatch.md` | TASK-0577 | Coordinator FSM pull-dispatch states + transitions (T11, T12 owner; T13 joint; R30/R32/R37d/R37e; A5) |
+| `TEST-SPEC-0578-worker-fsm-pull-dispatch.md` | TASK-0578 | Worker FSM pull-dispatch states + heterogeneous-worker simulation (T13 joint, T14 primary; R32/R35/R37d/R37e; A5) |
+| `TEST-SPEC-0588-bordergraph-extend-call-site-discipline.md` | TASK-0588 | BorderGraph::extend_with_chunk_borders call-site discipline (R37f; A7; cross-spec SPEC-19) |
+| `TEST-SPEC-0589-r10b-strategy-a-streaming-wiring.md` | TASK-0589 | SPEC-22 R10b Strategy A (`DisableUnderDelta`) streaming wiring (R37b; A6; reuses TEST-SPEC-T9a fixture) |
+| `TEST-SPEC-0590-r10b-strategy-b-streaming-wiring.md` | TASK-0590 | SPEC-22 R10b Strategy B (`BorderClean`) streaming wiring (R37b; A6; reuses TEST-SPEC-T9b fixture) |
+| `TEST-SPEC-0591-streaming-no-recycle-cargo-feature-gate.md` | TASK-0591 | `streaming-no-recycle` cargo feature gate (R37b alternative closure; cross-cuts 0589/0590 as ADDITIONAL safety net) |
+
+### Spec-catalog tests (SPEC-21 §7.1-§7.5 — T-series)
+
+| File | T-ID | Owning task(s) |
+|------|------|---------------|
+| `TEST-SPEC-T1-round-robin-assignment-correctness.md` | T1 | 0530 |
+| `TEST-SPEC-T2-agent-batch-construction.md` | T2 | 0520, 0521 |
+| `TEST-SPEC-T3-forward-reference-resolution.md` | T3 | 0542, 0553, 0554 |
+| `TEST-SPEC-T4-empty-pending-store-assertion.md` | T4 | 0554 |
+| `TEST-SPEC-T5-streaming-pipeline-valid-partitions.md` | T5 | 0554 |
+| `TEST-SPEC-T6-streaming-vs-batch-equivalence.md` | T6 | 0540, 0517, 0554 |
+| `TEST-SPEC-T7-end-to-end-reduction-equivalence.md` | T7 | 0542, 0554 |
+| `TEST-SPEC-T8-chunk-size-independence.md` | T8 | 0541, 0554 |
+| `TEST-SPEC-T9-strategy-independence.md` | T9 | 0530, 0531, 0554 |
+| `TEST-SPEC-T10-peak-memory-measurement.md` | T10 | 0552, 0554 (full T10 deferred to TASK-0584 wave 2) |
+| `TEST-SPEC-T11-pull-based-dispatch-protocol.md` | T11 | 0511, 0514 |
+| `TEST-SPEC-T12-pull-vs-push-equivalence.md` | T12 | 0511, 0514 |
+| `TEST-SPEC-T13-short-stream-fewer-chunks-than-workers.md` | T13 | 0514 |
+| `TEST-SPEC-T14-heterogeneous-worker-simulation.md` | T14 | 0514 |
+
+### Coverage completeness — SPEC-21
+
+- Every TEST-SPEC-05XX forward-referenced from a TASK-051X..059X task file (Stage-2 wave-1 + wave-2) has a file (35/35: 8 Phase A + 5 Phase B + 2 Phase C + 4 Phase D + 5 Phase E + **11 Phase F**).
+- Every SPEC-21 §7 spec-catalog test ID (T1..T14) has a TEST-SPEC file (14/14). Phase F establishes integration-level closure for T6 / T8 (TEST-SPEC-0567), T11 / T12 (TEST-SPEC-0577), T13 joint / T14 primary (TEST-SPEC-0577 + TEST-SPEC-0578).
+- **Stage-2 wave-2 closure (Phase F):** TEST-SPEC-0565, 0567, 0568, 0575, 0576, 0577, 0578, 0588, 0589, 0590, 0591 authored. The forward-references from Phase A files (0511, 0512, 0514, 0515, 0516, 0517) are NOW resolved; the wave-2 deferral notes in those Phase A files remain accurate as historical context.
+- **Closure-flag coverage:** SC-001 (TEST-SPEC-0511, 0514, 0565, 0575), SC-005 (TEST-SPEC-0511, 0576 defensive PROTOCOL_VERSION), SC-006 (TEST-SPEC-0550, 0552), SC-007 (TEST-SPEC-0515, 0589, 0590, 0591; cross-spec via TEST-SPEC-0476), SC-008 (TEST-SPEC-0513, 0540), SC-013 (TEST-SPEC-0514, 0577, 0578 R37e), SC-014 (TEST-SPEC-0567 R26 short-circuit), SC-015 (TEST-SPEC-0514), SC-017 (TEST-SPEC-0516, 0588 call-site discipline), SC-018 (TEST-SPEC-0510), SC-019 (TEST-SPEC-0514, 0577 R37d BSP barrier), SC-020 (REF-TBD acknowledged in TEST-SPEC-0531 / 0568 — TCC-root cleanup), SC-021 (TEST-SPEC-0522 chunks_processed pipeline-owned), SC-024 (TEST-SPEC-0512, 0565 benchmark-TBD doc gate).
+- **Cross-spec fixture reuse (mandatory citations, no duplication):** TEST-SPEC-0486 / 0487 / 0489 / 0490 / 0491 / T11..T14a / T14a (SPEC-22 SparseNet) cited by TEST-SPEC-0550 / 0551 / 0552; TEST-SPEC-0482 (SPEC-22 RecyclePolicy + protected tombstones) cited by TEST-SPEC-0515 / 0589 / 0590; **TEST-SPEC-T9a (Strategy A delta-only fixture)** cited by TEST-SPEC-0589 (canonical fixture extended with mid-stream border at slot 47); **TEST-SPEC-T9b (Strategy B delta-only fixture)** cited by TEST-SPEC-0590 (same canonical fixture); TEST-SPEC-0476 (SPEC-22 PROTOCOL_VERSION defensive contract) cited by TEST-SPEC-0511 + TEST-SPEC-0576; TEST-SPEC-0484 (DenseAllocationExceedsThreshold) cited by TEST-SPEC-0552.
+- **PROTOCOL_VERSION defensive contract (THIRD IN WAVE):** TEST-SPEC-0511 (amendment) and TEST-SPEC-0576 (production) follow the TEST-SPEC-0476 pattern verbatim. Assertion is `PROTOCOL_VERSION == PREVIOUS_LIVE_VERSION + 1`, NEVER a hardcoded integer. SPEC-21 R31 is the THIRD spec in the wave (after SPEC-22 2→3 and SPEC-20 3→4); landing-order-aware contract is mandatory and verified at three layers (UT-0511-01, UT-0576-01, UT-0576-02 const_assert).
+- **R15 / I3' reconciliation:** TEST-SPEC-0544 explicitly distinguishes generator-layer monotonicity (within-chunk) from arena-layer uniqueness (across-run with recycling); positive + negative + CI lint covered.
+- **AccumulatorNet equivalence:** TEST-SPEC-0550 / 0551 / 0552 cover Sparse-default, mutation, and finalize-conversion paths; SPEC-22 R30 dense-rejection threshold honored.
+- **Benchmark trait migration:** TEST-SPEC-0513 covers default-impl path; TEST-SPEC-0540 covers per-impl override; CI-lint gate ensures the 13 baseline impls compile unchanged.
+- **streaming-no-recycle cargo gate:** TEST-SPEC-0515 exercises BOTH gate states at the amendment level; TEST-SPEC-0591 exercises BOTH gate states at the production level + CI matrix verification (IT-0591-04 / IT-0591-05); TEST-SPEC-0589 / TEST-SPEC-0590 cross-cut the feature with their runtime gates as ADDITIONAL safety net (gate ON disables pop unconditionally during streaming; gate OFF the runtime gate is load-bearing with R10b protected tombstones).
+- **Pull-dispatch protocol (T11..T14):** TEST-SPEC-0577 (coordinator FSM, T11/T12 owner) and TEST-SPEC-0578 (worker FSM, T13 joint with 0577, T14 primary owner). The spec-catalog T11..T14 files delegate to this plumbing pair for FSM transition coverage and integration-level closure. T14 heterogeneous-worker simulation harness uses AC-014 wall-clock methodology (warmup discard, median over 10 iterations).
+- **Delta + streaming combined path:** TEST-SPEC-0588 wires SPEC-19 `BorderGraph::extend_with_chunk_borders` (cross-spec; impl owned by SPEC-19) into the streaming orchestrator + pull-dispatch loop. Regression-catcher variant (UT-0588-02) FAILS without the call-site, proving the gate is load-bearing per ARG-005 closure.
+- **R26 short-circuit:** TEST-SPEC-0567 owns the integration-level isomorphism oracle for both T6 (streaming-vs-batch equivalence per benchmark) and T8 (chunk-size independence for `chunk_size ∈ {2, 8, 64, 512, size, u32::MAX}`). The short-circuit at `chunk_size = u32::MAX` uses `ContiguousIdStrategy` (SPEC-04 R22) regardless of `streaming_strategy`; documented per TASK-0567 NOTE line 69.
+
+Total active TEST-SPEC files (SPEC-21 sub-section): **49** (35 plumbing: 8 Phase A + 5 Phase B + 2 Phase C + 4 Phase D + 5 Phase E + 11 Phase F; plus 14 spec-catalog).
+**Combined active TEST-SPEC files (SPEC-20 + SPEC-22 + SPEC-21): 159.**
+
+---
+
 ## Archive
 
 `archive/` holds TEST-SPECs from previously shipped bundles (TEST-SPEC-0001..0030, 0383..0403). Do not edit.
