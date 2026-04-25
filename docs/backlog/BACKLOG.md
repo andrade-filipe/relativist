@@ -1,7 +1,8 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-23
-**Total tasks:** 252 (158 done, 0 in progress, 93 todo, 1 obsoleted)
+**Last updated:** 2026-04-24 (SPEC-20 Stage 1 TASK-SPLITTER landed: BACKLOG section + coverage matrix)
+**Total tasks:** 288 (158 done, 0 in progress, 129 todo, 1 obsoleted)
+**SPEC-20 split:** 36 new atomic tasks (TASK-0410..TASK-0455 with intentional gaps at 0427-0429, 0431, 0444-0445, 0448-0449, 0453-0454) covering R0a..R39, NF-001..NF-011 closures, and §3.8 amendments A1..A8. See SPEC-20 section below for per-phase tables and the full coverage matrix. Estimated total ~6,400 LoC production + ~3,200 LoC tests.
 
 **Pipeline:** See `../WORKFLOWS.md` (§1 Development Pipeline) for the 6-stage SDD process.
 
@@ -394,6 +395,154 @@ Bundle source: `docs/DEFERRED-WORK.md` D-005 row (opened 2026-04-23 during DEV o
 
 **DAG:** `TASK-0400 → TASK-0401 → TASK-0402 → TASK-0403` (strict linear).
 **Bundle acceptance signal:** UT-0385-08 parameterized matrix (6 fixtures × 2 strict modes = 12 cases) passes with `canonicalize(out_delta) == canonicalize(out_v1)` AND `metrics.total_interactions == metrics_v1.total_interactions` on every case. `cargo test --workspace --lib` ≥ 1151 default / ≥ 1192 `--features zero-copy`. Clippy + fmt clean both feature configs. **Closes D-003 + D-004 + D-005 DEFERRED-WORK rows.**
+
+## SPEC-20 Elastic Grid (ROADMAP 2.1, 2.2, 2.3 — Tier 4)
+
+Bundle source: `specs/SPEC-20-elastic-grid.md` (Reviewed v2 — Round 3 closure landed 2026-04-24).
+Spec reviews: `docs/spec-reviews/SPEC-REVIEW-20-round-3-2026-04-24.md` (NF closure pass, all 11 NFs CLOSED), `docs/spec-reviews/archive/SPEC-REVIEW-20-round-2-2026-04-24.md` (CONDITIONAL_PASS), `docs/spec-reviews/archive/SPEC-REVIEW-20-round-1-2026-04-24.md` (30 findings).
+Theory: ARG-001 (P1-P6), ARG-002, ARG-004, ARG-006 (CLOSED — gates R29a + R39 G1-elastic-departure for v1 + delta-conservative); ARG-005 (CLOSED at SPEC-19 boundary; conditional gate for SPEC-20 R24b-delta optimized only). Anchors per `docs/theory-bridge.md` (last updated 2026-04-24).
+Scope: 36 atomic tasks (TASK-0410..TASK-0455 with intentional gaps at 0427-0429, 0431, 0444-0445, 0448-0449, 0453-0454 — preserved for future expansion / spec polish). Estimated total ~6,400 LoC production + ~3,200 LoC tests across 4 phases. Zero regression against v1 (1181 default / 1224 `--features zero-copy`); v1 floor (690 tests) MUST never regress.
+Test rows forward-referenced (Stage 2 TEST-GENERATOR consumes): EG-U1..EG-U18 (unit) including EG-U1b, EG-U4-delta-wire-symmetry, EG-U9-extended (R26a both branches), EG-U15a + EG-U15b (NF-010 split); EG-I1..EG-I5 (integration); EG-P1..EG-P6 (property); EG-B1..EG-B3 (benchmark).
+
+### Phase A — Predecessor-spec amendments (§3.8 A1..A8) — non-blocking, cross-spec
+
+These tasks formally extend predecessor specs (SPEC-02, SPEC-04, SPEC-05, SPEC-06, SPEC-13, SPEC-19). They are forward-references for the SPEC-20 implementation but MUST land before any task that consumes them. Tag: `[SPEC-NN amendment]`.
+
+| ID | Title | Priority | Status | Depends | Complexity | Amends |
+|----|-------|----------|--------|---------|------------|--------|
+| TASK-0410 | Implement `Net::union` structural-concatenation primitive | P0 | TODO | none | S | SPEC-02 (A7) |
+| TASK-0411 | Expose `allocate_border_ids` + `remap_partition_ids` on `PartitionPlan` | P0 | TODO | none | M | SPEC-04 (A3, A4) |
+| TASK-0412 | Extend `reconstruct` to accept optional `reclaimed_partitions` (3-arg) | P0 | TODO | 0410, 0411 | S | SPEC-19 (A8) |
+| TASK-0413 | Conditional `elastic_departure` clause on R25 / PhaseTimeout path | P0 | TODO | none | S | SPEC-06 (A1) |
+| TASK-0414 | Register new CoordinatorState / Event / Action enums | P0 | TODO | none | S | SPEC-13 (A2) |
+| TASK-0415 | Extend `GridConfig` with 9 elastic-grid fields + R0c immutability discipline | P0 | TODO | none | S | SPEC-05 (A5) |
+
+A6 (SPEC-19 R45 metric coexistence audit) is committed-in-record via R38a and discharged by TASK-0450 (no separate amendment task — the audit is part of the GridMetrics task).
+
+### Phase B — Wire protocol, configuration, hybrid coordinator foundations
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0416 | CLI flags for elastic-grid configuration (R34) | P0 | TODO | 0415 | S |
+| TASK-0417 | Bump `PROTOCOL_VERSION` 3 → 4 (R37, R0d) | P0 | TODO | none | S |
+| TASK-0418 | Extend `Message` enum with 5 elastic-grid variants (R21, R35, R35a, R36, R35-cross-spec) | P0 | TODO | 0417 | M |
+| TASK-0419 | Coordinator handshake branch — `Register` vs `JoinRequest` (R37a, R0d) | P0 | TODO | 0417, 0418 | S |
+| TASK-0420 | `WorkerId` reservation + `partition_index` decoupling (R2, R2a, R7, R7a, R11, R11a) | P0 | TODO | 0414, 0418 | M |
+| TASK-0421 | ID-range recomputation on `K_eff` change (R8, R13, R30) | P0 | TODO | 0411, 0420 | S |
+| TASK-0422 | Coordinator event loop — `tokio::select!` 4-arm pattern (R3, R3b) | P0 | TODO | 0414, 0418, 0415 | M |
+| TASK-0423 | Spawn in-process self-worker via `ChannelTransport` (R1, R3, R3a, R4-v1) | P0 | TODO | 0420, 0421, 0422 | M |
+| TASK-0424 | Strict-BSP uniformity for self-partition (R3c) | P1 | TODO | 0423, 0436 | S |
+| TASK-0425 | `SoloReducing` state + `reduce_n(solo_budget)` batch loop (R5, R5a, R6, R15) | P0 | TODO | 0414, 0415, 0422, 0436 | M |
+| TASK-0426 | `TimerKind` enum with `#[repr(u32)]` (NF-008) | P0 | TODO | 0414 | S |
+| TASK-0430 | Hybrid dispatch orchestration — `K_eff = K+1` partitioning + self-spawn wiring (R1, R2, R3b, R4-v1) | P0 | TODO | 0420, 0421, 0422, 0423 | M |
+| TASK-0437 | Delta-mode self-worker symmetry — full worker delta loop (R4-delta, R4-delta-self-symmetry / NF-003) | P0 | TODO | 0423 | M |
+
+### Phase C — Dynamic joining (Phase 2.2)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0432 | `JoinRequest` handshake handler — assign `WorkerId`, send `JoinAck` (R9, R11, R11a, R17, R35a, R0d) | P0 | TODO | 0418, 0419, 0420 | M |
+| TASK-0433 | v1 re-partition on join — `K_eff_new = K_eff_old + J` (R12-v1, R13, R14-v1) | P0 | TODO | 0421, 0432, 0435, 0436 | M |
+| TASK-0434 | `pending_connections_queue` buffering (R10b, R16) | P0 | TODO | 0422 | S |
+| TASK-0435 | Join-window drain-then-arm protocol with min/max timers (R10, R10a, SC-007) | P0 | TODO | 0426, 0432, 0434 | M |
+| TASK-0436 | Extended FSM transition table — all elastic rows (§4.1.4 closes SC-012, SC-018) | P0 | TODO | 0414, 0426, 0420, 0422 | L |
+| TASK-0446 | Delta-mode rejoin cycle — mid-run `FinalStateRequest` + reconstruct + fresh `InitialPartition` (R12-delta, R12a, R14-delta) | P0 | TODO | 0412, 0432, 0437, 0435 | M |
+
+### Phase D — Dynamic departure (Phase 2.3) + retained state
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0438 | Departure detection — `collect_timeout` + TCP-error ConnectionLost (R18, R19) | P0 | TODO | 0413, 0414, 0426, 0436 | S |
+| TASK-0439 | Retained-state bookkeeping — `retained_initial` + `retained_last_acked` atomic refresh (R23, R23a, R23b-v1, R23b-delta, R23c-v1, R23c-delta, R23d, R31) | P0 | TODO | 0415 | M |
+| TASK-0440 | v1-mode departure reclaim + deferred re-`split` (R24a-v1, R24b-v1, R24c, R24d, R25, R26, R30) | P0 | TODO | 0410, 0411, 0438, 0439, 0436 | M |
+| TASK-0441 | Graceful `LeaveRequest`/`LeaveAck` flow (R20, R21, R22a, R22b, R22c, R35a) | P0 | TODO | 0418, 0436, 0440 | S |
+| TASK-0442 | `D == K_eff` edge case — solo fallback / Error (R26a / NF-007, R27) | P0 | TODO | 0440, 0443, 0425 | S |
+| TASK-0443 | Delta-mode departure reclaim + `reconstruct` + re-`split` (R24a-delta, R24b-delta, R25, R26, R27, R28, R29, R29a) | P0 | TODO | 0410, 0411, 0412, 0437, 0439, 0436 | M |
+| TASK-0447 | Combined join + departure in the same round (§4.2.3) | P1 | TODO | 0433, 0440, 0446, 0443 | S |
+
+### Phase E — Observability, invariant defense, regression gate
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0450 | `GridMetrics` elastic fields + `WorkerRoundStats::is_coordinator_self` (R38, R38a / NF-004 audit, R38b) — also discharges A6 record | P1 | TODO | 0420 | S |
+| TASK-0451 | INFO/WARN logging on join (R17) and departure (R28) | P2 | TODO | 0432, 0441, 0440, 0443 | S |
+| TASK-0452 | Invariant defense — debug assertions for D3-elastic, D4-elastic, D5, R31; G1-elastic-departure (R39, R24c, R24d, R11a, R31) | P1 | TODO | 0439, 0440, 0443, 0420 | S |
+| TASK-0455 | v1-compatibility regression gate — all elastic flags false = v1 baseline (R32, R39-G1-v1) | P0 | TODO | ALL SPEC-20 | S |
+
+### SPEC-20 Coverage Matrix (R-numbers, NFs, §3.8 amendments → tasks)
+
+Every R-number (R0a..R39 plus letter sub-clauses), every closed NF (NF-001..NF-011), and every §3.8 amendment (A1..A8) MUST appear in at least one task. Coverage check below.
+
+| Spec ID | Subject | Owning Task(s) |
+|---------|---------|----------------|
+| §3.0 M0 | 4-mode matrix (A/B/C/D) | TASK-0415 |
+| R0a | Per-feature mode coverage | TASK-0415 |
+| R0b | v1↔delta term interpretation | TASK-0415 |
+| R0c | Mode immutability per run | TASK-0415 |
+| R0d | Version-mismatch full-rejoin | TASK-0417, TASK-0419, TASK-0432 |
+| R1 | Hybrid reduction primitives | TASK-0423, TASK-0430 |
+| R2 / R2a | K_eff = K+1; cross-mode WorkerId 0 (SC-016) | TASK-0420, TASK-0430 |
+| R3 / R3a / R3b / R3c | tokio::select 4-arm + self-panic + concurrent events + strict_bsp uniformity | TASK-0422, TASK-0423, TASK-0424, TASK-0430 |
+| R4-v1 / R4-delta / R4-delta-self-symmetry | Per-mode merge / border resolution; NF-003 self-worker delta loop | TASK-0423, TASK-0430, TASK-0437 |
+| R5 / R5a / R6 | Solo mode batch loop, termination, initial_wait_timeout | TASK-0425 |
+| R7 / R7a | GridMetrics distinguishes coord-self; WorkerId 0 reserved permanently | TASK-0420, TASK-0450 |
+| R8 | Self-partition id-range via `partition_index = 0` | TASK-0421 |
+| R9 | Accept new TCP between rounds | TASK-0432 |
+| R10 / R10a / R10b | Join-window FSM state, drain-then-arm timing, boundary buffering | TASK-0434, TASK-0435 |
+| R11 / R11a | Monotonic WorkerId assignment, partition_index decoupling (D4-elastic) | TASK-0420, TASK-0432 |
+| R12-v1 / R12-delta / R12a | Re-partition on join (per-mode); v1-equivalent rejoin wire-cost | TASK-0433, TASK-0446 |
+| R13 | ID-range recomputation on K_eff change | TASK-0421, TASK-0433 |
+| R14-v1 / R14-delta | Joining worker payload (Partition vs InitialPartition) | TASK-0433, TASK-0446 |
+| R15 | Solo→grid transition on first join | TASK-0425 |
+| R16 | Mid-round joins are queued | TASK-0434 |
+| R17 | INFO logging on join (SHOULD) | TASK-0432, TASK-0451 |
+| R18 / R19 | Timeout detection / connection-loss detection | TASK-0438 |
+| R20 / R21 | Graceful departure + LeaveRequest variant + LeaveKind | TASK-0418, TASK-0441 |
+| R22a / R22b / R22c | Clean leave / urgent leave / lenient upgrade | TASK-0441 |
+| R23 / R23a / R23b-v1 / R23b-delta / R23c-v1 / R23c-delta / R23d | Retained-state bookkeeping; release policy (NF-011) | TASK-0439 |
+| R24a-v1 / R24b-v1 | v1 catastrophic + post-success departure reclaim | TASK-0440 |
+| R24a-delta / R24b-delta | Delta catastrophic + optimized reclaim (R24b-delta optimized CONDITIONAL on ARG-005) | TASK-0443 |
+| R24c | D3-elastic invariant — no in-round mixed-merge | TASK-0440, TASK-0443, TASK-0452 |
+| R24d | border_id rebase on reclaim (consumes A3) | TASK-0440, TASK-0443, TASK-0452 |
+| R25 | Re-partition for K_eff_new = K_eff - D | TASK-0440, TASK-0443 |
+| R26 | Multiple simultaneous departures, single cycle | TASK-0440, TASK-0443 |
+| R26a | D == K_eff edge case (NF-007) — hybrid solo / non-hybrid Error | TASK-0442 |
+| R27 | All-remote-depart fallback rules | TASK-0442, TASK-0443 |
+| R28 | WARN logging on departure (SHOULD) | TASK-0443, TASK-0451 |
+| R29 / R29a | At-least-once recoverability (ARG-006 v1 CLOSED; delta CONDITIONAL on ARG-005) | TASK-0443 |
+| R30 | ID uniqueness preservation via `remap_partition_ids` | TASK-0421, TASK-0440, TASK-0443 |
+| R31 | Retained-state release; memory bounds (NF-011) | TASK-0439, TASK-0452 |
+| R32 | `retain_partitions=false` ⇒ v1 fatal-on-disconnect | TASK-0415, TASK-0455 |
+| R33 / R33a | GridConfig 9 fields + defaults | TASK-0415 |
+| R34 | CLI flags exposing R33 fields | TASK-0416 |
+| R35 / R35a / R35-cross-spec-version-shape (NF-009) | Wire variants 12-16; LeaveAck-before-close; ProtocolVersionMismatch shape | TASK-0418, TASK-0441 |
+| R36 | Serde + rkyv (zero-copy) on new variants | TASK-0418 |
+| R37 / R37a | PROTOCOL_VERSION bump 4; Register vs JoinRequest selection | TASK-0417, TASK-0419 |
+| R38 / R38a / R38b | GridMetrics elastic fields; non-collision audit (NF-004); is_coordinator_self (SC-027) | TASK-0450 |
+| R39 (T1-T7, D1-D6, I1-I5, G1) | Invariant preservation defense (G1-elastic-departure gated by ARG-006 v1 + delta-conservative; CONDITIONAL ARG-005 for delta-optimized) | TASK-0452, TASK-0455 |
+| **§3.8 A1** (SPEC-06 R25 conditional) | Elastic-departure overrides v1 PhaseTimeout fatal | TASK-0413 |
+| **§3.8 A2** (SPEC-13 R21 transitions) | New CoordinatorState / Event / Action enum rows | TASK-0414 |
+| **§3.8 A3** (SPEC-04 new R18a) | `PartitionPlan::allocate_border_ids` (NF-006 + Item 12 fix) | TASK-0411 |
+| **§3.8 A4** (SPEC-04 new R19a) | `remap_partition_ids` (NF-006) | TASK-0411 |
+| **§3.8 A5** (SPEC-05 GridConfig) | 9 new fields + R33a defaults | TASK-0415 |
+| **§3.8 A6** (SPEC-19 R45 coexistence) | Metric non-collision audit committed (NF-004 — audit-only, in-record via R38a) | TASK-0450 |
+| **§3.8 A7** (SPEC-02 Net::union) | New structural-concatenation primitive (NF-001) | TASK-0410 |
+| **§3.8 A8** (SPEC-19 R38 reconstruct) | Optional 3rd `reclaimed_partitions` arg (NF-005) | TASK-0412 |
+| NF-001..NF-011 closures | (see audit pointers in `SPEC-REVIEW-20-round-3-2026-04-24.md` §2) | as above; all NFs covered transitively by amendments + main tasks |
+
+**Coverage completeness check:** every R-number (R0a..R39 inclusive of letter sub-clauses), every NF (NF-001..NF-011), and every §3.8 amendment (A1..A8) appears in at least one task. **PASS — no gaps.**
+
+### SPEC-20 DAG (high-level)
+
+Predecessor amendments first (Phase A), then config + wire foundations (0415-0419), then hybrid coordinator (0420-0430, 0437) in parallel with FSM scaffolding (0414, 0426, 0436), then joining (Phase C: 0432-0435, 0446), then departure (Phase D: 0438-0443, 0447), then observability + regression gate (Phase E: 0450-0455). TASK-0455 is the bundle gate — all SPEC-20 tasks must complete before its regression assertion runs.
+
+### SPEC-20 Bundle gates
+
+- All 36 tasks shipped: status DONE.
+- `cargo test --workspace` ≥ 1181 default / ≥ 1224 zero-copy (zero regression on v1 floor of 690).
+- New EG-* tests live under `relativist-core/tests/elastic/` and `relativist-core/src/**` per task file expectations.
+- Clippy + fmt clean both feature configs.
+- TASK-0455 v1-compatibility regression test passes (all elastic flags `false` reproduces v1 baseline byte-identical metrics on EP-Annihilation + DualTree + MixedNet benchmarks).
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

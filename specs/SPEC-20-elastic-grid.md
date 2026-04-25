@@ -1,6 +1,6 @@
 # SPEC-20: Elastic Grid
 
-**Status:** Draft — Round 2 (post-SPEC-REVIEW-20-round-1-2026-04-24)
+**Status:** Reviewed v2 — Round 3 closure landed 2026-04-24 (Round-2 verdict CONDITIONAL_PASS; Round-3 NF closure pass closed NF-001, NF-003 through NF-011; NF-002 was closed earlier in Round 3 housekeeping commit d891d63; per Round-2 review §"Gate decision", Round 3 is AVOIDABLE).
 **Depends on:** SPEC-01 (Invariants), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-13 (System Architecture), SPEC-17 (Transport Abstraction), SPEC-18 (Wire Format v2), SPEC-19 (Delta Protocol)
 **ROADMAP items:** 2.1 (Coordinator as Worker), 2.2 (Dynamic Worker Joining), 2.3 (Dynamic Worker Departure)
 **References consumed:** REF-002 (Lafont 1997), REF-005 (Mackie & Pinto 2002), REF-017 (Foster — grid resource dynamics)
@@ -131,6 +131,8 @@ This pattern guarantees: (i) `LeaveRequest`, `WorkerJoined`, `PhaseTimeout`, and
 - **R4-v1 (mode A or B).** After all `K_eff` results are received (`PartitionResult` from remote workers + the self-partition's terminal `Partition`), the coordinator MUST merge all `K_eff` partitions using `merge()` (SPEC-05 R1-R11). The self-partition MUST be treated identically to any remote partition: same `free_port_index` reconstruction (SPEC-05 R20-R23), same border reconnection, same invariant checks. **(MUST)**
 - **R4-delta (mode C or D).** After all `K_eff` round results are received (`RoundResult` from remote workers + the self-worker's local `RoundResult` synthesized via the in-process channel), the coordinator MUST `BorderGraph.apply_deltas` for each result (SPEC-19 R11), detect border redexes (R12), and resolve them at the coordinator (R13-R15). The self-worker's `RoundResult` flows through the identical `apply_deltas` path. At Global Normal Form, `FinalStateRequest` is sent to ALL members of `W_active` *including the self-worker*; the self-worker responds with `FinalStateResult` containing its current partition; the final `merge()` (SPEC-19 R29) treats it identically. **(MUST)**
 
+- **R4-delta-self-symmetry (closes NF-003).** In delta mode, the in-process self-worker MUST execute the *full* worker-side delta state machine specified by SPEC-19 R24 (the worker's delta loop). Concretely: the self-worker (i) maintains its own `partition` and `border_id` endpoint state (the self-worker is structurally a delta-mode worker, NOT a delta-mode coordinator — the coordinator's `BorderGraph` is a separate piece of state owned by the orchestration role); (ii) receives `RoundStart(deltas)` from the coordinator's orchestration role through `ChannelTransport` (SPEC-17 R15); (iii) applies deltas via `apply_border_deltas(partition, deltas)` (SPEC-19 R24); (iv) reduces via `reduce_all(partition)`; (v) emits `RoundResult(deltas)` back through the channel. The coordinator's orchestration role consumes that `RoundResult` identically to any remote worker's, by routing it through the same `BorderGraph.apply_deltas` code path. Implementations MUST NOT short-circuit the self-worker's reduction by directly invoking `reduce_all` on the full self-partition without going through the delta loop, because doing so would (a) bypass the per-round delta-emission protocol, breaking SPEC-19's coordinator-side `BorderGraph` consistency invariant, and (b) silently violate D2 (Local Reduction Equivalence) by introducing a per-worker code-path divergence between the self-worker and remote workers. The "treated identically" claim in R4-delta follows by construction once R4-delta-self-symmetry holds. Test EG-U4-delta-wire-symmetry (§7.1) MUST assert shape-equivalence of the self-worker's `RoundResult.border_deltas` payload with what a same-partition remote worker would emit, observable via instrumented channel transport. **(MUST)**
+
 **R5 (solo mode; closes SC-009).** When `K == 0` at the start of a round AND `hybrid_coordinator = true`, the coordinator MUST enter the `SoloReducing` FSM state and reduce the entire net via `reduce_n(net, solo_budget)` in a loop (NOT `reduce_all` end-to-end), polling the async event loop between successive `reduce_n` batches for `WorkerJoined` events. This trades minor per-batch overhead for join responsiveness. The default `solo_budget = 10_000` interactions; setting `solo_budget = u32::MAX` degenerates to `reduce_all` with no join responsiveness (acceptable for benchmark-only configurations). The previous wording "no split/merge overhead" (R5 v1 draft) is RETAINED in the sense that `split()` is not invoked, but the round-loop polling is explicitly part of solo-mode cost. **(MUST)**
 
 **R5a (solo termination).** The `SoloReducing` state terminates on either: (i) `reduce_n` returns with empty redex queue (Local Normal Form, transition to `Done`), or (ii) `WorkerJoined(id)` event fires (transition to `CheckTermination` then `Partitioning` with `K_eff = 2` as per R15). In case (ii), if the in-flight `reduce_n` batch is mid-execution, the coordinator MUST allow that batch to complete (no preemption mid-batch) before processing the join. **(MUST)**
@@ -226,9 +228,9 @@ The `worker_id` field is NOT carried on the wire because the coordinator already
 
 **R23 (state retention enabled-by).** When `GridConfig.retain_partitions: bool` is `true` (default `true` whenever `elastic_departure = true`, R33), the coordinator MUST maintain *two* retained-state slots per worker, with semantics that depend on the active execution mode (M0):
 
-**R23a (retained slot inventory).**
-- `retained_initial[w]`: the round-0 dispatch state for worker `w`. Allocated once per worker (at the worker's first `AssignPartition` in v1 or first `InitialPartition` in delta) and held for the *entire* run. Released only when `w` either completes the run successfully or is shut down via `Shutdown`.
-- `retained_last_acked[w]`: the most recent committed worker state. Refreshed *atomically* at every successful round boundary, defined as: "the round N+1 dispatch has been transmitted to all surviving members of `W_active`". Released only when its replacement (`retained_last_acked[w]_round_n+1`) has been successfully transmitted, OR when `w` departs and the slot has been consumed by a re-dispatch.
+**R23a (retained slot inventory; release-policy clarified for NF-011).**
+- `retained_initial[w]`: the round-0 dispatch state for worker `w`. Allocated once per worker (at the worker's first `AssignPartition` in v1 or first `InitialPartition` in delta). Released when `w` either: (a) completes the run successfully via graceful `LeaveRequest{kind: AfterResult}` (R22a), (b) is shut down via coordinator-initiated `Shutdown`, OR (c) has its `retained_initial[w]` *consumed by a reclaim* (R24a/R24b, R26, R26a) — at which point the reclaimed partition is renumbered and re-introduced via re-`split()` into a new round's partition slot, the original slot is freed, and `w` is removed from `W_active`. Case (c) is the routine reclaim path; the spec previously underspecified it (NF-011). Reclaim consumes the slot: a worker MUST NOT have its `retained_initial[w]` reclaimed twice within a run, because R11's no-WorkerId-reuse rule guarantees that once `w` exits `W_active` via reclaim, its `WorkerId` cannot return.
+- `retained_last_acked[w]`: the most recent committed worker state. Refreshed *atomically* at every successful round boundary, defined as: "the round N+1 dispatch has been transmitted to all surviving members of `W_active`". Released when its replacement (`retained_last_acked[w]_round_n+1`) has been successfully transmitted, OR when `w` departs and the slot has been consumed by a re-dispatch (R24b reclaim).
 
 **R23b (per-mode contents of `retained_initial`).**
 - **R23b-v1.** `retained_initial[w] = Partition` — the exact `Partition` structure sent to `w` via `AssignPartition` at round 0. Memory: O(|partition_w|).
@@ -256,7 +258,14 @@ The `worker_id` field is NOT carried on the wire because the coordinator already
 
 **R26 (multiple simultaneous departures).** If multiple workers depart in the same round, the coordinator MUST handle all departures collectively in a single re-partition cycle: reclaim all `D` workers' state per R24a/b (by category), include all reclaimed partitions in the re-`split` input (v1) or in the `reconstruct` input (delta), and dispatch the new `K_eff_new = K_eff - D` partitions. The coordinator MUST NOT perform multiple sequential re-partitions for departures observed in the same window. **(MUST)**
 
-**R27.** If all remote workers depart and `hybrid_coordinator = true`, the coordinator MUST fall back to solo reduction (R5/R5a). If `hybrid_coordinator = false` AND all remote workers depart, the coordinator MUST transition to `Error` (the v1 fatal path) because there is no executor left. **(MUST)**
+**R26a (D == K_eff edge case; closes NF-007).** When `D == K_eff` (every active worker departs in the same round, so no result will ever be received from a survivor), the standard R26 cycle has degenerate inputs because there is no `survivor_results` set to merge (v1) and no `surviving_partitions` to query via `FinalStateRequest` (delta). The coordinator MUST handle this edge case as follows:
+
+- **Hybrid mode (`hybrid_coordinator = true`).** All `K_eff = K_remote` reclaims target slots whose workers vanished, but the coordinator's own self-partition is still progressing (the self-worker is part of `K_eff_total = K_remote + 1` but is structurally not counted in `D` because the self-worker never departs gracefully — its panic path is `SelfPartitionPanic → Error` per R3a, not the elastic-departure path). The coordinator MUST discard `retained_last_acked` for all `D` reclaimed slots (those snapshots are derivable from `retained_initial` plus the coordinator's self-partition progress, but the simpler and conservative recovery is to fall back unconditionally to R24a-style use of `retained_initial[w]` for every `w ∈ D`). The coordinator THEN falls back per R27 (continue solo with the still-progressing self-partition; reclaimed partitions are queued for re-introduction at the next `AcceptingMembershipChanges` window via R5a + R15 if any worker rejoins). In this mode the delta-mode `FinalStateRequest` step of §4.2.2 step 3 is SKIPPED — there are no survivors to query; the coordinator reconstructs each reclaimed worker's contribution by applying `retained_last_acked[w]` deltas (if available) to `retained_initial[w]` directly, OR (conservative path) by using `retained_initial[w]` alone.
+- **Non-hybrid mode (`hybrid_coordinator = false`).** No executor remains. The coordinator MUST transition to `Error` per R27's second clause. The delta-mode `FinalStateRequest` step is SKIPPED (no survivors AND no executor to use the result). The reclaimed snapshots are not consumed; they are released as part of the `Error` cleanup along with all other run state.
+
+R26a's intent is narrowly defensive: D == K_eff is a rare pathological case (every remote worker dying in the same window) that must not deadlock the coordinator on a `FinalStateRequest` broadcast that has no recipients. Test EG-U9 (extended, see §7.1) MUST cover both branches. **(MUST)**
+
+**R27.** If all remote workers depart and `hybrid_coordinator = true`, the coordinator MUST fall back to solo reduction (R5/R5a). If `hybrid_coordinator = false` AND all remote workers depart, the coordinator MUST transition to `Error` (the v1 fatal path) because there is no executor left. R26a refines the precondition for this rule when `D == K_eff` happens in a single round (vs. cumulative across multiple rounds). **(MUST)**
 
 **R28.** The coordinator SHOULD log each departure event at `WARN` level, including the departed worker's `WorkerId`, the departure type (`timeout`, `connection_loss`, `leave_after_result`, `leave_urgent`), the round number, and which retained slot (`retained_initial` or `retained_last_acked`) was consumed. **(SHOULD)**
 
@@ -274,15 +283,20 @@ Until ARG-005 lands, implementers MAY ship delta mode with R24b disabled (fall b
 
 #### 3.3.6 Memory Cost (closes SC-013)
 
-**R31 (retained-state release; upgraded SHOULD→MUST).** The coordinator MUST release `retained_last_acked[w]` for round N as soon as both:
+**R31 (retained-state release; upgraded SHOULD→MUST; bounds corrected per NF-011).** The coordinator MUST release `retained_last_acked[w]` for round N as soon as both:
 (a) a *new* `retained_last_acked[w]_round_n+1` has been *fully* committed (the next round's dispatch has been transmitted to all surviving members of `W_active`), AND
 (b) the worker `w` has not departed.
 
 If `w` departs between (a) and the start of round N+1's dispatch, the coordinator MUST consult `retained_last_acked[w]_round_n+1` (the freshest commit) per R24b.
 
-`retained_initial[w]` is held for the entire run and released only at run end OR when `w` is permanently removed from the `WorkerId` namespace (which only happens at run end, per R11). Memory bound: `O(sum_{w in W_ever_active} |partition_w|)`.
+`retained_initial[w]` is held until `w` exits the retention set per R23a (graceful completion, `Shutdown`, or reclaim). Reclaim consumes the slot — once `w` is reclaimed, its `WorkerId` is permanently retired (R11 no-reuse rule) and its `retained_initial[w]` is freed.
 
-`retained_last_acked` memory bound: `O(sum_{w in W_active} |partition_w|)` at any instant (one slot per active worker; replaced atomically at each round). **(MUST)**
+**Memory bounds (corrected; supersedes the Round-2 wording that referenced `W_ever_active`).** Let `W_currently_active` be the set of WorkerIds presently in `W_active`, and let `W_pending_reclaim` be the (typically empty, transiently non-empty) set of WorkerIds whose departure has been observed in the current round but whose `retained_initial[w]` or `retained_last_acked[w]` has not yet been consumed by a re-`split()`. Both sets are bounded by current concurrency, NOT by cumulative join/leave history. The Round-2 bound `O(sum_{w in W_ever_active} |partition_w|)` was incorrect because `W_ever_active` is monotonically growing under churn and would imply unbounded memory; the actual bounds are:
+
+- `retained_initial` memory bound: `O(sum_{w in W_currently_active ∪ W_pending_reclaim} |partition_w|)` — bounded by `K_eff + D_pending_reclaim` slots at any instant, where `D_pending_reclaim ≤ K_eff` (per R26 single-cycle handling). Practically: at most `2 · K_eff` partition-sized slots. For TCC scope (K_eff ≤ 8), this is trivially bounded.
+- `retained_last_acked` memory bound: `O(sum_{w in W_currently_active} |partition_w|)` at any instant (one slot per currently-active worker; replaced atomically at each round; the transient `_round_n` and `_round_n+1` overlap is bounded by one extra slot per worker during R31's atomic refresh window).
+
+**(MUST)**
 
 **R32.** The `GridConfig` MUST provide `retain_partitions: bool` to allow disabling retention when departure detection is not needed (e.g., trusted LAN environments). When `retain_partitions = false`, `elastic_departure` MUST also be `false` (or the validator rejects the configuration), and `PhaseTimeout` reverts to v1 fatal error behavior (R18 condition). **(MUST)**
 
@@ -410,6 +424,11 @@ JoinNack {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinNackReason {
     /// Coordinator's PROTOCOL_VERSION differs from JoinRequest.protocol_version.
+    /// Payload shape is intentionally aligned with the cross-spec
+    /// PROTOCOL_VERSION-mismatch case used by SPEC-19 R37's `RegisterNack`
+    /// version-rejection path (closes NF-009): the rejection carries both
+    /// endpoints' versions so the rejected side can produce a self-explanatory
+    /// error message regardless of which is older.
     ProtocolVersionMismatch { coordinator: u32, worker: u32 },
     /// elastic_join is disabled in the active GridConfig.
     ElasticJoinDisabled,
@@ -426,6 +445,8 @@ pub struct WorkerCapabilities {
 ```
 
 **(MUST)**
+
+**R35-cross-spec-version-shape (closes NF-009).** The `JoinNackReason::ProtocolVersionMismatch { coordinator: u32, worker: u32 }` shape MUST match the corresponding `RegisterNack` rejection used by SPEC-19 R37 for the initial-`Register` version-mismatch path. SPEC-19 R37 itself does not pin an explicit payload shape for the version-mismatch `RegisterNack` (it defers to the existing coordinator-rejection path in `protocol/coordinator.rs`); SPEC-20 fixes the canonical payload here as `{ coordinator: u32, worker: u32 }` and SPEC-19 R37's next revision MUST adopt the same shape. Either (a) reuse this exact `JoinNackReason::ProtocolVersionMismatch` variant from inside `RegisterNack`'s reason field, OR (b) inline a shape-equivalent `RegisterNackReason::ProtocolVersionMismatch { coordinator: u32, worker: u32 }`. Implementations MUST NOT diverge between the two rejection paths because a v3 worker hitting a v4 coordinator and a mid-session v3 worker hitting a v4 coordinator on the same grid run would otherwise observe asymmetric error shapes. **(MUST)**
 
 **R35a (acknowledgement semantics; closes SC-004 sub-issue and SC-017).** The coordinator MUST send `LeaveAck` (discriminant 15) before closing the worker's TCP connection. The worker MUST NOT close its connection before receiving `LeaveAck`. This eliminates the race where the worker disappears before the coordinator's bookkeeping is updated. The pre-existing `Shutdown` message (SPEC-06) is reserved exclusively for *coordinator-initiated* termination (run end, hard error); it is NOT used as a `LeaveRequest` ack. This decouples the two semantically distinct events. Closes SC-017 ambiguity. **(MUST)**
 
@@ -464,7 +485,28 @@ pub join_round_overhead_ms_per_round: Vec<u64>,
 ```
 **(MUST)**
 
-**R38a (additivity with SPEC-19 metrics; closes SC-019).** When both delta protocol (SPEC-19) and elastic grid (SPEC-20) are active, all metrics from both specs coexist in a single `GridMetrics` struct. SPEC-19's `border_graph_apply_deltas_time_per_round`, `delta_bytes_sent_per_round`, etc., are additive with the SPEC-20 fields above. There MUST NOT be a field name collision; any field-name collision discovered at implementation time is a spec defect to be reported back to ESPECIALISTA EM SPECS for arbitration. The current draft has no overlap. **(MUST)**
+**R38a (additivity with SPEC-19 metrics; closes SC-019, NF-004).** When both delta protocol (SPEC-19) and elastic grid (SPEC-20) are active, all metrics from both specs coexist in a single `GridMetrics` struct. The exhaustive non-collision audit follows. SPEC-19 R45 (verified in `specs/SPEC-19-delta-protocol.md` lines 464-494 at the time of this revision, 2026-04-24) contributes the following field names to `GridMetrics`:
+
+- `coordinator_free_rounds: u32`
+- `border_deltas_received_per_round: Vec<u32>`
+- `border_deltas_sent_per_round: Vec<u32>`
+- `coordinator_border_resolutions_per_round: Vec<u32>`
+- `delta_bytes_sent_per_round: Vec<usize>`
+- `delta_bytes_received_per_round: Vec<usize>`
+- `coordinator_resolve_time_per_round: Vec<Duration>`
+- `border_graph_update_time_per_round: Vec<Duration>`
+
+SPEC-20 R38 contributes:
+
+- `workers_joined_per_round: Vec<u32>`
+- `workers_departed_per_round: Vec<u32>`
+- `effective_slots_per_round: Vec<u32>`
+- `partitions_redispatched_per_round: Vec<u32>`
+- `retained_initial_reclaims_per_round: Vec<u32>`
+- `retained_last_acked_reclaims_per_round: Vec<u32>`
+- `join_round_overhead_ms_per_round: Vec<u64>`
+
+The two sets are disjoint by inspection: every SPEC-20 field name begins with `workers_`, `effective_`, `partitions_`, `retained_`, or `join_round_`; no SPEC-19 field uses any of those prefixes. The audit is committed to this written record per NF-004's requirement. Any field-name collision discovered at implementation time against this baseline is a spec defect to be reported back to ESPECIALISTA EM SPECS for arbitration. **(MUST)**
 
 **R38b (`is_coordinator_self` field on WorkerRoundStats; closes SC-027).** `WorkerRoundStats` (SPEC-05 R37) MUST gain a boolean `is_coordinator_self: bool` field. Set to `true` for the coordinator's hybrid self-partition entry (R7); `false` for all remote workers. Log analyzers and benchmark tooling MUST key on this field, NOT on `worker_id == 0` alone. **(MUST)**
 
@@ -518,17 +560,27 @@ SPEC-20 amends the following requirements of predecessor specs. The amendments a
 - New transitions per §4.1.3.
 - New actions: `RegisterWorker(id)`, `RemoveWorker(id)`, `ReclaimPartition(id, slot)`, `QueueWorkerForNextWindow(id)`, `LogJoin`, `LogDeparture`.
 
-**A3. SPEC-04 R15 amendment (border_id allocator).** SPEC-04 R15 (border_id allocation, currently described as a one-shot allocation at `split()`-time) is amended with a new dynamic primitive:
+**A3. SPEC-04 amendment (border_id allocator) — closes NF-006, fixes item-12 amendment-target mismatch.** SPEC-04's existing border_id allocation is described in R16-R18 (NOT R15; R15 is about FreePort Lafont vs Boundary distinction and is unrelated to border_id allocation). The amendment introduces a new dynamic primitive at the `PartitionPlan` API surface, slotted as a new requirement following the existing R16-R18 cluster:
 
-> *R15a: SPEC-04 MUST expose `PartitionPlan::allocate_border_ids(count: u32) -> Range<u32>` that returns a fresh disjoint border_id range and updates the plan's internal `next_border_id` cursor. This primitive is required by SPEC-20 R24d for departure recovery.*
+> *R18a (new, owned by SPEC-04 next revision): SPEC-04 MUST expose `PartitionPlan::allocate_border_ids(count: u32) -> Result<Range<u32>, PartitionError>` that returns a fresh disjoint border_id range and updates the plan's internal `next_border_id` cursor. Error variant: `PartitionError::BorderIdSpaceExhausted { requested: u32, available: u32 }` when `count > u32::MAX - next_border_id`. This primitive is required by SPEC-20 R24d for departure recovery.*
 
-**A4. SPEC-04 R19 amendment (id remap).** SPEC-04 R19 (`remapAllPartitions` is no longer needed because IDs are pre-allocated) is amended with a narrow exception:
+**A4. SPEC-04 R19 amendment (id remap) — closes NF-006.** SPEC-04 R19 (`remapAllPartitions` is no longer needed because IDs are pre-allocated) is amended with a narrow exception:
 
-> *R19a: For SPEC-20's elastic departure recovery (R30), SPEC-04 MUST expose `remap_partition_ids(partition: Partition, new_range: IdRange) -> Partition` to renumber a reclaimed partition's agents into a fresh `IdRange` allocated for the new round. This is the ONLY supported caller of remap; v1 reduction continues to require zero remaps.*
+> *R19a (new, owned by SPEC-04 next revision): For SPEC-20's elastic departure recovery (R30), SPEC-04 MUST expose `remap_partition_ids(partition: Partition, new_range: IdRange) -> Result<Partition, PartitionError>` to renumber a reclaimed partition's agents into a fresh `IdRange` allocated for the new round. Error variant: `PartitionError::NewRangeTooSmall { partition_size: u32, range_size: u32 }` when `partition.agent_count() > new_range.len()`. This is the ONLY supported caller of remap; v1 reduction continues to require zero remaps.*
 
 **A5. SPEC-05 GridConfig amendment.** SPEC-05's `GridConfig` definition is extended with all the new fields listed in R33. Field defaults follow R33a.
 
-**A6. SPEC-19 R45 amendment (metric coexistence).** SPEC-19's `GridMetrics` extension is composable with SPEC-20's per R38a. No collision in current draft.
+**A6. SPEC-19 R45 amendment (metric coexistence).** SPEC-19's `GridMetrics` extension is composable with SPEC-20's per R38a. No collision in current draft (audit committed in R38a; closes NF-004).
+
+**A7. SPEC-02 amendment (net combination primitive) — closes NF-001.** SPEC-02 currently defines no operation that combines two `Net` values into one. SPEC-20 §4.2.2 v1-mode departure step 4 ("treating them as additional input nets to be unioned ... before split") and delta-mode departure step 4 ("apply the snapshot's deltas to its corresponding `retained_initial` and union the result") both depend on such a primitive. The amendment:
+
+> *(new, owned by SPEC-02 next revision): SPEC-02 MUST expose `Net::union(self, other: Net) -> Net` that concatenates two agent arrays under the precondition that the caller has already ensured **disjoint `AgentId` ranges** (which SPEC-20 guarantees by construction in §4.2.2 because reclaimed partitions are renumbered via SPEC-04 `remap_partition_ids` per R30 / A4 before union, and freshly-split partitions occupy a disjoint `IdRange` per SPEC-04 `compute_id_ranges(K_eff_new)` per R13). Border `FreePort` entries on either side are preserved in the resulting net's free-port list; the operation does NOT detect or resolve cross-net `FreePort` matches — that is `merge()`'s responsibility (SPEC-05). The operation is total when the disjointness precondition holds; if it is violated the implementation MUST panic with a clear assertion (this is a programming error in the caller, not a runtime input). This primitive is required by SPEC-20 §4.2.2 departure-recovery re-split for both v1 and delta modes.*
+
+Implementation note: `Net::union` is a structural concatenation, NOT a `merge()`. It is strictly cheaper because it does not consult `FreePort` cross-references. SPEC-20 §4.2.2 invokes `Net::union` to *prepare the input* of a subsequent `split()` call; `split()` then re-allocates border IDs and rebuilds the `PartitionPlan`, so any latent `FreePort` mismatches are resolved at split-time by the standard SPEC-04 mechanism.
+
+**A8. SPEC-19 R38 `reconstruct` signature extension — closes NF-005.** SPEC-19 R38 currently defines `reconstruct(border_graph, worker_partitions)` (2-argument signature). SPEC-20 §4.2.2 delta-mode departure step 4 invokes a 3-argument variant: `reconstruct(border_graph, surviving_partitions, reclaimed_partitions)`. The amendment:
+
+> *(new, owned by SPEC-19 next revision): SPEC-19 R38 `reconstruct` MUST accept an OPTIONAL third argument `reclaimed_partitions: Vec<Partition>` defaulting to the empty vector. Semantics: the union `surviving_partitions ∪ reclaimed_partitions` (disjoint by SPEC-20 R30 / A4 renumbering construction) is treated as the input partition set for reconstruction. When `reclaimed_partitions` is empty, behavior is identical to the existing 2-argument signature; downstream SPEC-19 callers (SPEC-19 R29 final merge) are unaffected. The 3-argument form is exclusively invoked by SPEC-20 §4.2.2 delta-mode departure recovery.*
 
 ---
 
@@ -602,13 +654,19 @@ pub enum CoordinatorAction {
 
 ```rust
 /// Replaces all symbolic timer names ("initial_wait_timer", "join_window_timer",
-/// "collect_timer") with a typed enum. SPEC-13 R21's `TimerId = u32` is derived
-/// deterministically from `TimerKind` (e.g., as `kind as u32`).
+/// "collect_timer") with a typed enum. SPEC-13 R21's `TimerId = u32` MUST be
+/// derived from `TimerKind` as `kind as u32` (NF-008): the enum MUST carry
+/// `#[repr(u32)]` so the cast is a stable, portable, well-defined operation
+/// rather than an implementation-private mapping. This guarantees that test
+/// assertions on `TimerId` values are portable across implementations and that
+/// log analysis tooling can decode `TimerId -> TimerKind` without per-build
+/// metadata.
+#[repr(u32)]
 pub enum TimerKind {
-    InitialWait,
-    JoinWindowMin,
-    JoinWindowMax,
-    Collect,
+    InitialWait    = 0,
+    JoinWindowMin  = 1,
+    JoinWindowMax  = 2,
+    Collect        = 3,
 }
 ```
 
@@ -716,14 +774,14 @@ WaitingForResults:
 1. During `WaitingForResults`, D workers depart (timeout / connection-loss / urgent leave); 0 ≤ D ≤ K_eff.
 2. For each departed worker `w`, the coordinator reclaims `retained_last_acked[w]` if it exists, else `retained_initial[w]` (R23d, R24a/b auto-pick).
 3. The K_eff_old - D surviving slots return their normal results (`PartitionResult` for v1).
-4. **D3-elastic enforcement (R24c):** the coordinator does NOT call `merge()` on a mixed set within this round. Instead it transitions to `Merging` with the K_eff_old - D survivor results, completes the round's merge as if those were the only slots, and then enters `AcceptingMembershipChanges`. At the join window (which doubles as a departure-resolution window), the coordinator includes the reclaimed partitions in the next round's re-`split()` input by treating them as additional input nets to be unioned via `Net::union` before split.
+4. **D3-elastic enforcement (R24c):** the coordinator does NOT call `merge()` on a mixed set within this round. Instead it transitions to `Merging` with the K_eff_old - D survivor results, completes the round's merge as if those were the only slots, and then enters `AcceptingMembershipChanges`. At the join window (which doubles as a departure-resolution window), the coordinator includes the reclaimed partitions in the next round's re-`split()` input by treating them as additional input nets to be unioned via `Net::union` (SPEC-02 amendment A7, §3.8) before split. Each reclaimed partition is first renumbered into a disjoint `IdRange` via `remap_partition_ids` (SPEC-04 amendment A4) so that the `Net::union` disjointness precondition holds by construction.
 5. `K_eff_new = K_eff_old - D` slots are dispatched in round N+1.
 
 **delta mode (C or D).**
 1. During `WaitingForResults`, D workers depart.
 2. For each departed worker, the coordinator reclaims `retained_last_acked[w]` (which is `(border_graph_snapshot, last_round_result)` or, with `checkpoint_partitions = true`, a full `Partition`).
 3. The coordinator broadcasts `FinalStateRequest` to surviving workers, collects their current partitions.
-4. `merged_net = reconstruct(border_graph, surviving_partitions, reclaimed_partitions)` — `reconstruct` is extended (SPEC-19 amendment) to accept reclaimed partitions reconstructed from `retained_last_acked` (apply the snapshot's deltas to its corresponding `retained_initial` and union the result).
+4. `merged_net = reconstruct(border_graph, surviving_partitions, reclaimed_partitions)` — `reconstruct` is extended via SPEC-19 amendment A8 (§3.8) to accept the optional third argument `reclaimed_partitions: Vec<Partition>` defaulting to the empty vector. Each reclaimed `Partition` is materialized from `retained_last_acked` by applying the snapshot's deltas to its corresponding `retained_initial` and unioning the result via `Net::union` (SPEC-02 amendment A7) under the disjoint-`IdRange` precondition; if `checkpoint_partitions = true` the materialization is a direct read of the checkpointed `Partition` and the `Net::union` step inside the materialization is skipped. Surviving and reclaimed `Partition` values are guaranteed disjoint by R30 / A4 renumbering, so `reconstruct`'s union-of-inputs operation is well-defined.
 5. `partitions = split(merged_net, K_eff_new = K_eff_old - D)`.
 6. Fresh `InitialPartition` to all surviving workers; new `BorderGraph` from the new `PartitionPlan`.
 
@@ -979,6 +1037,7 @@ All four features are independently enableable via `GridConfig`:
 | EG-U3 | `test_hybrid_self_partition_id_range` | R8 | Verify self-partition (partition_index=0) receives the first IdRange from `compute_id_ranges(K_eff)`. |
 | EG-U4 | `test_hybrid_merge_includes_self` | R4-v1 | Merge K+1 partitions (self + K remote). Verify result matches sequential `reduce_all`. |
 | EG-U4-delta | `test_hybrid_apply_deltas_includes_self` | R4-delta | Apply deltas from K+1 round results (self + K remote) to BorderGraph. Verify converged state matches v1 hybrid. |
+| EG-U4-delta-wire-symmetry | `test_self_worker_delta_round_result_shape_matches_remote` | R4-delta-self-symmetry, NF-003 | Run the same partition through (a) the in-process self-worker via `ChannelTransport` and (b) a remote worker over a real (or instrumented loopback) transport. Capture both `RoundResult.border_deltas` payloads via instrumentation; assert structural equivalence of the deltas (same set of `(border_id, delta_kind)` entries, same ordering up to canonical sort). This guards against a regression where the self-worker short-circuits the delta loop and silently diverges from the protocol used by remote workers. |
 | EG-U5 | `test_dynamic_join_repartition_v1` | R12-v1, R13 | Start v1 K=2, add 1 worker. Verify next round uses K_eff=4 (with hybrid) and ID ranges are disjoint. |
 | EG-U5-delta | `test_dynamic_join_repartition_delta` | R12-delta | Start delta K=2, add 1 worker. Verify FinalStateRequest cycle, reconstruct, fresh InitialPartition. |
 | EG-U6 | `test_dynamic_join_mid_round_queued` | R10b, R16 | Worker connecting mid-round is buffered and not dispatched until next window. |
@@ -988,7 +1047,7 @@ All four features are independently enableable via `GridConfig`:
 | EG-U7b | `test_departure_reclaim_last_acked_v1` | R23c-v1, R24b | Worker departs after 2 successful rounds; reclaim `retained_last_acked` (the round-2 partition), not `retained_initial`. |
 | EG-U7c | `test_departure_reclaim_last_acked_delta` | R23c-delta, R24b | Same as EG-U7b but in delta mode; reclaim `(BorderGraph snapshot, last RoundResult deltas)`. |
 | EG-U8 | `test_departure_multiple_workers_v1` | R26 | 2 of 4 workers depart simultaneously; one re-split for K_eff=3 (with hybrid: K_eff=2). |
-| EG-U9 | `test_departure_all_workers_solo_fallback` | R27 | All remote workers depart; coordinator falls back to `SoloReducing`. |
+| EG-U9 | `test_departure_all_workers_solo_fallback` | R26a, R27 | All remote workers depart in a single round (D == K_eff); branch (a) hybrid mode: coordinator skips `FinalStateRequest` (no recipients), discards `retained_last_acked` of all D departed workers, and falls back to `SoloReducing` per R27 with the still-progressing self-partition; reclaimed snapshots are queued for next-window re-introduction per R5a + R15. Branch (b) non-hybrid mode: coordinator transitions to `Error`. Both branches MUST be covered. |
 | EG-U10 | `test_graceful_leave_after_round` | R20, R22a | Worker sends PartitionResult then `LeaveRequest{AfterResult}`; verify `LeaveAck` is sent and worker removed for next round. |
 | EG-U10a | `test_graceful_leave_urgent_v1` | R22b, SC-008 | Worker sends `LeaveRequest{Urgent}` mid-round; coordinator uses timeout-recovery path for current round. |
 | EG-U10b | `test_graceful_leave_urgent_delta` | R22b | Same as EG-U10a in delta mode. |
@@ -998,7 +1057,8 @@ All four features are independently enableable via `GridConfig`:
 | EG-U12a | `test_partition_index_vs_worker_id_decoupling` | R11a, SC-006 | With WorkerIds {0, 1, 5, 7} and K_eff=4, ranges are `[0,c), [c,2c), [2c,3c), [3c,4c)` keyed on partition_index, not on WorkerId 5/7. |
 | EG-U13 | `test_retained_partition_atomic_release` | R31 (MUST), SC-013 | Verify `retained_last_acked[w]_round_n` is held until round N+1 dispatch is fully transmitted. |
 | EG-U14 | `test_worker_id_exhaustion_join_nack` | R11, R35a, SC-023 | After `next_worker_id == u32::MAX`, next `JoinRequest` receives `JoinNack { reason: WorkerIdSpaceExhausted }`. |
-| EG-U15 | `test_protocol_version_mismatch_rejection` | R0d, R37 | v3 worker connects to v4 coordinator; rejected with `RegisterNack { ProtocolVersionMismatch }`. |
+| EG-U15a | `test_protocol_version_mismatch_register_path` | R0d, R37, NF-010 | Initial-window `Register` handshake (worker is part of the initial `WaitingForWorkers` cohort): v3 worker connects to v4 coordinator; rejected with `RegisterNack { reason: ProtocolVersionMismatch { coordinator: 4, worker: 3 } }` per SPEC-19 R37's rejection path. |
+| EG-U15b | `test_protocol_version_mismatch_join_request_path` | R0d, R37, R37a, R35-cross-spec-version-shape, NF-010 | Mid-session `JoinRequest` handshake (worker connects after the BSP loop has started): v3 worker connects to v4 coordinator; rejected with `JoinNack { reason: JoinNackReason::ProtocolVersionMismatch { coordinator: 4, worker: 3 } }` per SPEC-20 R35. Assert payload shape is identical to EG-U15a's rejection (closes NF-009 + NF-010). |
 | EG-U16 | `test_self_partition_panic_to_error` | R3a | Inject panic in self-partition spawn_blocking task; verify `WaitingForResults × SelfPartitionPanic → Error`. |
 | EG-U17 | `test_strict_bsp_self_partition_uniformity` | R3c | In strict_bsp mode, self-partition border-origin redexes are deferred to next round identically to remote. |
 | EG-U18 | `test_initial_wait_timeout_supersedes_worker_connect_timeout` | R6, SC-020 | Hybrid mode, K=0, `initial_wait_timeout=30s`, `worker_connect_timeout=120s`; verify solo reduction starts at 30s. |
@@ -1061,9 +1121,13 @@ This section retains the original open questions for traceability; all are now r
 The following residual items are NOT blockers for spec-critic Round 2 endorsement but MUST be tracked as follow-ups:
 
 1. **ARG-006 (mixed-trace recoverability proof)** CLOSED (2026-04-24) — v1 mode and delta-conservative path proved by P10+P11+P12 over ARG-001 P1-P6; see `discussoes/argumentos/ARG-006-mixed-trace-recoverability.md`. **ARG-005 (delta border completeness)** CLOSED (2026-04-24) — see `discussoes/argumentos/ARG-005-delta-border-completeness.md`; gates only the delta-optimized R24b path. R24/R29/EG-I3/EG-I5a/EG-P2/EG-P5 are now CLOSED for v1 and delta-conservative; only EG-I1-delta R24b-optimized path and EG-P5 delta-optimized variant remain empirically pending pending SPEC-19 implementation. See `codigo/relativist/docs/theory-bridge.md` for full bridge.
-2. **SPEC-04 amendments (A3, A4)** must land in SPEC-04's next revision. ESPECIALISTA EM SPECS owns the cross-spec patch coordination.
+2. **SPEC-04 amendments (A3, A4)** must land in SPEC-04's next revision. A3 introduces `R18a: PartitionPlan::allocate_border_ids(count: u32) -> Result<Range<u32>, PartitionError>` with the `BorderIdSpaceExhausted` error variant; A4 introduces `R19a: remap_partition_ids(partition, new_range) -> Result<Partition, PartitionError>` with the `NewRangeTooSmall` error variant (closes NF-006). ESPECIALISTA EM SPECS owns the cross-spec patch coordination.
+
+   **SPEC-02 amendment (A7)** — `Net::union(self, other: Net) -> Net` under disjoint-`AgentId` precondition — must also land in SPEC-02's next revision (closes NF-001).
+
+   **SPEC-19 amendment (A8)** — `reconstruct` 3-argument signature extension — must land in SPEC-19's next revision (closes NF-005, see also Open Issue 4 below).
 3. **SPEC-06 amendment (A1)** and **SPEC-13 amendment (A2)** must land in their next revisions.
-4. **SPEC-19 reconstruct extension** for accepting reclaimed partitions (cited in §4.2.2 delta-mode departure step 4) needs a small amendment to SPEC-19 R29; owned jointly with the SPEC-19 maintainer.
+4. **SPEC-19 reconstruct extension** for accepting reclaimed partitions (cited in §4.2.2 delta-mode departure step 4) — RESOLVED 2026-04-24 by promotion to formal §3.8 amendment **A8** (3-argument `reconstruct(border_graph, surviving_partitions, reclaimed_partitions)` with `reclaimed_partitions: Vec<Partition>` defaulting to empty, owned by SPEC-19 next revision; closes NF-005). The amendment lands in SPEC-19's next revision per the §3.8 cross-spec-patch-coordination protocol.
 5. **Possible SPEC-20 split** into SPEC-20 (Hybrid + Joining) and SPEC-21 (Departure) — Round 2 critic considered this split. With ARG-006 now CLOSED (2026-04-24) for v1 and delta-conservative paths, the departure G1 claim is no longer CONDITIONAL for the main execution paths, so the original splitting rationale is weakened. The split remains open as an optional organizational improvement (no correctness necessity). ESPECIALISTA EM SPECS leaves this for future endorsement; no commitment.
 6. **`ChannelTransport` self-worker integration with `WorkerCapabilities`** — the in-process self-worker currently uses an empty capabilities struct; a v3 enhancement might allow the self-worker to advertise extended capabilities (e.g., zero-copy via shared memory bypassing serialization). Tracked as roadmap item, not in scope.
 
@@ -1098,7 +1162,47 @@ This section maps every Round 1 finding to its outcome in this revision. CLOSED 
 - `discussoes/argumentos/ARG-005-delta-border-completeness.md` (SPEC-19's delta protocol proof; gates SPEC-20's R24b-delta optimized path)
 - `discussoes/exploracoes/DISC-013-arg-005-disambiguation.md` (naming decision: SPEC-19 keeps ARG-005, SPEC-20's mixed-trace argument renamed to ARG-006)
 
-**Round 3 spec status:** still **CONDITIONAL_PASS** from Round 2 (NF-001 `Net::union` and other Round-2 NFs remain open). This Round 3 only closed NF-002 (ARG-005 name collision) — the other Round-2 NFs are addressed by SPEC-CRITIC Round 3 in Wave 1 of the v2 Pre-DEV bundle (separate work). No semantic changes to any requirement R-NN; this is purely nomenclature + status update.
+**Spec status (after this housekeeping sub-pass alone):** still **CONDITIONAL_PASS** from Round 2 — this housekeeping pass alone only closed NF-002 (ARG-005 name collision). Per the Round-2 review §"Gate decision", "Round 3 is AVOIDABLE" and the residual NFs are owned by ESPECIALISTA EM SPECS, not by spec-critic. The remaining Round-2 NFs (NF-001 `Net::union`, NF-003 self-worker delta symmetry, NF-004 metric audit, NF-005 reconstruct extension, NF-006 A3/A4 error returns, NF-007 D == K_eff edge case, NF-008 TimerKind MUST, NF-009 / NF-010 protocol-version-mismatch shape and test split, NF-011 retention policy + memory bound) are addressed by ESPECIALISTA EM SPECS in this Round 3 closure pass (see the next sub-section, "Round 3 (continuation) — 2026-04-24 — NF closure pass"). Spec-critic re-engages in Round 3 only if any individual closure is judged structurally non-trivial (escalation path); otherwise the spec moves to Stage 1 TASK-SPLITTER directly. No semantic changes to any requirement R-NN within this housekeeping entry; nomenclature + status update only.
+
+---
+
+### Round 3 (continuation) — 2026-04-24 — NF closure pass
+
+**Trigger:** Round-2 review (CONDITIONAL_PASS) §"Specialist-em-specs TODO list" enumerated 11 NFs + 2 polish items. The earlier "Round 3 — 2026-04-24 (housekeeping)" entry above closed only NF-002 (ARG name collision) via commit d891d63. This continuation entry closes the remaining 10 NFs and the 1 amendment-target polish item (item 12). Item 13 (proof-sketch polish in §5.1) is judged not worth the cost relative to the existing R39-G1-elastic-departure breakdown and is left as a deferred polish; it is not a blocker.
+
+**Per-NF closures:**
+
+- **NF-001 (HIGH) — `Net::union` undefined in SPEC-02. CLOSED via §3.8 amendment A7 (preferred option from the Round-2 review).** Added a new amendment A7 that formally specifies `Net::union(self, other: Net) -> Net` under the disjoint-`AgentId` precondition (which SPEC-20 §4.2.2 guarantees by construction via `remap_partition_ids` per A4 + `compute_id_ranges` per R13). Updated §4.2.2 v1-mode step 4 prose to reference A7 explicitly and to call out the `remap_partition_ids` renumbering that establishes the precondition. Diff pointer: §3.8 A7 (new); §4.2.2 v1-mode step 4 (prose extended).
+
+- **NF-003 (HIGH) — R4-delta self-worker symmetry. CLOSED via R4-delta-self-symmetry clause + new test EG-U4-delta-wire-symmetry.** Appended an explicit clause to R4-delta requiring the in-process self-worker to execute SPEC-19 R24's full worker-side delta state machine (apply_border_deltas → reduce_all → emit RoundResult through the channel), with an explicit prohibition on short-circuiting `reduce_all` over the full self-partition. Added test EG-U4-delta-wire-symmetry asserting structural equivalence of the self-worker's `RoundResult.border_deltas` payload with what a same-partition remote worker would emit, observable via instrumented channel transport. Diff pointer: §3.1 R4-delta-self-symmetry (new); §7.1 EG-U4-delta-wire-symmetry (new).
+
+- **NF-004 (MEDIUM) — Metric non-collision audit not committed to written record. CLOSED via R38a expansion.** Replaced R38a's prose-only assurance with an explicit enumeration of all 8 SPEC-19 R45 field names and all 7 SPEC-20 R38 field names, plus a by-inspection disjointness argument keyed on field-name prefixes. The audit is now committed to the written record. Diff pointer: §3.6 R38a (rewritten).
+
+- **NF-005 (MEDIUM) — `reconstruct` 3-argument signature unamended. CLOSED via §3.8 amendment A8.** Promoted the previously-informal Open Issue #4 to a formal §3.8 amendment A8 specifying the optional third argument `reclaimed_partitions: Vec<Partition>` defaulting to the empty vector. Updated §4.2.2 delta-mode step 4 prose to reference A8 explicitly and to specify how reclaimed partitions are materialized from `retained_last_acked` via `Net::union` (A7) under the disjointness precondition. Diff pointer: §3.8 A8 (new); §4.2.2 delta-mode step 4 (prose rewritten).
+
+- **NF-006 (MEDIUM) — A3/A4 lacked error-return signatures. CLOSED via A3/A4 expansion with named `PartitionError` variants.** A3 now returns `Result<Range<u32>, PartitionError>` with `BorderIdSpaceExhausted { requested, available }` for `count > u32::MAX - next_border_id`; A4 now returns `Result<Partition, PartitionError>` with `NewRangeTooSmall { partition_size, range_size }` for under-sized `new_range`. Diff pointer: §3.8 A3, A4 (signatures revised).
+
+- **NF-007 (MEDIUM) — D == K_eff edge case unspecified. CLOSED via R26a.** Added R26a covering both branches: hybrid mode discards `retained_last_acked` for all D reclaimed slots, falls back per R27 with the still-progressing self-partition, and skips `FinalStateRequest`; non-hybrid mode transitions to `Error` and skips `FinalStateRequest`. Updated EG-U9 test description to require both branches. Diff pointer: §3.3.4 R26a (new); §3.3.4 R27 (precondition refined); §7.1 EG-U9 (description expanded).
+
+- **NF-008 (LOW) — TimerKind derivation said "e.g.". CLOSED via MUST upgrade with `#[repr(u32)]`.** §4.1.3 now mandates `#[repr(u32)]` on the enum and assigns explicit discriminants 0-3, making `TimerId = kind as u32` a portable, well-defined operation. Diff pointer: §4.1.3 (TimerKind block).
+
+- **NF-009 (LOW) — `JoinNackReason::ProtocolVersionMismatch` shape vs SPEC-19 R37 `RegisterNack`. CLOSED via R35-cross-spec-version-shape + variant docstring.** Added requirement R35-cross-spec-version-shape pinning the canonical payload `{ coordinator: u32, worker: u32 }` for both rejection paths and obligating SPEC-19 R37's next revision to adopt the same shape (either by reusing the variant or inlining a shape-equivalent enum case). Cross-references the alignment in the variant's docstring. Diff pointer: §3.5 R35 `JoinNackReason` (docstring extended); §3.5 R35-cross-spec-version-shape (new).
+
+- **NF-010 (LOW) — EG-U15 conflated Register and JoinRequest paths. CLOSED via test split.** Replaced EG-U15 with EG-U15a (initial `Register` path → `RegisterNack`) and EG-U15b (mid-session `JoinRequest` path → `JoinNack`). EG-U15b additionally asserts that the rejection payload shape is identical to EG-U15a's (closes NF-009 + NF-010 jointly). Diff pointer: §7.1 EG-U15 (split into EG-U15a / EG-U15b).
+
+- **NF-011 (MEDIUM) — R23a retention policy + R31 memory bound. CLOSED via R23a clause (c) and R31 bounds correction.** R23a now explicitly enumerates three release conditions: graceful completion via `LeaveRequest{AfterResult}`, coordinator-initiated `Shutdown`, and reclaim consumption (case (c)). R31's memory bound was corrected: the Round-2 wording `O(sum_{w in W_ever_active} |partition_w|)` is replaced with `O(sum_{w in W_currently_active ∪ W_pending_reclaim} |partition_w|)`, bounded by `2 · K_eff` partition-sized slots at any instant rather than by cumulative join/leave history. Diff pointer: §3.3.3 R23a (clause (c) added); §3.3.6 R31 (bounds rewritten).
+
+- **Item 12 (polish) — A3 amendment-target mismatch (was "SPEC-04 R15"). FIXED in §3.8 A3.** The amendment is now correctly slotted as a new requirement (`R18a`) following SPEC-04's R16-R18 border_id-allocation cluster, instead of being incorrectly attributed to R15 (which is about FreePort Lafont vs Boundary distinction and is unrelated to border_id allocation). The amendment heading explicitly notes the correction. Diff pointer: §3.8 A3 (target re-numbered).
+
+**Item 13 (polish) — proof sketch in §5.1.** DEFERRED. The existing R39-G1-elastic-departure breakdown in §3.7 already states the "reduce to ARG-001 Passo 11 via clean-boundary re-split" argument with sufficient precision (per-mode breakdown + ARG-006 P10/P11/P12 citation). Pulling it into §5.1 would be a presentation polish, not a substantive correctness improvement. Cost > value at this point in the pipeline; not blocking.
+
+**Stale-state repairs in this same pass (carried out alongside the NF closures):**
+- Status frontmatter field bumped from "Draft — Round 2 (post-SPEC-REVIEW-20-round-1-2026-04-24)" to "Reviewed v2 — Round 3 closure landed 2026-04-24". Justification: Round-2 verdict explicitly stated "Round 3 is AVOIDABLE"; this NF-closure pass discharges all 10 remaining NFs without re-scoping any requirement; no new spec-critic round is required by the Round-2 contract.
+- §11 housekeeping-entry "Round 3 spec status" wording corrected: the Round-2 NFs are owned by ESPECIALISTA EM SPECS in this closure pass, NOT by spec-critic Round 3 in a separate Wave-1 bundle (the prior wording mis-attributed ownership). Cross-link to the present Round-3-continuation sub-section added.
+
+**Closure log:** `docs/spec-reviews/SPEC-REVIEW-20-round-3-2026-04-24.md` (per-NF verdict + evidence + diff pointer; titled as a continuation of the partial Round 3 commit d891d63 which closed only NF-002).
+
+**Spec status (after this NF closure pass):** **Reviewed v2.** All 11 Round-2 NFs are now CLOSED (NF-002 in the housekeeping entry above; NF-001, NF-003 through NF-011 in this entry). Item 12 (amendment target) is FIXED; item 13 (proof-sketch polish) is DEFERRED as non-blocking. No new spec-critic round is required per the Round-2 verdict; if any specific closure is judged structurally non-trivial by spec-critic during a subsequent audit, that closure escalates to Round 3 individually.
 
 ---
 

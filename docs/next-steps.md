@@ -16,7 +16,7 @@
 
 | Wave | Spec(s) | Tier / Milestone | Status |
 |------|---------|------------------|--------|
-| 1 | SPEC-20 Elastic Grid | Tier 2 / M2 | NOT STARTED — already at Round 2 CONDITIONAL_PASS; needs Round 3 + Stage 1 + Stage 2 |
+| 1 | SPEC-20 Elastic Grid | Tier 2 / M2 | **DONE 2026-04-24 (pending commit)** — Stage 0: `Reviewed v2`, closure log `docs/spec-reviews/SPEC-REVIEW-20-round-3-2026-04-24.md` (10 NFs closed). Stage 1: 36 tasks TASK-0410..0455 in `docs/backlog/`, BACKLOG.md SPEC-20 section + coverage matrix added (~9.6k LoC est). Stage 2: 62 TEST-SPECs (33 EG-U / 10 EG-I / 6 EG-P / 3 EG-B / 10 plumbing) + INDEX in `docs/tests/`. Forward-refs logged for SPEC-02 A7, SPEC-04 A3/A4, SPEC-19 A8. After commit, move row to progress.md and trigger Wave 2. |
 | 2 | SPEC-22 Arena Mgmt → SPEC-21 Streaming Generation | Tier 3 / M5 | NOT STARTED |
 | 3 | SPEC-25 Recipe Gen → SPEC-27 R26-R28 (deferred D-001 — plan tasks/tests now per user directive) | Tier 5 / M10+M7 | NOT STARTED |
 | 4 | SPEC-26 §3.2-§3.6 GUI App (workspace §3.1 already shipped) | Tier 5 / M11 | NOT STARTED |
