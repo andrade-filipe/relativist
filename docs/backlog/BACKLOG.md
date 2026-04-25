@@ -1,8 +1,9 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-24 (SPEC-20 Stage 1 TASK-SPLITTER landed: BACKLOG section + coverage matrix)
-**Total tasks:** 288 (158 done, 0 in progress, 129 todo, 1 obsoleted)
-**SPEC-20 split:** 36 new atomic tasks (TASK-0410..TASK-0455 with intentional gaps at 0427-0429, 0431, 0444-0445, 0448-0449, 0453-0454) covering R0a..R39, NF-001..NF-011 closures, and §3.8 amendments A1..A8. See SPEC-20 section below for per-phase tables and the full coverage matrix. Estimated total ~6,400 LoC production + ~3,200 LoC tests.
+**Last updated:** 2026-04-25 (SPEC-22 Stage 1 TASK-SPLITTER landed: BACKLOG section + coverage matrix)
+**Total tasks:** 324 (158 done, 0 in progress, 165 todo, 1 obsoleted)
+**SPEC-20 split:** 36 atomic tasks (TASK-0410..TASK-0455 with intentional gaps) covering R0a..R39, NF-001..NF-011 closures, and §3.8 amendments A1..A8. ~6,400 LoC production + ~3,200 LoC tests.
+**SPEC-22 split:** 36 new atomic tasks (TASK-0460..TASK-0500 with intentional gaps at 0470, 0479, 0485, 0494, 0499 — preserved for future expansion / spec polish) covering R1..R32 (incl. letter sub-clauses R6, R9a, R10a, R10b, R10c, R23, R27a, R30) and §3.8 amendments A1..A10 against 7 predecessor specs (SPEC-01, SPEC-02, SPEC-03, SPEC-04, SPEC-05, SPEC-18, SPEC-19). See SPEC-22 section below. Estimated total ~2,070 LoC production + ~1,830 LoC tests.
 
 **Pipeline:** See `../WORKFLOWS.md` (§1 Development Pipeline) for the 6-stage SDD process.
 
@@ -543,6 +544,164 @@ Predecessor amendments first (Phase A), then config + wire foundations (0415-041
 - New EG-* tests live under `relativist-core/tests/elastic/` and `relativist-core/src/**` per task file expectations.
 - Clippy + fmt clean both feature configs.
 - TASK-0455 v1-compatibility regression test passes (all elastic flags `false` reproduces v1 baseline byte-identical metrics on EP-Annihilation + DualTree + MixedNet benchmarks).
+
+## SPEC-22 Arena Management (ROADMAP 2.32, 2.33 — free-list variant + SparseNet)
+
+Bundle source: `specs/SPEC-22-arena-management.md` (Reviewed v2 — Round 2 closure landed 2026-04-25).
+Spec reviews: `docs/spec-reviews/SPEC-REVIEW-22-round-2-2026-04-25.md` (closure pass — 20/21 CLOSED inline, 1 DEFERRED to TCC-root cleanup), `docs/spec-reviews/SPEC-REVIEW-22-round-1-2026-04-24.md` (BLOCK — 21 findings, 4 CRITICAL / 7 HIGH / 6 MEDIUM / 4 LOW).
+Theory: REF-002 (Lafont 1997), REF-003 (HVM2 — arena management), REF-014 (Kahl — GC impact); AC-001 (Haskell IC.Core baseline), AC-006 (HVM2 flat-array rationale), AC-009, AC-011 (free-list ↔ HVM4 static heap partitioning), AC-015 (CC-4 ID space); ARG-002 (border bijection — informs §3.8 SPEC-04/SPEC-05 amendments), ARG-005 (delta recoverability — informs SC-005 BorderGraph constraint, OPEN; CONDITIONAL gate on R10b under delta-optimized strategy).
+Scope: 36 atomic tasks (TASK-0460..TASK-0500 with intentional gaps at 0470, 0479, 0485, 0494, 0499 — preserved for future expansion / spec polish). Estimated total ~2,070 LoC production + ~1,830 LoC tests across 6 phases. Zero regression against v2 baseline (1181 default / 1224 `--features zero-copy`); v1 floor (690 tests) MUST never regress.
+Test rows forward-referenced (Stage 2 TEST-GENERATOR consumes): T1..T18 (SPEC-22 §7.1 free-list + §7.2 SparseNet) plus T7a (CON-DUP under partial free-list), T8a (wire-version rejection), T9a (Strategy A protected tombstone), T9b (Strategy B border-clean), T14a (partition-scoped to_dense). The full T1..T18 + T7a/T8a/T9a/T9b/T14a coverage maps to the 28 implementation tasks via the matrix below.
+
+### Phase A — Predecessor-spec amendments (§3.8 A1..A10) — non-blocking, cross-spec
+
+These tasks formally extend predecessor specs (SPEC-01, SPEC-02, SPEC-03, SPEC-04, SPEC-05, SPEC-18, SPEC-19). They are forward-references for SPEC-22 implementation but MUST land before any task that consumes them. Tag: `[SPEC-NN amendment]`.
+
+| ID | Title | Priority | Status | Depends | Complexity | Amends |
+|----|-------|----------|--------|---------|------------|--------|
+| TASK-0460 | Relax I3 (Monotonicity) → I3' (Uniqueness of AgentIds) | P0 | TODO | none | S | SPEC-01 (A1) |
+| TASK-0461 | Relax R2 — `AgentId` reuse via free-list with explicit clearing protocol | P0 | TODO | 0460 | S | SPEC-02 (A2) |
+| TASK-0462 | Restate R10 — `next_id` increment by `f = k - r` (fresh allocations only) | P0 | TODO | 0460 | S | SPEC-02 (A3) |
+| TASK-0463 | Clarify R11 — "next available ID" subsumes free-list pop | P0 | TODO | 0460, 0461, 0462 | S | SPEC-02 (A4) |
+| TASK-0464 | Extend R12 — `remove_agent` pushes free-list, purges `freeport_redirects` | P0 | TODO | 0460, 0461 | S | SPEC-02 (A5) |
+| TASK-0465 | Reformulate §4.3 debug-assertion language as I3'-compatible | P0 | TODO | 0460 | S | SPEC-03 (A6) |
+| TASK-0466 | Extend §4.5 `build_subnet` — populate per-partition free-list + 4× sparse threshold | P0 | TODO | 0460-0464 | S | SPEC-04 (A7) |
+| TASK-0467 | Extend §4.2 `merge` — free-list reconciliation across partitions | P0 | TODO | 0460, 0461 | S | SPEC-05 (A8) |
+| TASK-0468 | Bump `PROTOCOL_VERSION` 2 → 3 for `Net.free_list` wire layout | P0 | TODO | none | S | SPEC-18 (A9) |
+| TASK-0469 | Extend §3.2 `BorderGraph` contract — recycle-protection under delta mode | P0 | TODO | 0460 | S | SPEC-19 (A10) |
+
+### Phase B — Free-list core implementation (R1..R12, R28, R32, R9a, R6, R5)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0471 | Add `free_list: Vec<AgentId>` field to `Net` struct + constructors (R1, R8, R28) | P0 | TODO | 0461 | S |
+| TASK-0472 | Modify `create_agent` to pop from free-list (R3, R4, R5) | P0 | TODO | 0471, 0463, 0462 | S |
+| TASK-0473 | Modify `remove_agent` to push to free-list + purge `freeport_redirects` (R2, R7) | P0 | TODO | 0471, 0464 | S |
+| TASK-0474 | Free-list no-duplicates invariant — debug assertion + optional HashSet shadow (R5, R6) | P0 | TODO | 0473 | S |
+| TASK-0475 | Serde + bincode round-trip for `Net.free_list` (R9) | P0 | TODO | 0471, 0473 | S |
+| TASK-0476 | Bump `PROTOCOL_VERSION` 2 → 3 + v2-vs-v3 rejection clause (R9a) | P0 | TODO | 0468, 0475 | S |
+| TASK-0477 | `count_live_agents` MUST NOT count free-list entries (R11) | P1 | TODO | 0473 | S |
+| TASK-0478 | M5-scale bitmap free-list fallback (`bitvec::BitVec` representation) (R32) | P2 | TODO | 0471, 0472, 0473, 0474 | M |
+
+### Phase C — Distributed integration (R10, R10a, R10b, R10c, R12, R22, R30)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0480 | Per-worker ID range constraint on recycle (R10) | P0 | TODO | 0472, 0481 | S |
+| TASK-0481 | `build_subnet` populates partition free-list with in-range `None` slots (R10a) | P0 | TODO | 0466, 0471, 0480 | S |
+| TASK-0482 | `RecyclePolicy` enum + `GridConfig.recycle_under_delta` + `is_border_protected` wiring (R10b/R10c — Strategy A and Strategy B) | P0 | TODO | 0469, 0473, 0472, 0480 | M |
+| TASK-0483 | `merge` free-list reconciliation across partitions (R12 — consumer of A8) | P0 | TODO | 0467, 0471 | S |
+| TASK-0484 | `PartitionError::DenseAllocationExceedsThreshold` + `sparse_build` flag rejection at threshold (R30) | P0 | TODO | 0466 | S |
+
+### Phase D — SparseNet (R13..R23, R29)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0486 | Define `SparseNet` struct + constructors (R13, R18, R29) | P0 | TODO | none | S |
+| TASK-0487 | SparseNet operations — create/remove/connect/disconnect/get_target/get_agent/is_reduced/count_live (R14, R15, R16, R17) | P0 | TODO | 0486 | M |
+| TASK-0488 | `Send + Sync` compile-time assertions for `Net` and `SparseNet` (§4.4) | P1 | TODO | 0471, 0486 | S |
+| TASK-0489 | `Net::to_sparse()` conversion (R19) | P0 | TODO | 0486, 0487, 0471 | S |
+| TASK-0490 | `SparseNet::to_dense(id_range)` conversion with partition scoping (R20 — closes SC-006) | P0 | TODO | 0486, 0487, 0471 | S |
+| TASK-0491 | `Net::is_behaviorally_equal` helper + R21 round-trip closure (closes SC-014) | P0 | TODO | 0489, 0490, 0471 | S |
+| TASK-0492 | Sparse-then-dense `build_subnet` integration under 4× threshold (R22 — consumer of A7) | P0 | TODO | 0466, 0481, 0484, 0489, 0490 | M |
+| TASK-0493 | CI lint forbidding `SparseNet` imports in `src/reduction/**` (R23 — closes SC-008) | P1 | TODO | 0486 | S |
+
+### Phase E — Invariant amendments + observability (R24..R27, R27a, R31)
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0495 | I3' uniqueness debug assertions in `remove_agent` / `create_agent` (R24, R25, R27) | P0 | TODO | 0460, 0472, 0473, 0482 | S |
+| TASK-0496 | T1 / I1 / I2 SparseNet debug assertions (R26) | P1 | TODO | 0486, 0487 | S |
+| TASK-0497 | SPEC-03 reduction-engine assertion audit — reformulate as I3'-compatible (R27a — consumer of A6) | P0 | TODO | 0465, 0472 | M |
+| TASK-0498 | Safe-Rust-only audit — confirm SPEC-22 implementations contain no `unsafe` (R31) | P2 | TODO | 0471, 0472, 0473, 0486, 0487, 0489, 0490 | S |
+
+### Phase F — Regression gate
+
+| ID | Title | Priority | Status | Depends | Complexity |
+|----|-------|----------|--------|---------|------------|
+| TASK-0500 | v1 backward-compat regression — all 1181/1224 tests pass with free-list always-on default (R28, R29) | P0 | TODO | ALL SPEC-22 | S |
+
+### SPEC-22 Coverage Matrix (R-numbers, A-amendments → tasks)
+
+Every R-number (R1..R32 inclusive of letter sub-clauses R6, R9a, R10a, R10b, R10c, R23, R27a, R30) and every §3.8 amendment (A1..A10) MUST appear in at least one task. Coverage check below.
+
+| Spec ID | Subject | Owning Task(s) |
+|---------|---------|----------------|
+| R1 | `Net.free_list: Vec<AgentId>` field | TASK-0471 |
+| R2 | `remove_agent` push to free-list | TASK-0473 |
+| R3 | `create_agent` free-list-pop OR next_id increment | TASK-0472 |
+| R4 | Recycled-slot semantics (Some(Agent), DISCONNECTED ports, no expansion) | TASK-0472 |
+| R5 | LIFO ordering | TASK-0472, TASK-0474 |
+| R6 | Free-list no-duplicates (MUST + debug_assert + optional HashSet shadow) | TASK-0474 |
+| R7 | No `PortRef::AgentPort` references to free-list IDs | TASK-0473, TASK-0495 (family 4) |
+| R8 | Constructors initialize empty free-list | TASK-0471 |
+| R9 | Serde participation | TASK-0475 |
+| R9a | `PROTOCOL_VERSION` 2→3; v2-vs-v3 rejection (closes SC-007) | TASK-0468, TASK-0476 |
+| R10 | Per-worker ID range constraint (free-list confined to `[start, end)`) | TASK-0480, TASK-0481 |
+| R10a | `build_subnet` populates partition free-list (closes SC-006 dense path) | TASK-0481 (consumes A7) |
+| R10b | BorderGraph slot-id stability — Strategy A (`DisableUnderDelta`, default) and Strategy B (`BorderClean`); explicit acceptance criteria for both code paths under `GridConfig.recycle_under_delta` | TASK-0482 (consumes A10) |
+| R10c | Protected tombstone semantics (slot None, ports DISCONNECTED, ID NOT in free-list) | TASK-0482, TASK-0495 (family 2) |
+| R11 | `count_live_agents` excludes free-list | TASK-0477 |
+| R12 | `merge` free-list reconciliation | TASK-0483 (consumes A8) |
+| R13 | `SparseNet` field list (incl. `freeport_redirects`, closes SC-011) | TASK-0486 |
+| R14 | SparseNet operations parity with Net | TASK-0487 |
+| R15 | SparseNet O(1) amortized complexity | TASK-0487 |
+| R16 | SparseNet no tombstones | TASK-0487 |
+| R17 | SparseNet no ERA auxiliary port entries (sparse equivalent of I6) | TASK-0487 |
+| R18 | SparseNet derives (Debug/Clone/Eq/Serialize/Deserialize) | TASK-0486 |
+| R19 | `Net::to_sparse()` | TASK-0489 |
+| R20 | `SparseNet::to_dense(id_range)` (signature change closes SC-006) | TASK-0490 |
+| R21 | Round-trip behavioral equality + `Net::is_behaviorally_equal` helper (closes SC-014) | TASK-0491 |
+| R22 | Sparse-then-dense `build_subnet` under 4× threshold (closes SC-009) | TASK-0492 (consumes A7) |
+| R23 | DESIGN CONSTRAINT — CI lint forbidding SparseNet in `src/reduction/**` (closes SC-008) | TASK-0493 |
+| R24 | I3' (Uniqueness of AgentIds) statement | TASK-0460 (A1), TASK-0495 |
+| R25 | D4 preservation under I3' | TASK-0460, TASK-0480, TASK-0495 |
+| R26 | SparseNet T1/I1/I2 debug assertions | TASK-0496 |
+| R27 | Free-list debug assertions (4 families: post-remove recycle, post-remove protected-tombstone, post-create recycle, periodic) | TASK-0495 |
+| R27a | SPEC-03 in-rule assertion audit (closes SC-010; CON-DUP load-bearing) | TASK-0497 (consumes A6) |
+| R28 | Always-on default (no feature gate) | TASK-0471, TASK-0472, TASK-0500 |
+| R29 | SparseNet always available (no feature gate) | TASK-0486, TASK-0500 |
+| R30 | `sparse_build` flag MUST + `PartitionError::DenseAllocationExceedsThreshold` rejection | TASK-0484 |
+| R31 | Safe-Rust-only audit (closes SC-017) | TASK-0498 |
+| R32 | M5-scale bitmap free-list fallback (closes SC-015) | TASK-0478 |
+| **§3.8 A1** (SPEC-01 I3 → I3') | Monotonicity → Uniqueness | TASK-0460 |
+| **§3.8 A2** (SPEC-02 R2 reuse) | Lifts "never reused" with clearing protocol | TASK-0461 |
+| **§3.8 A3** (SPEC-02 R10 increment) | `f = k - r` accounting under I3' | TASK-0462 |
+| **§3.8 A4** (SPEC-02 R11 clarify) | "Next available ID" subsumes free-list pop | TASK-0463 |
+| **§3.8 A5** (SPEC-02 R12 extend) | `remove_agent` pushes free-list + purges `freeport_redirects` | TASK-0464 |
+| **§3.8 A6** (SPEC-03 §4.3 assertions) | I3'-compatible assertion allowlist/denylist | TASK-0465 |
+| **§3.8 A7** (SPEC-04 §4.5 build_subnet) | Per-partition free-list + 4× sparse threshold | TASK-0466 |
+| **§3.8 A8** (SPEC-05 §4.2 merge) | Free-list reconciliation algorithm | TASK-0467 |
+| **§3.8 A9** (SPEC-18 PROTOCOL_VERSION) | Bump 2 → 3 + v2-vs-v3 rejection | TASK-0468 |
+| **§3.8 A10** (SPEC-19 §3.2 BorderGraph) | Recycle-protection under delta mode (Strategy A/B) | TASK-0469 |
+
+**Per-amendment R-number verification (Round 2 §"Round 3 confirmation suggestions" item 1):** every §3.8 amendment cites a verbatim target-spec R-number. All 10 amendments verified against target specs at Round 2 (closure log §"Cross-spec consistency re-audit" lines 132-150) and re-verified by task-splitter against the SPEC-22 frontmatter `Amends:` line:
+
+- A1 → SPEC-01 I3 (lines 289-296) — RESOLVES.
+- A2 → SPEC-02 R2 (line 37) — RESOLVES.
+- A3 → SPEC-02 R10 (line 58) — RESOLVES.
+- A4 → SPEC-02 R11 — RESOLVES (R-number cited verbatim in SPEC-22 §3.8 A4 *Old text*).
+- A5 → SPEC-02 R12 — RESOLVES (R-number cited verbatim in SPEC-22 §3.8 A5 *Old text*).
+- A6 → SPEC-03 §4.3 (section reference; no R-number — SPEC-03 §4.3 is generic prose) — RESOLVES at section granularity.
+- A7 → SPEC-04 §4.5 build_subnet — RESOLVES at section granularity.
+- A8 → SPEC-05 §4.2 merge (line 322) — RESOLVES.
+- A9 → SPEC-18 R28 (line 163; live constant `PROTOCOL_VERSION = 2` at line 536) — RESOLVES.
+- A10 → SPEC-19 §3.2 R8-R12 BorderGraph — RESOLVES at R-number range granularity.
+
+**Coverage completeness check:** every R-number (R1..R32 inclusive of letter sub-clauses) and every §3.8 amendment (A1..A10) appears in at least one task. **PASS — no gaps.**
+
+### SPEC-22 DAG (high-level)
+
+Predecessor amendments first (Phase A: 0460 → 0461/0462 → 0463 → 0464; 0465 ← 0460; 0466 ← 0460-0464; 0467 ← 0460-0461; 0468 standalone; 0469 ← 0460), then free-list core implementation (Phase B: 0471 → 0472, 0473, 0474, 0475, 0477, 0478; 0476 ← 0468+0475), then distributed integration (Phase C: 0480 ← 0472+0481; 0481 ← 0466+0471+0480; 0482 ← 0469+0472+0473+0480; 0483 ← 0467+0471; 0484 ← 0466), then SparseNet (Phase D: 0486 → 0487, 0488, 0489, 0490, 0491, 0492, 0493), then invariants + audit (Phase E: 0495, 0496, 0497, 0498), and finally Phase F regression gate 0500 (depends on ALL).
+
+### SPEC-22 Bundle gates
+
+- All 36 tasks shipped: status DONE.
+- `cargo test --workspace` ≥ 1181 default / ≥ 1224 zero-copy (zero regression on v1 floor of 690).
+- New SPEC-22 tests live under `relativist-core/src/net/{core,sparse,free_list}.rs` test modules and `relativist-core/tests/spec22_*.rs` integration files.
+- Clippy + fmt clean both feature configs.
+- TASK-0493 SparseNet-import lint passes; TASK-0498 unsafe-free audit passes.
+- TASK-0500 v1-compatibility regression test passes (free-list-aware default `GridConfig` reproduces v2-baseline metrics on EP-Annihilation + DualTree + MixedNet benchmarks).
 
 ## Cross-Cutting: Test Strategy (SPEC-08 v3)
 

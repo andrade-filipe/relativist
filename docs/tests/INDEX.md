@@ -106,7 +106,86 @@ Theory anchors: ARG-001 (CLOSED), ARG-002, ARG-004, ARG-005 (CLOSED at SPEC-19 b
 - ARG-006 empirical-signature tests EG-I3, EG-I5a, EG-P2, EG-P5 each cite ARG-006 in their description per `theory-bridge.md`.
 - Determinism strategies are documented in every test that touches BSP scheduling, the join-window, departure timing, or `tokio::select!` arms.
 
-Total active TEST-SPEC files: **62**.
+Total active TEST-SPEC files (SPEC-20 sub-section): **62**.
+
+---
+
+## SPEC-22 Arena Management (active bundle, Stage 2 deliverable)
+
+Source: `specs/SPEC-22-arena-management.md` (Reviewed v2, Round 2 closed 2026-04-25).
+Spec reviews: `docs/spec-reviews/SPEC-REVIEW-22-round-2-2026-04-25.md`, `docs/spec-reviews/SPEC-REVIEW-22-round-1-2026-04-24.md`.
+Theory anchors: REF-002 (Lafont 1997), REF-003 (HVM2), REF-014 (Kahl); AC-001, AC-006, AC-009, AC-011, AC-015; ARG-002, ARG-005. See `docs/theory-bridge.md`.
+
+### Plumbing / mechanical TEST-SPECs (numbered, one per task)
+
+| File | Task | Subject |
+|------|------|---------|
+| `TEST-SPEC-0471-net-free-list-field.md` | TASK-0471 | `Net.free_list` field + constructor init (R1, R8) |
+| `TEST-SPEC-0472-create-agent-free-list-pop.md` | TASK-0472 | `create_agent` recycle path (R3, R4, R5) |
+| `TEST-SPEC-0473-remove-agent-free-list-push.md` | TASK-0473 | `remove_agent` push + freeport_redirects purge (R2, R7) |
+| `TEST-SPEC-0474-free-list-no-duplicates.md` | TASK-0474 | R6 no-duplicates closure (closes SC-018) |
+| `TEST-SPEC-0475-free-list-serde.md` | TASK-0475 | Free-list serde + bincode round-trip (R9) |
+| `TEST-SPEC-0476-protocol-version-bump.md` | TASK-0476 | PROTOCOL_VERSION bump + v3-vs-v2 rejection (R9a; defensive landing-order-aware) |
+| `TEST-SPEC-0477-count-live-agents-free-list-exclusion.md` | TASK-0477 | `count_live_agents` excludes free-list (R11) |
+| `TEST-SPEC-0478-bitmap-free-list-fallback.md` | TASK-0478 | M5 bitmap fallback (R32) |
+| `TEST-SPEC-0480-per-worker-id-range-recycle.md` | TASK-0480 | Per-worker `id_range` defensive check (R10) |
+| `TEST-SPEC-0481-build-subnet-free-list-per-partition.md` | TASK-0481 | `build_subnet` partition free-list (R10a) |
+| `TEST-SPEC-0482-recycle-policy-border-graph.md` | TASK-0482 | `RecyclePolicy` + Strategy A/B + protected tombstones (R10b/R10c) |
+| `TEST-SPEC-0483-merge-free-list-reconciliation.md` | TASK-0483 | `merge` free-list reconciliation (R12 / A8) |
+| `TEST-SPEC-0484-partition-error-dense-allocation-threshold.md` | TASK-0484 | `DenseAllocationExceedsThreshold` rejection (R30) |
+| `TEST-SPEC-0486-sparse-net-struct.md` | TASK-0486 | `SparseNet` struct + constructors (R13, R18, R29) |
+| `TEST-SPEC-0487-sparse-net-operations.md` | TASK-0487 | `SparseNet` operations (R14-R17) |
+| `TEST-SPEC-0489-net-to-sparse.md` | TASK-0489 | `Net::to_sparse` (R19) |
+| `TEST-SPEC-0490-sparse-to-dense-id-range.md` | TASK-0490 | `SparseNet::to_dense(id_range)` partition-scoped (R20; closes SC-006) |
+| `TEST-SPEC-0491-is-behaviorally-equal-helper.md` | TASK-0491 | `Net::is_behaviorally_equal` (R21; closes SC-014) |
+| `TEST-SPEC-0492-sparse-then-dense-build-subnet.md` | TASK-0492 | Sparse `build_subnet` integration at threshold (R22; closes SC-009) |
+| `TEST-SPEC-0493-ci-lint-sparse-net-import.md` | TASK-0493 | CI lint forbidding SparseNet imports in `src/reduction/**` (R23) |
+| `TEST-SPEC-0495-i3-prime-debug-assertions.md` | TASK-0495 | I3' debug assertion families (R24, R25, R27) |
+| `TEST-SPEC-0496-sparse-net-debug-assertions.md` | TASK-0496 | SparseNet T1/I1/I2 assertions (R26) |
+| `TEST-SPEC-0497-spec03-reduction-assertion-audit.md` | TASK-0497 | SPEC-03 in-rule assertion audit (R27a; closes SC-010) |
+| `TEST-SPEC-0498-safe-rust-only-audit.md` | TASK-0498 | Safe-Rust-only audit (R31) |
+| `TEST-SPEC-0500-v1-backward-compat-regression.md` | TASK-0500 | Bundle-gate regression (R28, R29) |
+
+**Phase A predecessor-spec amendments** (TASK-0460..0469) and the **compile-time only** TASK-0488 do NOT have separate TEST-SPEC files — they are pure spec-text changes (A1..A10) or compile-time assertions, with their behavioral validation transitively covered by spec-catalog tests T1..T18 (mapping documented in each TASK-046X.md `## Test Expectations` section). TASK-0488's `static_assertions::assert_impl_all!` is the test (compile-error-on-failure); no markdown spec needed.
+
+### Spec-catalog tests (SPEC-22 §7.1 — free-list, §7.2 — SparseNet)
+
+| File | T-ID | Owning task(s) |
+|------|------|---------------|
+| `TEST-SPEC-T1-basic-recycling.md` | T1 | 0472, 0473 |
+| `TEST-SPEC-T2-lifo-ordering.md` | T2 | 0472, 0474 |
+| `TEST-SPEC-T3-free-list-exhaustion.md` | T3 | 0472 |
+| `TEST-SPEC-T4-port-slot-reinitialization.md` | T4 | 0472, 0473 |
+| `TEST-SPEC-T5-reduction-with-recycling.md` | T5 | 0473 |
+| `TEST-SPEC-T6-commutation-recycling.md` | T6 | 0472, 0473 |
+| `TEST-SPEC-T7-invariant-t1-after-recycling.md` | T7 | 0495 |
+| `TEST-SPEC-T7a-condup-partial-free-list.md` | T7a | 0497 (closes SC-010) |
+| `TEST-SPEC-T8-serialization-round-trip.md` | T8 | 0475, 0491 |
+| `TEST-SPEC-T8a-wire-version-rejection.md` | T8a | 0476 (closes SC-007) |
+| `TEST-SPEC-T9-distributed-id-range-compliance.md` | T9 | 0480, 0481 |
+| `TEST-SPEC-T9a-bordergraph-strategy-a-protected-tombstone.md` | T9a | 0482 (closes SC-005, Strategy A) |
+| `TEST-SPEC-T9b-bordergraph-strategy-b-border-clean.md` | T9b | 0482 (closes SC-005, Strategy B) |
+| `TEST-SPEC-T10-free-list-no-duplicates.md` | T10 | 0474 (closes SC-018) |
+| `TEST-SPEC-T11-sparse-construction-and-count.md` | T11 | 0487 |
+| `TEST-SPEC-T12-sparse-bidirectionality.md` | T12 | 0487, 0496 |
+| `TEST-SPEC-T13-sparse-era-cleanliness.md` | T13 | 0487 |
+| `TEST-SPEC-T14-conversion-round-trip-dense-sparse-dense.md` | T14 | 0489, 0490, 0491 (closes SC-014, SC-001 second surface) |
+| `TEST-SPEC-T14a-partition-scoped-to-dense.md` | T14a | 0490 (closes SC-006) |
+| `TEST-SPEC-T15-conversion-round-trip-sparse-dense-sparse.md` | T15 | 0489, 0490 |
+| `TEST-SPEC-T16-sparse-build-subnet-g1.md` | T16 | 0492, 0483, 0489, 0490 (load-bearing G1 closure for SPEC-22) |
+| `TEST-SPEC-T17-sparse-redex-detection.md` | T17 | 0487 |
+| `TEST-SPEC-T18-sparse-serialization-round-trip.md` | T18 | 0486 |
+
+### Coverage completeness — SPEC-22
+
+- Every TEST-SPEC-04XX/05XX forward-referenced from a SPEC-22 TASK-046X..050X has a file (25/25; the gaps at 0470, 0479, 0485, 0494, 0499 are intentional; TASK-0488 is compile-time only; TASK-0460..0469 + TASK-0467 + TASK-0469 are amendment-only and route to spec-catalog T-tests).
+- Every spec-catalog test ID in SPEC-22 §7.1 / §7.2 (T1..T18 + T7a + T8a + T9a + T9b + T14a) has a TEST-SPEC file (23/23).
+- Closure-flag coverage: SC-001 second surface (T14, T14a, TEST-SPEC-0489, 0490, 0473), SC-005 (T9a, T9b), SC-006 (T14a, TEST-SPEC-0490), SC-007 (T8a, TEST-SPEC-0476), SC-008 (TEST-SPEC-0493), SC-009 (T16, TEST-SPEC-0492, 0484), SC-010 (T7a, TEST-SPEC-0497), SC-014 (T8, T14, TEST-SPEC-0491), SC-015 (TEST-SPEC-0478), SC-017 (TEST-SPEC-0498), SC-018 (T10, TEST-SPEC-0474).
+- Theory citations: REF-002 / REF-003 / REF-014 / AC-001 / AC-006 / AC-009 / AC-011 / AC-015 / ARG-002 / ARG-005 — all present in `docs/theory-bridge.md`; cited only where applicable per the spec's Theory-bridge anchors.
+- Determinism strategies documented in every test that touches BSP scheduling, free-list ordering, serde state, or `tokio::select!` arms (T8a wire-handshake, T9a/T9b BorderGraph simulation, T16 G1 reduction, TEST-SPEC-0476 PROTOCOL_VERSION landing-order-aware contract).
+
+Total active TEST-SPEC files (SPEC-22 sub-section): **48** (25 plumbing + 23 spec-catalog).
+**Combined active TEST-SPEC files (SPEC-20 + SPEC-22): 110.**
 
 ---
 
