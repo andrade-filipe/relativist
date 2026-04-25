@@ -17,7 +17,7 @@
 | Wave | Spec(s) | Tier / Milestone | Status |
 |------|---------|------------------|--------|
 | ~~1~~ | ~~SPEC-20 Elastic Grid~~ | ~~Tier 2 / M2~~ | **DONE 2026-04-24** — closed in commit `ec680e4`; record moved to `progress.md`. |
-| 2 | ~~SPEC-22~~ Arena Mgmt → SPEC-21 Streaming Generation | Tier 3 / M5 | **SPEC-22 DONE 2026-04-25 (pending commit)** — Stage 0: `Reviewed v2`, closure log + Round 1/2 reviews shipped in commit `b66f758`. Stage 1: 36 tasks `TASK-0460..0500` in `docs/backlog/`, BACKLOG.md SPEC-22 section + coverage matrix added (~2.07k LoC prod / ~1.83k LoC tests est). Stage 2: 48 TEST-SPECs (32 unit / 13 int / 3 bench / 2 CI lint) + INDEX update in `docs/tests/`. **One open question** for ESPECIALISTA EM SPECS (non-blocking): TASK-0476 PROTOCOL_VERSION sequencing (SPEC-20 3→4 vs SPEC-22 2→3 ordering). **Next: SPEC-21 Streaming Generation Stage 0 (pesquisador coherence brief).** |
+| 2 | ~~SPEC-22~~ → SPEC-21 Streaming Generation | Tier 3 / M5 | **SPEC-22 DONE** in `b66f758`+`bbd976e`. **SPEC-21 Stage 0 DONE 2026-04-25** — Round 2 closed clean (closure log `docs/spec-reviews/SPEC-REVIEW-21-round-2-2026-04-25.md`); spec at `Reviewed v2` (1125L). 23/24 findings closed inline (all 2C+7H+10M+4L); 1 deferred (SC-020 FENNEL/LDG REF-NNN, TCC-root cleanup); 0 escalations; 0 fresh NFs. §3.8 Amendments block authored (A1–A8) covering 7 predecessor specs; Depends on: extended 5→12. **Next: Stage 1 (task-splitter) on SPEC-21.** |
 | 3 | SPEC-25 Recipe Gen → SPEC-27 R26-R28 (deferred D-001 — plan tasks/tests now per user directive) | Tier 5 / M10+M7 | NOT STARTED |
 | 4 | SPEC-26 §3.2-§3.6 GUI App (workspace §3.1 already shipped) | Tier 5 / M11 | NOT STARTED |
 | 5 | SPEC-23 Compact Memory → SPEC-24 WAN Deployment | Tier 5 / M9 | NOT STARTED |
