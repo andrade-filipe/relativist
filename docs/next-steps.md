@@ -16,8 +16,8 @@
 
 | Wave | Spec(s) | Tier / Milestone | Status |
 |------|---------|------------------|--------|
-| 1 | SPEC-20 Elastic Grid | Tier 2 / M2 | **DONE 2026-04-24 (pending commit)** — Stage 0: `Reviewed v2`, closure log `docs/spec-reviews/SPEC-REVIEW-20-round-3-2026-04-24.md` (10 NFs closed). Stage 1: 36 tasks TASK-0410..0455 in `docs/backlog/`, BACKLOG.md SPEC-20 section + coverage matrix added (~9.6k LoC est). Stage 2: 62 TEST-SPECs (33 EG-U / 10 EG-I / 6 EG-P / 3 EG-B / 10 plumbing) + INDEX in `docs/tests/`. Forward-refs logged for SPEC-02 A7, SPEC-04 A3/A4, SPEC-19 A8. After commit, move row to progress.md and trigger Wave 2. |
-| 2 | SPEC-22 Arena Mgmt → SPEC-21 Streaming Generation | Tier 3 / M5 | NOT STARTED |
+| ~~1~~ | ~~SPEC-20 Elastic Grid~~ | ~~Tier 2 / M2~~ | **DONE 2026-04-24** — closed in commit `ec680e4`; record moved to `progress.md`. |
+| 2 | SPEC-22 Arena Mgmt → SPEC-21 Streaming Generation | Tier 3 / M5 | **SPEC-22 Stage 0 DONE 2026-04-25** — Round 2 closed clean by `especialista-em-specs` (closure log `docs/spec-reviews/SPEC-REVIEW-22-round-2-2026-04-25.md`); spec at `Reviewed v2`, grew 617→880 (+43%). 20/21 findings closed inline (all 4C+7H+6M+3L); 1 deferred (SC-013, theory-bridge TCC-root cleanup); 0 escalations. §3.8 Amendments block authored (A1–A10). **Next: Stage 1 (task-splitter) on SPEC-22.** Then SPEC-21 (Streaming Generation, second half of Wave 2). |
 | 3 | SPEC-25 Recipe Gen → SPEC-27 R26-R28 (deferred D-001 — plan tasks/tests now per user directive) | Tier 5 / M10+M7 | NOT STARTED |
 | 4 | SPEC-26 §3.2-§3.6 GUI App (workspace §3.1 already shipped) | Tier 5 / M11 | NOT STARTED |
 | 5 | SPEC-23 Compact Memory → SPEC-24 WAN Deployment | Tier 5 / M9 | NOT STARTED |
