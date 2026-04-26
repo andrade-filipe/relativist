@@ -11,6 +11,7 @@ pub mod coordinator;
 pub mod error;
 pub mod frame;
 pub mod tcp;
+pub mod timers;
 pub mod transport;
 pub mod types;
 #[cfg(unix)]
@@ -33,6 +34,7 @@ mod delta_wire_tests;
 pub use config::*;
 pub use error::*;
 pub use frame::*;
+pub use timers::*;
 pub use transport::{create_transport, Transport, TransportStream};
 pub use types::*;
 

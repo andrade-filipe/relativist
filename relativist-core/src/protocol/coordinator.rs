@@ -229,20 +229,20 @@ pub(crate) fn handle_phase_timeout(
 // Phase 0: Accept workers (TASK-0088)
 // ---------------------------------------------------------------------------
 
-/// Current wire protocol version for Register handshake (SPEC-10 R36, SPEC-18 R28, SPEC-19 R37).
+/// Current wire protocol version for Register handshake (SPEC-10 R36, SPEC-18 R28, SPEC-19 R37, SPEC-20 R37).
 ///
 /// Bumped 1 → 2 by TASK-0347 to mark the atomic v2 wire break:
 /// bincode v2 + Compact PortRef + 9-byte frame header + LZ4.
 ///
 /// Bumped 2 → 3 by TASK-0400 (D-005 close bundle, 2026-04-23 §9 Change
-/// Log): `PendingCommutation` reshapes to NF-001 Shape A
-/// (`target_symbols: Vec<Symbol>` + `local_wiring: Vec<LocalWiringHint>`)
-/// and bincode cannot tolerate the new trailing field on decode without
-/// a version gate. v2 workers must be rejected with a `RegisterNack`.
-/// v1 workers must be rejected with a `RegisterNack` whose reason carries
-/// the canonical phrasing parsed by `worker::run_worker_inner` to surface
-/// `ProtocolError::VersionMismatch` (item 2.23 §3.6).
-pub const PROTOCOL_VERSION: u8 = 3;
+/// Log): `PendingCommutation` reshapes to NF-001 Shape A.
+///
+/// Bumped 3 → 4 by TASK-0417 (SPEC-20 R37) to mark the elastic-grid wire
+/// break: Message enum extension with 5 new variants (JoinRequest, JoinAck,
+/// LeaveRequest, LeaveAck, JoinNack) and supporting payloads. R37 mandates
+/// that v3 nodes are rejected to prevent bincode decoding failures on the
+/// new discriminants (12-16). R0d handshake rejection rules apply.
+pub const PROTOCOL_VERSION: u8 = 4;
 
 /// Accepts and authenticates workers (SPEC-06 R17, R24; SPEC-10 R14-R17).
 ///
@@ -778,16 +778,16 @@ mod tests {
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
     }
 
-    // === TASK-0347 / TASK-0400: PROTOCOL_VERSION bump sentinel ===
+    // === TASK-0347 / TASK-0400 / TASK-0417: PROTOCOL_VERSION bump sentinel ===
 
-    // TASK-0400 R37: canary against accidental rollback during merge
-    // conflicts. Bumped 2 → 3 by TASK-0400 (D-005 close, 2026-04-23)
-    // to gate the NF-001 Shape A `PendingCommutation` wire layout.
+    // TASK-0417 R37: canary against accidental rollback during merge
+    // conflicts. Bumped 3 → 4 by TASK-0417 (SPEC-20 R37) to gate the
+    // elastic-grid wire format (JoinRequest, LeaveRequest, etc.).
     #[test]
-    fn protocol_version_is_three() {
+    fn protocol_version_is_four() {
         assert_eq!(
-            PROTOCOL_VERSION, 3,
-            "v3 wire format requires PROTOCOL_VERSION = 3 (SPEC-19 R37, D-005)"
+            PROTOCOL_VERSION, 4,
+            "v4 wire format (SPEC-20) requires PROTOCOL_VERSION = 4"
         );
     }
 
@@ -809,7 +809,7 @@ mod tests {
 
         let mut w = client.connect().await.unwrap();
         let v1_register = Message::Register(RegisterPayload {
-            protocol_version: 1, // <-- v1 client against v3 coordinator
+            protocol_version: 1, // <-- v1 client against v4 coordinator
             auth_token: None,
         });
         send_frame(&mut w, &v1_register).await.unwrap();
@@ -827,7 +827,7 @@ mod tests {
             nack.reason
         );
         assert!(
-            nack.reason.contains("expected 3"),
+            nack.reason.contains("expected 4"),
             "expected version absent: {}",
             nack.reason
         );
@@ -882,7 +882,7 @@ mod tests {
             nack.reason,
         );
         assert!(
-            nack.reason.contains("expected 3"),
+            nack.reason.contains("expected 4"),
             "expected version absent: {}",
             nack.reason,
         );

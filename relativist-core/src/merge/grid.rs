@@ -1519,7 +1519,6 @@ mod tests {
         net.connect(PortRef::AgentPort(b, 0), PortRef::FreePort(1));
         net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
         net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1540,7 +1539,6 @@ mod tests {
         let a = net.create_agent(Symbol::Era);
         let b = net.create_agent(Symbol::Era);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: Some(0),
@@ -1598,7 +1596,6 @@ mod tests {
         let a = net.create_agent(Symbol::Era); // id=0 -> w0
         let b = net.create_agent(Symbol::Era); // id=1 -> w1
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1623,7 +1620,6 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
         net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
         net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1648,7 +1644,6 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         // c-d pair -> internal to w1 (ids 2,3)
         net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1671,7 +1666,6 @@ mod tests {
         let a = net.create_agent(Symbol::Era);
         let b = net.create_agent(Symbol::Era);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1701,7 +1695,6 @@ mod tests {
         let net_seq = net.clone();
         let mut seq = net_seq;
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1727,7 +1720,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1753,7 +1745,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1777,7 +1768,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1802,7 +1792,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1828,7 +1817,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1872,7 +1860,6 @@ mod tests {
         let net = Net::new();
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -1967,7 +1954,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -2011,7 +1997,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -2049,7 +2034,6 @@ mod tests {
         net.connect(PortRef::AgentPort(b, 0), PortRef::FreePort(1));
         net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
         net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
-
         let config = GridConfig {
             num_workers: 2,
             strict_bsp: true,
@@ -2072,7 +2056,6 @@ mod tests {
         let a = net.create_agent(Symbol::Era); // id=0 -> w0
         let b = net.create_agent(Symbol::Era); // id=1 -> w1
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-
         let config = GridConfig {
             num_workers: 2,
             strict_bsp: true,
@@ -2129,7 +2112,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             strict_bsp: true,
@@ -2162,7 +2144,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             strict_bsp: true,
@@ -2210,7 +2191,6 @@ mod tests {
 
         let mut seq = net.clone();
         let seq_stats = reduce_all(&mut seq);
-
         let config = GridConfig {
             num_workers: 2,
             strict_bsp: true,
@@ -2280,7 +2260,6 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
         net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
         net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -2322,7 +2301,6 @@ mod tests {
         let d = net.create_agent(Symbol::Era);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
-
         let config = GridConfig {
             num_workers: 2,
             max_rounds: None,
@@ -2430,6 +2408,7 @@ mod tests {
             strict_bsp: true,
             delta_mode: false,
             coordinator_free_rounds: true,
+            ..GridConfig::default()
         };
         let (result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
         assert!(metrics.converged, "GNF must mark converged = true");
@@ -2481,6 +2460,7 @@ mod tests {
             strict_bsp: false, // lenient
             delta_mode: false,
             coordinator_free_rounds: true,
+            ..GridConfig::default()
         };
         let (_result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
         assert_eq!(
@@ -2694,9 +2674,8 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
         net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
-
         let cfg = GridConfig {
-            num_workers: 2,
+            num_workers: 1,
             delta_mode: false,
             ..GridConfig::default()
         };
@@ -2733,7 +2712,6 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1_001));
         net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(1_002));
         net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(1_003));
-
         let cfg = GridConfig {
             num_workers: 2,
             delta_mode: true,
@@ -2801,7 +2779,6 @@ mod tests {
 
         let codec = ChurchArithmeticCodec::add();
         let net = codec.encode(br#"{"op":"add","a":2,"b":3}"#).unwrap();
-
         let cfg = GridConfig {
             num_workers: 2,
             max_rounds: Some(50),
@@ -2873,7 +2850,6 @@ mod tests {
         let a = net.create_agent(Symbol::Era);
         let b = net.create_agent(Symbol::Era);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
-
         let cfg = GridConfig {
             num_workers: 1,
             coordinator_free_rounds: true,
@@ -2992,6 +2968,7 @@ mod tests {
             strict_bsp: false, // lenient
             delta_mode: false,
             coordinator_free_rounds: true,
+            ..GridConfig::default()
         };
         let (result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
 
@@ -3155,6 +3132,7 @@ mod tests {
             strict_bsp: true,
             delta_mode: false,
             coordinator_free_rounds: true,
+            ..GridConfig::default()
         };
         let (_result, metrics) = run_grid(net, &cfg, &ContiguousIdStrategy);
 
@@ -3308,7 +3286,6 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
         net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
-
         let cfg = GridConfig {
             num_workers: 1,
             ..GridConfig::default()

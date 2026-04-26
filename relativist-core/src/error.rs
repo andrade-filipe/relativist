@@ -152,6 +152,22 @@ pub enum WorkerError {
     IdRangeExhausted { request_id: u32 },
 }
 
+/// Errors from grid configuration (SPEC-20 §3.4 R33a).
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("elastic_departure=true requires retain_partitions=true (SPEC-20 R32)")]
+    RetainRequiredForDeparture,
+
+    #[error("join_window_min ({min:?}) cannot be greater than join_window_max ({max:?})")]
+    JoinWindowOrdering {
+        min: std::time::Duration,
+        max: std::time::Duration,
+    },
+
+    #[error("solo_budget cannot be 0")]
+    SoloBudgetZero,
+}
+
 // ---------------------------------------------------------------------------
 // Top-level error type (SPEC-13 R17)
 // ---------------------------------------------------------------------------
@@ -182,6 +198,9 @@ pub enum RelativistError {
     #[error(transparent)]
     Security(#[from] SecurityError),
 
+    #[error(transparent)]
+    ConfigValidation(#[from] ConfigError),
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -206,7 +225,7 @@ impl RelativistError {
     /// - 3: internal errors (invariant violations, logic bugs)
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Config(_) => 1,
+            Self::ConfigValidation(_) | Self::Config(_) => 1,
             Self::Io(_) => 2,
             Self::Coordinator(CoordinatorError::Protocol(_)) => 2,
             Self::Worker(WorkerError::Protocol(_)) => 2,

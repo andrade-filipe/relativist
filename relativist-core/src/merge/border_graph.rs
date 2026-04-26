@@ -2205,16 +2205,16 @@ mod tests {
         }
     }
 
-    /// UT-0400-05: `PROTOCOL_VERSION == 3` sentinel at the wire-layer
-    /// call site. Pins the TASK-0400 bump for downstream bundles.
+    /// UT-0417-01: `PROTOCOL_VERSION == 4` sentinel at the wire-layer
+    /// call site. Pins the TASK-0417 bump for downstream bundles.
     /// Qualified path: `use crate::protocol::*` would trip R19
     /// source-scan pure-core invariant.
     #[test]
-    fn ut_0400_05_protocol_version_equals_three_sentinel() {
+    fn ut_0417_01_protocol_version_equals_four_sentinel() {
         assert_eq!(
             crate::protocol::coordinator::PROTOCOL_VERSION,
-            3,
-            "PROTOCOL_VERSION must be 3 after TASK-0400 (SPEC-19 R37, D-005)"
+            4,
+            "PROTOCOL_VERSION must be 4 after TASK-0417 (SPEC-20 R37)"
         );
     }
 

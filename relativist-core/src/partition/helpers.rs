@@ -1,9 +1,10 @@
 //! Helper functions for net partitioning (SPEC-04).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use std::collections::VecDeque;
 
+use crate::merge::GridConfig;
 use crate::net::{total_ports, AgentId, Net, PortId, PortRef, DISCONNECTED, PORTS_PER_SLOT};
 
 use super::types::{IdRange, WorkerId};
@@ -63,6 +64,48 @@ pub fn compute_id_ranges(num_workers: u32, base_next_id: u32) -> Vec<IdRange> {
             IdRange { start, end }
         })
         .collect()
+}
+
+/// SPEC-20 R8, R13, R30 (TASK-0421): Computes the disjoint ID ranges for
+/// the current round's active membership, accounting for hybrid-coordinator
+/// mode.
+///
+/// K_eff = active_workers.len() + (1 if hybrid_coordinator else 0).
+///
+/// Under hybrid mode, the coordinator's self-partition always takes
+/// `partition_index = 0` and is assigned the first range. Remote workers
+/// are assigned indices `1..K_eff` based on their `WorkerId` ascending.
+///
+/// Under non-hybrid mode, remote workers take all indices `0..num_workers`
+/// by `WorkerId` ascending.
+pub fn compute_round_id_ranges(
+    config: &GridConfig,
+    active_workers: &BTreeSet<WorkerId>,
+    base_next_id: u32,
+) -> HashMap<WorkerId, IdRange> {
+    let k = active_workers.len() as u32;
+    let k_eff = k + if config.hybrid_coordinator { 1 } else { 0 };
+
+    if k_eff == 0 {
+        return HashMap::new();
+    }
+
+    let ranges = compute_id_ranges(k_eff, base_next_id);
+    let mut map = HashMap::with_capacity(k_eff as usize);
+
+    if config.hybrid_coordinator {
+        // R8: self-partition is at index 0 (reserved WorkerId 0).
+        map.insert(0, ranges[0]);
+    }
+
+    // Assign ranges to remote workers by WorkerId ascending.
+    // Index offset is 1 if hybrid, 0 if not.
+    let offset = if config.hybrid_coordinator { 1 } else { 0 };
+    for (i, &worker_id) in active_workers.iter().enumerate() {
+        map.insert(worker_id, ranges[i + offset]);
+    }
+
+    map
 }
 
 /// Result of wire classification (SPEC-04 Section 4.4, Step 4).
@@ -666,5 +709,75 @@ mod tests {
             subnet.ports[a as usize * PORTS_PER_SLOT],
             PortRef::FreePort(99)
         );
+    }
+
+    // === compute_round_id_ranges tests (TASK-0421) ===
+
+    #[test]
+    fn test_compute_round_id_ranges_hybrid() {
+        let config = GridConfig {
+            hybrid_coordinator: true,
+            ..GridConfig::default()
+        };
+
+        let mut active = BTreeSet::new();
+        active.insert(10);
+        active.insert(5);
+
+        let ranges = compute_round_id_ranges(&config, &active, 100);
+
+        // K_eff = 2 (remote) + 1 (hybrid) = 3
+        assert_eq!(ranges.len(), 3);
+
+        // Coordinator (WorkerId 0) must be at index 0
+        assert!(ranges.contains_key(&0));
+        let r0 = ranges[&0];
+
+        // Workers 5 and 10 must be sorted
+        assert!(ranges.contains_key(&5));
+        assert!(ranges.contains_key(&10));
+        let r5 = ranges[&5];
+        let r10 = ranges[&10];
+
+        // Ranges must be contiguous and sorted by partition index
+        // index 0: Worker 0
+        // index 1: Worker 5
+        // index 2: Worker 10
+        assert_eq!(r0.end, r5.start);
+        assert_eq!(r5.end, r10.start);
+        assert_eq!(r10.end, u32::MAX);
+    }
+
+    #[test]
+    fn test_compute_round_id_ranges_non_hybrid() {
+        let config = GridConfig {
+            hybrid_coordinator: false,
+            ..GridConfig::default()
+        };
+
+        let mut active = BTreeSet::new();
+        active.insert(1);
+        active.insert(2);
+
+        let ranges = compute_round_id_ranges(&config, &active, 0);
+
+        // K_eff = 2
+        assert_eq!(ranges.len(), 2);
+        assert!(!ranges.contains_key(&0));
+        assert!(ranges.contains_key(&1));
+        assert!(ranges.contains_key(&2));
+
+        let r1 = ranges[&1];
+        let r2 = ranges[&2];
+        assert_eq!(r1.end, r2.start);
+        assert_eq!(r2.end, u32::MAX);
+    }
+
+    #[test]
+    fn test_compute_round_id_ranges_empty() {
+        let config = GridConfig::default();
+        let active = BTreeSet::new();
+        let ranges = compute_round_id_ranges(&config, &active, 0);
+        assert!(ranges.is_empty());
     }
 }

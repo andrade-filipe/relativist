@@ -277,7 +277,69 @@ pub(crate) trait WorkerDispatch {
 /// assert!(!cfg.strict_bsp);
 /// assert!(!cfg.coordinator_free_rounds);
 /// ```
-#[derive(Debug, Clone)]
+/// SPEC-20 §3.0 M0: The 4-mode execution matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ExecutionMode {
+    V1Lenient,
+    V1Strict,
+    DeltaLenient,
+    DeltaStrict,
+}
+
+// Helper functions for serde defaults (SPEC-20 R33a)
+fn default_initial_wait_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+fn default_join_window_min() -> Duration {
+    Duration::from_millis(50)
+}
+fn default_join_window_max() -> Duration {
+    Duration::from_millis(500)
+}
+fn default_solo_budget() -> u32 {
+    10_000
+}
+
+/// Configuration for the grid loop (SPEC-05, R25, R29, R30a; SPEC-19 §3.6; SPEC-20 §3.4).
+///
+/// The partition strategy is NOT stored here because trait objects
+/// are not Clone. It is passed as a separate parameter to `run_grid`.
+///
+/// # Examples
+///
+/// Opt into the delta protocol from a builder pattern (SPEC-19 §3.6 R41):
+///
+/// ```
+/// use relativist_core::merge::GridConfig;
+///
+/// let cfg = GridConfig {
+///     num_workers: 4,
+///     delta_mode: true,
+///     ..GridConfig::default()
+/// };
+/// assert!(cfg.delta_mode);
+/// assert_eq!(cfg.num_workers, 4);
+/// // All other fields retain defaults:
+/// assert!(!cfg.strict_bsp);
+/// assert!(!cfg.coordinator_free_rounds);
+/// ```
+///
+/// The default is the v1 path (SPEC-19 §3.6 R42 — backwards
+/// compatibility; no caller is silently routed through the delta loop):
+///
+/// ```
+/// use relativist_core::merge::GridConfig;
+///
+/// let cfg = GridConfig::default();
+/// assert!(!cfg.delta_mode);
+/// assert!(!cfg.strict_bsp);
+/// assert!(!cfg.coordinator_free_rounds);
+/// ```
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct GridConfig {
     /// Number of workers for parallel reduction.
     /// Must be >= 1.
@@ -370,6 +432,45 @@ pub struct GridConfig {
     /// revised and a `coordinator_free_rounds_user_set` tracking bit is
     /// introduced.
     pub coordinator_free_rounds: bool,
+
+    /// SPEC-20 R33a: Hybrid coordinator mode. When true, the coordinator
+    /// also acts as a worker (WorkerId 0).
+    #[serde(default)]
+    pub hybrid_coordinator: bool,
+
+    /// SPEC-20 R33a: Dynamic departure. Enables worker departure recovery.
+    #[serde(default)]
+    pub elastic_departure: bool,
+
+    /// SPEC-20 R33a: Retain partitions on departure (derived).
+    /// Default false, auto-true when elastic_departure is true.
+    #[serde(default)]
+    pub retain_partitions: bool,
+
+    /// SPEC-20 R33a: Dynamic joining (derived).
+    /// Auto-true when hybrid_coordinator or elastic_departure is true.
+    #[serde(default)]
+    pub elastic_join: bool,
+
+    /// SPEC-20 R33a: Checkpoint partitions.
+    #[serde(default)]
+    pub checkpoint_partitions: bool,
+
+    /// SPEC-20 R33a: Initial wait timeout.
+    #[serde(default = "default_initial_wait_timeout")]
+    pub initial_wait_timeout: Duration,
+
+    /// SPEC-20 R33a: Join window minimum.
+    #[serde(default = "default_join_window_min")]
+    pub join_window_min: Duration,
+
+    /// SPEC-20 R33a: Join window maximum.
+    #[serde(default = "default_join_window_max")]
+    pub join_window_max: Duration,
+
+    /// SPEC-20 R33a: Solo budget (max interactions in SoloReducing state).
+    #[serde(default = "default_solo_budget")]
+    pub solo_budget: u32,
 }
 
 impl Default for GridConfig {
@@ -382,6 +483,15 @@ impl Default for GridConfig {
             delta_mode: false,
             // SPEC-19 §3.1 R4: opt-in only — defaults preserve v1 behaviour.
             coordinator_free_rounds: false,
+            hybrid_coordinator: false,
+            elastic_departure: false,
+            retain_partitions: false,
+            elastic_join: false,
+            checkpoint_partitions: false,
+            initial_wait_timeout: Duration::from_secs(30),
+            join_window_min: Duration::from_millis(50),
+            join_window_max: Duration::from_millis(500),
+            solo_budget: 10_000,
         }
     }
 }
@@ -392,6 +502,8 @@ impl GridConfig {
     /// `coordinator_free_rounds` to `true` unconditionally (DC-0397-A option c),
     /// emitting a `tracing::debug!` if the previous value was `false` so the
     /// coercion is auditable. When `delta_mode` is `false` the method is a no-op.
+    ///
+    /// SPEC-20 R33a: enforce derived elastic defaults.
     ///
     /// The method is called automatically by CLI construction paths
     /// (`build_grid_config`, `build_grid_config_from_local`) so users running
@@ -408,7 +520,46 @@ impl GridConfig {
             );
             self.coordinator_free_rounds = true;
         }
+
+        // SPEC-20 derived defaults
+        if self.elastic_departure && !self.retain_partitions {
+            self.retain_partitions = true;
+        }
+        if (self.hybrid_coordinator || self.elastic_departure) && !self.elastic_join {
+            self.elastic_join = true;
+        }
+
         self
+    }
+
+    /// Validates the configuration (SPEC-20 §3.4).
+    pub fn validate(&self) -> Result<(), crate::error::ConfigError> {
+        use crate::error::ConfigError;
+
+        if self.elastic_departure && !self.retain_partitions {
+            return Err(ConfigError::RetainRequiredForDeparture);
+        }
+        if self.join_window_min > self.join_window_max {
+            return Err(ConfigError::JoinWindowOrdering {
+                min: self.join_window_min,
+                max: self.join_window_max,
+            });
+        }
+        if self.solo_budget == 0 {
+            return Err(ConfigError::SoloBudgetZero);
+        }
+        Ok(())
+    }
+
+    /// SPEC-20 R0c: mode immutability. delta_mode and strict_bsp MUST NOT mutate
+    /// after `run_grid` enters `WaitingForWorkers`.
+    pub fn active_mode(&self) -> ExecutionMode {
+        match (self.delta_mode, self.strict_bsp) {
+            (false, false) => ExecutionMode::V1Lenient,
+            (false, true) => ExecutionMode::V1Strict,
+            (true, false) => ExecutionMode::DeltaLenient,
+            (true, true) => ExecutionMode::DeltaStrict,
+        }
     }
 }
 
@@ -741,6 +892,158 @@ mod tests {
     }
 
     // === GridConfig tests (TASK-0062) ===
+
+    // SPEC-20 UT: GridConfig defaults match R33a (TASK-0415).
+    #[test]
+    fn grid_config_defaults_match_r33a() {
+        let c = GridConfig::default();
+        assert_eq!(c.num_workers, 1);
+        assert!(!c.hybrid_coordinator);
+        assert!(!c.elastic_departure);
+        assert!(!c.retain_partitions);
+        assert!(!c.elastic_join);
+        assert!(!c.checkpoint_partitions);
+        assert_eq!(c.initial_wait_timeout, Duration::from_secs(30));
+        assert_eq!(c.join_window_min, Duration::from_millis(50));
+        assert_eq!(c.join_window_max, Duration::from_millis(500));
+        assert_eq!(c.solo_budget, 10_000);
+    }
+
+    // SPEC-20 UT: normalize derived retain_partitions (TASK-0415).
+    #[test]
+    fn grid_config_derived_retain_partitions() {
+        let c = GridConfig {
+            elastic_departure: true,
+            retain_partitions: false,
+            ..GridConfig::default()
+        }
+        .normalize();
+        assert!(
+            c.retain_partitions,
+            "R33a: retain_partitions must be auto-enabled when elastic_departure is true"
+        );
+    }
+
+    // SPEC-20 UT: normalize derived elastic_join (TASK-0415).
+    #[test]
+    fn grid_config_derived_elastic_join() {
+        let c = GridConfig {
+            hybrid_coordinator: true,
+            ..GridConfig::default()
+        }
+        .normalize();
+        assert!(
+            c.elastic_join,
+            "R33a: elastic_join must be auto-enabled when hybrid_coordinator is true"
+        );
+
+        let c = GridConfig {
+            elastic_departure: true,
+            ..GridConfig::default()
+        }
+        .normalize();
+        assert!(
+            c.elastic_join,
+            "R33a: elastic_join must be auto-enabled when elastic_departure is true"
+        );
+    }
+
+    // SPEC-20 UT: validate rejects retain_false_with_departure_true (TASK-0415).
+    #[test]
+    fn validate_rejects_retain_false_with_departure_true() {
+        use crate::error::ConfigError;
+        let c = GridConfig {
+            elastic_departure: true,
+            retain_partitions: false, // explicitly disable after default
+            ..GridConfig::default()
+        };
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::RetainRequiredForDeparture)
+        ));
+    }
+
+    // SPEC-20 UT: validate rejects inverted_join_window_bounds (TASK-0415).
+    #[test]
+    fn validate_rejects_inverted_join_window_bounds() {
+        use crate::error::ConfigError;
+        let c = GridConfig {
+            join_window_min: Duration::from_millis(500),
+            join_window_max: Duration::from_millis(50),
+            ..GridConfig::default()
+        };
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::JoinWindowOrdering { .. })
+        ));
+    }
+
+    // SPEC-20 UT: validate rejects zero_solo_budget (TASK-0415).
+    #[test]
+    fn validate_rejects_zero_solo_budget() {
+        use crate::error::ConfigError;
+        let c = GridConfig {
+            solo_budget: 0,
+            ..GridConfig::default()
+        };
+        assert!(matches!(c.validate(), Err(ConfigError::SoloBudgetZero)));
+    }
+
+    // SPEC-20 UT: active_mode full matrix (TASK-0415).
+    #[test]
+    fn active_mode_full_matrix() {
+        let c = GridConfig {
+            delta_mode: false,
+            strict_bsp: false,
+            ..GridConfig::default()
+        };
+        assert_eq!(c.active_mode(), ExecutionMode::V1Lenient);
+
+        let c = GridConfig {
+            delta_mode: false,
+            strict_bsp: true,
+            ..GridConfig::default()
+        };
+        assert_eq!(c.active_mode(), ExecutionMode::V1Strict);
+
+        let c = GridConfig {
+            delta_mode: true,
+            strict_bsp: false,
+            ..GridConfig::default()
+        };
+        assert_eq!(c.active_mode(), ExecutionMode::DeltaLenient);
+
+        let c = GridConfig {
+            delta_mode: true,
+            strict_bsp: true,
+            ..GridConfig::default()
+        };
+        assert_eq!(c.active_mode(), ExecutionMode::DeltaStrict);
+    }
+
+    // SPEC-20 UT: GridConfig wire-break validation (TASK-0415).
+    //
+    // NOTE: Because bincode v2 with standard (varint) encoding is used,
+    // adding fields to a struct NOT at the end or changing types is a
+    // wire break. Even adding to the end is a break for decoders that
+    // expect the full byte stream to be consumed (UnexpectedEnd).
+    // This is why TASK-0417 bumps PROTOCOL_VERSION 3 -> 4.
+    #[test]
+    fn grid_config_v4_roundtrip() {
+        let original = GridConfig {
+            num_workers: 4,
+            max_rounds: Some(10),
+            strict_bsp: true,
+            delta_mode: true,
+            hybrid_coordinator: true,
+            ..GridConfig::default()
+        };
+
+        let bytes = crate::protocol::bincode_v2::encode(&original).unwrap();
+        let back: GridConfig = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+
+        assert_eq!(back, original);
+    }
 
     // T1: GridConfig with max_rounds
     #[test]

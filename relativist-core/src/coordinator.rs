@@ -18,7 +18,7 @@ use std::time::Duration;
 use crate::merge::WorkerRoundStats;
 use crate::net::Net;
 use crate::partition::{Partition, WorkerId};
-use crate::protocol::Message;
+use crate::protocol::{Message, TimerKind};
 
 /// Unique identifier for a timer managed by the coordinator's async runtime.
 ///
@@ -79,42 +79,6 @@ pub enum DepartureKind {
     LeaveAfter,
     /// Worker-initiated: `LeaveRequest { kind: Urgent }` (R22b).
     LeaveUrgent,
-}
-
-/// Typed timer identifiers (SPEC-20 §4.1.3; closes SC-022).
-///
-/// `TimerId` values are derived via `TimerKind as u32` so that the cast is
-/// portable and log tooling can decode `TimerId → TimerKind` without
-/// per-build metadata.
-///
-/// # Import path for observability consumers
-///
-/// Observability crates and log-decoding tooling should import this type as
-/// `relativist_core::coordinator::TimerKind`. When `LeaveKind` is moved to a
-/// shared types module (TASK-0418 / TASK-0426), `TimerKind` will follow to the
-/// same location for consistent import ergonomics.
-///
-/// # ABI stability
-///
-/// Explicit `#[repr(u32)]` discriminants 0–3 are normative per SPEC-20 §4.1.3
-/// (NF-008). Log-decoding tooling depends on these values. A future variant
-/// insertion that shifts these values is a wire-decoder break. Do NOT reorder
-/// or insert variants before position 4.
-///
-/// `#[non_exhaustive]` allows new variants to be added in future SPEC revisions
-/// without breaking downstream matches.
-#[repr(u32)]
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TimerKind {
-    /// Timer for the initial worker-connection wait (R6).
-    InitialWait = 0,
-    /// Minimum join-window duration (R10, R10a).
-    JoinWindowMin = 1,
-    /// Maximum join-window duration (R10a).
-    JoinWindowMax = 2,
-    /// Per-round collect timeout (SPEC-06 R30, R18).
-    Collect = 3,
 }
 
 // ---------------------------------------------------------------------------
