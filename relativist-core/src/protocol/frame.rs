@@ -641,6 +641,7 @@ mod tests {
             reduce_duration_secs: 0.001,
             interactions_by_rule: [1, 1, 1, 1, 1, 0],
             has_border_activity: false,
+            is_coordinator_self: false,
         }
     }
 
@@ -1319,6 +1320,11 @@ mod tests {
                 Message::RoundResult { .. } => {}
                 Message::FinalStateRequest { .. } => {}
                 Message::FinalStateResult { .. } => {}
+                Message::JoinRequest { .. } => {}
+                Message::JoinAck { .. } => {}
+                Message::LeaveRequest { .. } => {}
+                Message::LeaveAck => {}
+                Message::JoinNack { .. } => {}
             }
         }
 
@@ -1401,6 +1407,35 @@ mod tests {
                 Message::FinalStateResult {
                     round: 2,
                     partition: make_test_partition(),
+                },
+            ),
+            (
+                "JoinRequest",
+                Message::JoinRequest {
+                    protocol_version: 4,
+                    auth_token: None,
+                    capabilities: Default::default(),
+                },
+            ),
+            (
+                "JoinAck",
+                Message::JoinAck {
+                    worker_id: 1,
+                    partition_index: 0,
+                    next_round_number: 1,
+                },
+            ),
+            (
+                "LeaveRequest",
+                Message::LeaveRequest {
+                    kind: crate::protocol::types::LeaveKind::AfterResult,
+                },
+            ),
+            ("LeaveAck", Message::LeaveAck),
+            (
+                "JoinNack",
+                Message::JoinNack {
+                    reason: crate::protocol::types::JoinNackReason::ElasticJoinDisabled,
                 },
             ),
         ]

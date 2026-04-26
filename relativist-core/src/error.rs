@@ -127,6 +127,10 @@ pub enum CoordinatorError {
     #[error("no workers registered within timeout")]
     NoWorkers,
 
+    /// SPEC-20 R11 / SC-023: no WorkerId slots remaining.
+    #[error("WorkerId space exhausted (R11)")]
+    WorkerIdSpaceExhausted,
+
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
 }
@@ -268,7 +272,9 @@ mod tests {
 
     #[test]
     fn test_exit_code_coordinator_protocol() {
-        let proto = ProtocolError::AuthFailed;
+        let proto = ProtocolError::AuthFailed {
+            reason: "test".into(),
+        };
         let coord = CoordinatorError::Protocol(proto);
         let err = RelativistError::Coordinator(coord);
         assert_eq!(err.exit_code(), 2);
@@ -276,7 +282,9 @@ mod tests {
 
     #[test]
     fn test_exit_code_worker_protocol() {
-        let proto = ProtocolError::AuthFailed;
+        let proto = ProtocolError::AuthFailed {
+            reason: "test".into(),
+        };
         let worker = WorkerError::Protocol(proto);
         let err = RelativistError::Worker(worker);
         assert_eq!(err.exit_code(), 2);

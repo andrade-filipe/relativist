@@ -108,6 +108,32 @@ pub fn compute_round_id_ranges(
     map
 }
 
+/// SPEC-20 R11a (TASK-0420): Computes the dense partition index `[0, K_eff)`
+/// for a given `worker_id` in the current round's active set.
+///
+/// If the grid is in hybrid-coordinator mode, `WorkerId 0` is permanently
+/// reserved for the coordinator's self-partition and always assigned
+/// `partition_index = 0`. Remote workers are assigned indices `1..K_eff`
+/// based on their `WorkerId` ascending.
+///
+/// In non-hybrid mode, remote workers take all indices `0..K_eff` by
+/// `WorkerId` ascending.
+///
+/// Returns `None` if the `worker_id` is not in the active set.
+pub fn partition_index_of(
+    worker_id: WorkerId,
+    active_workers: &BTreeSet<WorkerId>,
+    hybrid_mode: bool,
+) -> Option<u32> {
+    if hybrid_mode && worker_id == 0 {
+        return Some(0);
+    }
+
+    let position = active_workers.iter().position(|&id| id == worker_id)?;
+    let offset = if hybrid_mode { 1 } else { 0 };
+    Some((position as u32) + offset)
+}
+
 /// Result of wire classification (SPEC-04 Section 4.4, Step 4).
 pub struct WireClassification {
     /// Border map: borderId -> (original endpoint A, original endpoint B).
@@ -779,5 +805,38 @@ mod tests {
         let active = BTreeSet::new();
         let ranges = compute_round_id_ranges(&config, &active, 0);
         assert!(ranges.is_empty());
+    }
+
+    // === partition_index_of tests (TASK-0420) ===
+
+    #[test]
+    fn test_partition_index_of_hybrid() {
+        let mut active = BTreeSet::new();
+        active.insert(10);
+        active.insert(5);
+
+        // Reserved ID 0 (hybrid)
+        assert_eq!(partition_index_of(0, &active, true), Some(0));
+
+        // Remote workers (offset by 1)
+        assert_eq!(partition_index_of(5, &active, true), Some(1));
+        assert_eq!(partition_index_of(10, &active, true), Some(2));
+
+        // Missing ID
+        assert_eq!(partition_index_of(7, &active, true), None);
+    }
+
+    #[test]
+    fn test_partition_index_of_non_hybrid() {
+        let mut active = BTreeSet::new();
+        active.insert(10);
+        active.insert(5);
+
+        // No ID 0 reservation
+        assert_eq!(partition_index_of(0, &active, false), None);
+
+        // Remote workers (no offset)
+        assert_eq!(partition_index_of(5, &active, false), Some(0));
+        assert_eq!(partition_index_of(10, &active, false), Some(1));
     }
 }

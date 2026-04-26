@@ -164,6 +164,11 @@ pub struct WorkerRoundStats {
     /// The field is part of the bincode v2 wire payload of
     /// `Message::PartitionResult` (R7 — additive, no new variant).
     pub has_border_activity: bool,
+
+    /// SPEC-20 R7, R38b: True if this worker is the coordinator itself
+    /// (hybrid mode).
+    #[serde(default)]
+    pub is_coordinator_self: bool,
 }
 
 /// SPEC-19 R26 (TASK-0384): pure-core mirror of `Message::RoundResult`'s
@@ -809,6 +814,7 @@ mod tests {
             reduce_duration_secs: 0.042,
             interactions_by_rule: [5, 3, 7, 2, 4, 4],
             has_border_activity: false,
+            is_coordinator_self: false,
         };
         assert_eq!(stats.worker_id, 2);
         assert_eq!(stats.agents_before, 100);
@@ -830,6 +836,7 @@ mod tests {
             reduce_duration_secs: 1.5,
             interactions_by_rule: [10, 20, 5, 8, 3, 4],
             has_border_activity: false,
+            is_coordinator_self: false,
         };
         let bytes = crate::protocol::bincode_v2::encode(&stats).unwrap();
         let deserialized: WorkerRoundStats =
@@ -859,6 +866,7 @@ mod tests {
             reduce_duration_secs: 0.0,
             interactions_by_rule: [0; 6],
             has_border_activity: false,
+            is_coordinator_self: false,
         };
         assert_eq!(stats.interactions_by_rule.len(), 6);
     }
@@ -877,6 +885,7 @@ mod tests {
             reduce_duration_secs: 0.005,
             interactions_by_rule: [1, 2, 3, 4, 5, 6],
             has_border_activity: true,
+            is_coordinator_self: false,
         };
         let bytes = crate::protocol::bincode_v2::encode(&stats).unwrap();
         let decoded: WorkerRoundStats = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
@@ -1166,14 +1175,16 @@ mod tests {
             (u32::MAX, false, 1234.5678_f64),
         ] {
             let original = WorkerRoundStats {
-                worker_id,
+                worker_id: 2,
                 agents_before: 100,
                 agents_after: 50,
                 local_redexes: 25,
-                reduce_duration_secs: duration_secs,
-                interactions_by_rule: [1, 2, 3, 4, 5, 6],
-                has_border_activity,
+                reduce_duration_secs: 0.042,
+                interactions_by_rule: [5, 3, 7, 2, 4, 4],
+                has_border_activity: true,
+                is_coordinator_self: false,
             };
+
 
             let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&original).expect("serialize");
             let archived = rkyv::access::<rkyv::Archived<WorkerRoundStats>, rkyv::rancor::Error>(

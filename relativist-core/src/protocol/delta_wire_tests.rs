@@ -81,6 +81,7 @@ fn stats_with_activity(activity: bool) -> WorkerRoundStats {
         reduce_duration_secs: 0.001,
         interactions_by_rule: [1, 1, 1, 1, 1, 0],
         has_border_activity: activity,
+        is_coordinator_self: false,
     }
 }
 

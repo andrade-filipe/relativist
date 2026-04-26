@@ -188,6 +188,98 @@ pub enum Message {
         /// The worker's final partition.
         partition: Partition,
     },
+
+    // === SPEC-20 — Elastic grid protocol (discriminants 12..=16) ===
+    /// Worker join request. Worker -> Coordinator.
+    ///
+    /// Discriminant: 12 (SPEC-20 R35).
+    JoinRequest {
+        /// Protocol version for fast rejection (MUST match `Register.protocol_version`).
+        protocol_version: u8,
+        /// Authentication token (MUST match `Register.auth_token`).
+        auth_token: Option<[u8; 32]>,
+        /// Worker's advertised processing capabilities (reserved for future use).
+        capabilities: WorkerCapabilities,
+    },
+
+    /// Join request accepted. Coordinator -> Worker.
+    ///
+    /// Discriminant: 13 (SPEC-20 R35).
+    JoinAck {
+        /// The WorkerId assigned to the newly joined worker.
+        worker_id: WorkerId,
+        /// The partition index assigned for the next round.
+        partition_index: u32,
+        /// The round number at which the worker will join the grid.
+        next_round_number: u32,
+    },
+
+    /// Worker-initiated departure request. Worker -> Coordinator.
+    ///
+    /// Discriminant: 14 (SPEC-20 R35).
+    LeaveRequest {
+        /// Severity/timing of the departure.
+        kind: LeaveKind,
+    },
+
+    /// Departure request acknowledged. Coordinator -> Worker.
+    /// The coordinator MUST send this before closing the TCP stream.
+    ///
+    /// Discriminant: 15 (SPEC-20 R35).
+    LeaveAck,
+
+    /// Join request rejected. Coordinator -> Worker.
+    ///
+    /// Discriminant: 16 (SPEC-20 R35).
+    JoinNack {
+        /// Structured reason for rejection.
+        reason: JoinNackReason,
+    },
+}
+
+/// Departure kind for `LeaveRequest` (SPEC-20 R21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum LeaveKind {
+    /// Graceful departure: worker wants to leave after current round finishes.
+    AfterResult,
+    /// Urgent departure: worker is leaving immediately (best-effort recovery).
+    Urgent,
+}
+
+/// Worker processing capabilities (SPEC-20 R35). Placeholder for future use.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub struct WorkerCapabilities {
+    // Reserved for SPEC-31 (intra-worker parallelism, rayon).
+}
+
+/// Reasons for rejecting a `JoinRequest` (SPEC-20 R35a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum JoinNackReason {
+    /// Protocol version mismatch (NF-009 shape alignment).
+    ProtocolVersionMismatch {
+        /// Version expected by the coordinator.
+        expected: u8,
+        /// Version provided by the worker.
+        got: u8,
+    },
+    /// The grid is not configured to allow dynamic joins.
+    ElasticJoinDisabled,
+    /// No WorkerId slots remaining (counter reached u32::MAX).
+    WorkerIdSpaceExhausted,
+    /// Authentication token is missing or invalid.
+    AuthenticationFailed,
 }
 
 /// Registration payload (SPEC-10 Section 4.3).
@@ -251,6 +343,7 @@ mod tests {
             reduce_duration_secs: 0.001,
             interactions_by_rule: [1, 1, 1, 1, 1, 0],
             has_border_activity: false,
+            is_coordinator_self: false,
         }
     }
 
@@ -266,6 +359,7 @@ mod tests {
             reduce_duration_secs: 0.001,
             interactions_by_rule: [1, 1, 1, 1, 1, 0],
             has_border_activity: activity,
+            is_coordinator_self: false,
         }
     }
 
@@ -340,6 +434,23 @@ mod tests {
             Message::FinalStateResult {
                 round: 0,
                 partition: make_test_partition(),
+            },
+            Message::JoinRequest {
+                protocol_version: 4,
+                auth_token: None,
+                capabilities: WorkerCapabilities::default(),
+            },
+            Message::JoinAck {
+                worker_id: 1,
+                partition_index: 0,
+                next_round_number: 1,
+            },
+            Message::LeaveRequest {
+                kind: LeaveKind::AfterResult,
+            },
+            Message::LeaveAck,
+            Message::JoinNack {
+                reason: JoinNackReason::ElasticJoinDisabled,
             },
         ];
 
@@ -1127,6 +1238,35 @@ mod tests {
                     partition: make_test_partition(),
                 },
             ),
+            (
+                12,
+                Message::JoinRequest {
+                    protocol_version: 4,
+                    auth_token: None,
+                    capabilities: WorkerCapabilities::default(),
+                },
+            ),
+            (
+                13,
+                Message::JoinAck {
+                    worker_id: 1,
+                    partition_index: 0,
+                    next_round_number: 1,
+                },
+            ),
+            (
+                14,
+                Message::LeaveRequest {
+                    kind: LeaveKind::AfterResult,
+                },
+            ),
+            (15, Message::LeaveAck),
+            (
+                16,
+                Message::JoinNack {
+                    reason: JoinNackReason::ElasticJoinDisabled,
+                },
+            ),
         ];
 
         for (expected_disc, msg) in &cases {
@@ -1147,7 +1287,7 @@ mod tests {
         // Extend this assertion when the enum grows.
         assert_eq!(
             cases.len(),
-            12,
+            17,
             "R37: the discriminant-stability test MUST cover all current \
              Message variants; update `cases` when a variant is appended",
         );

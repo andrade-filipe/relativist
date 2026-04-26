@@ -89,6 +89,7 @@ fn sample_stats(worker_id: u32) -> WorkerRoundStats {
         reduce_duration_secs: 0.025,
         interactions_by_rule: [3, 2, 1, 4, 1, 0],
         has_border_activity: true,
+        is_coordinator_self: false,
     }
 }
 

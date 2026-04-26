@@ -203,6 +203,7 @@ pub fn transition(ctx: &mut WorkerContext, event: WorkerEvent) -> Vec<WorkerActi
                         // the async runtime path; this FSM stub stays at
                         // false to keep the v1 contract bit-identical.
                         has_border_activity: false,
+                        is_coordinator_self: false,
                     },
                 },
             )));
@@ -675,6 +676,7 @@ pub fn handle_round_start(
         reduce_duration_secs: reduce_duration.as_secs_f64(),
         interactions_by_rule: reduction_stats.interactions_by_rule,
         has_border_activity,
+        is_coordinator_self: false,
     };
 
     ctx.round = round;

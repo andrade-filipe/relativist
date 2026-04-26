@@ -134,6 +134,7 @@ pub fn run_grid(
                 reduce_duration_secs: reduce_duration.as_secs_f64(),
                 interactions_by_rule: by_rule,
                 has_border_activity,
+                is_coordinator_self: false, // run_grid only models remote workers in v1
             });
         }
 
@@ -1471,6 +1472,7 @@ fn run_single_worker(
         interactions_by_rule: stats.interactions_by_rule,
         // n == 1 has no borders by definition (no partitioning).
         has_border_activity: false,
+        is_coordinator_self: true, // single-worker is self-reducing
     }]);
 
     metrics.total_time = start_time.elapsed();
@@ -2333,6 +2335,7 @@ mod tests {
             reduce_duration_secs: 0.0,
             interactions_by_rule: [0; 6],
             has_border_activity,
+            is_coordinator_self: false,
         }
     }
 
@@ -3403,6 +3406,7 @@ mod tests {
                 reduce_duration_secs: 0.0,
                 interactions_by_rule: [0; 6],
                 has_border_activity: false,
+                is_coordinator_self: false,
             },
             has_border_activity: false,
             // TASK-0398 (D-004): no mints on canned quiet results — no
@@ -3427,6 +3431,7 @@ mod tests {
                 reduce_duration_secs: 0.0,
                 interactions_by_rule: [0; 6],
                 has_border_activity: true,
+                is_coordinator_self: false,
             },
             has_border_activity: true,
             // TASK-0398 (D-004): no mints on canned active results either.

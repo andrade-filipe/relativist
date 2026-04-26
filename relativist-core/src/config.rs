@@ -103,7 +103,7 @@ pub enum LogFormat {
 // ---------------------------------------------------------------------------
 
 /// Arguments for the `coordinator` subcommand (SPEC-07 R3, SPEC-13 R44).
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Default, Clone)]
 pub struct CoordinatorArgs {
     /// Number of workers to wait for before starting (must be >= 1).
     #[arg(short = 'w', long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -201,6 +201,45 @@ pub struct CoordinatorArgs {
     #[arg(long, default_value_t = false)]
     pub delta_mode: bool,
 
+    /// Enable hybrid coordinator mode (SPEC-20 R34).
+    /// When enabled, the coordinator acts as a worker (WorkerId 0).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub hybrid: bool,
+
+    /// Enable dynamic worker departure recovery (SPEC-20 R34).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub elastic_departure: bool,
+
+    /// Explicitly enable retaining partitions on departure (SPEC-20 R34).
+    /// Auto-enabled when --elastic-departure is set.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub retain_partitions: bool,
+
+    /// Enable dynamic worker joining (SPEC-20 R34).
+    /// Auto-enabled when --hybrid or --elastic-departure is set.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub elastic_join: bool,
+
+    /// Enable partition checkpointing (SPEC-20 R34).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub checkpoint_partitions: bool,
+
+    /// Initial wait timeout for worker connections in seconds (SPEC-20 R34).
+    #[arg(long, default_value_t = 30)]
+    pub initial_wait_timeout: u64,
+
+    /// Minimum join window duration in milliseconds (SPEC-20 R34).
+    #[arg(long, default_value_t = 50)]
+    pub join_window_min_ms: u64,
+
+    /// Maximum join window duration in milliseconds (SPEC-20 R34).
+    #[arg(long, default_value_t = 500)]
+    pub join_window_max_ms: u64,
+
+    /// Maximum interactions per solo-reducing batch (SPEC-20 R34).
+    #[arg(long, default_value_t = 10_000)]
+    pub solo_budget: u32,
+
     /// TLS certificate file (PEM), requires --tls-key (SPEC-10 R25).
     #[cfg(feature = "tls")]
     #[arg(long)]
@@ -275,7 +314,7 @@ pub struct WorkerArgs {
 }
 
 /// Arguments for the `local` subcommand (SPEC-07 R5, SPEC-13 R45a).
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Default, Clone)]
 pub struct LocalArgs {
     /// Number of simulated workers (must be >= 1).
     #[arg(short = 'w', long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -301,6 +340,26 @@ pub struct LocalArgs {
     /// SPEC-19 §3.6 R41. Defaults to `false` (R42). See `CoordinatorArgs::delta_mode`.
     #[arg(long, default_value_t = false)]
     pub delta_mode: bool,
+
+    /// Enable hybrid coordinator mode (SPEC-20 R34).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub hybrid: bool,
+
+    /// Enable dynamic worker departure recovery (SPEC-20 R34).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub elastic_departure: bool,
+
+    /// Enable dynamic worker joining (SPEC-20 R34).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub elastic_join: bool,
+
+    /// Initial wait timeout for worker connections in seconds (SPEC-20 R34).
+    #[arg(long, default_value_t = 30)]
+    pub initial_wait_timeout: u64,
+
+    /// Maximum interactions per solo-reducing batch (SPEC-20 R34).
+    #[arg(long, default_value_t = 10_000)]
+    pub solo_budget: u32,
 
     /// Path to write the reduced network (.bin).
     #[arg(short = 'o', long)]
@@ -536,7 +595,16 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
         delta_mode: args.delta_mode,
-        ..GridConfig::default()
+        hybrid_coordinator: args.hybrid,
+        elastic_departure: args.elastic_departure,
+        retain_partitions: args.retain_partitions,
+        elastic_join: args.elastic_join,
+        checkpoint_partitions: args.checkpoint_partitions,
+        coordinator_free_rounds: false, // Normalizer will handle auto-enabling if delta_mode is true
+        initial_wait_timeout: std::time::Duration::from_secs(args.initial_wait_timeout),
+        join_window_min: std::time::Duration::from_millis(args.join_window_min_ms),
+        join_window_max: std::time::Duration::from_millis(args.join_window_max_ms),
+        solo_budget: args.solo_budget,
     }
     .normalize()
 }
@@ -550,6 +618,11 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
         delta_mode: args.delta_mode,
+        hybrid_coordinator: args.hybrid,
+        elastic_departure: args.elastic_departure,
+        elastic_join: args.elastic_join,
+        initial_wait_timeout: std::time::Duration::from_secs(args.initial_wait_timeout),
+        solo_budget: args.solo_budget,
         ..GridConfig::default()
     }
     .normalize()
@@ -1036,6 +1109,7 @@ mod tests {
             tls_cert: None,
             #[cfg(feature = "tls")]
             tls_key: None,
+            ..Default::default()
         }
     }
 
@@ -1104,6 +1178,72 @@ mod tests {
                 );
             }
             _ => panic!("expected Local"),
+        }
+    }
+
+    // SPEC-20 UT: CLI defaults match R33a (TASK-0416).
+    #[test]
+    fn cli_defaults_match_r33a() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "1",
+            "--input",
+            "in.bin",
+        ])
+        .unwrap();
+        if let Command::Coordinator(args) = cli.command {
+            let cfg = build_grid_config(&args);
+            assert!(!cfg.hybrid_coordinator);
+            assert!(!cfg.elastic_departure);
+            assert_eq!(cfg.solo_budget, 10_000);
+            assert_eq!(cfg.initial_wait_timeout.as_secs(), 30);
+        } else {
+            panic!("expected Coordinator");
+        }
+    }
+
+    // SPEC-20 UT: CLI hybrid flag sets field (TASK-0416).
+    #[test]
+    fn cli_hybrid_flag_sets_field() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "1",
+            "--input",
+            "in.bin",
+            "--hybrid",
+        ])
+        .unwrap();
+        if let Command::Coordinator(args) = cli.command {
+            let cfg = build_grid_config(&args);
+            assert!(cfg.hybrid_coordinator);
+            assert!(cfg.elastic_join, "normalize must auto-enable elastic_join");
+        }
+    }
+
+    // SPEC-20 UT: CLI join window flags (TASK-0416).
+    #[test]
+    fn cli_join_window_flags() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "coordinator",
+            "--workers",
+            "1",
+            "--input",
+            "in.bin",
+            "--join-window-min-ms",
+            "100",
+            "--join-window-max-ms",
+            "1000",
+        ])
+        .unwrap();
+        if let Command::Coordinator(args) = cli.command {
+            let cfg = build_grid_config(&args);
+            assert_eq!(cfg.join_window_min.as_millis(), 100);
+            assert_eq!(cfg.join_window_max.as_millis(), 1000);
         }
     }
 

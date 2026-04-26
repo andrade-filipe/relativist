@@ -38,7 +38,16 @@
 
 | Phase | Bundle | Spec | Scope | Status |
 |-------|--------|------|-------|--------|
-| 1 (Tier 2) | D-006 | SPEC-20 §3.1 (R1-R7) | Coordinator-as-worker (hybrid node); `worker_id=0`; K_eff = K+1; ~250 prod + ~80 test LoC | **NEXT** |
+| 1 (Tier 2) | D-006 | SPEC-20 §3.1 (R1-R7) | Coordinator-as-worker (hybrid node); `worker_id=0`; K_eff = K+1; ~250 prod + ~80 test LoC | **ACTIVE** |
+
+### Phase B - Wave Tracking (Stage 3 DEV)
+
+| Wave | Tasks | Date | Status |
+|------|-------|------|--------|
+| Wave 1 | 0415, 0417, 0421, 0426 | 2026-04-25 | ✅ DONE |
+| Wave 2 | 0416, 0418, 0420, 0425 | 2026-04-25 | ⏭ ACTIVE |
+| Wave 3 | 0419, 0422 | 2026-04-25 | TODO |
+| Wave 4 | 0423, 0424 | 2026-04-25 | TODO |
 | 1 (Tier 2) | D-007 | SPEC-20 §3.2 | Dynamic worker joining; Join Window; ~500 prod + ~150 test LoC | TODO (after D-006) |
 | 1 (Tier 2) | D-008 | SPEC-20 §3.3 | Dynamic worker departure; retained-partition re-dispatch; ~600 prod + ~200 test LoC | TODO (after D-007) |
 | 2 (Tier 3) | D-009 | SPEC-22 §1/§3 | Arena recycling free-list; ~150 prod + ~80 test LoC | TODO |

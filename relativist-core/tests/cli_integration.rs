@@ -50,6 +50,7 @@ fn test_local_mode_roundtrip() {
         metrics: Some(metrics_path.clone()),
         strategy: "round-robin".to_string(),
         log_format: None,
+        ..Default::default()
     };
 
     run_local_command(args).unwrap();
@@ -93,6 +94,7 @@ fn test_local_mode_single_worker() {
         metrics: None,
         strategy: "round-robin".to_string(),
         log_format: None,
+        ..Default::default()
     };
 
     run_local_command(args).unwrap();
@@ -116,6 +118,7 @@ fn test_local_mode_nonexistent_file() {
         metrics: None,
         strategy: "round-robin".to_string(),
         log_format: None,
+        ..Default::default()
     };
 
     let result = run_local_command(args);
@@ -140,6 +143,7 @@ fn test_local_mode_csv_metrics() {
         metrics: Some(metrics_path.clone()),
         strategy: "round-robin".to_string(),
         log_format: None,
+        ..Default::default()
     };
 
     run_local_command(args).unwrap();

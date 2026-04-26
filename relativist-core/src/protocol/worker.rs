@@ -198,7 +198,9 @@ async fn run_worker_inner(
                     received,
                 });
             }
-            return Err(ProtocolError::AuthFailed);
+            return Err(ProtocolError::AuthFailed {
+                reason: nack.reason,
+            });
         }
         other => {
             return Err(ProtocolError::UnexpectedMessage {
@@ -254,6 +256,7 @@ async fn run_worker_inner(
                     reduce_duration_secs: reduce_duration.as_secs_f64(),
                     interactions_by_rule: reduction_stats.interactions_by_rule,
                     has_border_activity,
+                    is_coordinator_self: false, // Remote workers are never the coordinator
                 };
 
                 tracing::info!(
@@ -491,6 +494,7 @@ mod tests {
                 reduce_duration_secs: 0.0,
                 interactions_by_rule: [0; 6],
                 has_border_activity: false,
+                is_coordinator_self: false,
             },
         };
         send_frame(&mut stream, &bad_msg).await.unwrap();
@@ -559,7 +563,7 @@ mod tests {
         send_frame(&mut stream, &nack).await.unwrap();
 
         let result = worker_handle.await.unwrap();
-        assert!(matches!(result, Err(ProtocolError::AuthFailed)));
+        assert!(matches!(result, Err(ProtocolError::AuthFailed { .. })));
     }
 
     // TASK-0347 R3 unit: version-mismatch parser handles the canonical phrase
@@ -639,7 +643,7 @@ mod tests {
         send_frame(&mut stream, &nack).await.unwrap();
 
         let result = worker_handle.await.unwrap();
-        assert!(matches!(result, Err(ProtocolError::AuthFailed)));
+        assert!(matches!(result, Err(ProtocolError::AuthFailed { .. })));
     }
 
     // T7: connect_with_retry with max_attempts=Some(1) fails (TcpTransport — needs real failure)

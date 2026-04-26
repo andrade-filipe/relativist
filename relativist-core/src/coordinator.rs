@@ -399,10 +399,12 @@ pub struct CoordinatorContext {
     pub round: u32,
     /// The current net (held between rounds).
     pub net: Option<Net>,
+    /// SPEC-20 R11: Monotonic WorkerId counter.
+    pub next_worker_id: u32,
 }
 
 impl CoordinatorContext {
-    pub fn new(bind: SocketAddr, min_workers: u32) -> Self {
+    pub fn new(bind: SocketAddr, min_workers: u32, hybrid_mode: bool) -> Self {
         Self {
             state: CoordinatorState::Init,
             min_workers,
@@ -413,6 +415,8 @@ impl CoordinatorContext {
             collected_partitions: Vec::new(),
             round: 0,
             net: None,
+            // R7a: in hybrid mode, WorkerId 0 is reserved. Counter starts at 1.
+            next_worker_id: if hybrid_mode { 1 } else { 0 },
         }
     }
 }
@@ -654,7 +658,7 @@ mod tests {
 
     /// Shared test fixture: coordinator with min_workers=2 and a fresh Net.
     pub(super) fn make_ctx() -> CoordinatorContext {
-        let mut ctx = CoordinatorContext::new("127.0.0.1:9000".parse().unwrap(), 2);
+        let mut ctx = CoordinatorContext::new("127.0.0.1:9000".parse().unwrap(), 2, false);
         ctx.net = Some(Net::new());
         ctx
     }
@@ -985,6 +989,7 @@ mod tests {
             reduce_duration_secs: 0.001,
             interactions_by_rule: [1, 0, 0, 0, 0, 0],
             has_border_activity: false,
+            is_coordinator_self: false,
         };
 
         // Construct each of the 9 new events.
@@ -1016,6 +1021,7 @@ mod tests {
             reduce_duration_secs: 0.0,
             interactions_by_rule: [0; 6],
             has_border_activity: false,
+            is_coordinator_self: false,
         };
 
         let cases: Vec<(&str, CoordinatorEvent)> = vec![
