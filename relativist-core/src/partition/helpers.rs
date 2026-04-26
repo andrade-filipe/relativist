@@ -86,6 +86,18 @@ pub fn compute_round_id_ranges(
     let k = active_workers.len() as u32;
     let k_eff = k + if config.hybrid_coordinator { 1 } else { 0 };
 
+    // --- Invariant Defense (TASK-0452) ---
+    // D4-elastic: K_eff must match membership.
+    #[cfg(debug_assertions)]
+    {
+        let expected_k_eff =
+            active_workers.len() as u32 + if config.hybrid_coordinator { 1 } else { 0 };
+        assert_eq!(
+            k_eff, expected_k_eff,
+            "D4 violated: K_eff calculation mismatch"
+        );
+    }
+
     if k_eff == 0 {
         return HashMap::new();
     }

@@ -53,6 +53,13 @@ impl RetainedStateRegistry {
 
     /// R31: atomic refresh of last_acked[w].
     pub fn refresh_last_acked(&mut self, worker_id: WorkerId, state: RetainedLastAcked) {
+        // --- Invariant Defense (TASK-0452) ---
+        // D5: verify that initial state exists before last_acked is refreshed.
+        debug_assert!(
+            self.initial.contains_key(&worker_id),
+            "D5 violated: refreshing last_acked for worker {} without initial state",
+            worker_id
+        );
         self.last_acked.insert(worker_id, state);
     }
 

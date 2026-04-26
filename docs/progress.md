@@ -2,7 +2,9 @@
 
 > **CRITICAL LLM INSTRUCTION:** This file is for **PAST/COMPLETED work only**. Active work, current pipeline state, and future milestones live exclusively in `next-steps.md`.
 
-**Last updated:** 2026-04-25 (Phase C COMPLETED in commit `613c847`. All 7 joining-related tasks implemented and verified across 3 waves. Phase D Departure is now ACTIVE.)
+**Last updated:** 2026-04-25 (Phase E Wave 1 closed in commit `fff0f9e`. Phase D Wave 3 closed in commit `583a368`. Phase C COMPLETED in commit `613c847`. All joining/departure foundation implemented and verified. v2 Pre-DEV Spec Pipeline CLOSED across Waves 1+2 in commits `ec680e4`, `b66f758`, `bbd976e`, `508e595`, `131ca26`. Strategic decision logged: Tier 2 + Tier 3 DEV next; Tier 4 + Tier 5 deferred until after Tier 2+3 ship.)
+**Updated by:** **Phase E Wave 1 closed (TASK-0450, 0451).** Extended `GridMetrics` with 7 telemetry fields (R38); implemented join/departure observability logging (R17, R28).
+**Updated by:** **Phase D Wave 3 closed (TASK-0442, 0443).** Handled D == K_eff edge case; implemented delta-mode reclaim/reconstruct.
 **Updated by:** **Phase C Final Closure (TASK-0430 through 0435).**
 - **Wave 1:** Hybrid orchestration (K_eff = K + 1), `JoinRequest` handshake handler.
 - **Wave 2:** `pending_connections_queue` (R10b), v1 re-partitioning logic on membership change.

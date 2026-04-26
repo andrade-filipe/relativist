@@ -1,9 +1,9 @@
 //! Helpers for departure recovery and partition materialization (SPEC-20 §3.3.4).
 
-use crate::partition::{Partition, IdRange, WorkerId};
-use crate::protocol::retained::RetainedStateRegistry;
-use crate::partition::remap::remap_partition_ids;
 use crate::error::PartitionError;
+use crate::partition::remap::remap_partition_ids;
+use crate::partition::{IdRange, Partition, WorkerId};
+use crate::protocol::retained::RetainedStateRegistry;
 use std::collections::HashMap;
 
 /// Materializes the partitions of departed workers from retained state (TASK-0443).
@@ -16,24 +16,50 @@ pub fn materialize_reclaimed_partitions(
     registry: &RetainedStateRegistry,
     reclaimed_id_ranges: &HashMap<WorkerId, IdRange>,
 ) -> Result<Vec<Partition>, PartitionError> {
-    let mut reclaimed = Vec::with_capacity(departed_worker_ids.len());
+    let mut reclaimed: Vec<Partition> = Vec::with_capacity(departed_worker_ids.len());
 
     for &wid in departed_worker_ids {
         // R24a: materialize from retained_initial (conservative)
         if let Some(initial) = registry.initial.get(&wid) {
             let p = initial.partition().clone();
-            
+
             // R30: remap to a fresh disjoint range
             if let Some(&new_range) = reclaimed_id_ranges.get(&wid) {
+                // --- Invariant Defense (TASK-0452) ---
+                // R24d: verify no overlap between reclaimed partitions.
+                #[cfg(debug_assertions)]
+                {
+                    for r in &reclaimed {
+                        assert!(
+                            new_range.start >= r.id_range.end || new_range.end <= r.id_range.start,
+                            "R24d violated: overlapping remapped ranges in reclaim: {:?} vs {:?}",
+                            new_range,
+                            r.id_range
+                        );
+                    }
+                }
+
                 let remapped = remap_partition_ids(p, new_range)?;
                 reclaimed.push(remapped);
             } else {
-                tracing::error!(worker_id = wid, "No remapped ID range available for departed worker; skipping reclaim.");
-                return Err(PartitionError::InvariantViolation(format!("No ID range for worker {}", wid)));
+                tracing::error!(
+                    worker_id = wid,
+                    "No remapped ID range available for departed worker; skipping reclaim."
+                );
+                return Err(PartitionError::InvariantViolation(format!(
+                    "No ID range for worker {}",
+                    wid
+                )));
             }
         } else {
-            tracing::error!(worker_id = wid, "No retained state available for departed worker; state loss occurred!");
-            return Err(PartitionError::InvariantViolation(format!("State loss for worker {}", wid)));
+            tracing::error!(
+                worker_id = wid,
+                "No retained state available for departed worker; state loss occurred!"
+            );
+            return Err(PartitionError::InvariantViolation(format!(
+                "State loss for worker {}",
+                wid
+            )));
         }
     }
 

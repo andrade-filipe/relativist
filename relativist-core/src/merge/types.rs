@@ -112,7 +112,6 @@ pub struct GridMetrics {
     //
     // All SPEC-20 telemetry fields are strictly prefix-disjoint from SPEC-19
     // ensuring clean additive serialization for CSV/JSON consumers.
-
     /// Count of workers that successfully joined in each round's join window.
     pub workers_joined_per_round: Vec<u32>,
 
