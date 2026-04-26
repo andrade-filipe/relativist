@@ -2,49 +2,102 @@
 
 use std::time::Instant;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
+use super::channel::ChannelTransport;
+use super::frame::{recv_frame, send_frame};
+use super::transport::{Transport, TransportStream};
+use super::types::Message;
 use crate::merge::WorkerRoundStats;
-use crate::partition::Partition;
 use crate::reduction::reduce_all;
 
-/// Spawns a blocking task to reduce a partition locally.
+/// Handle to a spawned in-process self-worker.
+pub struct SelfWorkerHandle {
+    /// Coordinator-side stream for communicating with the self-worker.
+    pub stream: TransportStream,
+    /// Join handle for the blocking reduction task.
+    pub join_handle: JoinHandle<()>,
+    /// Receiver for panic/error signals from the self-worker.
+    pub panic_rx: oneshot::Receiver<String>,
+}
+
+/// Spawns a blocking task that acts as an in-process worker (SPEC-20 R3).
 ///
-/// Returns a receiver for the `WorkerRoundStats` result.
-/// If the task panics, the sender is dropped and the receiver returns `Err`.
-pub fn spawn_self_worker(
-    mut partition: Partition,
-) -> oneshot::Receiver<Result<WorkerRoundStats, String>> {
-    let (tx, rx) = oneshot::channel();
+/// Communicates with the coordinator via `ChannelTransport`.
+pub async fn spawn_self_partition(max_payload_size: u32) -> SelfWorkerHandle {
+    let (mut server_transport, mut client_transport) = ChannelTransport::pair(1, 1024 * 1024);
 
-    // SPEC-20 R3: spawn_blocking to keep the async loop responsive for join/leave events.
-    tokio::task::spawn_blocking(move || {
-        let start_time = Instant::now();
-        let agents_before = partition.subnet.count_live_agents();
+    let (panic_tx, panic_rx) = oneshot::channel();
 
-        // Perform reduction
-        let reduction_stats = reduce_all(&mut partition.subnet);
+    // Accept on server side (coordinator)
+    let server_stream = server_transport
+        .accept()
+        .await
+        .expect("ChannelTransport accept must succeed");
 
-        let agents_after = partition.subnet.count_live_agents();
-        let reduce_duration = start_time.elapsed();
+    // Spawn the worker logic in a blocking task
+    let join_handle = tokio::task::spawn_blocking(move || {
+        // Run a mini worker loop for one round
+        let runtime = tokio::runtime::Handle::current();
 
-        let stats = WorkerRoundStats {
-            worker_id: partition.worker_id,
-            agents_before,
-            agents_after,
-            local_redexes: reduction_stats.total_interactions as usize,
-            reduce_duration_secs: reduce_duration.as_secs_f64(),
-            interactions_by_rule: reduction_stats.interactions_by_rule,
-            // Self-partition by definition has no external border activity
-            // during its local reduction; coordinator merge handles its
-            // borders later.
-            has_border_activity: false,
-            is_coordinator_self: true,
-        };
+        let result = runtime.block_on(async {
+            let mut stream = client_transport
+                .connect()
+                .await
+                .map_err(|e| e.to_string())?;
 
-        let _ = tx.send(Ok(stats));
+            // Phase 1: Wait for partition assignment
+            let (msg, _) = recv_frame(&mut stream, max_payload_size)
+                .await
+                .map_err(|e| e.to_string())?;
+            let (round, mut partition) = match msg {
+                Message::AssignPartition { round, partition } => (round, partition),
+                other => return Err(format!("expected AssignPartition, got {:?}", other)),
+            };
+
+            let start_time = Instant::now();
+            let agents_before = partition.subnet.count_live_agents();
+
+            // Phase 2: Perform reduction
+            let reduction_stats = reduce_all(&mut partition.subnet);
+
+            let agents_after = partition.subnet.count_live_agents();
+            let reduce_duration = start_time.elapsed();
+
+            let stats = WorkerRoundStats {
+                worker_id: partition.worker_id,
+                agents_before,
+                agents_after,
+                local_redexes: reduction_stats.total_interactions as usize,
+                reduce_duration_secs: reduce_duration.as_secs_f64(),
+                interactions_by_rule: reduction_stats.interactions_by_rule,
+                has_border_activity: false, // self-partition has no local borders
+                is_coordinator_self: true,
+            };
+
+            // Phase 3: Return result
+            let result_msg = Message::PartitionResult {
+                round,
+                partition,
+                stats,
+            };
+            send_frame(&mut stream, &result_msg)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            Ok::<(), String>(())
+        });
+
+        if let Err(e) = result {
+            let _ = panic_tx.send(e);
+        }
     });
 
-    rx
+    SelfWorkerHandle {
+        stream: server_stream,
+        join_handle,
+        panic_rx,
+    }
 }
 
 /// Helper for SoloReducing state: performs a single batch of reduction.

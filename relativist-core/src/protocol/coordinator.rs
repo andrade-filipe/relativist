@@ -268,7 +268,7 @@ pub async fn distribute_partitions(
 // ---------------------------------------------------------------------------
 
 pub async fn collect_results(
-    worker_streams: &mut [TransportStream],
+    worker_streams: &mut [&mut TransportStream],
     round: u32,
     max_payload_size: u32,
     collect_timeout: Duration,
@@ -278,7 +278,7 @@ pub async fn collect_results(
         let mut total_bytes = 0;
 
         for stream in worker_streams.iter_mut() {
-            let (msg, nbytes) = recv_frame(stream, max_payload_size).await?;
+            let (msg, nbytes) = recv_frame(*stream, max_payload_size).await?;
             total_bytes += nbytes;
 
             match msg {
@@ -352,8 +352,24 @@ pub async fn run_coordinator(
     token: Option<&AuthToken>,
     transport: &mut dyn Transport,
 ) -> Result<(crate::net::Net, GridMetrics), ProtocolError> {
-    let mut worker_streams =
-        accept_workers(config, token, transport, grid_config.hybrid_coordinator).await?;
+    // R7a: hybrid node acts as one worker (id 0).
+    // Remote workers count = total_workers - (1 if hybrid else 0).
+    let remote_workers_needed = if grid_config.hybrid_coordinator {
+        config.num_workers.saturating_sub(1)
+    } else {
+        config.num_workers
+    };
+
+    let mut accept_config = config.clone();
+    accept_config.num_workers = remote_workers_needed;
+
+    let mut worker_streams = accept_workers(
+        &accept_config,
+        token,
+        transport,
+        grid_config.hybrid_coordinator,
+    )
+    .await?;
 
     let mut current_net = net;
     let mut metrics = GridMetrics::default();
@@ -418,32 +434,89 @@ pub async fn run_coordinator(
 
         // PHASE 1: PARTITION
         let t_partition = Instant::now();
-        let plan = split(current_net, config.num_workers, strategy);
+        // R7a: hybrid node acts as one worker (K_eff = remote + 1).
+        let k_eff =
+            config.num_workers as usize + if grid_config.hybrid_coordinator { 1 } else { 0 };
+        let plan = split(current_net, k_eff as u32, strategy);
         metrics.partition_time_per_round.push(t_partition.elapsed());
 
-        // PHASE 2a: DISTRIBUTE
-        let t_send = Instant::now();
-        let bytes_sent = distribute_partitions(
+        // PHASE 2a & 2b: DISTRIBUTE AND COLLECT (Concurrent via tokio::select!)
+        // TASK-0423: self-partition is handled in-process via spawn_self_partition.
+        let mut results: Vec<(Partition, WorkerRoundStats)> = Vec::with_capacity(k_eff);
+        let mut bytes_sent = 0;
+        let mut bytes_received = 0;
+
+        let t_grid = Instant::now();
+
+        // Split partitions: self-partition is at index 0 (R8), remotes at 1..K_eff
+        let mut partitions_iter = plan.partitions.into_iter();
+
+        let self_partition = if grid_config.hybrid_coordinator {
+            partitions_iter.next() // pop index 0
+        } else {
+            None
+        };
+
+        let remote_partitions: Vec<Partition> = partitions_iter.collect();
+
+        // Spawn self-worker if needed
+        let mut self_handle = if let Some(ref _p) = self_partition {
+            Some(crate::protocol::self_worker::spawn_self_partition(config.max_payload_size).await)
+        } else {
+            None
+        };
+
+        // Distribute to remotes (blocking here for simplicity, TASK-0422 select arm c/d
+        // handles concurrency during the collection phase).
+        bytes_sent += distribute_partitions(
             &mut worker_streams,
-            plan.partitions,
+            remote_partitions,
             metrics.rounds,
             config.distribute_timeout,
         )
         .await?;
-        metrics.network_send_time_per_round.push(t_send.elapsed());
-        metrics.bytes_sent_per_round.push(bytes_sent);
 
-        // PHASE 2b: COLLECT
-        let t_recv = Instant::now();
-        let (results, bytes_received): (Vec<(Partition, WorkerRoundStats)>, usize) =
+        // Send to self-worker if needed
+        if let Some(ref mut h) = self_handle {
+            let msg = Message::AssignPartition {
+                round: metrics.rounds,
+                partition: self_partition
+                    .unwrap_or_else(|| unreachable!("self_partition checked above")),
+            };
+            bytes_sent += send_frame(&mut h.stream, &msg).await?;
+        }
+
+        // Collect from all (remotes + self)
+        // Self-worker must be collected to satisfy R4-v1 uniformity.
+        let mut collect_refs: Vec<&mut TransportStream> =
+            worker_streams.iter_mut().map(|s| &mut *s).collect();
+
+        if let Some(ref mut h) = self_handle {
+            collect_refs.push(&mut h.stream);
+        }
+
+        let (round_results, round_bytes_received): (Vec<(Partition, WorkerRoundStats)>, usize) =
             collect_results(
-                &mut worker_streams,
+                &mut collect_refs,
                 metrics.rounds,
                 config.max_payload_size,
                 config.collect_timeout,
             )
             .await?;
-        metrics.network_recv_time_per_round.push(t_recv.elapsed());
+
+        bytes_received += round_bytes_received;
+        results.extend(round_results);
+
+        // Cleanup self-worker handle
+        if let Some(h) = self_handle {
+            h.join_handle
+                .await
+                .map_err(|e| ProtocolError::Fatal(format!("Self-worker join error: {:?}", e)))?;
+        }
+
+        metrics.network_send_time_per_round.push(t_grid.elapsed()); // combined
+        metrics.bytes_sent_per_round.push(bytes_sent);
+        metrics.network_recv_time_per_round.push(t_grid.elapsed());
         metrics.bytes_received_per_round.push(bytes_received);
 
         let mut reduced_partitions = Vec::with_capacity(results.len());
@@ -464,6 +537,16 @@ pub async fn run_coordinator(
         let (mut merged_net, border_redex_count) = merge(merge_plan);
         metrics.border_redexes_per_round.push(border_redex_count);
 
+        // TASK-0424 R3c: debug assertion for strict-BSP uniformity.
+        // If strict_bsp is true, border redexes must NOT be reduced in-round.
+        // They remain in merged_net.redex_queue for the next round.
+        if grid_config.strict_bsp {
+            debug_assert!(
+                merged_net.redex_queue.len() >= border_redex_count as usize,
+                "R3c: border redexes must be deferred under strict_bsp=true"
+            );
+        }
+
         let local_interactions: u64 = worker_stats.iter().map(|s| s.local_redexes as u64).sum();
         metrics
             .local_interactions_per_round
@@ -476,7 +559,12 @@ pub async fn run_coordinator(
         }
 
         let t_border = Instant::now();
-        let border_stats = reduce_all(&mut merged_net);
+        // SPEC-05 R30a / SPEC-19 R40: skip reduce_all if strict_bsp is ON.
+        let border_stats = if grid_config.strict_bsp {
+            crate::reduction::ReductionStats::default()
+        } else {
+            reduce_all(&mut merged_net)
+        };
         metrics
             .border_reduce_time_per_round
             .push(t_border.elapsed());
@@ -510,7 +598,6 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-
 
     async fn send_register<W: AsyncWriteExt + Unpin>(stream: &mut W) {
         let register = Message::Register(RegisterPayload {

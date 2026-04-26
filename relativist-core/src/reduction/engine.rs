@@ -82,7 +82,7 @@ pub fn reduce_step(net: &mut Net) -> StepResult {
 ///
 /// Tracks the total number of interactions and per-rule breakdowns.
 /// Managed by callers (`reduce_all`, `reduce_n`), not by `reduce_step`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReductionStats {
     /// Total number of interactions performed.
     pub total_interactions: u64,
