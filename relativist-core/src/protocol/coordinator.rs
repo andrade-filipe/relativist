@@ -99,6 +99,116 @@ pub(crate) fn handle_phase_timeout(
 /// Current wire protocol version (SPEC-20 R37).
 pub const PROTOCOL_VERSION: u8 = 4;
 
+/// Processes a mid-session `JoinRequest` (SPEC-20 §3.2 R9).
+///
+/// Performs the JoinRequest/JoinAck handshake, authenticates the worker,
+/// and assigns a `WorkerId` and `partition_index`.
+///
+/// R17: logs assignment at INFO level.
+pub async fn process_join_request(
+    stream: &mut TransportStream,
+    msg: Message,
+    grid_config: &GridConfig,
+    _node_config: &NodeConfig,
+    expected_token: Option<&AuthToken>,
+    next_worker_id: &mut u32,
+    current_round: u32,
+    active_workers: &std::collections::BTreeSet<WorkerId>,
+) -> Result<Option<WorkerId>, ProtocolError> {
+    let (protocol_version, auth_token) = match msg {
+        Message::JoinRequest {
+            protocol_version,
+            auth_token,
+            ..
+        } => (protocol_version, auth_token),
+        other => {
+            tracing::warn!("Handshake error: expected JoinRequest, got {:?}", other);
+            return Ok(None);
+        }
+    };
+
+    // R0d: validate protocol version
+    if protocol_version != PROTOCOL_VERSION {
+        let nack = Message::JoinNack {
+            reason: crate::protocol::types::JoinNackReason::ProtocolVersionMismatch {
+                expected: PROTOCOL_VERSION,
+                got: protocol_version,
+            },
+        };
+        let _ = send_frame(stream, &nack).await;
+        return Ok(None);
+    }
+
+    // R9: check if joins are enabled
+    if !grid_config.elastic_join {
+        let nack = Message::JoinNack {
+            reason: crate::protocol::types::JoinNackReason::ElasticJoinDisabled,
+        };
+        let _ = send_frame(stream, &nack).await;
+        return Ok(None);
+    }
+
+    // Auth check
+    if let Some(token) = expected_token {
+        let mut valid = false;
+        if let Some(provided_bytes) = auth_token {
+            let provided = AuthToken::from_bytes(provided_bytes);
+            if token.verify(&provided) {
+                valid = true;
+            }
+        }
+        if !valid {
+            let nack = Message::JoinNack {
+                reason: crate::protocol::types::JoinNackReason::AuthenticationFailed,
+            };
+            let _ = send_frame(stream, &nack).await;
+            return Ok(None);
+        }
+    }
+
+    // R11: allocate WorkerId
+    if *next_worker_id == u32::MAX {
+        let nack = Message::JoinNack {
+            reason: crate::protocol::types::JoinNackReason::WorkerIdSpaceExhausted,
+        };
+        let _ = send_frame(stream, &nack).await;
+        return Err(ProtocolError::Coordinator(Box::new(
+            crate::error::CoordinatorError::WorkerIdSpaceExhausted,
+        )));
+    }
+
+    let worker_id = *next_worker_id;
+    *next_worker_id += 1;
+
+    // R11a: Compute the partition_index the worker WILL occupy in the next round.
+    // In v1, membership changes trigger a full re-partitioning at round start.
+    // For now, we use a simple deterministic index: active_count + 1 (reserved 0 for self).
+    let partition_index = if grid_config.hybrid_coordinator {
+        active_workers.len() as u32 + 1
+    } else {
+        active_workers.len() as u32
+    };
+
+    // R16: JoinAck informs worker of next_round_number
+    let next_round_number = current_round + 1;
+
+    let ack = Message::JoinAck {
+        worker_id,
+        partition_index,
+        next_round_number,
+    };
+    send_frame(stream, &ack).await?;
+
+    tracing::info!(
+        "Worker joined: id={}, partition_index={}, next_round={}",
+        worker_id,
+        partition_index,
+        next_round_number
+    );
+
+    Ok(Some(worker_id))
+}
+
 /// Accepts and authenticates workers (SPEC-06 R17, R24; SPEC-10 R14-R17).
 pub async fn accept_workers(
     config: &NodeConfig,
@@ -432,42 +542,39 @@ pub async fn run_coordinator(
         // Foundational loop remains sequential BSP for this wave,
         // preparing for full asynchronous event routing in Wave 4.
 
-        // PHASE 1: PARTITION
+        // === PHASE 1: PARTITION ===
         let t_partition = Instant::now();
-        // R7a: hybrid node acts as one worker (K_eff = remote + 1).
-        let k_eff =
-            config.num_workers as usize + if grid_config.hybrid_coordinator { 1 } else { 0 };
+        // R7a: hybrid node acts as one worker (K_eff = remote_active + 1).
+        let remote_count = worker_streams.len();
+        let k_eff = remote_count + if grid_config.hybrid_coordinator { 1 } else { 0 };
+
+        // R1: produce K_eff partitions
         let plan = split(current_net, k_eff as u32, strategy);
         metrics.partition_time_per_round.push(t_partition.elapsed());
 
-        // PHASE 2a & 2b: DISTRIBUTE AND COLLECT (Concurrent via tokio::select!)
-        // TASK-0423: self-partition is handled in-process via spawn_self_partition.
+        // PHASE 2a & 2b: DISTRIBUTE AND COLLECT (R4-v1 uniformity)
         let mut results: Vec<(Partition, WorkerRoundStats)> = Vec::with_capacity(k_eff);
         let mut bytes_sent = 0;
         let mut bytes_received = 0;
-
         let t_grid = Instant::now();
 
-        // Split partitions: self-partition is at index 0 (R8), remotes at 1..K_eff
+        // R8: self-partition is index 0, remotes are 1..K_eff
         let mut partitions_iter = plan.partitions.into_iter();
-
         let self_partition = if grid_config.hybrid_coordinator {
-            partitions_iter.next() // pop index 0
+            partitions_iter.next()
         } else {
             None
         };
-
         let remote_partitions: Vec<Partition> = partitions_iter.collect();
 
-        // Spawn self-worker if needed
+        // TASK-0423: in-process self-worker
         let mut self_handle = if let Some(ref _p) = self_partition {
             Some(crate::protocol::self_worker::spawn_self_partition(config.max_payload_size).await)
         } else {
             None
         };
 
-        // Distribute to remotes (blocking here for simplicity, TASK-0422 select arm c/d
-        // handles concurrency during the collection phase).
+        // Distribute to remotes
         bytes_sent += distribute_partitions(
             &mut worker_streams,
             remote_partitions,
@@ -476,18 +583,18 @@ pub async fn run_coordinator(
         )
         .await?;
 
-        // Send to self-worker if needed
+        // Distribute to self-worker (R3 bridge)
         if let Some(ref mut h) = self_handle {
+            // we use theCorrect partition instance popped at index 0
+            let p = self_partition.as_ref().unwrap();
             let msg = Message::AssignPartition {
                 round: metrics.rounds,
-                partition: self_partition
-                    .unwrap_or_else(|| unreachable!("self_partition checked above")),
+                partition: p.clone(),
             };
             bytes_sent += send_frame(&mut h.stream, &msg).await?;
         }
 
-        // Collect from all (remotes + self)
-        // Self-worker must be collected to satisfy R4-v1 uniformity.
+        // Collect from all (unify streams)
         let mut collect_refs: Vec<&mut TransportStream> =
             worker_streams.iter_mut().map(|s| &mut *s).collect();
 
@@ -507,11 +614,11 @@ pub async fn run_coordinator(
         bytes_received += round_bytes_received;
         results.extend(round_results);
 
-        // Cleanup self-worker handle
+        // Ensure self-worker cleanup (R3a)
         if let Some(h) = self_handle {
-            h.join_handle
-                .await
-                .map_err(|e| ProtocolError::Fatal(format!("Self-worker join error: {:?}", e)))?;
+            h.join_handle.await.map_err(|e| {
+                ProtocolError::Fatal(format!("Self-worker reduction task panicked: {:?}", e))
+            })?;
         }
 
         metrics.network_send_time_per_round.push(t_grid.elapsed()); // combined
