@@ -55,7 +55,15 @@
 |------|-------|------|--------|
 | Wave 1 | 0430, 0432 | 2026-04-25 | ✅ DONE |
 | Wave 2 | 0433, 0434 | 2026-04-25 | ✅ DONE |
-| Wave 3 | 0435 | 2026-04-25 | ⏭ ACTIVE |
+| Wave 3 | 0435 | 2026-04-25 | ✅ DONE |
+
+### Phase D - Departure (Stage 3+ DEV)
+
+| Wave | Tasks | Date | Status |
+|------|-------|------|--------|
+| Wave 1 | 0438, 0439 | 2026-04-25 | ⏭ ACTIVE |
+| Wave 2 | 0440, 0441 | 2026-04-25 | TODO |
+| Wave 3 | 0442, 0443 | 2026-04-25 | TODO |
 | 1 (Tier 2) | D-007 | SPEC-20 §3.2 | Dynamic worker joining; Join Window; ~500 prod + ~150 test LoC | TODO (after D-006) |
 | 1 (Tier 2) | D-008 | SPEC-20 §3.3 | Dynamic worker departure; retained-partition re-dispatch; ~600 prod + ~200 test LoC | TODO (after D-007) |
 | 2 (Tier 3) | D-009 | SPEC-22 §1/§3 | Arena recycling free-list; ~150 prod + ~80 test LoC | TODO |

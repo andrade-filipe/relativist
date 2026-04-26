@@ -32,7 +32,6 @@ use crate::security::AuthToken;
 // ---------------------------------------------------------------------------
 
 /// Identifies which FSM event triggered the elastic recovery path.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DepartureEventKind {
     ConnectionLost,
@@ -40,7 +39,6 @@ pub(crate) enum DepartureEventKind {
 }
 
 /// Outcome of the SPEC-06 R25 / SPEC-20 §3.8 A1 connection-loss branch.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConnectionLossOutcome {
     Abort(String),
@@ -50,7 +48,6 @@ pub(crate) enum ConnectionLossOutcome {
     },
 }
 
-#[allow(dead_code)]
 pub(crate) fn handle_connection_loss(
     worker_id: WorkerId,
     error_description: &str,
@@ -71,7 +68,6 @@ pub(crate) fn handle_connection_loss(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn handle_phase_timeout(
     worker_id: WorkerId,
     elapsed: Duration,
@@ -491,6 +487,9 @@ pub async fn run_coordinator(
         remote_count as u32
     };
 
+    // SPEC-20 R23: Retained state registry
+    let mut retained_state = crate::protocol::retained::RetainedStateRegistry::new();
+
     let mut current_net = net;
     let mut metrics = GridMetrics::default();
     let start_time = Instant::now();
@@ -594,6 +593,26 @@ pub async fn run_coordinator(
             None
         };
 
+        // TASK-0439: state retention (R23b)
+        // Store initial partitions for new members of the grid
+        if grid_config.retain_partitions {
+            if let Some(ref p) = self_partition {
+                if !retained_state.initial.contains_key(&0) {
+                    retained_state
+                        .initial
+                        .insert(0, crate::protocol::retained::RetainedInitial::V1(p.clone()));
+                }
+            }
+            for p in &remote_partitions {
+                if !retained_state.initial.contains_key(&p.worker_id) {
+                    retained_state.initial.insert(
+                        p.worker_id,
+                        crate::protocol::retained::RetainedInitial::V1(p.clone()),
+                    );
+                }
+            }
+        }
+
         // Distribute to remotes
         bytes_sent += distribute_partitions(
             &mut worker_streams,
@@ -614,7 +633,12 @@ pub async fn run_coordinator(
             bytes_sent += send_frame(&mut h.stream, &msg).await?;
         }
 
-        // Collect from all (unify streams)
+        // PHASE 2b: COLLECT (R18, R19 per-worker detection)
+        let t_recv_start = Instant::now();
+        let mut collect_results_vec = Vec::with_capacity(k_eff);
+        let mut bytes_received_round = 0;
+
+        // Unify remote and self streams for collection (R4-v1)
         let mut collect_refs: Vec<&mut TransportStream> =
             worker_streams.iter_mut().map(|s| &mut *s).collect();
 
@@ -622,14 +646,88 @@ pub async fn run_coordinator(
             collect_refs.push(&mut h.stream);
         }
 
-        let (round_results, round_bytes_received): (Vec<(Partition, WorkerRoundStats)>, usize) =
-            collect_results(
-                &mut collect_refs,
-                metrics.rounds,
-                config.max_payload_size,
-                config.collect_timeout,
-            )
-            .await?;
+        // We need to keep track of which indices in collect_refs correspond to which worker_streams
+        // for possible removal in future waves. For Wave 1 TASK-0438, we focus on detection.
+        for stream_ptr in collect_refs {
+            let recv_future = recv_frame(stream_ptr, config.max_payload_size);
+
+            // R18: per-worker collect_timeout
+            match tokio::time::timeout(config.collect_timeout, recv_future).await {
+                Ok(Ok((msg, nbytes))) => {
+                    bytes_received_round += nbytes;
+                    match msg {
+                        Message::PartitionResult {
+                            round: r,
+                            partition,
+                            stats,
+                        } => {
+                            if r != metrics.rounds {
+                                return Err(ProtocolError::UnexpectedMessage {
+                                    expected: "Matching round",
+                                    received: format!("round {}", r),
+                                });
+                            }
+                            // R23c: atomic refresh of last_acked
+                            if grid_config.retain_partitions {
+                                retained_state.refresh_last_acked(
+                                    partition.worker_id,
+                                    crate::protocol::retained::RetainedLastAcked::V1(
+                                        partition.clone(),
+                                    ),
+                                );
+                            }
+                            collect_results_vec.push((partition, stats));
+                        }
+                        Message::Error {
+                            worker_id,
+                            description,
+                            ..
+                        } => {
+                            // R19: treat explicit error as ConnectionLost-equivalent for recovery
+                            let outcome = handle_connection_loss(
+                                worker_id,
+                                &description,
+                                grid_config.elastic_departure,
+                            );
+                            if let ConnectionLossOutcome::Abort(e) = outcome {
+                                return Err(ProtocolError::Fatal(e));
+                            }
+                            // Recovery path (TASK-0443) will handle the worker removal
+                        }
+                        other => {
+                            return Err(ProtocolError::UnexpectedMessage {
+                                expected: "PartitionResult",
+                                received: format!("{:?}", other),
+                            })
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    // R19: immediate ConnectionLost on I/O error
+                    // We don't have the worker_id easily here without more bookkeeping,
+                    // using 0 as a placeholder or improving this in TASK-0439.
+                    let outcome =
+                        handle_connection_loss(0, &e.to_string(), grid_config.elastic_departure);
+                    if let ConnectionLossOutcome::Abort(e) = outcome {
+                        return Err(ProtocolError::Fatal(e));
+                    }
+                }
+                Err(_) => {
+                    // R18: per-worker timeout
+                    let outcome = handle_phase_timeout(
+                        0,
+                        config.collect_timeout,
+                        grid_config.elastic_departure,
+                    );
+                    if let ConnectionLossOutcome::Abort(e) = outcome {
+                        return Err(ProtocolError::Fatal(e));
+                    }
+                }
+            }
+        }
+
+        let round_results = collect_results_vec;
+        let round_bytes_received = bytes_received_round;
 
         bytes_received += round_bytes_received;
         results.extend(round_results);
@@ -719,8 +817,11 @@ pub async fn run_coordinator(
             tokio::pin!(min_timer);
             tokio::pin!(max_timer);
 
-            tracing::info!("Opening Join Window (min={:?}, max={:?})", 
-                grid_config.join_window_min, grid_config.join_window_max);
+            tracing::info!(
+                "Opening Join Window (min={:?}, max={:?})",
+                grid_config.join_window_min,
+                grid_config.join_window_max
+            );
 
             loop {
                 // 1. Drain whatever is currently in the queue

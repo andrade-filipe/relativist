@@ -1169,7 +1169,7 @@ mod tests {
     #[cfg(feature = "zero-copy")]
     #[test]
     fn rkyv_round_trip_worker_round_stats() {
-        for (worker_id, has_border_activity, duration_secs) in [
+        for (_worker_id, _has_border_activity, _duration_secs) in [
             (0u32, false, 0.0_f64),
             (7u32, true, 0.042_f64),
             (u32::MAX, false, 1234.5678_f64),
