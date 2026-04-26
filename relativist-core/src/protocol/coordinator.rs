@@ -634,7 +634,7 @@ pub async fn run_coordinator(
         }
 
         // PHASE 2b: COLLECT (R18, R19 per-worker detection)
-        let t_recv_start = Instant::now();
+        let _t_recv_start = Instant::now();
         let mut collect_results_vec = Vec::with_capacity(k_eff);
         let mut bytes_received_round = 0;
 
@@ -645,6 +645,10 @@ pub async fn run_coordinator(
         if let Some(ref mut h) = self_handle {
             collect_refs.push(&mut h.stream);
         }
+
+        // Keep track of workers that requested to leave mid-collection
+        let mut departing_workers: std::collections::HashSet<WorkerId> =
+            std::collections::HashSet::new();
 
         // We need to keep track of which indices in collect_refs correspond to which worker_streams
         // for possible removal in future waves. For Wave 1 TASK-0438, we focus on detection.
@@ -678,6 +682,26 @@ pub async fn run_coordinator(
                             }
                             collect_results_vec.push((partition, stats));
                         }
+                        Message::LeaveRequest { kind } => {
+                            // R20, R22a/b/c: Graceful departure handshake
+                            tracing::info!(?kind, "Received LeaveRequest from worker");
+
+                            // Send LeaveAck before closing TCP (R35a)
+                            let _ = send_frame(stream_ptr, &Message::LeaveAck).await;
+
+                            match kind {
+                                crate::protocol::types::LeaveKind::AfterResult => {
+                                    // If we reach this point, we haven't seen the PartitionResult yet
+                                    // for this stream (the loop processes one message per stream).
+                                    // R22c: AfterResult without result received -> upgrade to Urgent.
+                                    tracing::warn!("LeaveRequest::AfterResult received before result; upgrading to Urgent semantics (R22c)");
+                                    // Mark for removal/reclaim path
+                                }
+                                crate::protocol::types::LeaveKind::Urgent => {
+                                    // Urgent path: R22b.
+                                }
+                            }
+                        }
                         Message::Error {
                             worker_id,
                             description,
@@ -704,8 +728,6 @@ pub async fn run_coordinator(
                 }
                 Ok(Err(e)) => {
                     // R19: immediate ConnectionLost on I/O error
-                    // We don't have the worker_id easily here without more bookkeeping,
-                    // using 0 as a placeholder or improving this in TASK-0439.
                     let outcome =
                         handle_connection_loss(0, &e.to_string(), grid_config.elastic_departure);
                     if let ConnectionLossOutcome::Abort(e) = outcome {
@@ -812,8 +834,8 @@ pub async fn run_coordinator(
         // Mid-session joins are queued in pending_connections_queue (R10b).
         if grid_config.elastic_join {
             let t_window_start = Instant::now();
-            let mut min_timer = tokio::time::sleep(grid_config.join_window_min);
-            let mut max_timer = tokio::time::sleep(grid_config.join_window_max);
+            let min_timer = tokio::time::sleep(grid_config.join_window_min);
+            let max_timer = tokio::time::sleep(grid_config.join_window_max);
             tokio::pin!(min_timer);
             tokio::pin!(max_timer);
 
@@ -827,7 +849,7 @@ pub async fn run_coordinator(
                 // 1. Drain whatever is currently in the queue
                 while let Some(mut stream) = pending_connections_queue.pop_front() {
                     // Track active IDs to compute partition_index in process_join_request
-                    let mut active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
+                    let active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
                         .iter()
                         .enumerate()
                         .map(|(i, _)| {

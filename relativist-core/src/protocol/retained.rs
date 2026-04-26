@@ -32,7 +32,6 @@ pub enum RetainedLastAcked {
     V1(Partition),
     /// Placeholder for delta-light (border_graph + last_deltas)
     DeltaLight {
-        // We'll use Option for now as types might be in flux
         placeholder: String,
     },
     DeltaCheckpoint(Partition),
@@ -64,16 +63,13 @@ impl RetainedStateRegistry {
     }
 
     /// NF-011: memory bound debug assertions.
-    /// To be called at steady round boundaries.
     pub fn assert_memory_bounds(&self, k_eff: usize) {
-        // retained_initial bound: 2 * K_eff (includes pending reclaim)
         debug_assert!(
             self.initial.len() <= 2 * k_eff,
             "R31/NF-011: retained_initial exceeds memory bound ({} > 2*{})",
             self.initial.len(),
             k_eff
         );
-        // retained_last_acked bound: K_eff (only active members)
         debug_assert!(
             self.last_acked.len() <= k_eff,
             "R31/NF-011: retained_last_acked exceeds memory bound ({} > {})",
