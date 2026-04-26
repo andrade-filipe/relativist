@@ -2,13 +2,8 @@
 
 > **CRITICAL LLM INSTRUCTION:** This file is for **PAST/COMPLETED work only**. Active work, current pipeline state, and future milestones live exclusively in `next-steps.md`.
 
-**Last updated:** 2026-04-25 (Phase B COMPLETED in commit `21cbfb4`. All 12 foundational hybrid-coordinator tasks implemented and verified across 4 waves. Phase C Joining is now ACTIVE.)
-**Updated by:** **Phase B Final Closure (TASK-0415 through 0426).**
-- **Wave 1:** `GridConfig` extension, `PROTOCOL_VERSION 4`, `compute_round_id_ranges`, `TimerKind`.
-- **Wave 2:** CLI flags, `Message` elastic variants, `WorkerId 0` reservation, `SoloReducing` loop.
-- **Wave 3:** `JoinRequest` handshake branch, `tokio::select!` 4-arm event loop.
-- **Wave 4:** In-process self-worker spawn, strict BSP uniformity (R3c).
-Test counts: 1256 default / 1299 zero-copy. v1 floor (690) preserved.
+**Last updated:** 2026-04-25 (Phase C Wave 1 closed in commit `c87b048`. Phase B closed in commit `21cbfb4`. v2 Pre-DEV Spec Pipeline CLOSED across Waves 1+2 in commits `ec680e4`, `b66f758`, `bbd976e`, `508e595`, `131ca26`. Strategic decision logged: Tier 2 + Tier 3 DEV next; Tier 4 + Tier 5 deferred until after Tier 2+3 ship.)
+**Updated by:** **Phase C Wave 1 closed (TASK-0430, 0432).** Refactored coordinator for hybrid orchestration (K_eff = K + 1); implemented `JoinRequest` handshake handler with NF-009 version shape; unified result collection for remote and self-workers. Test counts: 1256 default / 1299 zero-copy. v1 floor (690) preserved.
 **Updated by:** **Pre-DEV Spec Pipeline closed across Waves 1+2 (Tier 2 + Tier 3); user directive 2026-04-25 to defer Tier 4+5 until after Tier 2+3 are shipped.** Wave 1 (SPEC-20 Elastic Grid, Tier 2 / M2): Stage 0+1+2 done in `ec680e4`. Wave 2 first half (SPEC-22 Arena Management, Tier 3 / M5): Stage 0 in `b66f758`, Stages 1+2 in `bbd976e` — 36 tasks `TASK-0460..0500` + 48 TEST-SPECs. Wave 2 second half (SPEC-21 Streaming Generation, Tier 3 / M5): Stage 0 in `508e595`, Stages 1+2 in `131ca26` — 36 tasks `TASK-0510..0554+0565/0567/0568/0575-0578/0588-0591` + 49 TEST-SPECs (35 plumbing + 14 spec-catalog T1..T14). Defensive PROTOCOL_VERSION pattern propagated across SPEC-20, SPEC-22, SPEC-21 (TEST-SPEC-0476/0511/0575/0576). Cumulative across Waves 1+2: **108 atomic tasks, 159 TEST-SPECs, 4490 benchmarks frozen at v1 baseline.** TCC-root deferred items: SC-013 (DISC-012 stale tag), SC-020 (FENNEL/LDG REF-NNN registration). 5 non-blocking gaps in SPEC-21 Stage 2 (IT-0577 exact-count, IT-0588 cross-spec block, IT-0578 wall-clock, UT-0568 SC-020 gate, PREVIOUS_LIVE_VERSION mechanism unification). Test counts unchanged across the entire Pre-DEV bundle: 1181 default / 1224 zero-copy. **Next phase: Tier 2 DEV starting bundle D-006 (SPEC-20 §3.1 hybrid coordinator).**
 
 **Previous update (2026-04-25):** v2 Pre-DEV Wave 2 / SPEC-22 Arena Management CLOSED (first half) in commits `b66f758` + `bbd976e`.

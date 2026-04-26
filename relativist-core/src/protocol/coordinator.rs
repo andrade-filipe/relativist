@@ -481,6 +481,16 @@ pub async fn run_coordinator(
     )
     .await?;
 
+    let mut pending_connections_queue = std::collections::VecDeque::<TransportStream>::new();
+    // R11: monotonic counter. accept_workers already assigned IDs up to remote_count.
+    // In hybrid mode, ID 0 is reserved.
+    let remote_count = worker_streams.len();
+    let mut next_worker_id: u32 = if grid_config.hybrid_coordinator {
+        (remote_count + 1) as u32
+    } else {
+        remote_count as u32
+    };
+
     let mut current_net = net;
     let mut metrics = GridMetrics::default();
     let start_time = Instant::now();
@@ -508,8 +518,18 @@ pub async fn run_coordinator(
                 // Arms (a, b, c, d) from TASK-0422 are prepared.
                 while !current_net.redex_queue.is_empty() {
                     tokio::select! {
-                        // Arm (c): placeholder for accepting joins during solo-reduction
-                        // _ = transport.accept() => { /* queue for handshake */ }
+                        // Arm (c): accepting joins during solo-reduction
+                        new_conn = transport.accept() => {
+                            match new_conn {
+                                Ok(stream) => {
+                                    tracing::info!("Accepted mid-session connection during SoloReducing; queued.");
+                                    pending_connections_queue.push_back(stream);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to accept mid-session connection: {}", e);
+                                }
+                            }
+                        }
 
                         // Arm (a, b, d): pure batch reduction for now
                         else => {
@@ -688,6 +708,50 @@ pub async fn run_coordinator(
 
         current_net = merged_net;
         metrics.rounds += 1;
+
+        // === JOIN WINDOW (TASK-0435) ===
+        // Drain pending connections and perform handshakes.
+        // Mid-session joins are queued in pending_connections_queue (R10b).
+        if grid_config.elastic_join && !pending_connections_queue.is_empty() {
+            tracing::info!(
+                "Opening Join Window: {} connections pending.",
+                pending_connections_queue.len()
+            );
+
+            // Track active IDs to compute partition_index in process_join_request
+            let mut active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    // This is a simplification for v1: we assume IDs are 1..N (if hybrid) or 0..N-1
+                    let offset = if grid_config.hybrid_coordinator { 1 } else { 0 };
+                    (i as u32) + offset
+                })
+                .collect();
+
+            while let Some(mut stream) = pending_connections_queue.pop_front() {
+                // Read the first message (could be Register or JoinRequest)
+                // mid-session connections SHOULD send JoinRequest (R9).
+                let (msg, _) = recv_frame(&mut stream, config.max_payload_size).await?;
+
+                let join_result = process_join_request(
+                    &mut stream,
+                    msg,
+                    grid_config,
+                    config,
+                    token,
+                    &mut next_worker_id,
+                    metrics.rounds,
+                    &active_ids,
+                )
+                .await?;
+
+                if let Some(worker_id) = join_result {
+                    worker_streams.push(stream);
+                    active_ids.insert(worker_id);
+                }
+            }
+        }
     }
 
     shutdown_workers(&mut worker_streams).await;
