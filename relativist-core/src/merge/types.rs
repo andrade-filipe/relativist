@@ -1185,7 +1185,6 @@ mod tests {
                 is_coordinator_self: false,
             };
 
-
             let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&original).expect("serialize");
             let archived = rkyv::access::<rkyv::Archived<WorkerRoundStats>, rkyv::rancor::Error>(
                 bytes.as_ref(),

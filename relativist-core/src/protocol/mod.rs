@@ -10,6 +10,7 @@ pub mod config;
 pub mod coordinator;
 pub mod error;
 pub mod frame;
+pub mod self_worker;
 pub mod tcp;
 pub mod timers;
 pub mod transport;

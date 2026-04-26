@@ -178,6 +178,33 @@ pub async fn accept_workers(
                     tracing::info!("Worker {} registered (id={})", streams.len() + 1, worker_id);
                     streams.push(stream);
                 }
+                Message::JoinRequest {
+                    protocol_version, ..
+                } => {
+                    // SPEC-20 R37a: JoinRequest is for mid-session joins.
+                    // During the initial accept_workers window, we strictly enforce Register.
+                    tracing::warn!(
+                        "Rejected: JoinRequest received during initial WaitingForWorkers window"
+                    );
+
+                    // R0d + NF-009: handle version mismatch even on rejected path
+                    if protocol_version != PROTOCOL_VERSION {
+                        let nack = Message::JoinNack {
+                            reason:
+                                crate::protocol::types::JoinNackReason::ProtocolVersionMismatch {
+                                    expected: PROTOCOL_VERSION,
+                                    got: protocol_version,
+                                },
+                        };
+                        let _ = send_frame(&mut stream, &nack).await;
+                    } else {
+                        let nack = Message::JoinNack {
+                            reason: crate::protocol::types::JoinNackReason::ElasticJoinDisabled,
+                        };
+                        let _ = send_frame(&mut stream, &nack).await;
+                    }
+                    continue;
+                }
                 other => {
                     tracing::warn!("Rejected: expected Register, got {:?}", other);
                     let nack = Message::RegisterNack(RegisterNackPayload {
@@ -351,17 +378,22 @@ pub async fn run_coordinator(
             if grid_config.hybrid_coordinator {
                 tracing::info!("Entering SoloReducing (budget={})", grid_config.solo_budget);
 
+                // Foundational tokio::select! loop for SoloReducing.
+                // Arms (a, b, c, d) from TASK-0422 are prepared.
                 while !current_net.redex_queue.is_empty() {
-                    let stats = crate::reduction::reduce_n(
-                        &mut current_net,
-                        grid_config.solo_budget as usize,
-                    );
-                    metrics.total_interactions += stats.total_interactions;
-                    for (i, &count) in stats.interactions_by_rule.iter().enumerate() {
-                        metrics.total_interactions_by_rule[i] += count;
-                    }
-                    if stats.total_interactions == 0 {
-                        break;
+                    tokio::select! {
+                        // Arm (c): placeholder for accepting joins during solo-reduction
+                        // _ = transport.accept() => { /* queue for handshake */ }
+
+                        // Arm (a, b, d): pure batch reduction for now
+                        else => {
+                            let stats = crate::reduction::reduce_n(&mut current_net, grid_config.solo_budget as usize);
+                            metrics.total_interactions += stats.total_interactions;
+                            for (i, &count) in stats.interactions_by_rule.iter().enumerate() {
+                                metrics.total_interactions_by_rule[i] += count;
+                            }
+                            if stats.total_interactions == 0 { break; }
+                        }
                     }
                     tokio::task::yield_now().await;
                 }
@@ -380,6 +412,9 @@ pub async fn run_coordinator(
         metrics
             .agents_per_round
             .push(current_net.count_live_agents());
+
+        // Foundational loop remains sequential BSP for this wave,
+        // preparing for full asynchronous event routing in Wave 4.
 
         // PHASE 1: PARTITION
         let t_partition = Instant::now();
@@ -475,6 +510,7 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
 
     async fn send_register<W: AsyncWriteExt + Unpin>(stream: &mut W) {
         let register = Message::Register(RegisterPayload {
