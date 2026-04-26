@@ -20,6 +20,7 @@ pub use border_graph::{
     MintedAgent, PendingCommutation,
 };
 pub use core::merge;
+pub(crate) use grid::reconstruct;
 pub use grid::run_grid;
 pub(crate) use grid::run_grid_entry;
 pub use helpers::{drain_stale_redexes, rebuild_free_port_index};

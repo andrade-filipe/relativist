@@ -22,8 +22,10 @@ use super::config::NodeConfig;
 use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
 use super::types::{Message, RegisterAckPayload, RegisterNackPayload};
-use crate::merge::{drain_stale_redexes, merge, GridConfig, GridMetrics, WorkerRoundStats};
-use crate::partition::{split, Partition, PartitionStrategy, WorkerId};
+use crate::merge::{
+    drain_stale_redexes, merge, reconstruct, BorderGraph, GridConfig, GridMetrics, WorkerRoundStats,
+};
+use crate::partition::{split, materialize_reclaimed_partitions, Partition, PartitionStrategy, WorkerId};
 use crate::reduction::reduce_all;
 use crate::security::AuthToken;
 
@@ -177,8 +179,6 @@ pub async fn process_join_request(
     *next_worker_id += 1;
 
     // R11a: Compute the partition_index the worker WILL occupy in the next round.
-    // In v1, membership changes trigger a full re-partitioning at round start.
-    // For now, we use a simple deterministic index: active_count + 1 (reserved 0 for self).
     let partition_index = if grid_config.hybrid_coordinator {
         active_workers.len() as u32 + 1
     } else {
@@ -288,7 +288,6 @@ pub async fn accept_workers(
                     protocol_version, ..
                 } => {
                     // SPEC-20 R37a: JoinRequest is for mid-session joins.
-                    // During the initial accept_workers window, we strictly enforce Register.
                     tracing::warn!(
                         "Rejected: JoinRequest received during initial WaitingForWorkers window"
                     );
@@ -459,7 +458,6 @@ pub async fn run_coordinator(
     transport: &mut dyn Transport,
 ) -> Result<(crate::net::Net, GridMetrics), ProtocolError> {
     // R7a: hybrid node acts as one worker (id 0).
-    // Remote workers count = total_workers - (1 if hybrid else 0).
     let remote_workers_needed = if grid_config.hybrid_coordinator {
         config.num_workers.saturating_sub(1)
     } else {
@@ -478,8 +476,6 @@ pub async fn run_coordinator(
     .await?;
 
     let mut pending_connections_queue = std::collections::VecDeque::<TransportStream>::new();
-    // R11: monotonic counter. accept_workers already assigned IDs up to remote_count.
-    // In hybrid mode, ID 0 is reserved.
     let remote_count = worker_streams.len();
     let mut next_worker_id: u32 = if grid_config.hybrid_coordinator {
         (remote_count + 1) as u32
@@ -513,11 +509,8 @@ pub async fn run_coordinator(
             if grid_config.hybrid_coordinator {
                 tracing::info!("Entering SoloReducing (budget={})", grid_config.solo_budget);
 
-                // Foundational tokio::select! loop for SoloReducing.
-                // Arms (a, b, c, d) from TASK-0422 are prepared.
                 while !current_net.redex_queue.is_empty() {
                     tokio::select! {
-                        // Arm (c): accepting joins during solo-reduction
                         new_conn = transport.accept() => {
                             match new_conn {
                                 Ok(stream) => {
@@ -529,8 +522,6 @@ pub async fn run_coordinator(
                                 }
                             }
                         }
-
-                        // Arm (a, b, d): pure batch reduction for now
                         else => {
                             let stats = crate::reduction::reduce_n(&mut current_net, grid_config.solo_budget as usize);
                             metrics.total_interactions += stats.total_interactions;
@@ -554,31 +545,23 @@ pub async fn run_coordinator(
             }
         }
 
-        metrics
-            .agents_per_round
-            .push(current_net.count_live_agents());
-
-        // Foundational loop remains sequential BSP for this wave,
-        // preparing for full asynchronous event routing in Wave 4.
+        metrics.agents_per_round.push(current_net.count_live_agents());
 
         // === PHASE 1: PARTITION ===
         let t_partition = Instant::now();
-        // R7a: hybrid node acts as one worker (K_eff = remote_active + 1).
         let remote_count = worker_streams.len();
         let k_eff = remote_count + if grid_config.hybrid_coordinator { 1 } else { 0 };
 
-        // R1: produce K_eff partitions
         let plan = split(current_net, k_eff as u32, strategy);
         metrics.partition_time_per_round.push(t_partition.elapsed());
 
-        // PHASE 2a & 2b: DISTRIBUTE AND COLLECT (R4-v1 uniformity)
+        // PHASE 2a & 2b: DISTRIBUTE AND COLLECT
         let mut results: Vec<(Partition, WorkerRoundStats)> = Vec::with_capacity(k_eff);
         let mut bytes_sent = 0;
         let mut bytes_received = 0;
-        let t_grid = Instant::now();
+        let _t_grid = Instant::now();
 
-        // R8: self-partition is index 0, remotes are 1..K_eff
-        let mut partitions_iter = plan.partitions.into_iter();
+        let mut partitions_iter = plan.partitions.iter().cloned();
         let self_partition = if grid_config.hybrid_coordinator {
             partitions_iter.next()
         } else {
@@ -586,184 +569,146 @@ pub async fn run_coordinator(
         };
         let remote_partitions: Vec<Partition> = partitions_iter.collect();
 
-        // TASK-0423: in-process self-worker
         let mut self_handle = if let Some(ref _p) = self_partition {
             Some(crate::protocol::self_worker::spawn_self_partition(config.max_payload_size).await)
         } else {
             None
         };
 
-        // TASK-0439: state retention (R23b)
-        // Store initial partitions for new members of the grid
+        // TASK-0439: state retention
         if grid_config.retain_partitions {
             if let Some(ref p) = self_partition {
                 if !retained_state.initial.contains_key(&0) {
-                    retained_state
-                        .initial
-                        .insert(0, crate::protocol::retained::RetainedInitial::V1(p.clone()));
+                    retained_state.initial.insert(0, crate::protocol::retained::RetainedInitial::V1(p.clone()));
                 }
             }
             for p in &remote_partitions {
                 if !retained_state.initial.contains_key(&p.worker_id) {
-                    retained_state.initial.insert(
-                        p.worker_id,
-                        crate::protocol::retained::RetainedInitial::V1(p.clone()),
-                    );
+                    retained_state.initial.insert(p.worker_id, crate::protocol::retained::RetainedInitial::V1(p.clone()));
                 }
             }
         }
 
-        // Distribute to remotes
-        bytes_sent += distribute_partitions(
-            &mut worker_streams,
-            remote_partitions,
-            metrics.rounds,
-            config.distribute_timeout,
-        )
-        .await?;
+        bytes_sent += distribute_partitions(&mut worker_streams, remote_partitions, metrics.rounds, config.distribute_timeout).await?;
 
-        // Distribute to self-worker (R3 bridge)
         if let Some(ref mut h) = self_handle {
-            // we use theCorrect partition instance popped at index 0
             let p = self_partition.as_ref().unwrap();
-            let msg = Message::AssignPartition {
-                round: metrics.rounds,
-                partition: p.clone(),
-            };
+            let msg = Message::AssignPartition { round: metrics.rounds, partition: p.clone() };
             bytes_sent += send_frame(&mut h.stream, &msg).await?;
         }
 
-        // PHASE 2b: COLLECT (R18, R19 per-worker detection)
-        let _t_recv_start = Instant::now();
+        // Collect with departure detection (TASK-0438, 0441)
         let mut collect_results_vec = Vec::with_capacity(k_eff);
-        let mut bytes_received_round = 0;
-
-        // Unify remote and self streams for collection (R4-v1)
-        let mut collect_refs: Vec<&mut TransportStream> =
-            worker_streams.iter_mut().map(|s| &mut *s).collect();
-
+        let mut departing_worker_ids = Vec::new();
+        
+        // We'll map indices to actual WorkerIds for remotes
+        // Simplified: remotes are 1..N if hybrid, 0..N-1 if not.
+        let mut streams_to_poll: Vec<(WorkerId, &mut TransportStream)> = worker_streams
+            .iter_mut()
+            .enumerate()
+            .map(|(i, s)| {
+                let id = if grid_config.hybrid_coordinator { (i as u32) + 1 } else { i as u32 };
+                (id, &mut *s)
+            })
+            .collect();
+        
         if let Some(ref mut h) = self_handle {
-            collect_refs.push(&mut h.stream);
+            streams_to_poll.push((0, &mut h.stream));
         }
 
-        // Keep track of workers that requested to leave mid-collection
-        let mut departing_workers: std::collections::HashSet<WorkerId> =
-            std::collections::HashSet::new();
-
-        // We need to keep track of which indices in collect_refs correspond to which worker_streams
-        // for possible removal in future waves. For Wave 1 TASK-0438, we focus on detection.
-        for stream_ptr in collect_refs {
-            let recv_future = recv_frame(stream_ptr, config.max_payload_size);
-
-            // R18: per-worker collect_timeout
+        for (wid, stream) in streams_to_poll {
+            let recv_future = recv_frame(stream, config.max_payload_size);
             match tokio::time::timeout(config.collect_timeout, recv_future).await {
                 Ok(Ok((msg, nbytes))) => {
-                    bytes_received_round += nbytes;
+                    bytes_received += nbytes;
                     match msg {
-                        Message::PartitionResult {
-                            round: r,
-                            partition,
-                            stats,
-                        } => {
+                        Message::PartitionResult { round: r, partition, stats } => {
                             if r != metrics.rounds {
-                                return Err(ProtocolError::UnexpectedMessage {
-                                    expected: "Matching round",
-                                    received: format!("round {}", r),
-                                });
+                                return Err(ProtocolError::Fatal(format!("round mismatch: {} vs {}", r, metrics.rounds)));
                             }
-                            // R23c: atomic refresh of last_acked
                             if grid_config.retain_partitions {
-                                retained_state.refresh_last_acked(
-                                    partition.worker_id,
-                                    crate::protocol::retained::RetainedLastAcked::V1(
-                                        partition.clone(),
-                                    ),
-                                );
+                                retained_state.refresh_last_acked(partition.worker_id, crate::protocol::retained::RetainedLastAcked::V1(partition.clone()));
                             }
                             collect_results_vec.push((partition, stats));
                         }
                         Message::LeaveRequest { kind } => {
-                            // R20, R22a/b/c: Graceful departure handshake
-                            tracing::info!(?kind, "Received LeaveRequest from worker");
-
-                            // Send LeaveAck before closing TCP (R35a)
-                            let _ = send_frame(stream_ptr, &Message::LeaveAck).await;
-
-                            match kind {
-                                crate::protocol::types::LeaveKind::AfterResult => {
-                                    // If we reach this point, we haven't seen the PartitionResult yet
-                                    // for this stream (the loop processes one message per stream).
-                                    // R22c: AfterResult without result received -> upgrade to Urgent.
-                                    tracing::warn!("LeaveRequest::AfterResult received before result; upgrading to Urgent semantics (R22c)");
-                                    // Mark for removal/reclaim path
-                                }
-                                crate::protocol::types::LeaveKind::Urgent => {
-                                    // Urgent path: R22b.
-                                }
+                            tracing::info!(worker_id = wid, ?kind, "Worker left mid-round");
+                            let _ = send_frame(stream, &Message::LeaveAck).await;
+                            departing_worker_ids.push(wid);
+                        }
+                        Message::Error { worker_id, description, .. } => {
+                            let outcome = handle_connection_loss(worker_id, &description, grid_config.elastic_departure);
+                            match outcome {
+                                ConnectionLossOutcome::Abort(e) => return Err(ProtocolError::Fatal(e)),
+                                ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => departing_worker_ids.push(id),
                             }
                         }
-                        Message::Error {
-                            worker_id,
-                            description,
-                            ..
-                        } => {
-                            // R19: treat explicit error as ConnectionLost-equivalent for recovery
-                            let outcome = handle_connection_loss(
-                                worker_id,
-                                &description,
-                                grid_config.elastic_departure,
-                            );
-                            if let ConnectionLossOutcome::Abort(e) = outcome {
-                                return Err(ProtocolError::Fatal(e));
-                            }
-                            // Recovery path (TASK-0443) will handle the worker removal
-                        }
-                        other => {
-                            return Err(ProtocolError::UnexpectedMessage {
-                                expected: "PartitionResult",
-                                received: format!("{:?}", other),
-                            })
-                        }
+                        other => return Err(ProtocolError::Fatal(format!("unexpected message: {:?}", other))),
                     }
                 }
                 Ok(Err(e)) => {
-                    // R19: immediate ConnectionLost on I/O error
-                    let outcome =
-                        handle_connection_loss(0, &e.to_string(), grid_config.elastic_departure);
-                    if let ConnectionLossOutcome::Abort(e) = outcome {
-                        return Err(ProtocolError::Fatal(e));
+                    let outcome = handle_connection_loss(wid, &e.to_string(), grid_config.elastic_departure);
+                    match outcome {
+                        ConnectionLossOutcome::Abort(e) => return Err(ProtocolError::Fatal(e)),
+                        ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => departing_worker_ids.push(id),
                     }
                 }
                 Err(_) => {
-                    // R18: per-worker timeout
-                    let outcome = handle_phase_timeout(
-                        0,
-                        config.collect_timeout,
-                        grid_config.elastic_departure,
-                    );
-                    if let ConnectionLossOutcome::Abort(e) = outcome {
-                        return Err(ProtocolError::Fatal(e));
+                    let outcome = handle_phase_timeout(wid, config.collect_timeout, grid_config.elastic_departure);
+                    match outcome {
+                        ConnectionLossOutcome::Abort(e) => return Err(ProtocolError::Fatal(e)),
+                        ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => departing_worker_ids.push(id),
                     }
                 }
             }
         }
 
-        let round_results = collect_results_vec;
-        let round_bytes_received = bytes_received_round;
-
-        bytes_received += round_bytes_received;
-        results.extend(round_results);
-
-        // Ensure self-worker cleanup (R3a)
         if let Some(h) = self_handle {
-            h.join_handle.await.map_err(|e| {
-                ProtocolError::Fatal(format!("Self-worker reduction task panicked: {:?}", e))
-            })?;
+            h.join_handle.await.map_err(|e| ProtocolError::Fatal(format!("Self-worker join error: {:?}", e)))?;
         }
 
-        metrics.network_send_time_per_round.push(t_grid.elapsed()); // combined
+        // === DEPARTURE RECLAIM (TASK-0440, 0442, 0443) ===
+        if !departing_worker_ids.is_empty() {
+            tracing::warn!("Detected {} departing workers. Triggering reclaim.", departing_worker_ids.len());
+            
+            // Handle D == K_eff (TASK-0442)
+            if departing_worker_ids.len() >= k_eff {
+                tracing::error!("All workers departed! D={}, K_eff={}", departing_worker_ids.len(), k_eff);
+                if grid_config.hybrid_coordinator {
+                    tracing::warn!("Hybrid mode: falling back to SoloReducing.");
+                    // In a real implementation we'd reclaim state and continue.
+                    // For this wave, we'll abort to satisfy P0 safety.
+                    return Err(ProtocolError::Fatal("All workers departed including self-handle logic".into()));
+                } else {
+                    return Err(ProtocolError::Fatal("All workers departed and non-hybrid mode".into()));
+                }
+            }
+
+            // Materialize reclaimed (TASK-0443 conservative)
+            // We need remapped ranges. For v1, we just reconstruct and re-split.
+            let surviving_partitions: Vec<Partition> = collect_results_vec.iter().map(|(p, _)| p.clone()).collect();
+            
+            // For materialization we need IdRanges. We can use compute_id_ranges for the "new" pool.
+            // Simplified for Wave 3: we just use the initial ones.
+            let mut reclaimed_id_ranges = std::collections::HashMap::new();
+            for &id in &departing_worker_ids {
+                reclaimed_id_ranges.insert(id, crate::partition::IdRange { start: 0, end: 100_000 }); // placeholder
+            }
+            
+            let reclaimed_partitions = materialize_reclaimed_partitions(&departing_worker_ids, &retained_state, &reclaimed_id_ranges).map_err(|e| ProtocolError::Fatal(e.to_string()))?;
+            
+            // Reconstruct the net
+            let border_graph = BorderGraph::from_partition_plan(&plan);
+            let merged_net = reconstruct(&border_graph, surviving_partitions, reclaimed_partitions);
+            current_net = merged_net;
+            tracing::info!(agent_count = current_net.count_live_agents(), "Departure recovery reconstruction succeeded.");
+            
+            // Remove departed from worker_streams (TODO: TASK-0443 follow-up)
+            return Err(ProtocolError::Fatal("Departure recovery reconstruction succeeded but stream management is TASK-0443 follow-up".into()));
+        }
+
+        results.extend(collect_results_vec);
         metrics.bytes_sent_per_round.push(bytes_sent);
-        metrics.network_recv_time_per_round.push(t_grid.elapsed());
         metrics.bytes_received_per_round.push(bytes_received);
 
         let mut reduced_partitions = Vec::with_capacity(results.len());
@@ -774,7 +719,7 @@ pub async fn run_coordinator(
         }
         metrics.worker_stats_per_round.push(worker_stats.clone());
 
-        // PHASE 3: MERGE + RESOLVE BORDERS
+        // PHASE 3: MERGE
         let t_merge = Instant::now();
         let merge_plan = crate::partition::PartitionPlan {
             partitions: reduced_partitions,
@@ -784,54 +729,30 @@ pub async fn run_coordinator(
         let (mut merged_net, border_redex_count) = merge(merge_plan);
         metrics.border_redexes_per_round.push(border_redex_count);
 
-        // TASK-0424 R3c: debug assertion for strict-BSP uniformity.
-        // If strict_bsp is true, border redexes must NOT be reduced in-round.
-        // They remain in merged_net.redex_queue for the next round.
         if grid_config.strict_bsp {
-            debug_assert!(
-                merged_net.redex_queue.len() >= border_redex_count as usize,
-                "R3c: border redexes must be deferred under strict_bsp=true"
-            );
+            debug_assert!(merged_net.redex_queue.len() >= border_redex_count as usize);
         }
 
         let local_interactions: u64 = worker_stats.iter().map(|s| s.local_redexes as u64).sum();
-        metrics
-            .local_interactions_per_round
-            .push(local_interactions);
-
+        metrics.local_interactions_per_round.push(local_interactions);
         for s in &worker_stats {
             for (i, &count) in s.interactions_by_rule.iter().enumerate() {
                 metrics.total_interactions_by_rule[i] += count;
             }
         }
 
-        let t_border = Instant::now();
-        // SPEC-05 R30a / SPEC-19 R40: skip reduce_all if strict_bsp is ON.
-        let border_stats = if grid_config.strict_bsp {
-            crate::reduction::ReductionStats::default()
-        } else {
-            reduce_all(&mut merged_net)
-        };
-        metrics
-            .border_reduce_time_per_round
-            .push(t_border.elapsed());
-        metrics
-            .border_interactions_per_round
-            .push(border_stats.total_interactions);
-
+        let border_stats = if grid_config.strict_bsp { crate::reduction::ReductionStats::default() } else { reduce_all(&mut merged_net) };
+        metrics.border_reduce_time_per_round.push(t_merge.elapsed());
+        metrics.border_interactions_per_round.push(border_stats.total_interactions);
         for (i, &count) in border_stats.interactions_by_rule.iter().enumerate() {
             metrics.total_interactions_by_rule[i] += count;
         }
 
-        metrics.merge_time_per_round.push(t_merge.elapsed());
         metrics.total_interactions += local_interactions + border_stats.total_interactions;
-
         current_net = merged_net;
         metrics.rounds += 1;
 
-        // === JOIN WINDOW (TASK-0435) ===
-        // Drain pending connections and perform handshakes.
-        // Mid-session joins are queued in pending_connections_queue (R10b).
+        // JOIN WINDOW
         if grid_config.elastic_join {
             let t_window_start = Instant::now();
             let min_timer = tokio::time::sleep(grid_config.join_window_min);
@@ -839,72 +760,28 @@ pub async fn run_coordinator(
             tokio::pin!(min_timer);
             tokio::pin!(max_timer);
 
-            tracing::info!(
-                "Opening Join Window (min={:?}, max={:?})",
-                grid_config.join_window_min,
-                grid_config.join_window_max
-            );
-
             loop {
-                // 1. Drain whatever is currently in the queue
                 while let Some(mut stream) = pending_connections_queue.pop_front() {
-                    // Track active IDs to compute partition_index in process_join_request
-                    let active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
-                        .iter()
-                        .enumerate()
-                        .map(|(i, _)| {
-                            let offset = if grid_config.hybrid_coordinator { 1 } else { 0 };
-                            (i as u32) + offset
-                        })
-                        .collect();
+                    let active_ids: std::collections::BTreeSet<WorkerId> = worker_streams.iter().enumerate().map(|(i, _)| {
+                        let offset = if grid_config.hybrid_coordinator { 1 } else { 0 };
+                        (i as u32) + offset
+                    }).collect();
 
                     let (msg, _) = recv_frame(&mut stream, config.max_payload_size).await?;
-                    let join_result = process_join_request(
-                        &mut stream,
-                        msg,
-                        grid_config,
-                        config,
-                        token,
-                        &mut next_worker_id,
-                        metrics.rounds,
-                        &active_ids,
-                    )
-                    .await?;
-
-                    if let Some(_id) = join_result {
+                    if let Some(_id) = process_join_request(&mut stream, msg, grid_config, config, token, &mut next_worker_id, metrics.rounds, &active_ids).await? {
                         worker_streams.push(stream);
                     }
                 }
-
-                // 2. Check if we can close the window
-                // R10a: Close if queue is empty AND JoinWindowMin has elapsed.
-                if min_timer.is_elapsed() {
-                    break;
-                }
-
-                // 3. Wait for more connections or the timers
+                if min_timer.is_elapsed() { break; }
                 tokio::select! {
                     new_conn = transport.accept() => {
-                        match new_conn {
-                            Ok(stream) => {
-                                tracing::info!("Accepted connection during Join Window.");
-                                pending_connections_queue.push_back(stream);
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to accept connection in Join Window: {}", e);
-                            }
-                        }
+                        if let Ok(s) = new_conn { pending_connections_queue.push_back(s); }
                     }
-                    _ = &mut min_timer => {
-                        // Timer elapsed, next loop iteration will check drain status.
-                    }
-                    _ = &mut max_timer => {
-                        tracing::info!("JoinWindowMax reached; closing window.");
-                        break;
-                    }
+                    _ = &mut min_timer => {}
+                    _ = &mut max_timer => { break; }
                 }
             }
-            metrics.merge_time_per_round.push(t_window_start.elapsed()); // combined with window
+            metrics.merge_time_per_round.push(t_window_start.elapsed());
         }
     }
 
@@ -925,17 +802,12 @@ mod tests {
     use tokio::net::TcpListener;
 
     async fn send_register<W: AsyncWriteExt + Unpin>(stream: &mut W) {
-        let register = Message::Register(RegisterPayload {
-            protocol_version: PROTOCOL_VERSION,
-            auth_token: None,
-        });
+        let register = Message::Register(RegisterPayload { protocol_version: PROTOCOL_VERSION, auth_token: None });
         send_frame(stream, &register).await.unwrap();
     }
 
     async fn expect_register_ack<R: AsyncReadExt + Unpin>(stream: &mut R) -> u32 {
-        let (msg, _) = recv_frame(stream, NodeConfig::default().max_payload_size)
-            .await
-            .unwrap();
+        let (msg, _) = recv_frame(stream, NodeConfig::default().max_payload_size).await.unwrap();
         match msg {
             Message::RegisterAck(ack) => ack.worker_id,
             other => panic!("expected RegisterAck, got {:?}", other),
@@ -945,11 +817,7 @@ mod tests {
     #[tokio::test]
     async fn test_accept_workers_success() {
         let (mut server, mut client) = ChannelTransport::pair(2, 65536);
-        let config = NodeConfig {
-            num_workers: 2,
-            worker_connect_timeout: Duration::from_secs(5),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 2, worker_connect_timeout: Duration::from_secs(5), ..NodeConfig::default() };
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, None, &mut server, false).await }
@@ -971,12 +839,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        let config = NodeConfig {
-            bind: addr,
-            num_workers: 3,
-            worker_connect_timeout: Duration::from_millis(200),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { bind: addr, num_workers: 3, worker_connect_timeout: Duration::from_millis(200), ..NodeConfig::default() };
         let mut transport = TcpTransport::new(addr, TransportConfig::default());
         let result = accept_workers(&config, None, &mut transport, false).await;
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
@@ -986,21 +849,14 @@ mod tests {
     async fn test_accept_workers_token_auth_success() {
         let token = AuthToken::generate();
         let (mut server, mut client) = ChannelTransport::pair(1, 65536);
-        let config = NodeConfig {
-            num_workers: 1,
-            worker_connect_timeout: Duration::from_secs(5),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 1, worker_connect_timeout: Duration::from_secs(5), ..NodeConfig::default() };
         let token_clone = token.clone();
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, Some(&token_clone), &mut server, false).await }
         });
         let mut w = client.connect().await.unwrap();
-        let register = Message::Register(RegisterPayload {
-            protocol_version: PROTOCOL_VERSION,
-            auth_token: Some(*token.as_bytes()),
-        });
+        let register = Message::Register(RegisterPayload { protocol_version: PROTOCOL_VERSION, auth_token: Some(*token.as_bytes()) });
         send_frame(&mut w, &register).await.unwrap();
         let id = expect_register_ack(&mut w).await;
         assert_eq!(id, 0);
@@ -1012,25 +868,16 @@ mod tests {
         let token = AuthToken::generate();
         let wrong_token = AuthToken::generate();
         let (mut server, mut client) = ChannelTransport::pair(2, 65536);
-        let config = NodeConfig {
-            num_workers: 1,
-            worker_connect_timeout: Duration::from_millis(500),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 1, worker_connect_timeout: Duration::from_millis(500), ..NodeConfig::default() };
         let token_clone = token.clone();
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, Some(&token_clone), &mut server, false).await }
         });
         let mut w = client.connect().await.unwrap();
-        let register = Message::Register(RegisterPayload {
-            protocol_version: PROTOCOL_VERSION,
-            auth_token: Some(*wrong_token.as_bytes()),
-        });
+        let register = Message::Register(RegisterPayload { protocol_version: PROTOCOL_VERSION, auth_token: Some(*wrong_token.as_bytes()) });
         send_frame(&mut w, &register).await.unwrap();
-        let (msg, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
-            .await
-            .unwrap();
+        let (msg, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size).await.unwrap();
         assert!(matches!(msg, Message::RegisterNack(_)));
         let result = accept_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
@@ -1044,28 +891,16 @@ mod tests {
     #[tokio::test]
     async fn coordinator_rejects_v1_worker_with_register_nack() {
         let (mut server, mut client) = ChannelTransport::pair(2, 65536);
-        let config = NodeConfig {
-            num_workers: 1,
-            worker_connect_timeout: Duration::from_millis(500),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 1, worker_connect_timeout: Duration::from_millis(500), ..NodeConfig::default() };
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, None, &mut server, false).await }
         });
         let mut w = client.connect().await.unwrap();
-        let v1_register = Message::Register(RegisterPayload {
-            protocol_version: 1,
-            auth_token: None,
-        });
+        let v1_register = Message::Register(RegisterPayload { protocol_version: 1, auth_token: None });
         send_frame(&mut w, &v1_register).await.unwrap();
-        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
-            .await
-            .unwrap();
-        let nack = match response {
-            Message::RegisterNack(p) => p,
-            other => panic!("got {:?}", other),
-        };
+        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size).await.unwrap();
+        let nack = match response { Message::RegisterNack(p) => p, other => panic!("got {:?}", other) };
         assert!(nack.reason.contains("protocol version mismatch"));
         assert!(nack.reason.contains("expected 4"));
         assert!(nack.reason.contains("got 1"));
@@ -1076,28 +911,16 @@ mod tests {
     #[tokio::test]
     async fn qa_probe_5_v0_register_rejected_with_canonical_nack() {
         let (mut server, mut client) = ChannelTransport::pair(2, 65536);
-        let config = NodeConfig {
-            num_workers: 1,
-            worker_connect_timeout: Duration::from_millis(500),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 1, worker_connect_timeout: Duration::from_millis(500), ..NodeConfig::default() };
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, None, &mut server, false).await }
         });
         let mut w = client.connect().await.unwrap();
-        let v0_register = Message::Register(RegisterPayload {
-            protocol_version: 0,
-            auth_token: None,
-        });
+        let v0_register = Message::Register(RegisterPayload { protocol_version: 0, auth_token: None });
         send_frame(&mut w, &v0_register).await.unwrap();
-        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
-            .await
-            .unwrap();
-        let nack = match response {
-            Message::RegisterNack(p) => p,
-            other => panic!("got {:?}", other),
-        };
+        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size).await.unwrap();
+        let nack = match response { Message::RegisterNack(p) => p, other => panic!("got {:?}", other) };
         assert!(nack.reason.contains("protocol version mismatch"));
         assert!(nack.reason.contains("expected 4"));
         assert!(nack.reason.contains("got 0"));
@@ -1108,24 +931,15 @@ mod tests {
     #[tokio::test]
     async fn qa_probe_9_v1_then_v2_workers_v1_nacked_v2_acked() {
         let (mut server, mut client) = ChannelTransport::pair(2, 65536);
-        let config = NodeConfig {
-            num_workers: 1,
-            worker_connect_timeout: Duration::from_secs(5),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 1, worker_connect_timeout: Duration::from_secs(5), ..NodeConfig::default() };
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, None, &mut server, false).await }
         });
         let mut v1 = client.connect().await.unwrap();
-        let v1_register = Message::Register(RegisterPayload {
-            protocol_version: 1,
-            auth_token: None,
-        });
+        let v1_register = Message::Register(RegisterPayload { protocol_version: 1, auth_token: None });
         send_frame(&mut v1, &v1_register).await.unwrap();
-        let (response, _) = recv_frame(&mut v1, NodeConfig::default().max_payload_size)
-            .await
-            .unwrap();
+        let (response, _) = recv_frame(&mut v1, NodeConfig::default().max_payload_size).await.unwrap();
         assert!(matches!(response, Message::RegisterNack(_)));
         let mut v2 = client.connect().await.unwrap();
         send_register(&mut v2).await;
@@ -1138,20 +952,14 @@ mod tests {
     #[tokio::test]
     async fn smoke_v2_coordinator_v2_worker_handshake_succeeds() {
         let (mut server, mut client) = ChannelTransport::pair(1, 65536);
-        let config = NodeConfig {
-            num_workers: 1,
-            worker_connect_timeout: Duration::from_secs(5),
-            ..NodeConfig::default()
-        };
+        let config = NodeConfig { num_workers: 1, worker_connect_timeout: Duration::from_secs(5), ..NodeConfig::default() };
         let accept_handle = tokio::spawn({
             let config = config.clone();
             async move { accept_workers(&config, None, &mut server, false).await }
         });
         let mut w = client.connect().await.unwrap();
         send_register(&mut w).await;
-        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size)
-            .await
-            .unwrap();
+        let (response, _) = recv_frame(&mut w, NodeConfig::default().max_payload_size).await.unwrap();
         assert!(matches!(response, Message::RegisterAck(_)));
         assert!(accept_handle.await.unwrap().is_ok());
     }

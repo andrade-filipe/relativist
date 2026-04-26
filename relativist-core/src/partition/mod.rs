@@ -8,6 +8,7 @@
 //! - A4 (R19a): `remap_partition_ids` — renumbers reclaimed partitions for re-split.
 
 pub mod compact;
+pub mod departure_recovery;
 pub mod helpers;
 pub mod remap;
 pub mod split;
@@ -16,6 +17,7 @@ pub mod types;
 
 // Re-exports: convenience access via `crate::partition::*`
 pub use compact::CompactSubnet;
+pub use departure_recovery::materialize_reclaimed_partitions;
 pub use helpers::{classify_wires, compute_id_ranges, max_freeport_id, WireClassification};
 pub use remap::remap_partition_ids;
 pub use split::split;
