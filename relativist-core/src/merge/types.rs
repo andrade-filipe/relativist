@@ -103,6 +103,36 @@ pub struct GridMetrics {
     /// reaching Global Normal Form. `None` in v1 mode or when
     /// convergence was reached naturally.
     pub delta_max_rounds_hit: Option<bool>,
+
+    // --- Elastic grid metrics (SPEC-20 R38, R38a; TASK-0450) ---
+    //
+    // R38a Audit (SC-019/NF-004): Non-collision with SPEC-19 R45 fields.
+    // SPEC-19 Prefixes: bytes_, network_, compute_, agents_, partition_, ...
+    // SPEC-20 Prefixes: workers_, effective_, partitions_, retained_, join_round_
+    //
+    // All SPEC-20 telemetry fields are strictly prefix-disjoint from SPEC-19
+    // ensuring clean additive serialization for CSV/JSON consumers.
+
+    /// Count of workers that successfully joined in each round's join window.
+    pub workers_joined_per_round: Vec<u32>,
+
+    /// Count of workers that departed (detected or graceful) in each round.
+    pub workers_departed_per_round: Vec<u32>,
+
+    /// Effective slot count (K_eff) at the start of each round's partitioning.
+    pub effective_slots_per_round: Vec<u32>,
+
+    /// Number of partitions that had to be redispatched due to mid-round departure.
+    pub partitions_redispatched_per_round: Vec<u32>,
+
+    /// Count of partitions materialized from retained_initial (conservative path).
+    pub retained_initial_reclaims_per_round: Vec<u32>,
+
+    /// Count of partitions materialized from retained_last_acked (optimized path).
+    pub retained_last_acked_reclaims_per_round: Vec<u32>,
+
+    /// Cumulative time spent in rejoin round-trip handshakes (milliseconds).
+    pub join_round_overhead_ms_per_round: Vec<u64>,
 }
 
 impl GridMetrics {

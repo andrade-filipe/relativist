@@ -103,6 +103,7 @@ pub const PROTOCOL_VERSION: u8 = 4;
 /// and assigns a `WorkerId` and `partition_index`.
 ///
 /// R17: logs assignment at INFO level.
+#[allow(clippy::too_many_arguments)]
 pub async fn process_join_request(
     stream: &mut TransportStream,
     msg: Message,
@@ -551,6 +552,9 @@ pub async fn run_coordinator(
         let t_partition = Instant::now();
         let remote_count = worker_streams.len();
         let k_eff = remote_count + if grid_config.hybrid_coordinator { 1 } else { 0 };
+        
+        // R38: track effective slot count
+        metrics.effective_slots_per_round.push(k_eff as u32);
 
         let plan = split(current_net, k_eff as u32, strategy);
         metrics.partition_time_per_round.push(t_partition.elapsed());
@@ -578,40 +582,59 @@ pub async fn run_coordinator(
         // TASK-0439: state retention
         if grid_config.retain_partitions {
             if let Some(ref p) = self_partition {
-                if !retained_state.initial.contains_key(&0) {
-                    retained_state.initial.insert(0, crate::protocol::retained::RetainedInitial::V1(p.clone()));
-                }
+                retained_state
+                    .initial
+                    .entry(0)
+                    .or_insert_with(|| crate::protocol::retained::RetainedInitial::V1(p.clone()));
             }
             for p in &remote_partitions {
-                if !retained_state.initial.contains_key(&p.worker_id) {
-                    retained_state.initial.insert(p.worker_id, crate::protocol::retained::RetainedInitial::V1(p.clone()));
-                }
+                retained_state
+                    .initial
+                    .entry(p.worker_id)
+                    .or_insert_with(|| crate::protocol::retained::RetainedInitial::V1(p.clone()));
             }
         }
 
-        bytes_sent += distribute_partitions(&mut worker_streams, remote_partitions, metrics.rounds, config.distribute_timeout).await?;
+        bytes_sent += distribute_partitions(
+            &mut worker_streams,
+            remote_partitions,
+            metrics.rounds,
+            config.distribute_timeout,
+        )
+        .await?;
 
         if let Some(ref mut h) = self_handle {
             let p = self_partition.as_ref().unwrap();
-            let msg = Message::AssignPartition { round: metrics.rounds, partition: p.clone() };
+            let msg = Message::AssignPartition {
+                round: metrics.rounds,
+                partition: p.clone(),
+            };
             bytes_sent += send_frame(&mut h.stream, &msg).await?;
         }
 
         // Collect with departure detection (TASK-0438, 0441)
         let mut collect_results_vec = Vec::with_capacity(k_eff);
         let mut departing_worker_ids = Vec::new();
-        
+        let mut _round_reclaimed_initial = 0;
+        let round_reclaimed_last_acked = 0;
+        let mut round_departed_count = 0;
+
+
         // We'll map indices to actual WorkerIds for remotes
         // Simplified: remotes are 1..N if hybrid, 0..N-1 if not.
         let mut streams_to_poll: Vec<(WorkerId, &mut TransportStream)> = worker_streams
             .iter_mut()
             .enumerate()
             .map(|(i, s)| {
-                let id = if grid_config.hybrid_coordinator { (i as u32) + 1 } else { i as u32 };
+                let id = if grid_config.hybrid_coordinator {
+                    (i as u32) + 1
+                } else {
+                    i as u32
+                };
                 (id, &mut *s)
             })
             .collect();
-        
+
         if let Some(ref mut h) = self_handle {
             streams_to_poll.push((0, &mut h.stream));
         }
@@ -622,42 +645,110 @@ pub async fn run_coordinator(
                 Ok(Ok((msg, nbytes))) => {
                     bytes_received += nbytes;
                     match msg {
-                        Message::PartitionResult { round: r, partition, stats } => {
+                        Message::PartitionResult {
+                            round: r,
+                            partition,
+                            stats,
+                        } => {
                             if r != metrics.rounds {
-                                return Err(ProtocolError::Fatal(format!("round mismatch: {} vs {}", r, metrics.rounds)));
+                                return Err(ProtocolError::Fatal(format!(
+                                    "round mismatch: {} vs {}",
+                                    r, metrics.rounds
+                                )));
                             }
                             if grid_config.retain_partitions {
-                                retained_state.refresh_last_acked(partition.worker_id, crate::protocol::retained::RetainedLastAcked::V1(partition.clone()));
+                                retained_state.refresh_last_acked(
+                                    partition.worker_id,
+                                    crate::protocol::retained::RetainedLastAcked::V1(
+                                        partition.clone(),
+                                    ),
+                                );
                             }
                             collect_results_vec.push((partition, stats));
                         }
                         Message::LeaveRequest { kind } => {
-                            tracing::info!(worker_id = wid, ?kind, "Worker left mid-round");
+                            // R28: WARN log on departure
+                            tracing::warn!(
+                                worker_id = wid,
+                                round = metrics.rounds,
+                                ?kind,
+                                "Worker left gracefully via LeaveRequest (R28)"
+                            );
                             let _ = send_frame(stream, &Message::LeaveAck).await;
                             departing_worker_ids.push(wid);
+                            round_departed_count += 1;
                         }
-                        Message::Error { worker_id, description, .. } => {
-                            let outcome = handle_connection_loss(worker_id, &description, grid_config.elastic_departure);
+                        Message::Error {
+                            worker_id,
+                            description,
+                            ..
+                        } => {
+                            let outcome = handle_connection_loss(
+                                worker_id,
+                                &description,
+                                grid_config.elastic_departure,
+                            );
                             match outcome {
-                                ConnectionLossOutcome::Abort(e) => return Err(ProtocolError::Fatal(e)),
-                                ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => departing_worker_ids.push(id),
+                                ConnectionLossOutcome::Abort(e) => {
+                                    return Err(ProtocolError::Fatal(e))
+                                }
+                                ConnectionLossOutcome::RecoveryTriggered {
+                                    worker_id: id, ..
+                                } => {
+                                    // R28: WARN log
+                                    tracing::warn!(
+                                        worker_id = id,
+                                        round = metrics.rounds,
+                                        error = description,
+                                        "Worker departed due to error; triggering recovery (R28)"
+                                    );
+                                    departing_worker_ids.push(id);
+                                    round_departed_count += 1;
+                                }
                             }
                         }
-                        other => return Err(ProtocolError::Fatal(format!("unexpected message: {:?}", other))),
+                        other => {
+                            return Err(ProtocolError::Fatal(format!(
+                                "unexpected message: {:?}",
+                                other
+                            )))
+                        }
                     }
                 }
                 Ok(Err(e)) => {
-                    let outcome = handle_connection_loss(wid, &e.to_string(), grid_config.elastic_departure);
+                    let outcome =
+                        handle_connection_loss(wid, &e.to_string(), grid_config.elastic_departure);
                     match outcome {
                         ConnectionLossOutcome::Abort(e) => return Err(ProtocolError::Fatal(e)),
-                        ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => departing_worker_ids.push(id),
+                        ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => {
+                            tracing::warn!(
+                                worker_id = id,
+                                round = metrics.rounds,
+                                error = e.to_string(),
+                                "Worker connection lost; triggering recovery (R28)"
+                            );
+                            departing_worker_ids.push(id);
+                            round_departed_count += 1;
+                        }
                     }
                 }
                 Err(_) => {
-                    let outcome = handle_phase_timeout(wid, config.collect_timeout, grid_config.elastic_departure);
+                    let outcome = handle_phase_timeout(
+                        wid,
+                        config.collect_timeout,
+                        grid_config.elastic_departure,
+                    );
                     match outcome {
                         ConnectionLossOutcome::Abort(e) => return Err(ProtocolError::Fatal(e)),
-                        ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => departing_worker_ids.push(id),
+                        ConnectionLossOutcome::RecoveryTriggered { worker_id: id, .. } => {
+                            tracing::warn!(
+                                worker_id = id,
+                                round = metrics.rounds,
+                                "Worker timed out; triggering recovery (R28)"
+                            );
+                            departing_worker_ids.push(id);
+                            round_departed_count += 1;
+                        }
                     }
                 }
             }
@@ -703,9 +794,18 @@ pub async fn run_coordinator(
             current_net = merged_net;
             tracing::info!(agent_count = current_net.count_live_agents(), "Departure recovery reconstruction succeeded.");
             
+            _round_reclaimed_initial += departing_worker_ids.len() as u32;
+
             // Remove departed from worker_streams (TODO: TASK-0443 follow-up)
             return Err(ProtocolError::Fatal("Departure recovery reconstruction succeeded but stream management is TASK-0443 follow-up".into()));
         }
+
+        // R38: record round-level departure/reclaim metrics
+        metrics.workers_departed_per_round.push(round_departed_count);
+        metrics.retained_initial_reclaims_per_round.push(_round_reclaimed_initial);
+        metrics.retained_last_acked_reclaims_per_round.push(round_reclaimed_last_acked);
+        metrics.partitions_redispatched_per_round.push(0); // placeholder
+        metrics.join_round_overhead_ms_per_round.push(0); // placeholder
 
         results.extend(collect_results_vec);
         metrics.bytes_sent_per_round.push(bytes_sent);
@@ -753,6 +853,7 @@ pub async fn run_coordinator(
         metrics.rounds += 1;
 
         // JOIN WINDOW
+        let mut round_joined_count = 0;
         if grid_config.elastic_join {
             let t_window_start = Instant::now();
             let min_timer = tokio::time::sleep(grid_config.join_window_min);
@@ -768,8 +869,18 @@ pub async fn run_coordinator(
                     }).collect();
 
                     let (msg, _) = recv_frame(&mut stream, config.max_payload_size).await?;
-                    if let Some(_id) = process_join_request(&mut stream, msg, grid_config, config, token, &mut next_worker_id, metrics.rounds, &active_ids).await? {
+                    if let Some(worker_id) = process_join_request(&mut stream, msg, grid_config, config, token, &mut next_worker_id, metrics.rounds, &active_ids).await? {
                         worker_streams.push(stream);
+                        round_joined_count += 1;
+
+                        // R17: INFO log on join
+                        let k_eff_new = worker_streams.len() + if grid_config.hybrid_coordinator { 1 } else { 0 };
+                        tracing::info!(
+                            worker_id,
+                            k_eff_new,
+                            round = metrics.rounds,
+                            "Worker joined the grid (R17)"
+                        );
                     }
                 }
                 if min_timer.is_elapsed() { break; }
@@ -783,6 +894,7 @@ pub async fn run_coordinator(
             }
             metrics.merge_time_per_round.push(t_window_start.elapsed());
         }
+        metrics.workers_joined_per_round.push(round_joined_count);
     }
 
     shutdown_workers(&mut worker_streams).await;
