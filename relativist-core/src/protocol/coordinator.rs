@@ -712,45 +712,76 @@ pub async fn run_coordinator(
         // === JOIN WINDOW (TASK-0435) ===
         // Drain pending connections and perform handshakes.
         // Mid-session joins are queued in pending_connections_queue (R10b).
-        if grid_config.elastic_join && !pending_connections_queue.is_empty() {
-            tracing::info!(
-                "Opening Join Window: {} connections pending.",
-                pending_connections_queue.len()
-            );
+        if grid_config.elastic_join {
+            let t_window_start = Instant::now();
+            let mut min_timer = tokio::time::sleep(grid_config.join_window_min);
+            let mut max_timer = tokio::time::sleep(grid_config.join_window_max);
+            tokio::pin!(min_timer);
+            tokio::pin!(max_timer);
 
-            // Track active IDs to compute partition_index in process_join_request
-            let mut active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
-                    // This is a simplification for v1: we assume IDs are 1..N (if hybrid) or 0..N-1
-                    let offset = if grid_config.hybrid_coordinator { 1 } else { 0 };
-                    (i as u32) + offset
-                })
-                .collect();
+            tracing::info!("Opening Join Window (min={:?}, max={:?})", 
+                grid_config.join_window_min, grid_config.join_window_max);
 
-            while let Some(mut stream) = pending_connections_queue.pop_front() {
-                // Read the first message (could be Register or JoinRequest)
-                // mid-session connections SHOULD send JoinRequest (R9).
-                let (msg, _) = recv_frame(&mut stream, config.max_payload_size).await?;
+            loop {
+                // 1. Drain whatever is currently in the queue
+                while let Some(mut stream) = pending_connections_queue.pop_front() {
+                    // Track active IDs to compute partition_index in process_join_request
+                    let mut active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| {
+                            let offset = if grid_config.hybrid_coordinator { 1 } else { 0 };
+                            (i as u32) + offset
+                        })
+                        .collect();
 
-                let join_result = process_join_request(
-                    &mut stream,
-                    msg,
-                    grid_config,
-                    config,
-                    token,
-                    &mut next_worker_id,
-                    metrics.rounds,
-                    &active_ids,
-                )
-                .await?;
+                    let (msg, _) = recv_frame(&mut stream, config.max_payload_size).await?;
+                    let join_result = process_join_request(
+                        &mut stream,
+                        msg,
+                        grid_config,
+                        config,
+                        token,
+                        &mut next_worker_id,
+                        metrics.rounds,
+                        &active_ids,
+                    )
+                    .await?;
 
-                if let Some(worker_id) = join_result {
-                    worker_streams.push(stream);
-                    active_ids.insert(worker_id);
+                    if let Some(_id) = join_result {
+                        worker_streams.push(stream);
+                    }
+                }
+
+                // 2. Check if we can close the window
+                // R10a: Close if queue is empty AND JoinWindowMin has elapsed.
+                if min_timer.is_elapsed() {
+                    break;
+                }
+
+                // 3. Wait for more connections or the timers
+                tokio::select! {
+                    new_conn = transport.accept() => {
+                        match new_conn {
+                            Ok(stream) => {
+                                tracing::info!("Accepted connection during Join Window.");
+                                pending_connections_queue.push_back(stream);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to accept connection in Join Window: {}", e);
+                            }
+                        }
+                    }
+                    _ = &mut min_timer => {
+                        // Timer elapsed, next loop iteration will check drain status.
+                    }
+                    _ = &mut max_timer => {
+                        tracing::info!("JoinWindowMax reached; closing window.");
+                        break;
+                    }
                 }
             }
+            metrics.merge_time_per_round.push(t_window_start.elapsed()); // combined with window
         }
     }
 
