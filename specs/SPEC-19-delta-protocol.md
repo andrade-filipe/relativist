@@ -1,7 +1,8 @@
 # SPEC-19: Delta Protocol and Stateful Workers
 
-**Status:** Draft
+**Status:** Draft — §3.2 R8-R12 amended per SPEC-22 §3.8 A10 (BorderGraph recycle-policy-aware contract)
 **Depends on:** SPEC-01 (Invariants), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-17 (Transport Abstraction), SPEC-18 (Wire Format v2)
+**Amends:** SPEC-22 §3.8 A10 (§3.2 BorderGraph — recycle-protection under delta mode; RecyclePolicy, protected tombstones)
 **Amends:** SPEC-01 G1, D3, D6; SPEC-05 R24-R30a; SPEC-06 R2, R3
 **ROADMAP items:** 2.26 (Delta-Only Protocol with Stateful Workers), 2.34 (Coordinator-Free Round), 2.35 (Delta-Based Merge with BorderGraph)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
@@ -91,6 +92,21 @@ This section specifies the `BorderGraph` data structure and the delta-based merg
 **(MUST)**
 
 **R12.** The `BorderGraph` MUST provide a method `detect_border_redexes() -> Vec<(u32, BorderState)>` that returns all border entries where `is_redex == true`. This replaces the exhaustive border scan in the full merge (SPEC-05 R12). **(MUST)**
+
+**R12a. BorderGraph — Recycle-Policy-Aware Contract (Amendment A10)**
+
+> **Amendment A10 (SPEC-22 §3.8 A10 / R10b, R10c):** When `GridConfig.delta_mode == true`, worker-side free-list recycling is constrained as follows to preserve `BorderGraph` slot-id stability:
+>
+> - **Strategy A (`RecyclePolicy::DisableUnderDelta`, default):** Workers MUST NOT pop from the free-list during a delta-mode round. `create_agent` falls back to `next_id` allocation. The free-list still accumulates pushes from `remove_agent` and is drained at the next clean partition boundary (after `reconstruct` per R38).
+> - **Strategy B (`RecyclePolicy::BorderClean`):** Workers MAY pop from the free-list only for IDs not present in `border_entries` (partition-local `HashSet<AgentId>` shadow per SPEC-04 R20-R22). If the popped ID is border-referenced, it MUST be re-pushed to the free-list (or stored in a side-list for reuse after the next `reconstruct`) and a fresh `next_id` MUST be allocated instead.
+>
+> The choice between strategies is a `GridConfig.recycle_under_delta: RecyclePolicy` field (default: `RecyclePolicy::DisableUnderDelta` = Strategy A, the conservative choice). Strategy B is opt-in for benchmarks.
+>
+> **Protected tombstones (R10c):** When `remove_agent(id)` is called on a worker whose `id` IS border-referenced in the coordinator's `BorderGraph`, the agent's port slots MUST still be set to `DISCONNECTED`, the slot MUST be set to `agents[id] = None`, but the ID MUST NOT be pushed to the free-list. The slot becomes a *protected tombstone* that persists until the next `reconstruct`/clean-boundary moment.
+>
+> **Threat model prevented:** Round N produces border `B = (border_id, AgentPort(47, 0), AgentPort(123, 0))`; in round N+1 a worker recycles ID 47 to a different `Symbol`; coordinator dispatches a `CommutationBatch` indexing `AgentPort(47, 0)`; the worker's local `agents[47]` now resolves to a different rule than the BorderGraph computed → G1 violation. R12a/R10b prevent the recycle in step 2. Closes SC-005. See SPEC-22 R10b, R10c.
+
+**(MUST)**
 
 **R13.** When a border redex is detected (both endpoints are principal ports), the coordinator MUST resolve it. The resolution strategy MUST use option (a) from ROADMAP 2.35: the coordinator requests the two involved agents from their respective workers, performs the interaction locally using the standard reduction rules (SPEC-03), and sends the resulting port reconnections back to the workers as deltas. This stays within the star topology and does not require worker-to-worker communication. **(MUST)**
 

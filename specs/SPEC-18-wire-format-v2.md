@@ -1,8 +1,8 @@
 # SPEC-18: Wire Format v2
 
-**Status:** Draft
+**Status:** Draft — R28 amended per SPEC-22 §3.8 A9 (PROTOCOL_VERSION 2 → 3)
 **Depends on:** SPEC-06 (Wire Protocol), SPEC-02 (Net Representation), SPEC-04 (Partitioning), SPEC-17 (Transport Abstraction)
-**Amends:** SPEC-06 R4, R5, R6, R7, R11, R14, R15
+**Amends:** SPEC-06 R4, R5, R6, R7, R11, R14, R15; SPEC-22 §3.8 A9 (R28 — PROTOCOL_VERSION bump 2 → 3 for Net.free_list wire layout)
 **ROADMAP items:** 2.23 (Wire Format Compaction), 2.24 (Zero-Copy Archive)
 **References:** bincode v2 spec (docs.rs/bincode), lz4_flex crate, rkyv docs (rkyv.org), rust_serialization_benchmark (GitHub)
 
@@ -160,9 +160,11 @@ pub const FRAME_HEADER_SIZE: usize = 9;
 
 ### 3.6 Protocol Version
 
-**R28.** The `PROTOCOL_VERSION` constant MUST be bumped from `1` to `2`. This is a one-time, intentional wire compatibility break. **(MUST)**
+**R28.** The `PROTOCOL_VERSION` constant MUST be bumped from `2` to `3` upon SPEC-22 landing in the wire-relevant `Net` payload. v2 deserializers MUST reject v3 nets with `UnsupportedVersion`. The wire break is justified by the `free_list` field addition; v1/v2 binaries cannot deserialize v3 nets without producing length-mismatch errors. Migration path documented in SPEC-22 §6. v3 deserializers MAY ALSO reject v2 nets, OR MAY tolerate them as nets with an empty `free_list` (deserializer-defined; document the chosen path in §6 of SPEC-22). Persisted v1/v2 `.bin` files (e.g., `results/locked/v1_local_baseline/`) become unreadable by v3 binaries; this is acceptable because v1 baseline binaries are frozen and not consumed by v2/v3 code paths. **(MUST)**
 
-**R29.** A v2 coordinator that receives a `Register` message with `protocol_version == 1` MUST respond with `RegisterNack` containing the reason `"protocol version mismatch: expected 2, got 1"` and close the connection. **(MUST)**
+> **Amendment A9 (SPEC-22 §3.8 A9 / R9a):** The previous "bump from 1 to 2" clause is superseded by the 2 → 3 bump upon SPEC-22 landing. Closes SC-007. See SPEC-22 R9a for the formal statement.
+
+**R29.** A v3 coordinator that receives a `Register` message with `protocol_version == 2` (or `1`) MUST respond with `RegisterNack` containing the reason `"protocol version mismatch: expected 3, got <received>"` and close the connection. **(MUST)**
 
 **R30.** A v2 worker that receives a `RegisterAck` or `RegisterNack` from a coordinator whose prior `Register` response does not match the expected protocol flow MUST log an error and terminate. The worker SHOULD include the expected and received protocol versions in the error message for diagnostics. **(MUST for termination; SHOULD for diagnostic message)**
 
@@ -533,10 +535,11 @@ pub struct Partition {
 /// Wire protocol version.
 /// v1: bincode v1, fixed-int, 8-byte frame header.
 /// v2: bincode v2, varint, 9-byte frame header, optional LZ4 + rkyv.
-pub const PROTOCOL_VERSION: u8 = 2;
+/// v3: v2 + Net.free_list field (SPEC-22 §3.8 A9 / R9a). Amendment A9.
+pub const PROTOCOL_VERSION: u8 = 3;
 ```
 
-The Register handshake (SPEC-10) uses this constant. When a v2 coordinator receives `RegisterPayload { protocol_version: 1, .. }`, it responds with:
+The Register handshake (SPEC-10) uses this constant. When a v3 coordinator receives `RegisterPayload { protocol_version: 2, .. }` (or `1`), it responds with:
 
 ```rust
 Message::RegisterNack(RegisterNackPayload {
@@ -613,7 +616,9 @@ Computing CRC32C on the uncompressed payload (rather than the compressed payload
 
 ### 6.2 PROTOCOL_VERSION Bump
 
-**Step 1:** Change `pub const PROTOCOL_VERSION: u8 = 1;` to `pub const PROTOCOL_VERSION: u8 = 2;` in `src/protocol/coordinator.rs`.
+**Step 1 (original v1→v2 bump, already done):** Change `pub const PROTOCOL_VERSION: u8 = 1;` to `pub const PROTOCOL_VERSION: u8 = 2;` in `src/protocol/coordinator.rs`.
+
+**Step 1a (SPEC-22 amendment A9 — v2→v3 bump):** Upon SPEC-22 landing (Net.free_list serde layout change), change `pub const PROTOCOL_VERSION: u8 = 2;` to `pub const PROTOCOL_VERSION: u8 = 3;` in `src/protocol/coordinator.rs`. See SPEC-22 R9a, §3.8 A9.
 
 **Step 2:** Update the rejection message in the Register handshake to include both expected and received versions (R29).
 

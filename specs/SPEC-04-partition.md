@@ -1,7 +1,8 @@
 # SPEC-04: Net Partitioning
 
-**Status:** Revised v3
+**Status:** Revised v3.1 — §4.5 build_subnet amended per SPEC-22 §3.8 A7 (per-partition free-list + 4× sparse threshold)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine)
+**Amends:** SPEC-22 §3.8 A7 (build_subnet — populate per-partition free-list + sparse-build threshold)
 **Gray zones resolved:** Z2 (partitioning strategy for IC nets)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, premises P1-P5), DISC-004 v2 (formal partitioning of IC nets, conditions C1-C3, allocation function, wire classification, isomorphism theorem)
@@ -393,6 +394,10 @@ fn split(net, num_workers, strategy) -> PartitionPlan:
 ```
 
 **Complexity:** O(A + W) where A is the number of live agents and W is the number of wires (ports with valid connections). Step 4 traverses the port array once (A * PORTS_PER_SLOT). Step 5 copies agents and connections. The HashMap for sigma has O(1) amortized per lookup.
+
+#### 4.5.1 build_subnet — Free-List Population and Sparse-Build Threshold (Amendment A7)
+
+> **Amendment A7 (SPEC-22 §3.8 A7 / R10a, R22, R30):** `build_subnet` MUST populate the partition subnet's `free_list` with all `None` slots in `[partition.id_range.start, partition.id_range.end)` after the live agents are placed. When the dense-arena threshold check fires (`id_range.end - id_range.start > 4 × live_agent_count`), `build_subnet` MUST use `SparseNet` internally and call `to_dense(Some(partition.id_range.clone()))` before returning (SPEC-22 R10a, R22). The exposed signature MAY remain `Net` to preserve API stability; the sparse path is an implementation detail. When `PartitionConfig.sparse_build = false` is forced AND the threshold would fire, `build_subnet` MUST reject with `PartitionError::DenseAllocationExceedsThreshold` (SPEC-22 R30). The free-list MUST contain only IDs strictly within `[id_range.start, id_range.end)` (SPEC-22 R10a, closes SC-006). Cross-references: SPEC-22 R10a (per-partition free-list), R22 (sparse threshold), R30 (sparse_build flag). Closes SC-003, SC-006, SC-009.
 
 ### 4.6 FreePort Index Maintenance During Local Reduction
 

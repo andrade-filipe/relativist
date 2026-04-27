@@ -1,13 +1,14 @@
 # SPEC-01: System Invariants
 
-**Status:** Revised v3.1 — D6 and G1 clarified for lenient vs strict BSP modes (plano curious-sleeping-patterson)
+**Status:** Revised v3.2 — I3 relaxed to I3' (Uniqueness of AgentIds) per SPEC-22 §3.8 A1
 **Depends on:** SPEC-00 (Glossary)
+**Amends:** SPEC-22 R24 (I3' statement), SPEC-22 R25 (D4 preservation under I3')
 **Gray zones resolved:** Z1 (strong confluence local to distributed determinism)
 **References consumed:** REF-001, REF-002, REF-003, REF-005, REF-013, REF-014, REF-018
 **Discussions consumed:** DISC-001 v2, DISC-003 v2, DISC-004 v2
 **Arguments consumed:** ARG-001 (central argument, P1-P6), ARG-002 (partitioning, C1-C3)
 **Code analyses consumed:** AC-001, AC-002, AC-003, AC-004, AC-015
-**Revision history:** v3.1 (2026-04-10): D6 refined and a note added under G1 to clarify that both lenient and strict BSP modes (SPEC-05 R30a) preserve the Fundamental Property. No change to T1-T7, D1-D5, I1-I7, or G1 itself. Source: plano curious-sleeping-patterson, Fase 1.
+**Revision history:** v3.1 (2026-04-10): D6 refined and a note added under G1 to clarify that both lenient and strict BSP modes (SPEC-05 R30a) preserve the Fundamental Property. No change to T1-T7, D1-D5, I1-I7, or G1 itself. Source: plano curious-sleeping-patterson, Fase 1. v3.2 (2026-04-27): I3 relaxed to I3' (Uniqueness of AgentIds) per SPEC-22 §3.8 A1 / R24. Free-list mechanism allows ID recycling without violating uniqueness. Protected tombstones (SPEC-22 R10b/R10c) preserve slot-id stability during BorderGraph-active rounds. D4 preserved by partition-local free-list confinement (SPEC-22 R25).
 
 ---
 
@@ -286,15 +287,17 @@ Every reference `AgentPort(id, port)` in the port array or the redex queue MUST 
 
 ---
 
-**I3. Monotonicity of AgentIds**
+**I3' (Uniqueness of AgentIds)**
 
-The `next_id` field of Net MUST be strictly greater than any `AgentId` currently in use in that Net. IDs are never reused.
+> **Amendment A1 (SPEC-22 §3.8 A1 / R24):** I3 (Monotonicity of AgentIds) is relaxed to I3' (Uniqueness of AgentIds) to accommodate the free-list mechanism introduced by SPEC-22. The invariant below supersedes the former I3 text. See SPEC-22 R24, R25. Cross-reference: SPEC-22 R10b/R10c (protected tombstones).
 
-- **Formal statement:** For every agent `a` in the net: `a.id < net.next_id`. After each operation that creates agents, `next_id` is incremented by the number of agents created.
-- **Scope:** In the context of a single Net (whether the global net or a partition), `next_id` MUST be strictly greater than any `AgentId` in that Net's agent arena. During distributed execution, each partition satisfies I3 independently with respect to its own agent set and its own ID range (SPEC-04 R16-R19: static ID space partitioning gives each worker a contiguous range `[start, end)` with a local `next_id`). After merge, I3 is restored globally by taking the maximum `next_id` across all partitions (SPEC-05 R8).
-- **Justification:** AC-001, "Design Decisions" section. Monotonically increasing IDs prevent reuse and simplify distribution (each worker receives a disjoint range -- SPEC-00 Section 6.11, ID Space Partitioning).
-- **Relationship:** I3 is a precondition for D4 (ID uniqueness).
-- **How to verify:** Assertion that `next_id > max(active agent ids)` after each operation. During distributed execution, the assertion applies per-partition.
+**I3' (Uniqueness of AgentIds):** Each `AgentId` in use belongs to exactly one live agent in the arena. `AgentId` values in the free-list belong to no agent (`agents[id] == None`). No two live agents share the same `AgentId`. The `next_id` field MUST be strictly greater than any `AgentId` ever assigned (whether currently live, in the free-list, or previously freed and re-assigned). Stability of IDs is preserved during a `BorderGraph`-active round (R10b/R10c) by means of protected tombstones.
+
+- **Formal statement:** For every live agent `a` in the net: `a.id < net.next_id` and `net.agents[a.id] == Some(a)`. No two live agents share the same `id`. For every `id` in `net.free_list`: `net.agents[id] == None` and port slots `id*3..id*3+3` are `DISCONNECTED`. `create_agent` MAY return an ID less than `next_id` when recycling from the free-list; in that case `next_id` is NOT incremented (SPEC-22 R3).
+- **Scope:** In the context of a single Net (whether the global net or a partition), `next_id` MUST be strictly greater than any `AgentId` ever assigned in that Net's agent arena. During distributed execution, each partition satisfies I3' independently with respect to its own agent set and its own ID range (SPEC-04 R16-R19: static ID space partitioning gives each worker a contiguous range `[start, end)` with a local `next_id` and a partition-local free-list). After merge, I3' is restored globally by taking the maximum `next_id` across all partitions (SPEC-05 R8) and reconciling free-lists (SPEC-05 §4.2 amendment, SPEC-22 §3.8 A8).
+- **Justification:** Monotonicity is sufficient but not necessary for uniqueness; the free-list (SPEC-22 R1-R10c) provides uniqueness without monotonicity, recovering O(slot)-bounded memory under high-turnover workloads. AC-001, "Design Decisions" section (original rationale for disjoint-range distribution remains valid under I3').
+- **Relationship:** I3' is a precondition for D4 (ID uniqueness). D4 is preserved because free-list IDs are partition-local and partitions own disjoint ID ranges (SPEC-22 R25).
+- **How to verify:** Assertion that `next_id > max(ever-assigned agent ids)` after each operation; assertion that no two `Some` slots share the same `AgentId`; assertion that every free-list entry maps to a `None` slot. During distributed execution, the assertion applies per-partition.
 - **Consequence of violation:** ID collision, which violates D4 (ID uniqueness) in the distributed scenario and corrupts the port array in the local scenario.
 
 ---

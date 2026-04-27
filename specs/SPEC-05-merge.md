@@ -1,7 +1,8 @@
 # SPEC-05: Partition Merge and Grid Cycle
 
-**Status:** Revised v3.1 — strict_bsp mode added (plano curious-sleeping-patterson)
+**Status:** Revised v3.2 — §4.2 merge amended per SPEC-22 §3.8 A8 (free-list reconciliation across partitions)
 **Depends on:** SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning)
+**Amends:** SPEC-22 §3.8 A8 (§4.2 merge — free-list reconciliation)
 **Gray zones resolved:** Z3 (cross-boundary interaction protocol)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, P1-P5), DISC-004 v2 (formal partitioning, isomorphism split/merge), DISC-005 v2 (centralized merge protocol, border redexes, alternatives analysis)
@@ -428,6 +429,10 @@ fn is_principal_pair(a: PortRef, b: PortRef) -> bool {
 ```
 
 **Complexity:** O(A_total + B), satisfying R38.
+
+#### 4.2.1 merge — Free-List Reconciliation (Amendment A8)
+
+> **Amendment A8 (SPEC-22 §3.8 A8 / R12):** `merge` MUST construct the merged net's `free_list` as follows: walk every input partition's `free_list`; for each ID, check whether the ID is occupied in the merged arena; if `None` in the merged arena, push to merged free-list; if `Some` in the merged arena (because the slot was filled by a different partition's `Some` agent), discard the entry. Complexity: O(sum of |partition.free_list|). The post-merge free-list MUST satisfy the SPEC-22 R6 no-duplicates invariant; this is automatic given that pre-merge each partition's free-list is duplicate-free and partitions own disjoint ID ranges (SPEC-01 D4). Cross-references: SPEC-22 R12 (merge MUST handle free-lists), R6 (no duplicates), SPEC-01 D4 (partition disjointness as no-duplicate guarantor). Closes SC-003.
 
 ### 4.3 FreePort Index Lazy Reconstruction
 
