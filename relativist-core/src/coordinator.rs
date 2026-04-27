@@ -585,16 +585,94 @@ pub fn transition(ctx: &mut CoordinatorContext, event: CoordinatorEvent) -> Vec<
             actions.push(CoordinatorAction::ShutdownAll);
         }
 
+        // SPEC-20 R10b — mid-state buffering of joins (Phase C refactor MF-004).
+        //
+        // The four "active round" states (Partitioning, Dispatching,
+        // WaitingForResults, Merging) MUST emit `QueueWorkerForNextWindow(id)`
+        // when a `WorkerJoined(id)` event arrives, deferring the join into
+        // the upcoming `AcceptingMembershipChanges` window. Same state on the
+        // way out: only the buffer mutates; the FSM phase is unchanged.
+        //
+        // This closes SC-012 (FSM-totality for mid-round joins) and the
+        // QA-001 Phase A pattern (wildcard silently absorbing critical
+        // events). Without these arms, every `WorkerJoined` outside
+        // `AcceptingMembershipChanges` would fall through to the wildcard
+        // and produce zero actions — the joiner would be dropped at the
+        // FSM layer even when the procedural runtime correctly buffers
+        // the raw stream.
+        (
+            CoordinatorState::Partitioning
+            | CoordinatorState::Dispatching
+            | CoordinatorState::WaitingForResults
+            | CoordinatorState::Merging,
+            CoordinatorEvent::WorkerJoined(id),
+        ) => {
+            actions.push(CoordinatorAction::QueueWorkerForNextWindow(id));
+            actions.push(CoordinatorAction::LogJoin(id));
+            actions.push(CoordinatorAction::LogTransition {
+                from: from.clone(),
+                to: from,
+            });
+        }
+
+        // SPEC-20 R22b — mid-state graceful departures (Phase C refactor MF-004).
+        //
+        // Same family as `WorkerJoined`: the FSM observes the departure
+        // event in any active-round state, emits `RemoveWorker(id)`, and
+        // stays in the same state. The procedural runtime separately
+        // handles the LeaveAck handshake; the FSM layer only owns
+        // membership bookkeeping.
+        (
+            CoordinatorState::Partitioning
+            | CoordinatorState::Dispatching
+            | CoordinatorState::WaitingForResults
+            | CoordinatorState::Merging,
+            CoordinatorEvent::WorkerLeft(id, kind),
+        ) => {
+            actions.push(CoordinatorAction::RemoveWorker(id));
+            let dep_kind = match kind {
+                LeaveKind::AfterResult => DepartureKind::LeaveAfter,
+                LeaveKind::Urgent => DepartureKind::LeaveUrgent,
+            };
+            actions.push(CoordinatorAction::LogDeparture(id, dep_kind));
+            actions.push(CoordinatorAction::LogTransition {
+                from: from.clone(),
+                to: from,
+            });
+        }
+
+        // SPEC-20 R10/R10a — `MembershipWindowClosed` from any active-round
+        // state: the timer firing here is a stale carryover from a previous
+        // window (e.g., min-timer outliving the AMC→Partitioning transition).
+        // We log a transition row (state unchanged) so observability sees the
+        // event was processed, but no membership mutation occurs.
+        (
+            CoordinatorState::Partitioning
+            | CoordinatorState::Dispatching
+            | CoordinatorState::WaitingForResults
+            | CoordinatorState::Merging,
+            CoordinatorEvent::MembershipWindowClosed,
+        ) => {
+            actions.push(CoordinatorAction::LogTransition {
+                from: from.clone(),
+                to: from,
+            });
+        }
+
         // NOTE(TASK-0436): Replace this wildcard with exhaustive arms before
         // landing transition wiring. Every new SPEC-20 event (WorkerJoined,
         // WorkerLeft, WorkerConnectionLost, MembershipWindowClosed,
         // SelfPartitionReduced, SelfPartitionPanic, InitialWaitTimeout,
         // SoloReductionComplete, SoloReduceBatchComplete) that still reaches
         // this arm after TASK-0436 lands is a missing transition row.
-        // Test `ec_3_wildcard_arm_logs_unexpected_event_only` pins the
-        // current (TASK-0414) contract: wildcard absorbs, no actions emitted.
-        // SPEC-20 R10b requires explicit buffering of WorkerJoined in
-        // WaitingForResults — that must NOT fall through here after TASK-0436.
+        //
+        // Phase C refactor (MF-004) closed the WorkerJoined / WorkerLeft /
+        // MembershipWindowClosed gap for the four active-round states above.
+        // The remaining wildcard catches the residual events
+        // (WorkerConnectionLost, SelfPartitionReduced, SelfPartitionPanic,
+        // InitialWaitTimeout, SoloReductionComplete, SoloReduceBatchComplete)
+        // pending TASK-0436. Test `ec_3_wildcard_arm_logs_unexpected_event_only`
+        // pins those still-absorbed cells.
         //
         // Unexpected event in current state — log and ignore
         (state, event) => {
@@ -1226,16 +1304,16 @@ mod tests {
     // zero actions after TASK-0436, that is a contract violation.
     #[test]
     fn ec_3_wildcard_arm_logs_unexpected_event_only() {
-        // Arrange: new_events() returns a freshly-constructed vec of the 6 simple
-        // unit/single-value new events. WorkerLeft (requires LeaveKind) is tested
-        // in the separate loop below. SelfPartitionReduced and SelfPartitionPanic
-        // are not in this loop (move-only / requires test construction), but the
-        // constructor tests above exercise them.
-        let new_events = || {
+        // Arrange: new_events_still_absorbed() returns the events that
+        // STILL hit the wildcard arm after Phase C refactor (MF-004). The
+        // refactor added explicit transitions for WorkerJoined,
+        // WorkerLeft, and MembershipWindowClosed in the four active-round
+        // states (Partitioning/Dispatching/WaitingForResults/Merging) —
+        // those cells are tested separately in
+        // `mf_004_*_emits_queue_action_in_active_round_states`.
+        let new_events_still_absorbed = || {
             vec![
-                CoordinatorEvent::WorkerJoined(7),
                 CoordinatorEvent::WorkerConnectionLost(7),
-                CoordinatorEvent::MembershipWindowClosed,
                 CoordinatorEvent::InitialWaitTimeout,
                 CoordinatorEvent::SoloReductionComplete,
                 CoordinatorEvent::SoloReduceBatchComplete,
@@ -1252,14 +1330,13 @@ mod tests {
             // Done / Error excluded — terminal states accept FatalError only.
         ];
         for state in &states {
-            for event in new_events() {
+            for event in new_events_still_absorbed() {
                 let mut ctx = make_ctx_at_state(state.clone());
                 let actions = transition(&mut ctx, event);
-                // CURRENT contract (TASK-0414 baseline): wildcard absorbs, no
-                // actions are emitted and state is unchanged.
-                // TASK-0436 MUST flip this to non-empty for every owned cell.
-                // If this assertion fails it means TASK-0436 partially landed —
-                // update the assertion to check the new contract instead.
+                // CURRENT contract (post-MF-004): wildcard still absorbs the
+                // four residual events listed above. TASK-0436 will close
+                // them with explicit transitions; that is when this test
+                // should be updated cell-by-cell to assert the new contract.
                 assert!(
                     actions.is_empty(),
                     "QA-001: wildcard absorbed new event but produced actions in state {:?}; \
@@ -1274,23 +1351,158 @@ mod tests {
                 );
             }
         }
-        // Also cover LeaveKind-carrying variant (WorkerLeft).
-        for state in &states {
+        // The non-active-round states (Init, WaitingForWorkers,
+        // CheckTermination) still see WorkerJoined/WorkerLeft/
+        // MembershipWindowClosed as wildcard hits.
+        let non_active_states = [
+            CoordinatorState::Init,
+            CoordinatorState::WaitingForWorkers,
+            CoordinatorState::CheckTermination,
+        ];
+        let new_active_round_events = || {
+            vec![
+                CoordinatorEvent::WorkerJoined(7),
+                CoordinatorEvent::WorkerLeft(7, LeaveKind::AfterResult),
+                CoordinatorEvent::MembershipWindowClosed,
+            ]
+        };
+        for state in &non_active_states {
+            for event in new_active_round_events() {
+                let mut ctx = make_ctx_at_state(state.clone());
+                let actions = transition(&mut ctx, event);
+                assert!(
+                    actions.is_empty(),
+                    "QA-001: WorkerJoined-class event produced actions in non-active state {:?}",
+                    state
+                );
+                assert_eq!(
+                    ctx.state, *state,
+                    "QA-001: wildcard arm must not mutate state {:?}",
+                    state
+                );
+            }
+        }
+    }
+
+    /// MF-004 (Phase C refactor) — `WorkerJoined(id)` in any of the four
+    /// active-round states (`Partitioning`, `Dispatching`,
+    /// `WaitingForResults`, `Merging`) MUST emit
+    /// `QueueWorkerForNextWindow(id)` + `LogJoin(id)` and stay in the same
+    /// state. This closes the SPEC-20 R10b FSM-totality gap (SC-012).
+    #[test]
+    fn mf_004_worker_joined_emits_queue_action_in_active_round_states() {
+        let active_states = [
+            CoordinatorState::Partitioning,
+            CoordinatorState::Dispatching,
+            CoordinatorState::WaitingForResults,
+            CoordinatorState::Merging,
+        ];
+        for state in &active_states {
+            let mut ctx = make_ctx_at_state(state.clone());
+            let actions = transition(&mut ctx, CoordinatorEvent::WorkerJoined(99));
+            // State unchanged.
+            assert_eq!(
+                ctx.state, *state,
+                "MF-004: state must NOT change on WorkerJoined in {:?}",
+                state
+            );
+            // QueueWorkerForNextWindow(99) must be present.
+            let has_queue = actions
+                .iter()
+                .any(|a| matches!(a, CoordinatorAction::QueueWorkerForNextWindow(id) if *id == 99));
+            assert!(
+                has_queue,
+                "MF-004: state {:?} × WorkerJoined(99) must emit QueueWorkerForNextWindow(99); got {:?}",
+                state, actions
+            );
+            // LogJoin(99) must be present.
+            let has_log = actions
+                .iter()
+                .any(|a| matches!(a, CoordinatorAction::LogJoin(id) if *id == 99));
+            assert!(
+                has_log,
+                "MF-004: state {:?} × WorkerJoined(99) must emit LogJoin(99); got {:?}",
+                state, actions
+            );
+        }
+    }
+
+    /// MF-004 (Phase C refactor) — `WorkerLeft(id, kind)` in any active-round
+    /// state emits `RemoveWorker(id)` + `LogDeparture` and stays in the same
+    /// state.
+    #[test]
+    fn mf_004_worker_left_emits_remove_action_in_active_round_states() {
+        let active_states = [
+            CoordinatorState::Partitioning,
+            CoordinatorState::Dispatching,
+            CoordinatorState::WaitingForResults,
+            CoordinatorState::Merging,
+        ];
+        for state in &active_states {
             let mut ctx = make_ctx_at_state(state.clone());
             let actions = transition(
                 &mut ctx,
-                CoordinatorEvent::WorkerLeft(42, LeaveKind::AfterResult),
-            );
-            assert!(
-                actions.is_empty(),
-                "QA-001: WorkerLeft wildcard produced actions in state {:?}",
-                state
+                CoordinatorEvent::WorkerLeft(7, LeaveKind::AfterResult),
             );
             assert_eq!(
                 ctx.state, *state,
-                "QA-001: WorkerLeft wildcard must not mutate state {:?}",
+                "MF-004: state must NOT change on WorkerLeft in {:?}",
                 state
             );
+            let has_remove = actions
+                .iter()
+                .any(|a| matches!(a, CoordinatorAction::RemoveWorker(id) if *id == 7));
+            assert!(
+                has_remove,
+                "MF-004: state {:?} × WorkerLeft(7, AfterResult) must emit RemoveWorker(7)",
+                state
+            );
+            let has_dep = actions.iter().any(|a| {
+                matches!(
+                    a,
+                    CoordinatorAction::LogDeparture(id, DepartureKind::LeaveAfter) if *id == 7
+                )
+            });
+            assert!(
+                has_dep,
+                "MF-004: state {:?} × WorkerLeft(7, AfterResult) must emit LogDeparture(7, LeaveAfter)",
+                state
+            );
+        }
+    }
+
+    /// MF-004 (Phase C refactor) — every `WorkerJoined`/`WorkerLeft`/
+    /// `MembershipWindowClosed` event in the active-round states produces
+    /// at least one action OR a state transition (no silent loss). This is
+    /// the regression test for the QA-001 Phase A wildcard pattern.
+    #[test]
+    fn mf_004_active_round_states_never_silently_drop_membership_events() {
+        let active_states = [
+            CoordinatorState::Partitioning,
+            CoordinatorState::Dispatching,
+            CoordinatorState::WaitingForResults,
+            CoordinatorState::Merging,
+        ];
+        let events = || {
+            vec![
+                CoordinatorEvent::WorkerJoined(1),
+                CoordinatorEvent::WorkerLeft(1, LeaveKind::AfterResult),
+                CoordinatorEvent::WorkerLeft(1, LeaveKind::Urgent),
+                CoordinatorEvent::MembershipWindowClosed,
+            ]
+        };
+        for state in &active_states {
+            for ev in events() {
+                let ev_dbg = format!("{:?}", ev);
+                let mut ctx = make_ctx_at_state(state.clone());
+                let before = ctx.state.clone();
+                let actions = transition(&mut ctx, ev);
+                assert!(
+                    !actions.is_empty() || ctx.state != before,
+                    "MF-004: state {:?} × {} silently dropped — produced no action and no transition",
+                    state, ev_dbg
+                );
+            }
         }
     }
 
