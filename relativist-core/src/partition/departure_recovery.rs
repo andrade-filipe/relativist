@@ -25,12 +25,13 @@ pub fn materialize_reclaimed_partitions(
 
             // R30: remap to a fresh disjoint range
             if let Some(&new_range) = reclaimed_id_ranges.get(&wid) {
-                // --- Invariant Defense (TASK-0452) ---
+                // --- Invariant Defense (TASK-0452, MF-006) ---
                 // R24d: verify no overlap between reclaimed partitions.
+                // Uses `debug_assert!` for style consistency with D3 / D4 / D5.
                 #[cfg(debug_assertions)]
                 {
                     for r in &reclaimed {
-                        assert!(
+                        debug_assert!(
                             new_range.start >= r.id_range.end || new_range.end <= r.id_range.start,
                             "R24d violated: overlapping remapped ranges in reclaim: {:?} vs {:?}",
                             new_range,

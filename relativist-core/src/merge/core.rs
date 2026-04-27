@@ -37,15 +37,18 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
         ..
     } = plan;
 
-    // --- Invariant Defense (TASK-0452) ---
-    // Verifies that AgentIds across partitions are mutually disjoint (SPEC-04, R16-R19).
-    // D3-elastic: catches logic errors where overlapping ID ranges are merged.
+    // --- Invariant Defense (TASK-0452, MF-006) ---
+    // Verifies that AgentIds across partitions are mutually disjoint
+    // (SPEC-04, R16-R19). D3-elastic: catches logic errors where
+    // overlapping ID ranges are merged. Uses `debug_assert!` consistently
+    // (TASK-0452 contract); the cfg gate elides the supporting Vec
+    // allocation in release builds where the assertion is a no-op.
     #[cfg(debug_assertions)]
     {
         let mut sorted_ranges: Vec<_> = partitions.iter().map(|p| p.id_range).collect();
         sorted_ranges.sort_by_key(|r| r.start);
         for pair in sorted_ranges.windows(2) {
-            assert!(
+            debug_assert!(
                 pair[0].end <= pair[1].start,
                 "D3 violated: overlapping ID ranges in merge: {:?} vs {:?}",
                 pair[0],

@@ -132,6 +132,14 @@ pub struct GridMetrics {
 
     /// Cumulative time spent in rejoin round-trip handshakes (milliseconds).
     pub join_round_overhead_ms_per_round: Vec<u64>,
+
+    /// Wall-clock duration of the elastic join window per round (TASK-0450 / QA-001).
+    ///
+    /// Distinct from `merge_time_per_round` (structural merge timing). Only
+    /// populated when `GridConfig::elastic_join` is true; remains empty in
+    /// non-elastic mode. Spec intent (SPEC-20 R38 spirit): the join window
+    /// is its own observable, not a contamination of the merge timer.
+    pub join_window_time_per_round: Vec<Duration>,
 }
 
 impl GridMetrics {

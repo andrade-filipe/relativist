@@ -70,7 +70,17 @@
 | Wave | Tasks | Date | Status |
 |------|-------|------|--------|
 | Wave 1 | 0450, 0451 | 2026-04-25 | ✅ DONE |
-| Wave 2 | 0452 | 2026-04-25 | ⏭ ACTIVE |
+| Wave 2 | 0452 | 2026-04-25 | ✅ DONE |
+
+### SPEC-20 Elastic Grid Bundle (D-006) — ✅ COMPLETED
+**Commit:** `a84cb37` (Final Wave E-2 closure)
+**Verified:** 1256 default / 1299 zero-copy tests.
+
+
+### SPEC-20 Elastic Grid Bundle (D-006) — ✅ COMPLETED
+**Commit:** `a84cb37` (Final Wave E-2 closure)
+**Verified:** 1256 default / 1299 zero-copy tests.
+
 | 1 (Tier 2) | D-007 | SPEC-20 §3.2 | Dynamic worker joining; Join Window; ~500 prod + ~150 test LoC | TODO (after D-006) |
 | 1 (Tier 2) | D-008 | SPEC-20 §3.3 | Dynamic worker departure; retained-partition re-dispatch; ~600 prod + ~200 test LoC | TODO (after D-007) |
 | 2 (Tier 3) | D-009 | SPEC-22 §1/§3 | Arena recycling free-list; ~150 prod + ~80 test LoC | TODO |
@@ -88,6 +98,38 @@
 **Out of scope this bundle:** Tier 4 spec authoring, Tier 5 features, the article (`tcc_pt_br.tex`), v1 modifications.
 
 **On bundle close:** sdd-pipeline (or orchestrator) appends a closure entry to `progress.md` per bundle (commit hash, test counts before/after, LoC delta) and updates this Active Bundle table.
+
+---
+
+## Phase E Follow-Ups (Stage 6 closure, 2026-04-27)
+
+These items emerged from the Phase E REFACTOR pass (commit `<TBD>` covering MF-001..MF-006, QA-001..QA-005, SF-001..SF-003). They are intentionally deferred because they depend on TASK-0443 (D-008) closure or on a separate spec amendment.
+
+### TASK-0443 follow-up — reclaim metrics dead-on-arrival (MF-004)
+
+The two SPEC-20 R38 reclaim counters
+- `metrics.retained_initial_reclaims_per_round`
+- `metrics.retained_last_acked_reclaims_per_round`
+
+are pushed only on the success branch at `coordinator.rs` (post-collect, pre-merge). The conservative reclaim path (R24a) increments `round_reclaimed_initial` and then unconditionally returns `Err` — it does not reach the push site. Until TASK-0443 wires reclaim back into the round loop, both counters always push 0 in the happy path.
+
+A `// FIXME(TASK-0443):` marker at the push site documents the gap. Benchmark consumers (EG-B1/B2/B3) that read these fields must treat them as nominal-zero until the closure ships.
+
+### Phase D follow-up — `release_worker` never called (QA-010)
+
+`RetainedStateRegistry::release_worker(&mut self, worker_id)` (in `protocol/retained.rs`) has zero call sites in `coordinator.rs`. After a permanent disconnect / reclaim, the slot in `retained_state.initial` and `retained_state.last_acked` is never freed; `RetainedStateRegistry::assert_memory_bounds(k_eff)` will eventually fire under sustained churn. Wiring `release_worker` into the departure path is part of the eventual D-008 (SPEC-20 §3.3) rework — not addressed in this Phase E closure.
+
+### SPEC-11 follow-up — log field cardinality (QA-007)
+
+`worker_id` is emitted as a structured field on the R17 INFO log and the four R28 WARN logs. In long-running grids with churn, the unique-`worker_id` cardinality can exceed Loki/Prometheus label budgets. Suggested follow-up: SPEC-11 amendment that buckets `worker_id` for label-class fields while keeping the raw value in span attributes.
+
+### SF-003 / TEST-SPEC-0450 follow-up — extra coverage tests
+
+UT-0450-01 (struct field-existence) and UT-0450-10 (R45 disjointness) have been landed in `relativist-core/tests/elastic_phase_e_qa_regressions.rs` as part of Stage 6. UT-0450-11 (`bincode::serialize → deserialize` round-trip) remains blocked because `GridMetrics` only derives `Serialize`. A follow-up task should either add `Deserialize` to `GridMetrics` or relax UT-0450-11 to "serializes without panic" (which is already exercised by `ut_0450_10_spec20_field_name_disjointness_with_spec19`).
+
+### QA-014 — `next_worker_id` future hazard
+
+The read-modify-write at `coordinator.rs:181-182` (`*next_worker_id; *next_worker_id += 1`) is non-atomic. Today the join-window dequeue loop is sequential, so no race is possible. Any future refactor that fans `process_join_request` out across tokio tasks MUST promote `next_worker_id` to `Arc<AtomicU32>`. Documented here so the assumption is explicit.
 
 ---
 

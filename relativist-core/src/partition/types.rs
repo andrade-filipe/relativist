@@ -128,6 +128,28 @@ pub struct Partition {
 }
 
 impl Partition {
+    /// Constructs an empty partition for a given `worker_id`.
+    ///
+    /// Used as a placeholder by `RetainedStateRegistry::register_initial`
+    /// (SPEC-20 R23b / QA-002) when a mid-session joiner is announced
+    /// before its first round-N+1 partition has been computed. The empty
+    /// partition is replaced by the round-N+1 init block in
+    /// `coordinator::run_coordinator` via `entry().or_insert_with(...)`.
+    ///
+    /// All ranges are zero-width so the placeholder cannot accidentally be
+    /// merged with a live partition (SPEC-04 R16-R19 disjointness check
+    /// would catch it; the merge sort key uses `id_range.start`).
+    pub fn empty(worker_id: WorkerId) -> Self {
+        Self {
+            subnet: Net::new(),
+            worker_id,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 0 },
+            border_id_start: 0,
+            border_id_end: 0,
+        }
+    }
+
     /// Returns the number of live agents in this partition's subnet.
     ///
     /// Used by `remap_partition_ids` (SPEC-20 §3.8 A4) to validate that

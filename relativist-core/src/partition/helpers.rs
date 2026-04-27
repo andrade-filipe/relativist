@@ -86,18 +86,6 @@ pub fn compute_round_id_ranges(
     let k = active_workers.len() as u32;
     let k_eff = k + if config.hybrid_coordinator { 1 } else { 0 };
 
-    // --- Invariant Defense (TASK-0452) ---
-    // D4-elastic: K_eff must match membership.
-    #[cfg(debug_assertions)]
-    {
-        let expected_k_eff =
-            active_workers.len() as u32 + if config.hybrid_coordinator { 1 } else { 0 };
-        assert_eq!(
-            k_eff, expected_k_eff,
-            "D4 violated: K_eff calculation mismatch"
-        );
-    }
-
     if k_eff == 0 {
         return HashMap::new();
     }
@@ -115,6 +103,58 @@ pub fn compute_round_id_ranges(
     let offset = if config.hybrid_coordinator { 1 } else { 0 };
     for (i, &worker_id) in active_workers.iter().enumerate() {
         map.insert(worker_id, ranges[i + offset]);
+    }
+
+    // --- Invariant Defense (TASK-0452, MF-003 / QA-006) ---
+    // D4-elastic (SPEC-20 R11a): every consumed `partition_index` must be
+    // in `[0, K_eff)` and dense — no gaps, no duplicates, no out-of-range.
+    // Tests this property *after* the map is built: the previous tautological
+    // `K_eff == K_eff` check has been replaced by the real positional
+    // density invariant (MF-003), extended with a per-index pass (QA-006).
+    #[cfg(debug_assertions)]
+    {
+        debug_assert_eq!(
+            map.len() as u32,
+            k_eff,
+            "D4-elastic violated: |map| = {} but K_eff = {}",
+            map.len(),
+            k_eff
+        );
+        for (&wid, range) in &map {
+            debug_assert!(
+                range.start < range.end,
+                "D4-elastic violated: degenerate IdRange for worker {}: {:?}",
+                wid,
+                range
+            );
+        }
+        // Density: build the set of consumed `partition_index` values and
+        // assert it equals exactly `{0, 1, ..., K_eff - 1}` (R11a).
+        let mut consumed_indices: Vec<u32> = Vec::with_capacity(k_eff as usize);
+        if config.hybrid_coordinator {
+            consumed_indices.push(0);
+        }
+        for &wid in active_workers {
+            if let Some(idx) = partition_index_of(wid, active_workers, config.hybrid_coordinator) {
+                consumed_indices.push(idx);
+            }
+        }
+        consumed_indices.sort();
+        consumed_indices.dedup();
+        debug_assert_eq!(
+            consumed_indices.len() as u32,
+            k_eff,
+            "D4-elastic violated: dense partition_index set [0, {}) was not formed: got {:?}",
+            k_eff,
+            consumed_indices
+        );
+        for (i, &idx) in consumed_indices.iter().enumerate() {
+            debug_assert_eq!(
+                idx, i as u32,
+                "D4-elastic violated: gap or duplicate in partition_index sequence at position {}: {:?}",
+                i, consumed_indices
+            );
+        }
     }
 
     map
