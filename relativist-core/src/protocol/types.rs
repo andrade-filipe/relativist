@@ -38,7 +38,11 @@ use crate::partition::{Partition, WorkerId};
 /// v2 path established by SPEC-18.
 ///
 /// IMPORTANT: New variants MUST be appended at the end of this enum to
-/// preserve bincode discriminant stability (SPEC-06 R5, SPEC-19 R37).
+/// preserve bincode discriminant stability (SPEC-06 R5, SPEC-19 R37,
+/// SPEC-20 R37). `#[non_exhaustive]` forces external matchers to include
+/// wildcard arms; new variants MAY be added in any future spec revision
+/// without breaking downstream builds (Phase B refactor MF-004 / QA-009).
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     // === Coordinator -> Worker (SPEC-06 core) ===
@@ -194,8 +198,11 @@ pub enum Message {
     ///
     /// Discriminant: 12 (SPEC-20 R35).
     JoinRequest {
-        /// Protocol version for fast rejection (MUST match `Register.protocol_version`).
-        protocol_version: u8,
+        /// Protocol version for fast rejection. Typed as `u32` per
+        /// SPEC-20 §3.5 R35 and NF-009 (shape alignment with the
+        /// SPEC-19 R37 RegisterNack version-mismatch rejection path).
+        /// Phase B refactor MF-001 — 2026-04-27.
+        protocol_version: u32,
         /// Authentication token (MUST match `Register.auth_token`).
         auth_token: Option<[u8; 32]>,
         /// Worker's advertised processing capabilities (reserved for future use).
@@ -237,18 +244,13 @@ pub enum Message {
     },
 }
 
-/// Departure kind for `LeaveRequest` (SPEC-20 R21).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(
-    feature = "zero-copy",
-    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
-)]
-pub enum LeaveKind {
-    /// Graceful departure: worker wants to leave after current round finishes.
-    AfterResult,
-    /// Urgent departure: worker is leaving immediately (best-effort recovery).
-    Urgent,
-}
+// Departure kind for `LeaveRequest` (SPEC-20 R21).
+//
+// Phase B refactor MF-002 — 2026-04-27: `LeaveKind` is canonically defined
+// in `crate::partition::types` (SPEC-13 R28). Re-exported here so the wire
+// layer and the FSM layer cannot diverge. Adding/reordering a variant in
+// one site only is impossible by construction.
+pub use crate::partition::LeaveKind;
 
 /// Worker processing capabilities (SPEC-20 R35). Placeholder for future use.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,25 +263,34 @@ pub struct WorkerCapabilities {
 }
 
 /// Reasons for rejecting a `JoinRequest` (SPEC-20 R35a).
+///
+/// `#[repr(u8)]` pins variant byte order so log-decoding tooling and
+/// future zero-copy/rkyv consumers see a stable layout (Phase B
+/// refactor QA-007). Variants are append-only.
+#[non_exhaustive]
+#[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "zero-copy",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub enum JoinNackReason {
-    /// Protocol version mismatch (NF-009 shape alignment).
+    /// Protocol version mismatch (NF-009 shape alignment with the
+    /// SPEC-19 R37 RegisterNack version-mismatch path). Field names
+    /// `coordinator`/`worker` and `u32` typing are normative per
+    /// SPEC-20 §3.5 R35 (Phase B refactor MF-001).
     ProtocolVersionMismatch {
         /// Version expected by the coordinator.
-        expected: u8,
+        coordinator: u32,
         /// Version provided by the worker.
-        got: u8,
-    },
+        worker: u32,
+    } = 0,
     /// The grid is not configured to allow dynamic joins.
-    ElasticJoinDisabled,
+    ElasticJoinDisabled = 1,
     /// No WorkerId slots remaining (counter reached u32::MAX).
-    WorkerIdSpaceExhausted,
+    WorkerIdSpaceExhausted = 2,
     /// Authentication token is missing or invalid.
-    AuthenticationFailed,
+    AuthenticationFailed = 3,
 }
 
 /// Registration payload (SPEC-10 Section 4.3).
@@ -436,7 +447,7 @@ mod tests {
                 partition: make_test_partition(),
             },
             Message::JoinRequest {
-                protocol_version: 4,
+                protocol_version: 4u32,
                 auth_token: None,
                 capabilities: WorkerCapabilities::default(),
             },
@@ -1241,7 +1252,7 @@ mod tests {
             (
                 12,
                 Message::JoinRequest {
-                    protocol_version: 4,
+                    protocol_version: 4u32,
                     auth_token: None,
                     capabilities: WorkerCapabilities::default(),
                 },
@@ -1291,5 +1302,147 @@ mod tests {
             "R37: the discriminant-stability test MUST cover all current \
              Message variants; update `cases` when a variant is appended",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase B refactor QA-007 — per-variant discriminant pinning for
+    // `LeaveKind` and `JoinNackReason`.
+    //
+    // These enums ride inside `Message::LeaveRequest` (disc 14) and
+    // `Message::JoinNack` (disc 16). Bincode v2 varint-encodes each
+    // enum's discriminant in 1 byte for values 0..=250. The outer
+    // Message discriminant lives in `bytes[0]`; the inner enum
+    // discriminant lives in `bytes[1]`. A reorder of either inner enum
+    // would silently break the wire — these tests catch it.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn leave_kind_discriminants_are_stable() {
+        let bytes_after = bincode_v2::encode(&Message::LeaveRequest {
+            kind: LeaveKind::AfterResult,
+        })
+        .expect("encode LeaveKind::AfterResult");
+        let bytes_urgent = bincode_v2::encode(&Message::LeaveRequest {
+            kind: LeaveKind::Urgent,
+        })
+        .expect("encode LeaveKind::Urgent");
+        assert_eq!(bytes_after[0], 14, "Message::LeaveRequest disc must be 14");
+        assert_eq!(bytes_urgent[0], 14, "Message::LeaveRequest disc must be 14");
+        assert_eq!(
+            bytes_after[1], 0,
+            "LeaveKind::AfterResult MUST encode to discriminant 0"
+        );
+        assert_eq!(
+            bytes_urgent[1], 1,
+            "LeaveKind::Urgent MUST encode to discriminant 1"
+        );
+    }
+
+    #[test]
+    fn join_nack_reason_discriminants_are_stable() {
+        let pvm = bincode_v2::encode(&Message::JoinNack {
+            reason: JoinNackReason::ProtocolVersionMismatch {
+                coordinator: 4,
+                worker: 3,
+            },
+        })
+        .expect("encode JoinNackReason::ProtocolVersionMismatch");
+        let ejd = bincode_v2::encode(&Message::JoinNack {
+            reason: JoinNackReason::ElasticJoinDisabled,
+        })
+        .expect("encode JoinNackReason::ElasticJoinDisabled");
+        let wse = bincode_v2::encode(&Message::JoinNack {
+            reason: JoinNackReason::WorkerIdSpaceExhausted,
+        })
+        .expect("encode JoinNackReason::WorkerIdSpaceExhausted");
+        let af = bincode_v2::encode(&Message::JoinNack {
+            reason: JoinNackReason::AuthenticationFailed,
+        })
+        .expect("encode JoinNackReason::AuthenticationFailed");
+        assert_eq!(pvm[0], 16, "Message::JoinNack disc must be 16");
+        assert_eq!(ejd[0], 16, "Message::JoinNack disc must be 16");
+        assert_eq!(wse[0], 16, "Message::JoinNack disc must be 16");
+        assert_eq!(af[0], 16, "Message::JoinNack disc must be 16");
+        assert_eq!(
+            pvm[1], 0,
+            "JoinNackReason::ProtocolVersionMismatch MUST encode to disc 0"
+        );
+        assert_eq!(
+            ejd[1], 1,
+            "JoinNackReason::ElasticJoinDisabled MUST encode to disc 1"
+        );
+        assert_eq!(
+            wse[1], 2,
+            "JoinNackReason::WorkerIdSpaceExhausted MUST encode to disc 2"
+        );
+        assert_eq!(
+            af[1], 3,
+            "JoinNackReason::AuthenticationFailed MUST encode to disc 3"
+        );
+    }
+
+    // Phase B refactor MF-001 — verify the post-fix u32 wire shape for
+    // JoinRequest.protocol_version and JoinNackReason::ProtocolVersionMismatch.
+    #[test]
+    fn join_request_protocol_version_is_u32_on_the_wire() {
+        // u32::MAX cannot be represented in u8; if the field were still
+        // u8, this construction would not compile. Encode/decode must
+        // also preserve the u32 value exactly.
+        let original = Message::JoinRequest {
+            protocol_version: 0xDEADBEEFu32,
+            auth_token: None,
+            capabilities: WorkerCapabilities::default(),
+        };
+        let bytes = bincode_v2::encode(&original).expect("encode JoinRequest");
+        let decoded: Message = bincode_v2::decode_value(&bytes).expect("decode JoinRequest");
+        match decoded {
+            Message::JoinRequest {
+                protocol_version, ..
+            } => {
+                assert_eq!(
+                    protocol_version, 0xDEADBEEFu32,
+                    "MF-001: JoinRequest.protocol_version MUST be u32"
+                );
+            }
+            other => panic!("expected JoinRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn join_nack_protocol_version_mismatch_is_u32_pair_on_the_wire() {
+        let original = Message::JoinNack {
+            reason: JoinNackReason::ProtocolVersionMismatch {
+                coordinator: 0xCAFEBABEu32,
+                worker: 0x12345678u32,
+            },
+        };
+        let bytes = bincode_v2::encode(&original).expect("encode JoinNack");
+        let decoded: Message = bincode_v2::decode_value(&bytes).expect("decode JoinNack");
+        match decoded {
+            Message::JoinNack {
+                reason:
+                    JoinNackReason::ProtocolVersionMismatch {
+                        coordinator,
+                        worker,
+                    },
+            } => {
+                assert_eq!(coordinator, 0xCAFEBABEu32);
+                assert_eq!(worker, 0x12345678u32);
+            }
+            other => panic!("expected JoinNack/ProtocolVersionMismatch, got {:?}", other),
+        }
+    }
+
+    // Phase B refactor MF-002 — `LeaveKind` from the wire layer
+    // (`protocol::types::LeaveKind`, a re-export) MUST be the same
+    // Rust type as the FSM layer (`partition::LeaveKind`). Without
+    // the unification, this assignment would not compile.
+    #[test]
+    fn leave_kind_is_a_single_canonical_type_across_layers() {
+        let from_partition: crate::partition::LeaveKind = crate::partition::LeaveKind::Urgent;
+        let from_protocol: super::LeaveKind = super::LeaveKind::Urgent;
+        // If the two were distinct types, this comparison would not
+        // compile. (Equality is covered by the derived PartialEq.)
+        assert_eq!(from_partition, from_protocol);
     }
 }

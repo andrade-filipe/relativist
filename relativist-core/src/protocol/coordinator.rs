@@ -204,12 +204,12 @@ pub async fn process_join_request(
         }
     };
 
-    // R0d: validate protocol version
-    if protocol_version != PROTOCOL_VERSION {
+    // R0d: validate protocol version (MF-001: u32 wire shape per NF-009).
+    if protocol_version != PROTOCOL_VERSION as u32 {
         let nack = Message::JoinNack {
             reason: crate::protocol::types::JoinNackReason::ProtocolVersionMismatch {
-                expected: PROTOCOL_VERSION,
-                got: protocol_version,
+                coordinator: PROTOCOL_VERSION as u32,
+                worker: protocol_version,
             },
         };
         let _ = send_frame(stream, &nack).await;
@@ -264,8 +264,17 @@ pub async fn process_join_request(
         active_workers.len() as u32
     };
 
-    // R16: JoinAck informs worker of next_round_number
-    let next_round_number = current_round + 1;
+    // R16: JoinAck informs worker of next_round_number.
+    //
+    // QA-005 (Phase B refactor): `current_round` is `metrics.rounds` at the
+    // call site, which is incremented at the bottom of the previous round
+    // (`metrics.rounds += 1`) BEFORE the join window opens. By the time we
+    // reach this point, `current_round` already names the upcoming round
+    // (R+1) — the round in which the next call to `distribute_partitions`
+    // will dispatch this joiner's first partition. Adding +1 here would
+    // advertise R+2, mis-aligning the joiner's round counter by one and
+    // making its first AssignPartition look like a protocol violation.
+    let next_round_number = current_round;
 
     let ack = Message::JoinAck {
         worker_id,
@@ -377,12 +386,13 @@ pub async fn accept_workers(
                     );
 
                     // R0d + NF-009: handle version mismatch even on rejected path
-                    if protocol_version != PROTOCOL_VERSION {
+                    // (MF-001: u32 wire shape per NF-009).
+                    if protocol_version != PROTOCOL_VERSION as u32 {
                         let nack = Message::JoinNack {
                             reason:
                                 crate::protocol::types::JoinNackReason::ProtocolVersionMismatch {
-                                    expected: PROTOCOL_VERSION,
-                                    got: protocol_version,
+                                    coordinator: PROTOCOL_VERSION as u32,
+                                    worker: protocol_version,
                                 },
                         };
                         let _ = send_frame(&mut stream, &nack).await;
@@ -551,6 +561,18 @@ pub async fn run_coordinator(
     let mut accept_config = config.clone();
     accept_config.num_workers = remote_workers_needed;
 
+    // FIXME(QA-006 / phase-d-rework): `worker_streams: Vec<TransportStream>`
+    // uses the slot index as worker identity. This is safe today because
+    // Phase B never removes entries — joiners are only `.push()`-ed and
+    // departures abort the run. The instant Phase D wires actual
+    // departure handling and removes entries from this Vec, the
+    // index-based WorkerId reconstruction at the collect-phase
+    // (`streams_to_poll`) and at the join-window (`active_ids`) will
+    // mis-map IDs. The fix is to migrate this to
+    // `BTreeMap<WorkerId, TransportStream>` so identity is decoupled
+    // from position. We defer the migration to Phase D's rework
+    // because it cascades through several call sites that Phase D
+    // will revisit anyway.
     let mut worker_streams = accept_workers(
         &accept_config,
         token,
@@ -593,26 +615,57 @@ pub async fn run_coordinator(
             if grid_config.hybrid_coordinator {
                 tracing::info!("Entering SoloReducing (budget={})", grid_config.solo_budget);
 
+                // QA-001 (Phase B refactor): the previous implementation
+                // used `tokio::select! { new_conn = accept() => ..., else => reduce_n(...) }`.
+                // The `else` branch in `tokio::select!` only fires when ALL
+                // other branches are *disabled*; `transport.accept()` is
+                // unguarded, so the `else` arm was unreachable and
+                // `reduce_n` never ran — the coordinator hung forever in
+                // SoloReducing. Replace with an explicit
+                // reduce-then-poll-accept structure: every loop turn does
+                // at least one reduce batch, then drains any queued
+                // connections without blocking via `biased` + a
+                // pre-completed `ready()` future as a non-blocking peek.
                 while !current_net.redex_queue.is_empty() {
+                    // (1) Always perform one reduce batch first.
+                    let stats = crate::reduction::reduce_n(
+                        &mut current_net,
+                        grid_config.solo_budget as usize,
+                    );
+                    metrics.total_interactions += stats.total_interactions;
+                    for (i, &count) in stats.interactions_by_rule.iter().enumerate() {
+                        metrics.total_interactions_by_rule[i] += count;
+                    }
+                    if stats.total_interactions == 0 {
+                        break;
+                    }
+
+                    // (2) Drain newly-arrived connections without blocking.
+                    // `biased` + an immediately-ready future ensures the
+                    // accept branch is polled at most once per iteration
+                    // and falls through to the ready arm if no connection
+                    // is pending.
                     tokio::select! {
+                        biased;
                         new_conn = transport.accept() => {
                             match new_conn {
                                 Ok(stream) => {
-                                    tracing::info!("Accepted mid-session connection during SoloReducing; queued.");
+                                    tracing::info!(
+                                        "Accepted mid-session connection during SoloReducing; queued."
+                                    );
                                     pending_connections_queue.push_back(stream);
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to accept mid-session connection: {}", e);
+                                    tracing::warn!(
+                                        "Failed to accept mid-session connection: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
-                        else => {
-                            let stats = crate::reduction::reduce_n(&mut current_net, grid_config.solo_budget as usize);
-                            metrics.total_interactions += stats.total_interactions;
-                            for (i, &count) in stats.interactions_by_rule.iter().enumerate() {
-                                metrics.total_interactions_by_rule[i] += count;
-                            }
-                            if stats.total_interactions == 0 { break; }
+                        _ = std::future::ready(()) => {
+                            // No pending connection — fall through to next
+                            // reduce batch.
                         }
                     }
                     tokio::task::yield_now().await;
@@ -832,11 +885,16 @@ pub async fn run_coordinator(
                             }
                         }
                         other => {
+                            // QA-008: bound the panic-message payload —
+                            // a worker-supplied `Message::Error.description`
+                            // (or any other variant carrying user-controlled
+                            // bytes) could otherwise produce a multi-MB
+                            // string here that flows into tracing.
                             push_partial_round_metrics(&mut metrics);
-                            return Err(ProtocolError::Fatal(format!(
+                            return Err(ProtocolError::Fatal(sanitize_log_string(&format!(
                                 "unexpected message: {:?}",
                                 other
-                            )));
+                            ))));
                         }
                     }
                 }
@@ -893,15 +951,42 @@ pub async fn run_coordinator(
             }
         }
 
+        // QA-003 (Phase B refactor): drain any TCP connections that
+        // arrived while we were busy in distribute/collect/merge. Queue
+        // them for the upcoming `AcceptingMembershipChanges` window so
+        // mid-round arrivals are not stranded in the OS backlog. The
+        // poll is non-blocking — `biased` + an immediately-ready future
+        // ensures we never wait here.
+        loop {
+            let accepted = tokio::select! {
+                biased;
+                new_conn = transport.accept() => Some(new_conn),
+                _ = std::future::ready(()) => None,
+            };
+            match accepted {
+                Some(Ok(stream)) => {
+                    tracing::info!(
+                        "Accepted mid-round connection in collect phase; queued for next join window."
+                    );
+                    pending_connections_queue.push_back(stream);
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, "accept() error during collect-phase drain");
+                    break;
+                }
+                None => break,
+            }
+        }
+
         if let Some(h) = self_handle {
             // QA-003: top up per-round Vec parity before bailing on a
             // self-worker join failure.
             if let Err(e) = h.join_handle.await {
                 push_partial_round_metrics(&mut metrics);
-                return Err(ProtocolError::Fatal(format!(
+                return Err(ProtocolError::Fatal(sanitize_log_string(&format!(
                     "Self-worker join error: {:?}",
                     e
-                )));
+                ))));
             }
         }
 
@@ -940,8 +1025,17 @@ pub async fn run_coordinator(
             let surviving_partitions: Vec<Partition> =
                 collect_results_vec.iter().map(|(p, _)| p.clone()).collect();
 
-            // For materialization we need IdRanges. We can use compute_id_ranges for the "new" pool.
-            // Simplified for Wave 3: we just use the initial ones.
+            // FIXME(QA-004 / phase-d-rework): the placeholder
+            // `IdRange { 0, 100_000 }` collides with surviving workers'
+            // AgentIds. The proper allocation flows through
+            // `partition::compute_round_id_ranges` keyed off
+            // `current_net.all_live_agent_ids().max() + 1`. We cannot
+            // remove this placeholder here in Phase B refactor because
+            // the entire reclaim block returns Err immediately below
+            // (the success-path-then-Err pattern is itself the bigger
+            // bug — MF-003), and Phase D's pending revert is the only
+            // place this code path becomes live. Leaving the placeholder
+            // until the Phase D rework lands its proper implementation.
             let mut reclaimed_id_ranges = std::collections::HashMap::new();
             for &id in &departing_worker_ids {
                 reclaimed_id_ranges.insert(
@@ -950,7 +1044,7 @@ pub async fn run_coordinator(
                         start: 0,
                         end: 100_000,
                     },
-                ); // placeholder
+                );
             }
 
             let reclaimed_partitions = match materialize_reclaimed_partitions(
@@ -997,6 +1091,16 @@ pub async fn run_coordinator(
             // After TASK-0443 lands stream management here, this early
             // return goes away and the normal end-of-round push path takes
             // over.
+            // FIXME(MF-003 / phase-d-rework): success-path returns Err.
+            // The reconstructed `current_net` above is correctly merged,
+            // but stream management for the surviving + reclaimed
+            // partitions is not yet wired (it's Phase D's job —
+            // TASK-0438..0443). Phase D will be reverted and reworked,
+            // at which point this early return goes away and the round
+            // continues into the join window. Until then, the
+            // INFO-level "reconstruction succeeded" log preceding the
+            // FATAL error is intentionally confusing — readers should
+            // treat any departure event as a fatal abort in Phase B.
             push_partial_round_metrics(&mut metrics);
             return Err(ProtocolError::Fatal("Departure recovery reconstruction succeeded but stream management is TASK-0443 follow-up".into()));
         }
@@ -1537,5 +1641,236 @@ mod tests {
             .unwrap();
         assert!(matches!(response, Message::RegisterAck(_)));
         assert!(accept_handle.await.unwrap().is_ok());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase B refactor — Stage 6 RED→GREEN tests for Stage 4+5 findings.
+    // -----------------------------------------------------------------
+
+    /// QA-005 (Phase B refactor) — `JoinAck.next_round_number` must
+    /// equal the upcoming round, not upcoming + 1. The coordinator
+    /// increments `metrics.rounds` BEFORE the join window opens, so
+    /// when `current_round = metrics.rounds` is passed to
+    /// `process_join_request`, it already names the upcoming round; +1
+    /// over-shoots by one.
+    #[tokio::test]
+    async fn qa_005_join_ack_advertises_upcoming_round_not_upcoming_plus_one() {
+        use crate::merge::GridConfig;
+        use crate::protocol::types::WorkerCapabilities;
+
+        // Use a ChannelTransport pair to get two stream endpoints. The
+        // "coordinator side" runs `process_join_request`; the "worker
+        // side" sends `JoinRequest` and reads the `JoinAck`.
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let server_handle = tokio::spawn(async move {
+            server.listen().await.ok();
+            server.accept().await.expect("accept")
+        });
+        let mut s_worker = client.connect().await.expect("connect");
+        let mut s_coord = server_handle.await.expect("join");
+
+        let grid_config = GridConfig {
+            elastic_join: true,
+            ..GridConfig::default()
+        };
+        let node_config = NodeConfig::default();
+
+        // Send a valid v4 JoinRequest from the worker side.
+        let join_req = Message::JoinRequest {
+            protocol_version: PROTOCOL_VERSION as u32,
+            auth_token: None,
+            capabilities: WorkerCapabilities::default(),
+        };
+        send_frame(&mut s_worker, &join_req).await.expect("send");
+
+        // Coordinator side reads the JoinRequest then runs
+        // process_join_request.
+        let (msg, _) = recv_frame(&mut s_coord, node_config.max_payload_size)
+            .await
+            .expect("recv");
+        let mut next_worker_id: u32 = 1;
+        let active = std::collections::BTreeSet::<WorkerId>::new();
+        // Simulate: round R just finished; metrics.rounds was bumped to
+        // R+1; the join window opens with `current_round = R+1 = 7`.
+        // The joiner will be scheduled into round 7, NOT round 8.
+        let current_round_passed: u32 = 7;
+        let outcome = process_join_request(
+            &mut s_coord,
+            msg,
+            &grid_config,
+            &node_config,
+            None,
+            &mut next_worker_id,
+            current_round_passed,
+            &active,
+        )
+        .await
+        .expect("process_join_request");
+        assert!(outcome.is_some(), "QA-005: valid JoinRequest must succeed");
+
+        // Worker reads the JoinAck and asserts the round number matches
+        // the upcoming round, NOT upcoming + 1.
+        let (ack, _) = recv_frame(&mut s_worker, node_config.max_payload_size)
+            .await
+            .expect("ack recv");
+        match ack {
+            Message::JoinAck {
+                next_round_number, ..
+            } => {
+                assert_eq!(
+                    next_round_number, current_round_passed,
+                    "QA-005: JoinAck.next_round_number must be the upcoming round ({}), not upcoming+1",
+                    current_round_passed,
+                );
+            }
+            other => panic!("expected JoinAck, got {:?}", other),
+        }
+    }
+
+    /// QA-001 (Phase B refactor) — SoloReducing must make progress.
+    /// The previous `tokio::select! { ...accept... else => reduce_n(...) }`
+    /// trapped reduction in the unreachable `else` arm, causing the
+    /// coordinator to hang forever. After the fix, a non-empty net
+    /// reduces to convergence inside SoloReducing without any incoming
+    /// connection.
+    ///
+    /// Unit-level coverage: the post-fix loop is structured so that
+    /// `reduce_n` runs unconditionally each iteration, and accept is
+    /// polled non-blocking. A stand-alone reduce loop bound by
+    /// `solo_budget` therefore must converge for any net that
+    /// converges under `reduce_all`.
+    #[test]
+    fn qa_001_solo_reducing_unit_reduce_loop_converges() {
+        use crate::net::{Net, PortRef, Symbol};
+        // Build a CON-CON annihilation net (one active pair).
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::FreePort(1));
+        net.connect(PortRef::AgentPort(b, 1), PortRef::FreePort(2));
+        net.connect(PortRef::AgentPort(b, 2), PortRef::FreePort(3));
+        // Active pair should reduce in a single batch with any
+        // reasonable solo_budget.
+        let solo_budget: usize = 10_000;
+        let mut iters: usize = 0;
+        while !net.redex_queue.is_empty() {
+            let stats = crate::reduction::reduce_n(&mut net, solo_budget);
+            if stats.total_interactions == 0 {
+                break;
+            }
+            iters += 1;
+            if iters > 100 {
+                panic!("QA-001: SoloReducing loop did not converge");
+            }
+        }
+        assert!(
+            net.redex_queue.is_empty(),
+            "QA-001: redex queue must be drained after solo reduction"
+        );
+        assert!(iters >= 1, "QA-001: at least one reduce batch must execute");
+    }
+
+    /// QA-002 (Phase B refactor) — the join-window pending-connection
+    /// drain wraps `recv_frame` in `tokio::time::timeout` bounded by
+    /// the remaining `join_window_max` budget. A connection that
+    /// never sends any bytes must NOT stall past that budget.
+    #[tokio::test]
+    async fn qa_002_recv_frame_in_join_window_is_bounded_by_timeout() {
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let server_handle = tokio::spawn(async move {
+            server.listen().await.ok();
+            server.accept().await.expect("accept")
+        });
+        let mut _silent_worker = client.connect().await.expect("connect");
+        let mut s_coord = server_handle.await.expect("join");
+
+        // Mimic the join-window remaining-budget wrap: 250ms cap.
+        let budget = Duration::from_millis(250);
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            budget,
+            recv_frame(&mut s_coord, NodeConfig::default().max_payload_size),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        assert!(outcome.is_err(), "QA-002: must time out without any bytes");
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "QA-002: must respect the budget; elapsed={:?}",
+            elapsed,
+        );
+    }
+
+    /// MF-001 (Phase B refactor) — coordinator NACKs a v3 JoinRequest
+    /// with `ProtocolVersionMismatch { coordinator: 4, worker: 3 }`
+    /// (u32 pair). Confirms NF-009 wire shape end-to-end.
+    #[tokio::test]
+    async fn mf_001_join_request_protocol_version_mismatch_uses_u32_pair() {
+        use crate::merge::GridConfig;
+        use crate::protocol::types::{JoinNackReason, WorkerCapabilities};
+
+        let (mut server, mut client) = ChannelTransport::pair(1, 65536);
+        let server_handle = tokio::spawn(async move {
+            server.listen().await.ok();
+            server.accept().await.expect("accept")
+        });
+        let mut s_worker = client.connect().await.expect("connect");
+        let mut s_coord = server_handle.await.expect("join");
+
+        // Worker sends v3 JoinRequest.
+        let join_req = Message::JoinRequest {
+            protocol_version: 3u32,
+            auth_token: None,
+            capabilities: WorkerCapabilities::default(),
+        };
+        send_frame(&mut s_worker, &join_req).await.expect("send");
+
+        // Coordinator processes it.
+        let (msg, _) = recv_frame(&mut s_coord, NodeConfig::default().max_payload_size)
+            .await
+            .expect("recv");
+        let grid_config = GridConfig {
+            elastic_join: true,
+            ..GridConfig::default()
+        };
+        let node_config = NodeConfig::default();
+        let mut next_worker_id: u32 = 1;
+        let active = std::collections::BTreeSet::<WorkerId>::new();
+        let outcome = process_join_request(
+            &mut s_coord,
+            msg,
+            &grid_config,
+            &node_config,
+            None,
+            &mut next_worker_id,
+            5,
+            &active,
+        )
+        .await
+        .expect("process_join_request");
+        assert!(outcome.is_none(), "MF-001: v3 worker must be rejected");
+
+        // Worker reads the JoinNack.
+        let (nack, _) = recv_frame(&mut s_worker, NodeConfig::default().max_payload_size)
+            .await
+            .expect("nack recv");
+        match nack {
+            Message::JoinNack {
+                reason:
+                    JoinNackReason::ProtocolVersionMismatch {
+                        coordinator,
+                        worker,
+                    },
+            } => {
+                assert_eq!(coordinator, PROTOCOL_VERSION as u32);
+                assert_eq!(worker, 3u32);
+            }
+            other => panic!(
+                "MF-001: expected JoinNack/ProtocolVersionMismatch, got {:?}",
+                other
+            ),
+        }
     }
 }

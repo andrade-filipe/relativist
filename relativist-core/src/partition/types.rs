@@ -14,21 +14,30 @@ pub type WorkerId = u32;
 ///
 /// Relocated from `coordinator.rs` per SPEC-13 R28 (shared types must live
 /// below the protocol layer so both `coordinator` and `protocol/` can import
-/// without circularity). TASK-0418 will add `Serialize`/`Deserialize` here and
-/// import via `crate::partition::LeaveKind`.
+/// without circularity). This is the canonical site; `protocol::types`
+/// re-exports it so the wire layer and the FSM layer cannot diverge
+/// (Phase B refactor MF-002 — 2026-04-27).
 ///
 /// # API stability
 ///
 /// `#[non_exhaustive]` is set so that downstream matchers are forced to include
 /// a wildcard arm when new leave reasons are added. Do not reorder variants —
 /// declaration order is part of the public ABI.
+///
+/// `#[repr(u8)]` pins the LLVM-level layout so any future zero-copy/rkyv
+/// consumer sees a stable variant byte (Phase B refactor QA-007).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    feature = "zero-copy",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum LeaveKind {
     /// Worker returns its current-round result first, then departs (R22a).
-    AfterResult,
+    AfterResult = 0,
     /// Worker cannot complete the current round; departs immediately (R22b).
-    Urgent,
+    Urgent = 1,
 }
 
 /// An exclusive range of AgentIds reserved for a worker.
