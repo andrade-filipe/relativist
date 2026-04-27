@@ -2205,16 +2205,21 @@ mod tests {
         }
     }
 
-    /// UT-0417-01: `PROTOCOL_VERSION == 4` sentinel at the wire-layer
-    /// call site. Pins the TASK-0417 bump for downstream bundles.
-    /// Qualified path: `use crate::protocol::*` would trip R19
-    /// source-scan pure-core invariant.
+    /// UT-0417-01 (updated by TASK-0476): `PROTOCOL_VERSION >= 5` sentinel at
+    /// the wire-layer call site. TASK-0417 bumped 3→4; TASK-0476 bumped 4→5.
+    /// Pure-core invariant: must NOT import `crate::protocol` directly.
+    /// Uses qualified path (`crate::protocol::coordinator::PROTOCOL_VERSION`)
+    /// inline in the assertion to satisfy R19.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn ut_0417_01_protocol_version_equals_four_sentinel() {
-        assert_eq!(
-            crate::protocol::coordinator::PROTOCOL_VERSION,
-            4,
-            "PROTOCOL_VERSION must be 4 after TASK-0417 (SPEC-20 R37)"
+        // TASK-0417 guard: version was 4; TASK-0476 bumped to 5.
+        // Use ">= 5" to be landing-order-agnostic for future bumps while
+        // still verifying TASK-0417's work was not accidentally reverted.
+        assert!(
+            crate::protocol::coordinator::PROTOCOL_VERSION >= 5,
+            "PROTOCOL_VERSION must be >= 5 after TASK-0476 (SPEC-22 R9a); got {}",
+            crate::protocol::coordinator::PROTOCOL_VERSION
         );
     }
 

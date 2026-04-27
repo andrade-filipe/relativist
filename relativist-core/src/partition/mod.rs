@@ -28,4 +28,4 @@ pub use helpers::{classify_wires, compute_id_ranges, max_freeport_id, WireClassi
 pub use remap::remap_partition_ids;
 pub use split::split;
 pub use strategy::{ContiguousIdStrategy, PartitionStrategy};
-pub use types::{IdRange, LeaveKind, Partition, PartitionPlan, WorkerId};
+pub use types::{IdRange, LeaveKind, Partition, PartitionConfig, PartitionPlan, WorkerId};

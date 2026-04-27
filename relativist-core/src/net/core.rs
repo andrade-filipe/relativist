@@ -4,6 +4,7 @@
 //! port array, redex queue, and all CRUD operations.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use super::types::{total_ports, Agent, AgentId, PortRef, Symbol, DISCONNECTED, PORTS_PER_SLOT};
@@ -59,6 +60,75 @@ pub struct Net {
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub freeport_redirects: HashMap<u32, PortRef>,
+
+    /// SPEC-22 R1: free-list of recycled AgentId slots, LIFO (push/pop at end).
+    /// Initialized empty by `Net::new()` and `Net::with_capacity()` (R8).
+    /// Populated by `remove_agent` (R2) and consumed by `create_agent` (R3).
+    ///
+    /// Partition constraints (R10/R10b/R10c): in distributed contexts, the
+    /// free-list contains only IDs within the partition's `id_range`; protected
+    /// tombstones (border-referenced IDs under delta mode) are excluded.
+    ///
+    /// Always-on (R28): no feature gate; present in every build.
+    pub free_list: Vec<AgentId>,
+
+    /// SPEC-22 R10: the partition's owning ID range, if this Net belongs to a
+    /// partitioned worker. Set by `build_subnet`; `None` for whole-net contexts.
+    /// Not serialized (partition-context state).
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub id_range: Option<core::ops::Range<AgentId>>,
+
+    /// SPEC-22 R10b: border-entries shadow for `RecyclePolicy::BorderClean`.
+    /// Set by `build_subnet` for delta-mode workers; `None` in non-distributed contexts.
+    /// Not serialized (partition-context state).
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub border_entries_shadow: Option<HashSet<AgentId>>,
+
+    /// SPEC-22 R10b: recycle policy for delta-mode rounds.
+    /// Default: `RecyclePolicy::DisableUnderDelta`.
+    /// Not serialized (runtime policy, set by the worker dispatch loop).
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub recycle_policy: RecyclePolicy,
+
+    /// SPEC-22 R10b: true iff the current round is a delta-mode round.
+    /// Toggled by the worker dispatch loop at delta-round entry/exit.
+    /// Not serialized.
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub is_in_delta_round: bool,
+
+    /// SPEC-22 R10c (debug-only): protected tombstones — IDs that were
+    /// border-referenced when removed under delta mode. Excluded from the
+    /// free-list until the next `reconstruct` clean-boundary moment.
+    #[cfg(debug_assertions)]
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub protected_tombstones: Option<HashSet<AgentId>>,
+}
+
+/// SPEC-22 R10b: recycling strategy for delta-mode rounds.
+///
+/// Controls whether a worker may pop from the free-list during a delta-mode
+/// round, preventing G1 violations when `BorderGraph` slot-id stability is
+/// required.
+///
+/// - `DisableUnderDelta` (default, Strategy A): workers MUST NOT pop from the
+///   free-list during a delta-mode round; `create_agent` falls through to
+///   `next_id` allocation. The free-list is drained at the next clean partition
+///   boundary (`reconstruct` per SPEC-19 R38).
+/// - `BorderClean` (Strategy B): workers MAY pop from the free-list only if the
+///   popped ID is NOT in the partition's `border_entries_shadow`. Border-referenced
+///   IDs are re-pushed and a fresh allocation is returned instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum RecyclePolicy {
+    /// Strategy A (default): disable recycle during delta-mode rounds.
+    #[default]
+    DisableUnderDelta,
+    /// Strategy B: allow recycle of non-border-referenced IDs during delta-mode.
+    BorderClean,
 }
 
 impl Default for Net {
@@ -69,6 +139,8 @@ impl Default for Net {
 
 impl Net {
     /// Creates an empty Net with no agents, wires, or redexes.
+    ///
+    /// SPEC-22 R8: `free_list` is initialized empty.
     ///
     /// # Naming
     ///
@@ -86,6 +158,13 @@ impl Net {
             next_id: 0,
             root: None,
             freeport_redirects: HashMap::new(),
+            free_list: Vec::new(),
+            id_range: None,
+            border_entries_shadow: None,
+            recycle_policy: RecyclePolicy::DisableUnderDelta,
+            is_in_delta_round: false,
+            #[cfg(debug_assertions)]
+            protected_tombstones: None,
         }
     }
 
@@ -93,6 +172,9 @@ impl Net {
     ///
     /// Pre-allocates the agent arena for `capacity` slots and the port
     /// array for `capacity * PORTS_PER_SLOT` slots.
+    ///
+    /// SPEC-22 R8: `free_list` is initialized empty. The capacity hint does
+    /// NOT pre-allocate the free-list — it grows on demand via `remove_agent`.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             agents: Vec::with_capacity(capacity),
@@ -101,18 +183,105 @@ impl Net {
             next_id: 0,
             root: None,
             freeport_redirects: HashMap::new(),
+            free_list: Vec::new(),
+            id_range: None,
+            border_entries_shadow: None,
+            recycle_policy: RecyclePolicy::DisableUnderDelta,
+            is_in_delta_round: false,
+            #[cfg(debug_assertions)]
+            protected_tombstones: None,
         }
     }
 
     /// Creates a new agent with the given symbol and returns its assigned ID.
     ///
-    /// The agent gets `next_id` as its ID, and `next_id` is incremented.
-    /// The agent arena and port array are expanded as needed. All new port
-    /// slots are initialized to `DISCONNECTED`.
+    /// SPEC-22 R3/R4/R5 (free-list path): if `free_list` is non-empty AND
+    /// the recycle policy allows it for the current round, pops the most
+    /// recently freed ID (LIFO), re-initializes its slot, and returns it.
+    /// `next_id` is NOT incremented and the arena is NOT expanded.
     ///
-    /// Complexity: O(1) amortized (may trigger Vec reallocation).
-    /// Postcondition: `agents[id] == Some(Agent { symbol, id })`, `next_id == id + 1`.
+    /// SPEC-22 R3 (fresh-allocation path): if `free_list` is empty (or
+    /// recycling is disabled by `RecyclePolicy::DisableUnderDelta` during a
+    /// delta-mode round), falls through to `next_id` allocation.
+    ///
+    /// Complexity: O(1) amortized (may trigger Vec reallocation on the fresh path).
+    /// Postcondition: `agents[id] == Some(Agent { symbol, id })`.
     pub fn create_agent(&mut self, symbol: Symbol) -> AgentId {
+        // SPEC-22 R10b Strategy A: skip the free-list entirely during a
+        // delta-mode round when the policy is DisableUnderDelta.
+        let skip_recycle = self.is_in_delta_round
+            && self.recycle_policy == RecyclePolicy::DisableUnderDelta;
+
+        if !skip_recycle {
+            // SPEC-22 R5 (LIFO): try to pop the most recently freed ID.
+            // Strategy B: if popped ID is border-protected, re-push and fall through.
+            if let Some(id) = self.free_list.pop() {
+                // SPEC-22 R10b Strategy B: if the ID is border-protected, re-push
+                // and fall through to fresh allocation for this call.
+                if self.recycle_policy == RecyclePolicy::BorderClean
+                    && self.is_border_protected(id)
+                {
+                    self.free_list.push(id);
+                    // Fall through to fresh allocation below.
+                } else {
+                    // SPEC-22 R10: defensive — verify ID is in partition's range (debug only).
+                    // Only fire for IDs that were allocated FROM the fresh range (id >= range.start).
+                    // Pre-split agent IDs (id < range.start) are always below the fresh range and
+                    // are legitimately recycled without violating R10 (they belong to this partition
+                    // by σ assignment, not by range allocation).
+                    #[cfg(debug_assertions)]
+                    if let Some(ref range) = self.id_range {
+                        if id >= range.start {
+                            debug_assert!(
+                                range.contains(&id),
+                                "SPEC-22 R10 violation: popped id {} not in partition range {:?}",
+                                id,
+                                range
+                            );
+                        }
+                    }
+
+                    // SPEC-22 R4(b): re-initialize slot.
+                    debug_assert!(
+                        self.agents.get(id as usize).and_then(|s| s.as_ref()).is_none(),
+                        "SPEC-22 R4: recycled slot {} is not None (free-list invariant violated)",
+                        id
+                    );
+
+                    // Expand arena if somehow the slot is out of bounds
+                    // (synthetic-state edge case per TEST-SPEC-0472 EC-2).
+                    if self.agents.len() <= id as usize {
+                        self.agents.resize((id as usize) + 1, None);
+                    }
+                    self.agents[id as usize] = Some(Agent { symbol, id });
+
+                    // Re-initialize the 3 port slots to DISCONNECTED (R4(b) defensive).
+                    let required_len = (id as usize + 1) * PORTS_PER_SLOT;
+                    if self.ports.len() < required_len {
+                        self.ports.resize(required_len, DISCONNECTED);
+                    }
+                    let base = id as usize * PORTS_PER_SLOT;
+                    for offset in 0..PORTS_PER_SLOT {
+                        self.ports[base + offset] = DISCONNECTED;
+                    }
+
+                    // SPEC-22 R10c: guard against recycling a protected tombstone.
+                    #[cfg(debug_assertions)]
+                    debug_assert!(
+                        !self
+                            .protected_tombstones
+                            .as_ref()
+                            .is_some_and(|s| s.contains(&id)),
+                        "SPEC-22 R10c: attempted recycle of protected tombstone {}",
+                        id
+                    );
+
+                    return id;
+                }
+            }
+        }
+
+        // Fresh allocation path (SPEC-22 R3 fall-through).
         let id = self.next_id;
         self.next_id += 1;
 
@@ -228,14 +397,21 @@ impl Net {
     /// Removes an agent from the net.
     ///
     /// Disconnects all of the agent's ports (based on its symbol's
-    /// `total_ports`), then marks the slot as `None`. The `AgentId` is
-    /// NOT reused — the slot stays `None` for the rest of the execution.
+    /// `total_ports`), then marks the slot as `None`.
+    ///
+    /// SPEC-22 R2 / §4.3: after clearing the slot, purges any
+    /// `freeport_redirects` entry keyed by this agent's ID (closes SC-001
+    /// second surface — prevents stale redirects referencing a recycled slot),
+    /// then pushes the ID onto `free_list` UNLESS `is_border_protected(id)`
+    /// returns `true` (R10b/R10c protected-tombstone path).
+    ///
     /// No-op if the slot is already `None` or out of bounds.
     ///
     /// Does NOT clean up the redex queue — stale entries are detected
     /// at dequeue time (SPEC-02 R17).
     ///
-    /// Complexity: O(1) (at most 3 ports to disconnect).
+    /// Complexity: O(1) (at most 3 ports to disconnect; O(n) duplicate check
+    /// in debug builds unless shadow is adopted — see TASK-0474).
     pub fn remove_agent(&mut self, id: AgentId) {
         let idx = id as usize;
         if idx < self.agents.len() {
@@ -245,6 +421,115 @@ impl Net {
                     self.disconnect(PortRef::AgentPort(id, p));
                 }
                 self.agents[idx] = None;
+
+                // SPEC-22 §4.1 / SC-001 second surface: purge stale freeport_redirects entry.
+                self.freeport_redirects.remove(&id);
+
+                // SPEC-22 R2 + R10b/R10c: push to free-list unless border-protected.
+                if !self.is_border_protected(id) {
+                    // SPEC-22 R6 (closes SC-018): no duplicates — asserted in debug builds.
+                    debug_assert!(
+                        !self.free_list.contains(&id),
+                        "SPEC-22 R6: free-list duplicate detected for id {}; I3' violation",
+                        id
+                    );
+                    self.free_list.push(id);
+                } else {
+                    // R10c: protected tombstone — slot stays None, ports DISCONNECTED,
+                    // ID NOT pushed to free_list until next reconstruct clean-boundary.
+                    #[cfg(debug_assertions)]
+                    if let Some(ref mut tombstones) = self.protected_tombstones {
+                        tombstones.insert(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// SPEC-22 R10b/R10c: returns `true` iff `id` is border-referenced and
+    /// MUST NOT be recycled in the current delta-mode round.
+    ///
+    /// Default (single-net / non-distributed contexts): always returns `false`.
+    /// Distributed call sites populate `border_entries_shadow` via `build_subnet`
+    /// (TASK-0481) to override this behavior (TASK-0482).
+    fn is_border_protected(&self, id: AgentId) -> bool {
+        self.border_entries_shadow
+            .as_ref()
+            .is_some_and(|s| s.contains(&id))
+    }
+
+    /// SPEC-22 R9: validates the free-list post-condition.
+    ///
+    /// Every ID in `free_list` MUST correspond to a `None` slot in the arena.
+    /// Called after deserialization (R9) and after `merge` (TASK-0483) in debug builds.
+    ///
+    /// Returns `Ok(())` if the invariant holds; `Err(NetError::FreeListInvalid)`
+    /// if any entry is invalid.
+    pub fn validate_free_list(&self) -> Result<(), crate::error::NetError> {
+        for &id in &self.free_list {
+            if self
+                .agents
+                .get(id as usize)
+                .and_then(|s| s.as_ref())
+                .is_some()
+            {
+                return Err(crate::error::NetError::FreeListInvalid {
+                    id,
+                    reason: "slot is Some",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Drains protected tombstones back to the free-list at a clean partition
+    /// boundary (`reconstruct` per SPEC-19 R38, TASK-0482).
+    ///
+    /// IDs in `border_entries_shadow` (the protected-tombstone source) whose
+    /// arena slots are still `None` are pushed to `free_list`; others (slots
+    /// since filled) are discarded. Resets `is_in_delta_round` and clears
+    /// `border_entries_shadow` for the next round.
+    ///
+    /// In debug builds, also drains `protected_tombstones` for the
+    /// invariant-tracking shadow path.
+    pub fn reconstruct_drain_tombstones(&mut self) {
+        // Reset delta-round flag at clean boundary.
+        self.is_in_delta_round = false;
+
+        // Drain all border-shadow IDs whose slots are still None (the canonical
+        // tombstone recovery path — works in both release and debug builds).
+        if let Some(shadow) = self.border_entries_shadow.take() {
+            for id in shadow {
+                if self
+                    .agents
+                    .get(id as usize)
+                    .is_none_or(|s| s.is_none())
+                    && !self.free_list.contains(&id)
+                {
+                    self.free_list.push(id);
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let ids: Vec<AgentId> = self
+                .protected_tombstones
+                .as_ref()
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+            for id in ids {
+                if self
+                    .agents
+                    .get(id as usize)
+                    .is_none_or(|s| s.is_none())
+                    && !self.free_list.contains(&id)
+                {
+                    self.free_list.push(id);
+                }
+            }
+            if let Some(ref mut ts) = self.protected_tombstones {
+                ts.clear();
             }
         }
     }
@@ -293,8 +578,15 @@ impl Net {
 
     /// Returns the number of live (non-`None`) agents in the net.
     ///
+    /// SPEC-22 R11: free-list entries correspond to `None` slots and are
+    /// therefore EXCLUDED from this count automatically — `flatten()` skips
+    /// `None` slots. The free-list does NOT change the semantics of this
+    /// function; it only affects which `None` slots are available for reuse.
+    ///
     /// Complexity: O(A) where A is the arena length.
     pub fn count_live_agents(&self) -> usize {
+        // SPEC-22 R11: agents.iter().flatten() naturally excludes None slots
+        // (free-list entries correspond to None slots and are skipped).
         self.agents.iter().filter(|slot| slot.is_some()).count()
     }
 
@@ -426,10 +718,11 @@ impl Net {
     /// - SPEC-02 §3.8 A7 (pending — ESPECIALISTA EM SPECS owes a
     ///   SPEC-02 v4 revision; QA-011)
     pub fn union(self, other: Net) -> Net {
-        // SPEC-22 D-009 will add `free_list: VecDeque<AgentId>` — the
-        // destructure pattern below MUST be updated when that field
-        // lands (RV-005).
         // Decompose so we own each field; avoids borrow contention.
+        // SPEC-22 D-009 (RV-005): free_list, id_range, border_entries_shadow,
+        // recycle_policy, is_in_delta_round, and protected_tombstones are
+        // now included. The merged net takes `self`'s free-list and discards
+        // `other`'s (union semantics: free-list reconciliation is `merge`'s job).
         let Net {
             agents: agents_a,
             ports: ports_a,
@@ -437,6 +730,13 @@ impl Net {
             next_id: next_id_a,
             root: root_a,
             freeport_redirects: mut redirects_a,
+            free_list: free_list_a,
+            id_range: _id_range_a,
+            border_entries_shadow: _bes_a,
+            recycle_policy: recycle_policy_a,
+            is_in_delta_round: _delta_a,
+            #[cfg(debug_assertions)]
+            protected_tombstones: _pt_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -445,6 +745,13 @@ impl Net {
             next_id: next_id_b,
             root: _root_b_dropped,
             freeport_redirects: redirects_b,
+            free_list: _free_list_b,
+            id_range: _id_range_b,
+            border_entries_shadow: _bes_b,
+            recycle_policy: _rp_b,
+            is_in_delta_round: _delta_b,
+            #[cfg(debug_assertions)]
+            protected_tombstones: _pt_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -531,6 +838,14 @@ impl Net {
             next_id: merged_next_id,
             root: root_a,
             freeport_redirects: redirects_a,
+            // SPEC-22: take self's free-list; other's is discarded (see above).
+            free_list: free_list_a,
+            id_range: None,
+            border_entries_shadow: None,
+            recycle_policy: recycle_policy_a,
+            is_in_delta_round: false,
+            #[cfg(debug_assertions)]
+            protected_tombstones: None,
         }
     }
 }
@@ -1235,6 +1550,654 @@ mod tests {
     // never carried on the wire and the round-trip MUST inflate it to
     // an empty HashMap (matching its `Default` value).
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // TASK-0471: Net.free_list field + constructor initialization (SPEC-22 R1, R8, R28)
+    // -----------------------------------------------------------------------
+
+    /// UT-0471-01: Net::new() initializes empty free_list.
+    #[test]
+    fn net_new_initializes_empty_free_list() {
+        let net = Net::new();
+        assert!(net.free_list.is_empty(), "R8: free_list must be empty on Net::new()");
+    }
+
+    /// UT-0471-02: Net::with_capacity initializes empty free_list.
+    #[test]
+    fn net_with_capacity_initializes_empty_free_list() {
+        let net = Net::with_capacity(100);
+        assert!(net.free_list.is_empty(), "R8: capacity hint does not pre-alloc free_list");
+    }
+
+    /// UT-0471-03: serde round-trip preserves empty free_list field.
+    #[test]
+    fn net_serde_round_trip_preserves_empty_free_list_field() {
+        let net = Net::new();
+        let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
+        let net2: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+        assert!(net2.free_list.is_empty(), "serde round-trip must preserve empty free_list");
+    }
+
+    /// UT-0471-04: Clone preserves free_list content.
+    #[test]
+    fn net_clone_preserves_free_list() {
+        let mut net = Net::new();
+        net.free_list.push(7);
+        let net2 = net.clone();
+        assert_eq!(net2.free_list, vec![7], "Clone must preserve free_list");
+    }
+
+    /// UT-0471-05: PartialEq distinguishes nets with different free_lists.
+    #[test]
+    fn net_partial_eq_distinguishes_free_list() {
+        let mut a = Net::new();
+        let b = Net::new();
+        a.free_list.push(7);
+        assert_ne!(a, b, "PartialEq must include free_list");
+    }
+
+    /// UT-0471-06: free_list field is pub and accessible.
+    #[test]
+    fn net_field_is_pub_visible() {
+        let net = Net::new();
+        let _: &Vec<AgentId> = &net.free_list;
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0472: create_agent free-list pop (SPEC-22 R3, R4, R5)
+    // -----------------------------------------------------------------------
+
+    /// UT-0472-01: create_agent with empty free_list falls through to next_id.
+    #[test]
+    fn create_agent_with_empty_free_list_falls_through_to_next_id() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        assert_eq!(id, 0);
+        assert_eq!(net.next_id, 1);
+        assert_eq!(net.agents.len(), 1);
+        assert!(net.free_list.is_empty());
+    }
+
+    /// UT-0472-02: create_agent with one free_list entry recycles it (LIFO).
+    #[test]
+    fn create_agent_with_one_free_list_entry_recycles() {
+        let mut net = Net::new();
+        // Create then remove to get ID 0 in free list
+        let id0 = net.create_agent(Symbol::Con);
+        assert_eq!(id0, 0);
+        net.remove_agent(0);
+        assert_eq!(net.free_list, vec![0], "remove_agent should push to free_list");
+        assert_eq!(net.next_id, 1, "next_id unchanged after remove");
+        // Now recycle
+        let id_reused = net.create_agent(Symbol::Dup);
+        assert_eq!(id_reused, 0, "R3/R5: must pop from free_list (LIFO)");
+        assert_eq!(net.next_id, 1, "R4(c): next_id must NOT increment on recycle");
+        assert!(net.free_list.is_empty(), "free_list drained after recycle");
+        assert!(net.agents[0].is_some_and(|a| a.symbol == Symbol::Dup), "R4: slot reinitialized with new symbol");
+    }
+
+    /// UT-0472-03: recycle does not grow the arena.
+    #[test]
+    fn create_agent_recycle_does_not_grow_arena() {
+        let mut net = Net::new();
+        for _ in 0..5 { net.create_agent(Symbol::Con); }
+        assert_eq!(net.agents.len(), 5);
+        net.remove_agent(2); // free_list = [2]
+        let pre_len = net.agents.len();
+        let id = net.create_agent(Symbol::Era);
+        assert_eq!(id, 2, "should recycle slot 2");
+        assert_eq!(net.agents.len(), pre_len, "R4(c): arena must not expand on recycle");
+    }
+
+    /// UT-0472-04: recycle re-initializes port slots to DISCONNECTED.
+    #[test]
+    fn create_agent_recycle_re_initializes_port_slots() {
+        use crate::net::types::port_index;
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Era);
+        // Wire a port to something non-DISCONNECTED
+        net.connect(PortRef::AgentPort(id, 0), PortRef::FreePort(99));
+        net.remove_agent(id);
+        // Recycle
+        let id2 = net.create_agent(Symbol::Era);
+        assert_eq!(id2, id, "should recycle same slot");
+        // R4(b): all port slots DISCONNECTED after recycle
+        for p in 0..3u8 {
+            assert_eq!(net.ports[port_index(id2, p)], DISCONNECTED,
+                "R4(b): port {} must be DISCONNECTED after recycle", p);
+        }
+    }
+
+    /// UT-0472-05: returned ID is consistent with stored ID.
+    #[test]
+    fn create_agent_returned_id_is_consistent() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        assert_eq!(net.agents[id as usize].unwrap().id, id,
+            "postcondition: stored ID must equal returned ID");
+    }
+
+    /// UT-0472-06: postcondition Some with correct symbol for all 3 symbols.
+    #[test]
+    fn create_agent_postcondition_some_with_correct_symbol() {
+        for symbol in [Symbol::Con, Symbol::Dup, Symbol::Era] {
+            let mut net = Net::new();
+            let id = net.create_agent(symbol);
+            assert_eq!(net.agents[id as usize].unwrap().symbol, symbol,
+                "postcondition: symbol must match for {:?}", symbol);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0473: remove_agent free-list push (SPEC-22 R2, R7)
+    // -----------------------------------------------------------------------
+
+    /// UT-0473-01: remove_agent pushes ID to free_list (LIFO push at end).
+    #[test]
+    fn remove_agent_pushes_id_to_free_list() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id=0
+        net.create_agent(Symbol::Con); // id=1
+        net.create_agent(Symbol::Con); // id=2
+        net.remove_agent(1);
+        assert!(net.free_list.contains(&1), "R2: free_list must contain removed id");
+        assert_eq!(net.free_list.last(), Some(&1), "LIFO: last element must be the removed id");
+    }
+
+    /// UT-0473-02: remove_agent marks slot None.
+    #[test]
+    fn remove_agent_marks_slot_none() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id=0
+        net.create_agent(Symbol::Con); // id=1
+        net.remove_agent(1);
+        assert!(net.agents[1].is_none(), "slot must be None after remove");
+    }
+
+    /// UT-0473-03: remove_agent disconnects all ports bidirectionally.
+    #[test]
+    fn remove_agent_disconnects_all_ports() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        let c = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(c, 2));
+        net.remove_agent(a);
+        // Partners' ports are also disconnected (bidirectional)
+        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED,
+            "b's port must be DISCONNECTED after a is removed");
+        assert_eq!(net.get_target(PortRef::AgentPort(c, 1)), DISCONNECTED,
+            "c port 1 must be DISCONNECTED after a is removed");
+        assert_eq!(net.get_target(PortRef::AgentPort(c, 2)), DISCONNECTED,
+            "c port 2 must be DISCONNECTED after a is removed");
+    }
+
+    /// UT-0473-04: freeport_redirects purged on recycle (SC-001 second surface).
+    #[test]
+    fn freeport_redirects_purged_on_recycle() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id=0
+        net.create_agent(Symbol::Con); // id=1
+        // Manually insert a freeport_redirects entry keyed by 1
+        net.freeport_redirects.insert(1, PortRef::AgentPort(0, 1));
+        net.remove_agent(1);
+        assert!(!net.freeport_redirects.contains_key(&1),
+            "SC-001: freeport_redirects entry keyed by removed id must be purged");
+    }
+
+    /// UT-0473-05: only the removed id's freeport_redirects entry is purged.
+    #[test]
+    fn freeport_redirects_only_keyed_by_removed_id_purged() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id=0
+        net.create_agent(Symbol::Con); // id=1
+        net.create_agent(Symbol::Con); // id=2
+        net.freeport_redirects.insert(0, PortRef::AgentPort(2, 1));
+        net.freeport_redirects.insert(1, PortRef::AgentPort(0, 1));
+        net.freeport_redirects.insert(2, PortRef::AgentPort(0, 2));
+        net.remove_agent(1);
+        assert!(!net.freeport_redirects.contains_key(&1), "id 1 must be purged");
+        assert!(net.freeport_redirects.contains_key(&0), "id 0 must remain");
+        assert!(net.freeport_redirects.contains_key(&2), "id 2 must remain");
+    }
+
+    /// UT-0473-06: remove_agent on already-removed ID is idempotent.
+    #[test]
+    fn remove_agent_on_already_removed_id_is_idempotent() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.remove_agent(a);
+        let free_list_len = net.free_list.len();
+        net.remove_agent(a); // second remove on same id
+        assert_eq!(net.free_list.len(), free_list_len,
+            "second remove must NOT push to free_list again");
+    }
+
+    /// UT-0473-07: is_border_protected returns false in pure net context.
+    #[test]
+    fn is_border_protected_stub_returns_false_in_pure_net() {
+        let net = Net::new();
+        // border_entries_shadow is None -> is_border_protected always false
+        // Test by verifying that remove_agent pushes to free_list (not protected)
+        let mut net2 = Net::new();
+        let id = net2.create_agent(Symbol::Con);
+        net2.remove_agent(id);
+        assert!(net2.free_list.contains(&id),
+            "in pure net (no border_entries_shadow), remove must push to free_list");
+        // Reference the pure net to avoid unused-variable warning
+        let _ = &net;
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0474: free-list no-duplicates invariant (SPEC-22 R5, R6)
+    // -----------------------------------------------------------------------
+
+    /// UT-0474-01: LIFO — pop returns most recently pushed.
+    #[test]
+    fn pop_returns_most_recently_pushed() {
+        let mut net = Net::new();
+        net.free_list.push(7);
+        net.free_list.push(11);
+        assert_eq!(net.free_list.pop(), Some(11), "R5 LIFO: most recent push is first pop");
+        assert_eq!(net.free_list.pop(), Some(7));
+    }
+
+    /// UT-0474-02 (debug-only): duplicate push via remove_agent triggers debug_assert.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn duplicate_push_via_remove_agent_triggers_debug_assert() {
+        use std::panic;
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        // Normal remove: pushes id to free_list
+        net.remove_agent(id);
+        assert!(net.free_list.contains(&id));
+        // Artificially recreate the slot to make remove_agent think the agent still exists
+        net.agents[id as usize] = Some(Agent { symbol: Symbol::Con, id });
+        // Second remove should trigger debug_assert (R6 duplicate check)
+        let result = panic::catch_unwind(move || {
+            net.remove_agent(id);
+        });
+        assert!(result.is_err(), "R6: debug_assert must fire on duplicate free_list push");
+    }
+
+    /// UT-0474-03 (release-only): duplicate push does NOT panic.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_build_compiles_assertion_out() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        net.remove_agent(id);
+        // Re-insert agent slot to simulate second remove
+        net.agents[id as usize] = Some(Agent { symbol: Symbol::Con, id });
+        // In release, this should NOT panic (debug_assert is compiled out)
+        net.remove_agent(id); // Should silently push duplicate
+    }
+
+    /// UT-0474-04: multiple removes sequence builds correct LIFO stack.
+    #[test]
+    fn multiple_removes_build_lifo_stack() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id=0
+        net.create_agent(Symbol::Con); // id=1
+        net.create_agent(Symbol::Con); // id=2
+        net.remove_agent(0);
+        net.remove_agent(1);
+        net.remove_agent(2);
+        // free_list = [0, 1, 2] in push order; LIFO top is 2
+        assert_eq!(net.free_list, vec![0, 1, 2]);
+        assert_eq!(net.free_list.last(), Some(&2), "LIFO top must be 2");
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0475: free-list serde + bincode round-trip (SPEC-22 R9)
+    // -----------------------------------------------------------------------
+
+    /// UT-0475-01/02: serde round-trip preserves free_list order.
+    #[test]
+    fn serde_round_trip_preserves_free_list_order() {
+        let mut net = Net::new();
+        for _ in 0..5 { net.create_agent(Symbol::Con); } // IDs 0-4
+        net.remove_agent(1); // free_list = [1]
+        net.remove_agent(3); // free_list = [1, 3]
+        let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
+        let net2: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+        assert_eq!(net2.free_list, vec![1, 3], "serde round-trip must preserve free_list order");
+    }
+
+    /// UT-0475-03: validate_free_list returns Ok on valid state.
+    #[test]
+    fn validate_free_list_returns_ok_on_valid_state() {
+        let mut net = Net::new();
+        for _ in 0..5 { net.create_agent(Symbol::Con); }
+        net.remove_agent(1);
+        net.remove_agent(3);
+        // agents[1] and agents[3] are None, free_list = [1, 3]
+        assert!(net.validate_free_list().is_ok(), "R9: validate_free_list must return Ok on valid state");
+    }
+
+    /// UT-0475-04: validate_free_list rejects Some slot.
+    #[test]
+    fn validate_free_list_rejects_some_slot() {
+        use crate::error::NetError;
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        // Synthetic invalid state: free_list contains id but slot is Some
+        net.free_list.push(id);
+        let result = net.validate_free_list();
+        assert!(matches!(result, Err(NetError::FreeListInvalid { id: fid, reason: "slot is Some" }) if fid == id),
+            "R9: validate_free_list must return FreeListInvalid when slot is Some");
+    }
+
+    /// UT-0475-05: serde round-trip then validate passes.
+    #[test]
+    fn serde_round_trip_then_validate_passes() {
+        let mut net = Net::new();
+        for _ in 0..5 { net.create_agent(Symbol::Con); }
+        net.remove_agent(1);
+        net.remove_agent(3);
+        let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
+        let net2: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+        assert!(net2.validate_free_list().is_ok(), "R9: validate after round-trip must pass");
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0477: count_live_agents excludes free-list entries (SPEC-22 R11)
+    // -----------------------------------------------------------------------
+
+    /// UT-0477-01: count_live excludes free_list entries.
+    #[test]
+    fn count_live_excludes_free_list_entries() {
+        let mut net = Net::new();
+        for _ in 0..10 { net.create_agent(Symbol::Con); }
+        net.remove_agent(0);
+        net.remove_agent(2);
+        net.remove_agent(4);
+        net.remove_agent(6);
+        net.remove_agent(8);
+        assert_eq!(net.count_live_agents(), 5, "R11: count must exclude free-list slots");
+        assert_eq!(net.free_list.len(), 5, "free_list must have 5 entries");
+    }
+
+    /// UT-0477-02: count_live zero after full removal.
+    #[test]
+    fn count_live_zero_after_full_removal_with_free_list() {
+        let mut net = Net::new();
+        let ids: Vec<_> = (0..10).map(|_| net.create_agent(Symbol::Con)).collect();
+        for id in ids { net.remove_agent(id); }
+        assert_eq!(net.count_live_agents(), 0, "R11: count must be 0 after all removed");
+        assert_eq!(net.free_list.len(), 10, "free_list must have all 10 entries");
+    }
+
+    /// UT-0477-04: count_live increments on create with recycle.
+    #[test]
+    fn count_live_increments_on_create_with_recycle() {
+        let mut net = Net::new();
+        for _ in 0..5 { net.create_agent(Symbol::Con); } // 5 live
+        net.remove_agent(0);
+        net.remove_agent(1);
+        net.remove_agent(2); // 3 free, 2 live
+        assert_eq!(net.count_live_agents(), 2);
+        assert_eq!(net.free_list.len(), 3);
+        net.create_agent(Symbol::Dup); // recycles one from free_list
+        assert_eq!(net.count_live_agents(), 3, "count must increment on recycle-create");
+        assert_eq!(net.free_list.len(), 2, "free_list must shrink by 1");
+    }
+
+    /// UT-0477-06: count_live after reduce_all on 100 CON-CON pairs = 0.
+    #[test]
+    fn count_live_after_reduce_all_zero_in_pure_annihilation_net() {
+        use crate::reduction::reduce_all;
+        let mut net = Net::new();
+        // Build 100 CON-CON annihilation pairs
+        for _ in 0..100 {
+            let a = net.create_agent(Symbol::Con);
+            let b = net.create_agent(Symbol::Con);
+            net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+            net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+            net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+        }
+        reduce_all(&mut net);
+        assert_eq!(net.count_live_agents(), 0, "R11: annihilation net must have 0 live agents");
+        assert_eq!(net.free_list.len(), 200, "free_list must hold all 200 freed agents");
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0480: per-worker id_range defensive check (SPEC-22 R10)
+    // -----------------------------------------------------------------------
+
+    /// UT-0480-02: no id_range set — create_agent succeeds without assertion.
+    #[test]
+    fn id_range_none_skips_assertion_in_release() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        assert_eq!(id, 0, "fresh allocation must work with no id_range");
+    }
+
+    /// UT-0480-03: id_range set, in-range pop succeeds.
+    #[test]
+    fn id_range_some_in_range_id_pop_succeeds() {
+        let mut net = Net::new();
+        // Set up id_range = Some(0..100)
+        net.id_range = Some(0..100);
+        // Create and remove to get free_list=[50] scenario requires creating 51 agents
+        // Instead, directly populate to avoid debug_assert overhead: use fresh alloc then inject
+        // First create agents to fill arena up to id 50
+        for _ in 0..51 { net.create_agent(Symbol::Con); } // IDs 0..50
+        net.remove_agent(50); // free_list = [50]
+        // Now create_agent should pop 50 (in range 0..100)
+        let id = net.create_agent(Symbol::Con);
+        assert_eq!(id, 50, "R10: in-range pop must succeed");
+    }
+
+    /// UT-0480-04 (debug-only): out-of-range pop triggers debug_assert.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn id_range_some_traps_out_of_range_pop() {
+        use std::panic;
+        let mut net = Net::new();
+        net.id_range = Some(0..100);
+        // Synthetic invalid state: inject out-of-range id into free_list
+        // Need arena to be large enough to contain slot 150
+        for _ in 0..151 { net.create_agent(Symbol::Con); }
+        net.remove_agent(150); // would normally push 150 to free_list
+        // But 150 is outside 0..100; simulate the violation by directly injecting
+        // (the remove_agent will have pushed it since id_range check is only in create_agent)
+        assert!(net.free_list.contains(&150));
+        // Creating an agent should pop 150, and the debug_assert in create_agent fires
+        let result = panic::catch_unwind(move || {
+            net.create_agent(Symbol::Con);
+        });
+        assert!(result.is_err(), "R10: debug_assert must fire on out-of-range pop");
+    }
+
+    /// UT-0480-06: build_subnet sets id_range on returned net.
+    /// (Tested indirectly: id_range field exists and is pub.)
+    #[test]
+    fn id_range_field_is_pub_and_settable() {
+        let mut net = Net::new();
+        net.id_range = Some(0..100);
+        assert_eq!(net.id_range, Some(0..100));
+        net.id_range = None;
+        assert_eq!(net.id_range, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0482: RecyclePolicy enum + is_border_protected wiring (R10b/R10c)
+    // -----------------------------------------------------------------------
+
+    /// UT-0482-01: default RecyclePolicy is DisableUnderDelta.
+    #[test]
+    fn default_recycle_policy_is_disable_under_delta() {
+        let net = Net::new();
+        assert_eq!(net.recycle_policy, RecyclePolicy::DisableUnderDelta,
+            "R10b: default policy must be DisableUnderDelta");
+    }
+
+    /// UT-0482-02: RecyclePolicy serde round-trip.
+    #[test]
+    fn recycle_policy_enum_derives_serde() {
+        let policy = RecyclePolicy::BorderClean;
+        let bytes = crate::protocol::bincode_v2::encode(&policy).unwrap();
+        let back: RecyclePolicy = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+        assert_eq!(back, RecyclePolicy::BorderClean, "RecyclePolicy must round-trip through bincode");
+    }
+
+    /// UT-0482-03: is_border_protected returns false in pure net context.
+    #[test]
+    fn is_border_protected_returns_false_in_pure_net_context() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        net.remove_agent(id);
+        // With no border_entries_shadow, is_border_protected returns false for all ids,
+        // so remove_agent MUST push to free_list
+        assert!(net.free_list.contains(&id),
+            "R10b: without border_entries_shadow, is_border_protected must be false -> push to free_list");
+    }
+
+    /// UT-0482-04: is_border_protected returns true for border id.
+    #[test]
+    fn is_border_protected_returns_true_for_border_id() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con); // id=0
+        // Populate border_entries_shadow with id 0
+        let mut shadow = std::collections::HashSet::new();
+        shadow.insert(id);
+        net.border_entries_shadow = Some(shadow);
+        // Remove the agent: should NOT push to free_list (protected)
+        net.remove_agent(id);
+        assert!(!net.free_list.contains(&id),
+            "R10c: border-protected id must NOT be pushed to free_list");
+    }
+
+    /// UT-0482-05: is_border_protected returns false for non-border id.
+    #[test]
+    fn is_border_protected_returns_false_for_non_border_id() {
+        let mut net = Net::new();
+        let id0 = net.create_agent(Symbol::Con); // id=0
+        let id1 = net.create_agent(Symbol::Con); // id=1
+        // Only protect id0
+        let mut shadow = std::collections::HashSet::new();
+        shadow.insert(id0);
+        net.border_entries_shadow = Some(shadow);
+        // Remove id1: NOT protected, so must push to free_list
+        net.remove_agent(id1);
+        assert!(net.free_list.contains(&id1),
+            "R10b: non-border id must be pushed to free_list");
+    }
+
+    /// UT-0482-06: Strategy A skips pop during delta round.
+    #[test]
+    fn strategy_a_skips_pop_during_delta_round() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        net.remove_agent(id); // free_list = [id]
+        // Enable delta round + DisableUnderDelta (Strategy A)
+        net.is_in_delta_round = true;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        let next_before = net.next_id;
+        let new_id = net.create_agent(Symbol::Con);
+        assert_eq!(new_id, next_before, "R10b Strategy A: must fall through to fresh alloc during delta");
+        assert!(net.free_list.contains(&id), "free_list must still contain the id (not popped)");
+    }
+
+    /// UT-0482-07: Strategy A pops when NOT in delta round.
+    #[test]
+    fn strategy_a_pops_when_not_in_delta_round() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        net.remove_agent(id); // free_list = [id]
+        // NOT in delta round
+        net.is_in_delta_round = false;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        let new_id = net.create_agent(Symbol::Con);
+        assert_eq!(new_id, id, "R10b Strategy A: must pop from free_list when not in delta round");
+    }
+
+    /// UT-0482-08: Strategy B pops non-border id during delta round.
+    #[test]
+    fn strategy_b_pops_non_border_id() {
+        let mut net = Net::new();
+        let id0 = net.create_agent(Symbol::Con); // id=0
+        let id1 = net.create_agent(Symbol::Con); // id=1
+        // id0 is border-protected, id1 is not
+        let mut shadow = std::collections::HashSet::new();
+        shadow.insert(id0);
+        net.border_entries_shadow = Some(shadow);
+        net.remove_agent(id1); // free_list = [1]
+        net.is_in_delta_round = true;
+        net.recycle_policy = RecyclePolicy::BorderClean;
+        let new_id = net.create_agent(Symbol::Dup);
+        assert_eq!(new_id, id1, "R10b Strategy B: must pop non-border id");
+    }
+
+    /// UT-0482-09: Strategy B re-pushes border id on pop collision.
+    #[test]
+    fn strategy_b_re_pushes_border_id_on_pop_collision() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con); // id=0
+        let next_before_remove = net.next_id;
+        // protect id=0
+        let mut shadow = std::collections::HashSet::new();
+        shadow.insert(id);
+        net.border_entries_shadow = Some(shadow);
+        // Manually push id into free_list (simulate: it wasn't removed via remove_agent
+        // because border-protected, but synthetic state for this test)
+        net.free_list.push(id);
+        net.is_in_delta_round = true;
+        net.recycle_policy = RecyclePolicy::BorderClean;
+        // create_agent: pops id=0, sees it's border-protected, re-pushes, falls through to fresh
+        let new_id = net.create_agent(Symbol::Con);
+        assert_ne!(new_id, id, "R10b Strategy B: border-protected id must NOT be returned");
+        assert_eq!(new_id, next_before_remove, "R10b Strategy B: must fall through to fresh alloc");
+        // The border id is re-pushed back
+        assert!(net.free_list.contains(&id), "border id must be re-pushed after rejection");
+    }
+
+    /// UT-0482-10: R10c protected tombstone on remove_agent.
+    #[test]
+    fn r10c_protected_tombstone_on_remove_agent() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        // Protect id
+        let mut shadow = std::collections::HashSet::new();
+        shadow.insert(id);
+        net.border_entries_shadow = Some(shadow);
+        net.is_in_delta_round = true;
+        net.remove_agent(id);
+        assert!(net.agents[id as usize].is_none(), "slot must be None after remove");
+        assert!(!net.free_list.contains(&id), "R10c: border-protected id must NOT be in free_list");
+    }
+
+    /// UT-0482-11: protected tombstone drained at reconstruct.
+    #[test]
+    fn protected_tombstone_drained_at_reconstruct() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con);
+        let mut shadow = std::collections::HashSet::new();
+        shadow.insert(id);
+        net.border_entries_shadow = Some(shadow);
+        net.is_in_delta_round = true;
+        net.remove_agent(id);
+        assert!(!net.free_list.contains(&id), "pre-reconstruct: id not in free_list");
+        // Drain tombstones
+        net.reconstruct_drain_tombstones();
+        assert!(net.free_list.contains(&id), "post-reconstruct: tombstone must be drained to free_list");
+        assert!(!net.is_in_delta_round, "reconstruct must reset is_in_delta_round");
+    }
+
+    /// UT-0482-12: non-distributed context unaffected by recycle_policy.
+    #[test]
+    fn non_distributed_context_unaffected_by_recycle_policy() {
+        let mut net = Net::new();
+        // Pure net: no border_entries_shadow, not in delta round
+        let id = net.create_agent(Symbol::Con);
+        net.remove_agent(id); // pushed to free_list
+        let recycled_id = net.create_agent(Symbol::Dup); // should pop from free_list
+        assert_eq!(recycled_id, id, "non-distributed context: recycle must work normally");
+    }
 
     /// UT-0353-04: Net round-trips through rkyv with a small, connected
     /// pair of agents. Net implements PartialEq, so we compare the whole

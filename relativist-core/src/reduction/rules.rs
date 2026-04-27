@@ -841,9 +841,18 @@ mod tests {
         net.redex_queue.clear();
         interact_eras(&mut net, a, b);
 
-        // Original agents removed
-        assert!(net.get_agent(a).is_none());
-        assert!(net.get_agent(b).is_none());
+        // Original CON (a) and ERA (b) are removed; their slots may be recycled
+        // by the 2 new ERAs created within interact_eras (SPEC-22 free-list reuse).
+        // Verify: if slot `a` is occupied, it must hold an ERA (not the original CON).
+        if let Some(recycled) = net.get_agent(a) {
+            assert_eq!(recycled.symbol, Symbol::Era, "slot `a` was recycled but not as ERA");
+        }
+        // Slot `b` also recycled or None.
+        if let Some(recycled) = net.get_agent(b) {
+            assert_eq!(recycled.symbol, Symbol::Era, "slot `b` was recycled but not as ERA");
+        }
+        // Total live: x, y + 2 new ERAs = 4
+        assert_eq!(net.count_live_agents(), 4);
 
         // x.1 now points to a new ERA's principal port
         let x1_target = net.get_target(PortRef::AgentPort(x, 1));
@@ -887,8 +896,16 @@ mod tests {
 
         interact_eras(&mut net, a, b);
 
-        assert!(net.get_agent(a).is_none());
-        assert!(net.get_agent(b).is_none());
+        // Original DUP (a) and ERA (b) are removed; their slots may be recycled.
+        // Verify: if slot is occupied, it must hold an ERA (SPEC-22 free-list reuse).
+        if let Some(recycled) = net.get_agent(a) {
+            assert_eq!(recycled.symbol, Symbol::Era, "slot `a` recycled but not as ERA");
+        }
+        if let Some(recycled) = net.get_agent(b) {
+            assert_eq!(recycled.symbol, Symbol::Era, "slot `b` recycled but not as ERA");
+        }
+        // Total live: x, y + 2 new ERAs = 4
+        assert_eq!(net.count_live_agents(), 4);
 
         // x.1 -> new ERA.p0
         let x1_target = net.get_target(PortRef::AgentPort(x, 1));
@@ -1031,10 +1048,26 @@ mod tests {
 
         interact_eras(&mut net, a, b);
 
-        // ERA(b) was removed, its slots should all be DISCONNECTED
-        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
-        assert_eq!(net.get_target(PortRef::AgentPort(b, 1)), DISCONNECTED);
-        assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
+        // ERA(b) was removed and its slot is either:
+        //  (a) still None with DISCONNECTED ports, OR
+        //  (b) recycled by interact_eras — the new agent owns the slot.
+        // Either way, the slot is internally consistent: if None → DISCONNECTED;
+        // if Some(new_era) → port 0 is connected to a FreePort (FreePort(0) or
+        // FreePort(1) from a's aux ports), and ports 1 and 2 are DISCONNECTED.
+        // (SPEC-22 R4(b) ensures defensive re-initialization on recycle.)
+        if net.get_agent(b).is_none() {
+            // Slot truly empty — all ports DISCONNECTED (old behavior).
+            assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED);
+            assert_eq!(net.get_target(PortRef::AgentPort(b, 1)), DISCONNECTED);
+            assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
+        } else {
+            // Slot recycled — new ERA is live; verify it is an ERA.
+            assert_eq!(net.get_agent(b).unwrap().symbol, Symbol::Era);
+            // Aux slots (1 and 2) must be DISCONNECTED for a freshly created ERA
+            // (ERAs have arity 0; only port 0 is ever connected).
+            assert_eq!(net.get_target(PortRef::AgentPort(b, 1)), DISCONNECTED);
+            assert_eq!(net.get_target(PortRef::AgentPort(b, 2)), DISCONNECTED);
+        }
     }
 
     // ===================================================================
@@ -1071,12 +1104,10 @@ mod tests {
 
         interact_comm(&mut net, a, b);
 
-        // Original pair removed
-        assert!(net.get_agent(a).is_none());
-        assert!(net.get_agent(b).is_none());
-
         // 4 context agents + 4 new agents = 8 live agents
         // (6 original - 2 removed + 4 created = 8)
+        // With SPEC-22 free-list recycling, the original `a` and `b` slots
+        // may be reused by new agents — the count stays correct either way.
         assert_eq!(net.count_live_agents(), 8);
     }
 
@@ -1290,35 +1321,34 @@ mod tests {
 
         interact_comm(&mut net, a, b);
 
-        // Find new agents by scanning live agents (excluding removed a, b)
-        let new_agents: Vec<_> = net
-            .live_agents()
-            .filter(|agent| agent.id != a && agent.id != b)
-            .collect();
-        assert_eq!(new_agents.len(), 4);
+        // With SPEC-22 free-list recycling, original IDs `a` and `b` may be
+        // reused by the 4 new agents. We enumerate ALL live agents.
+        // After interact_comm: 4 new agents total (started with 2, removed 2, created 4).
+        let all_agents: Vec<_> = net.live_agents().copied().collect();
+        assert_eq!(all_agents.len(), 4, "expected 4 live agents after CON-DUP commutation");
 
-        // New DUPs' principal ports should point to FreePort(10) and FreePort(20)
-        let dup_agents: Vec<_> = new_agents
+        // Find the 2 new DUPs (inheriting CON's aux port targets: FreePort(10), FreePort(20))
+        let dup_agents: Vec<_> = all_agents
             .iter()
-            .filter(|a| a.symbol == Symbol::Dup)
+            .filter(|ag| ag.symbol == Symbol::Dup)
             .collect();
-        assert_eq!(dup_agents.len(), 2);
+        assert_eq!(dup_agents.len(), 2, "expected 2 DUP agents");
         let dup_targets: Vec<_> = dup_agents
             .iter()
-            .map(|a| net.get_target(PortRef::AgentPort(a.id, 0)))
+            .map(|ag| net.get_target(PortRef::AgentPort(ag.id, 0)))
             .collect();
         assert!(dup_targets.contains(&PortRef::FreePort(10)));
         assert!(dup_targets.contains(&PortRef::FreePort(20)));
 
-        // New CONs' principal ports should point to FreePort(30) and FreePort(40)
-        let con_agents: Vec<_> = new_agents
+        // Find the 2 new CONs (inheriting DUP's aux port targets: FreePort(30), FreePort(40))
+        let con_agents: Vec<_> = all_agents
             .iter()
-            .filter(|a| a.symbol == Symbol::Con)
+            .filter(|ag| ag.symbol == Symbol::Con)
             .collect();
-        assert_eq!(con_agents.len(), 2);
+        assert_eq!(con_agents.len(), 2, "expected 2 CON agents");
         let con_targets: Vec<_> = con_agents
             .iter()
-            .map(|a| net.get_target(PortRef::AgentPort(a.id, 0)))
+            .map(|ag| net.get_target(PortRef::AgentPort(ag.id, 0)))
             .collect();
         assert!(con_targets.contains(&PortRef::FreePort(30)));
         assert!(con_targets.contains(&PortRef::FreePort(40)));

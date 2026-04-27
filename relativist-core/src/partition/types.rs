@@ -289,6 +289,36 @@ impl PartitionPlan {
     }
 }
 
+/// Configuration for `build_subnet_with_config` (SPEC-22 §3.4 R30).
+///
+/// Controls the arena construction strategy used when building a partition
+/// subnet. The default is the sparse path (`sparse_build: true`), which is
+/// safe for all partition sizes. The dense path (`sparse_build: false`) is
+/// only honored when the id_range is small relative to the live agent count
+/// (threshold: `id_range_size <= 4 × live_count`); exceeding the threshold
+/// with `sparse_build: false` is rejected with
+/// `PartitionError::DenseAllocationExceedsThreshold` to guard against the
+/// M5 memory pathology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartitionConfig {
+    /// SPEC-22 §3.4 R30: whether to use sparse arena construction.
+    ///
+    /// Default: `true` (sparse path). When `false`, the dense path is used
+    /// if and only if `id_range_size <= 4 × live_count`. Any configuration
+    /// that exceeds the threshold with `sparse_build: false` is rejected with
+    /// `PartitionError::DenseAllocationExceedsThreshold`.
+    pub sparse_build: bool,
+}
+
+impl Default for PartitionConfig {
+    fn default() -> Self {
+        Self {
+            // SPEC-22 R30: sparse path is the safe default.
+            sparse_build: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

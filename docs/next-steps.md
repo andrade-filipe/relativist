@@ -6,47 +6,34 @@
 
 **Maintained by:** sdd-pipeline agent (see `docs/WORKFLOWS.md`)
 
-### Active Bundle — Tier 2 + Tier 3 DEV
+### Active Bundle — Tier 3 (Memory Efficiency) — D-009 OPEN
 
-**Opened:** 2026-04-25 (Tier 2 first; Tier 3 next; Tier 4+5 deferred per user directive).
-**Authoritative plan:** `C:\Users\Filipe\.claude\plans\kind-shimmying-harbor.md` (master) + `docs/plans/2026-04-24-tier-4-master-plan.md` §2/§3.
+**Opened:** 2026-04-27 (D-006 Tier 2 closed; advancing to Tier 3).
+**Authoritative plan:** `C:\Users\Filipe\.claude\plans\kind-shimmying-harbor.md` (master) + `docs/plans/2026-04-24-tier-4-master-plan.md` §3.
 
-### SPEC-20 Elastic Grid Bundle (D-006) — STATUS: 3 of 4 phases REFACTORED; Phase D outstanding
+### D-009: SPEC-22 Arena Management — Stage 3 DEV (Amendment Wave)
 
-The Stage 3 DEV pass (TASK-0410..0455) was delegated to a non-Claude LLM 2026-04-25; commits `4fb77bc..a84cb37` (12 commits, archived at tag `v2-llm-experiment-archive`). The code compiled and tests passed (1256/1299) but the Stage 4+5 audit on 2026-04-27 found **14 CRITICAL + 23 HIGH bugs** (see `docs/reviews/AUDIT-SUMMARY-2026-04-27.md`).
+**Current stage:** 3 — DEV (Stage 1 SPLITTING and Stage 2 TESTS are DONE)
+**Test baseline entering D-009:** 1308 default / 1351 zero-copy. v1 floor: 690. These are the new floor.
 
-**Stage 6 REFACTOR progress (2026-04-27):**
+**Stage history:**
+- [x] SPLITTING: 2026-04-25 (task-splitter) — TASK-0460..0500 exist in `docs/backlog/`
+- [x] TESTS: 2026-04-25 (test-generator) — TEST-SPEC-0460..0500 exist in `docs/tests/`
+- [ ] DEV: pending (developer)
+- [ ] REVIEW: pending (reviewer)
+- [ ] QA: pending (qa)
+- [ ] REFACTOR: pending (developer)
 
-| Phase | Verdict | Refactor commit | Tests (default → final) | Status |
-|-------|---------|-----------------|-------------------------|--------|
-| **E** (Observability) | ACCEPT_WITH_FIXES | `434a242` | 1256 → 1273 | ✅ DONE |
-| **B** (Foundations) | ACCEPT_WITH_FIXES | `df93908` | 1273 → 1282 | ✅ DONE |
-| **C** (Joining) | REJECT_WITH_FIXES | `8dd6d1b` | 1282 → 1292 | ✅ DONE (BTreeMap migration deferred to Phase D rework) |
-| **D** (Departure) | REJECT | (Option A applied) | 1292 → 1308 | ✅ DONE — Option A landed |
+**D-009 phase order (dependency-driven):**
+1. Phase A: Spec amendments (TASK-0460..0469) — 10 tasks, ~S each, pure doc changes to SPEC-01/02/03/04/05/18/19/22
+2. Phase B: Free-list core (TASK-0471..0484) — 12 tasks, net/reduction changes (~2,070 LoC production)
+3. Phase D: SparseNet (TASK-0486..0500) — 14 tasks, new `SparseNet` type + dense integration
+4. Phase E: Integration gate — TASK-0500 v1-compat regression (final gate)
 
-**Phase D Option A — applied (2026-04-27):**
+**Phase A complete (2026-04-27):** TASK-0460..0469 — all 10 spec amendments (A1..A10) landed verbatim in SPEC-01/02/03/04/05/18/19. Closure log: `docs/spec-reviews/CLOSURE-D009-amendments-A1A10-2026-04-27.md`.
 
-Reviewer's Option A (instead of full reclaim+reconstruct rework, which the reviewer estimated 5-7 days):
-
-1. ✅ **Removed** the broken reclaim path (`materialize_reclaimed_partitions` + `reconstruct(border_graph, evolved_survivors, round_0_reclaimed)` block) from `protocol/coordinator.rs`. Deleted `partition/departure_recovery.rs` and the `partition::*` re-export.
-2. ✅ **Enforced** `GridConfig.elastic_departure: bool = false` as default (was already the default). When `true`, `run_coordinator` emits a one-time `tracing::warn!` and proceeds as if `false`.
-3. ✅ **Kept** detection helpers (`handle_connection_loss`, `handle_phase_timeout`), `RetainedStateRegistry` (with Phase E refactor's `register_initial` self-heal), `LeaveAck` send-before-close, `PROTOCOL_VERSION = 4`.
-4. ✅ **Wired** `release_worker(wid)` at every detected departure (collect-loop dispatch site), addressing QA-010 D.
-5. ✅ **Added** `ProtocolError::AllWorkersDeparted { detail }` as the canonical terminal-state for non-hybrid grids that lose every remote worker.
-6. ✅ **Migrated** `worker_streams: Vec<TransportStream>` to a paired `worker_ids: Vec<WorkerId>` parallel Vec so identity travels with the value, not the index (QA-012 D's latent SF-003 hazard activated by Option A's stream pruning).
-7. ✅ **Hardened** `RetainedLastAcked::DeltaLight` payload from `String` to `()` (QA-008 D — bounded wire size; the `(BorderGraph, RoundResult)` real payload lands in v2.1).
-8. ✅ **Idempotent** `departing_worker_ids.push` at every departure detection site (QA-005 D — `Message::Error` + timeout race no longer counts the same wid twice).
-9. ✅ **Surfaced** `LeaveAck` send errors via `tracing::warn!` (QA-004 D — pre-Option-A `let _ = send_frame(...)` silently absorbed `BrokenPipe`).
-10. ✅ **Drained** post-`PartitionResult` `LeaveRequest` frames within a 50ms peek (QA-011 D — pre-Option-A second frame was buffered and never read).
-11. ✅ **Defer to v2.1:** full `elastic_departure = true` reclaim + reconstruct path; `worker_streams: Vec → BTreeMap` migration (already cleaner under the parallel-Vec interim); `run_coordinator` decomposition.
-
-**Single new commit:** `refactor(elastic-grid): apply Option A — Phase D (TASK-0438..0443)`.
-
-**Test deltas:** default `1292 → 1308` (+16); zero-copy `1335 → 1351` (+16). All gates green: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo clippy --features zero-copy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test --workspace --features zero-copy`.
-
-**Test floor invariant:** ≥ 1308 default / 1351 zero-copy (post Option A). v1 floor (690) inviolable.
-
-**Bundle close-out gate:** D-006 ready to close. The user runs the close-out tag (`v2.0-elastic-grid-detection-only`) separately, archives Phase A audit artifacts (`docs/reviews/REVIEW-TASK-0411..0414`, `docs/qa/QA-TASK-0411..0414`) under `archive/`.
+**Next action:** invoke the **developer** agent for Phase B (free-list core implementation).
+Tell it: "Implement TASK-0471 through TASK-0484 (SPEC-22 free-list core: create_agent, remove_agent, Net struct field, partition free-list population, merge reconciliation, BorderGraph protected tombstones). Test specs: docs/tests/TEST-SPEC-0471..0484. Parent spec: specs/SPEC-22-arena-management.md. Branch: v2-development. Floor: 1308 default / 1351 zero-copy."
 
 ---
 
@@ -57,8 +44,8 @@ Reviewer's Option A (instead of full reclaim+reconstruct rework, which the revie
 | Tier | Status |
 |------|--------|
 | Tier 1 | ✅ DONE — frozen at `a431320` (D-005 Option A 12/12 G1 parity green) |
-| **Tier 2** (Elastic Grid) | ✅ **D-006 ready to close — Phase D Option A landed 2026-04-27** |
-| **Tier 3** (Memory Efficiency) | ⏭ READY TO DISPATCH — bundles D-009..D-013 |
+| **Tier 2** (Elastic Grid) | ✅ **D-006 CLOSED — Phase D Option A landed 2026-04-27 (commits df93908, 8dd6d1b, 7988573, fc680f5). Tag: v2.0-elastic-grid-detection-only** |
+| **Tier 3** (Memory Efficiency) | ACTIVE — D-009 open 2026-04-27. Stage 3 DEV (amendments wave). |
 | Tier 4 (UX/Deploy) | 🛑 DECISION DEFERRED |
 | Tier 5 | 🛑 DECISION DEFERRED |
 

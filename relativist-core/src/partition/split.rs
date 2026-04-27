@@ -43,12 +43,16 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
     let mut partitions = Vec::with_capacity(num_workers as usize);
 
     for i in 0..num_workers as usize {
+        // SPEC-22 R10a: pass the partition's id_range so build_subnet can
+        // populate the free_list with in-range None slots.
+        let id_range_for_subnet = id_ranges[i].start..id_ranges[i].end;
         let mut subnet = build_subnet(
             &net,
             &worker_agents[i],
             &sigma,
             &wire_class.border_entries[i],
             i as WorkerId,
+            id_range_for_subnet,
         );
 
         // Set next_id: max(id_range.start, max_agent_id + 1)

@@ -252,6 +252,13 @@ pub fn remap_partition_ids(
             other => Some(other),
         }),
         freeport_redirects: HashMap::new(),
+        free_list: Vec::new(),
+        id_range: None,
+        border_entries_shadow: None,
+        recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
+        is_in_delta_round: false,
+        #[cfg(debug_assertions)]
+        protected_tombstones: None,
     };
 
     Ok(Partition {
@@ -303,6 +310,13 @@ mod tests {
             next_id: 2,
             root: None,
             freeport_redirects: HashMap::new(),
+            free_list: Vec::new(),
+            id_range: None,
+            border_entries_shadow: None,
+            recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
+            is_in_delta_round: false,
+            #[cfg(debug_assertions)]
+            protected_tombstones: None,
         };
 
         Partition {

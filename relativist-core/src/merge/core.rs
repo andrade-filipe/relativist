@@ -32,7 +32,7 @@ use super::helpers::is_principal_pair;
 /// - In debug mode, assert_all_invariants() passes (R11).
 pub fn merge(plan: PartitionPlan) -> (Net, u32) {
     let PartitionPlan {
-        partitions,
+        mut partitions,
         borders,
         ..
     } = plan;
@@ -185,6 +185,58 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
         }
     }
 
+    // --- SPEC-22 R12 / §3.8 A8: free-list reconciliation ---
+    //
+    // Walk every input partition's free_list. For each ID, check whether the
+    // merged arena slot is still None. If None, push to merged free_list.
+    // If Some (filled by another partition or by merge boundary resolution),
+    // discard. Complexity: O(sum of |partition.free_list|).
+    //
+    // D4 disjointness guarantees no duplicates: each partition owns a disjoint
+    // ID range, so the same ID cannot appear in two different partitions'
+    // free_lists.
+    for partition in &partitions {
+        for &id in &partition.subnet.free_list {
+            if result.agents.get(id as usize).is_some_and(|s| s.is_none()) {
+                result.free_list.push(id);
+            }
+            // else: slot is occupied — discard (A8 discard branch)
+        }
+    }
+
+    // --- SPEC-22 R12: drain protected_tombstones (debug-only) ---
+    //
+    // Any tombstone still alive at merge time is reclaimable if its slot is None.
+    // This handles the case where a worker held a protected tombstone (border-
+    // referenced ID under delta mode) that was never recycled before the merge.
+    #[cfg(debug_assertions)]
+    for partition in &mut partitions {
+        if let Some(tombstones) = partition.subnet.protected_tombstones.take() {
+            for id in tombstones {
+                if result.agents.get(id as usize).is_some_and(|s| s.is_none())
+                    && !result.free_list.contains(&id)
+                {
+                    result.free_list.push(id);
+                }
+            }
+        }
+    }
+
+    // SPEC-22 R12: post-merge invariant check (debug only)
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        result.validate_free_list().is_ok(),
+        "SPEC-22 R12: merged free_list invariant violated after reconciliation"
+    );
+
+    // SPEC-22 R12: dissolve partition-local state
+    result.id_range = None;
+    result.border_entries_shadow = None;
+    #[cfg(debug_assertions)]
+    {
+        result.protected_tombstones = None;
+    }
+
     // Debug assertion: verify all invariants on the merged net (R11)
     #[cfg(debug_assertions)]
     result.assert_all_invariants();
@@ -196,7 +248,8 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
 mod tests {
     use super::*;
     use crate::net::Symbol;
-    use crate::partition::{split, ContiguousIdStrategy};
+    use crate::partition::{split, ContiguousIdStrategy, IdRange, Partition};
+    use std::collections::{HashMap, HashSet};
 
     // === TASK-0065: Unite agents tests ===
 
@@ -479,6 +532,245 @@ mod tests {
         assert_eq!(
             merged.get_target(PortRef::AgentPort(a, 1)),
             PortRef::FreePort(0)
+        );
+    }
+
+    // === TASK-0483: merge free-list reconciliation (SPEC-22 R12 / §3.8 A8) ===
+
+    /// Builds a test Partition with a subnet that has Era agents at `live_ids`
+    /// (each with port 0 connected to a unique Lafont FreePort) and `None` slots
+    /// at `free_ids`. `id_range` is the range assigned to this worker.
+    ///
+    /// All principal ports are wired to FreePort(u32::MAX - freeport_counter) to
+    /// satisfy T1 (no DISCONNECTED ports on live agents). The FreePort sentinel
+    /// starts far from 0 to avoid colliding with border IDs in other tests.
+    fn make_partition_with_free_list(
+        worker_id: u32,
+        live_ids: &[u32],
+        free_ids: &[u32],
+        id_range: std::ops::Range<u32>,
+    ) -> Partition {
+        let max_id = live_ids
+            .iter()
+            .chain(free_ids.iter())
+            .copied()
+            .max()
+            .unwrap_or(0) as usize;
+        let arena_size = max_id + 1;
+
+        let mut net = Net::new();
+        net.agents.resize(arena_size, None);
+        net.ports.resize(arena_size * crate::net::PORTS_PER_SLOT, DISCONNECTED);
+
+        // Connect each live Era agent's principal port (p=0) to a unique Lafont
+        // FreePort. FreePort(u32::MAX) is the DISCONNECTED sentinel — must avoid it.
+        // We use FreePort(1_000_000 + id) as a unique, non-sentinel, non-border ID.
+        // Era has arity 0 (only principal port), so this is sufficient for T1.
+        for &id in live_ids {
+            net.agents[id as usize] = Some(crate::net::Agent {
+                symbol: Symbol::Era,
+                id,
+            });
+            let fp_id = 1_000_000u32 + id; // unique, non-MAX, far from border IDs
+            let port_idx = id as usize * crate::net::PORTS_PER_SLOT; // port 0
+            net.ports[port_idx] = PortRef::FreePort(fp_id);
+        }
+        // free_ids are left as None — they are the recycled slots
+        net.free_list = free_ids.to_vec();
+        net.id_range = Some(id_range.clone());
+        net.next_id = id_range.end;
+
+        Partition {
+            subnet: net,
+            worker_id,
+            free_port_index: HashMap::new(),
+            id_range: IdRange {
+                start: id_range.start,
+                end: id_range.end,
+            },
+            border_id_start: 0,
+            border_id_end: 0,
+        }
+    }
+
+    // UT-0483-01: merge combines free-lists from 2 partitions correctly.
+    // Partition 0: free_list [50, 75], live agents at other IDs.
+    // Partition 1: free_list [125, 175], live agents at other IDs.
+    // Expected: merged free_list == {50, 75, 125, 175}.
+    #[test]
+    fn merge_combines_partition_free_lists_correctly() {
+        let live0: Vec<u32> = (0..100).filter(|&id| id != 50 && id != 75).collect();
+        let live1: Vec<u32> = (100..200).filter(|&id| id != 125 && id != 175).collect();
+
+        let p0 = make_partition_with_free_list(0, &live0, &[50, 75], 0..100);
+        let p1 = make_partition_with_free_list(1, &live1, &[125, 175], 100..200);
+
+        let plan = PartitionPlan {
+            partitions: vec![p0, p1],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        let free_set: HashSet<u32> = merged.free_list.iter().copied().collect();
+        assert_eq!(
+            free_set,
+            HashSet::from([50, 75, 125, 175]),
+            "merged free_list must contain all free IDs from both partitions"
+        );
+    }
+
+    // UT-0483-02: validate_free_list passes on the merged net from UT-0483-01.
+    #[test]
+    fn merge_post_condition_validate_free_list_passes() {
+        let live0: Vec<u32> = (0..100).filter(|&id| id != 50 && id != 75).collect();
+        let live1: Vec<u32> = (100..200).filter(|&id| id != 125 && id != 175).collect();
+
+        let p0 = make_partition_with_free_list(0, &live0, &[50, 75], 0..100);
+        let p1 = make_partition_with_free_list(1, &live1, &[125, 175], 100..200);
+
+        let plan = PartitionPlan {
+            partitions: vec![p0, p1],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        assert!(
+            merged.validate_free_list().is_ok(),
+            "validate_free_list must pass on the merged net"
+        );
+    }
+
+    // UT-0483-03: merge discards filled slots.
+    // Partition 0 free_list has [50] but slot 50 is filled by a live agent.
+    // (Simulates the case where a partition's free_list had an ID that is
+    //  actually occupied — the discard branch of §3.8 A8 must fire.)
+    #[test]
+    fn merge_discards_filled_slots() {
+        // Partition 0: all IDs 0..100 are live (including slot 50).
+        // The free_list says 50 is free — but it's not (data inconsistency).
+        // The A8 discard branch should catch this and NOT add 50 to merged.
+        let live0: Vec<u32> = (0..100).collect(); // ALL slots live, including 50
+        let live1: Vec<u32> = (100..200).collect();
+
+        let p0 = make_partition_with_free_list(0, &live0, &[50], 0..100);
+        // Force slot 50 to be occupied (it's already set by live0, but
+        // make_partition_with_free_list might have left it None via free_ids;
+        // here free_ids=[50] but live0 also contains 50 — live0 wins in
+        // the loop, so slot 50 is Some(Agent). Confirm that.
+        assert!(
+            p0.subnet.agents[50].is_some(),
+            "test setup: slot 50 must be occupied"
+        );
+        let p1 = make_partition_with_free_list(1, &live1, &[], 100..200);
+
+        let plan = PartitionPlan {
+            partitions: vec![p0, p1],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        assert!(
+            !merged.free_list.contains(&50),
+            "slot 50 is occupied — must NOT appear in merged free_list (A8 discard branch)"
+        );
+    }
+
+    // UT-0483-04: merged free_list has no duplicates (D4 disjointness smoke check).
+    #[test]
+    fn merge_preserves_no_duplicates() {
+        let live0: Vec<u32> = (0..100).filter(|&id| id != 50).collect();
+        let live1: Vec<u32> = (100..200).filter(|&id| id != 150).collect();
+
+        let p0 = make_partition_with_free_list(0, &live0, &[50], 0..100);
+        let p1 = make_partition_with_free_list(1, &live1, &[150], 100..200);
+
+        let plan = PartitionPlan {
+            partitions: vec![p0, p1],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        let as_vec = &merged.free_list;
+        let as_set: HashSet<u32> = as_vec.iter().copied().collect();
+        assert_eq!(
+            as_vec.len(),
+            as_set.len(),
+            "merged free_list must contain no duplicates"
+        );
+    }
+
+    // UT-0483-05: merge resets id_range to None on the merged net.
+    #[test]
+    fn merge_resets_id_range_to_none() {
+        let live0: Vec<u32> = (0..100).filter(|&id| id != 50).collect();
+        let p0 = make_partition_with_free_list(0, &live0, &[50], 0..100);
+        // Set id_range explicitly on subnet
+        assert!(p0.subnet.id_range.is_some(), "test setup: id_range must be Some");
+
+        let plan = PartitionPlan {
+            partitions: vec![p0],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        assert_eq!(
+            merged.id_range, None,
+            "merged net must have id_range == None (whole-net context dissolves partition locality)"
+        );
+    }
+
+    // UT-0483-06: merge resets border_entries_shadow to None.
+    #[test]
+    fn merge_resets_border_entries_shadow_to_none() {
+        let live0: Vec<u32> = (0..100).filter(|&id| id != 50).collect();
+        let mut p0 = make_partition_with_free_list(0, &live0, &[50], 0..100);
+        // Set border_entries_shadow to Some on subnet to simulate delta-mode state
+        p0.subnet.border_entries_shadow = Some(HashSet::from([10, 20]));
+
+        let plan = PartitionPlan {
+            partitions: vec![p0],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        assert_eq!(
+            merged.border_entries_shadow, None,
+            "merged net must have border_entries_shadow == None (delta state cleared)"
+        );
+    }
+
+    // UT-0483-07 (debug only): merge drains protected_tombstones into free_list.
+    // When a partition has protected_tombstones = Some({47}) and agents[47] == None,
+    // the merged free_list must contain 47.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn merge_drains_protected_tombstones() {
+        let live0: Vec<u32> = (0..100).filter(|&id| id != 47).collect();
+        let mut p0 = make_partition_with_free_list(0, &live0, &[], 0..100);
+        // Slot 47 is None in the subnet (not live, not in free_list yet).
+        // Mark it as a protected tombstone.
+        p0.subnet.protected_tombstones = Some(HashSet::from([47u32]));
+
+        let plan = PartitionPlan {
+            partitions: vec![p0],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+        let (merged, _) = merge(plan);
+
+        assert!(
+            merged.free_list.contains(&47),
+            "protected tombstone 47 (slot None) must be drained into merged free_list"
+        );
+        assert_eq!(
+            merged.protected_tombstones, None,
+            "merged net must have protected_tombstones == None after drain"
         );
     }
 }

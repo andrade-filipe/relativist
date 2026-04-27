@@ -168,8 +168,23 @@ fn push_partial_round_metrics(metrics: &mut GridMetrics) {
 // Phase 0: Accept workers (TASK-0088)
 // ---------------------------------------------------------------------------
 
-/// Current wire protocol version (SPEC-20 R37).
-pub const PROTOCOL_VERSION: u8 = 4;
+/// Current wire protocol version (SPEC-20 R37; SPEC-22 R9a).
+///
+/// Version history:
+/// - v1: initial release
+/// - v2: SPEC-18 wire format v2
+/// - v3: SPEC-18 R28 amendment
+/// - v4: SPEC-20 elastic grid fields added to wire messages (TASK-0417)
+/// - v5: SPEC-22 free-list added to Net serde payload (R9a) — REJECT-v4 policy:
+///   nets serialized with v4 do not carry `free_list`; deserialization
+///   returns `Err(ProtocolError::UnsupportedVersion)` rather than silently
+///   inflating an empty list (conservative safety posture per SPEC-22 §6).
+pub const PROTOCOL_VERSION: u8 = 5;
+
+/// The protocol version immediately preceding the current one.
+/// Used by tests to validate `PROTOCOL_VERSION == PREVIOUS_LIVE_VERSION + 1`
+/// (TEST-SPEC-0476 UT-0476-01 landing-order-aware contract).
+pub const PREVIOUS_LIVE_VERSION: u8 = 4;
 
 /// Processes a mid-session `JoinRequest` (SPEC-20 §3.2 R9).
 ///
@@ -1675,9 +1690,22 @@ mod tests {
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
     }
 
+    /// UT-0476-01: PROTOCOL_VERSION is strictly one greater than its predecessor
+    /// (TASK-0417 bump was 3→4; TASK-0476 bump is 4→5).
+    ///
+    /// Per TEST-SPEC-0476 landing-order-aware contract: MUST NOT assert
+    /// `PROTOCOL_VERSION == <specific integer>`; instead asserts the strict +1
+    /// increment invariant using the companion `PREVIOUS_LIVE_VERSION` constant.
     #[test]
-    fn protocol_version_is_four() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+    fn protocol_version_strictly_greater_than_predecessor() {
+        assert_eq!(
+            PROTOCOL_VERSION,
+            PREVIOUS_LIVE_VERSION + 1,
+            "SPEC-22 R9a: PROTOCOL_VERSION must be exactly PREVIOUS_LIVE_VERSION + 1 \
+             (was {} before this bump; now {})",
+            PREVIOUS_LIVE_VERSION,
+            PROTOCOL_VERSION
+        );
     }
 
     #[tokio::test]
@@ -1706,7 +1734,8 @@ mod tests {
             other => panic!("got {:?}", other),
         };
         assert!(nack.reason.contains("protocol version mismatch"));
-        assert!(nack.reason.contains("expected 4"));
+        // TASK-0476: PROTOCOL_VERSION bumped 4→5; use the constant to future-proof.
+        assert!(nack.reason.contains(&format!("expected {}", PROTOCOL_VERSION)));
         assert!(nack.reason.contains("got 1"));
         let result = accept_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
@@ -1738,7 +1767,8 @@ mod tests {
             other => panic!("got {:?}", other),
         };
         assert!(nack.reason.contains("protocol version mismatch"));
-        assert!(nack.reason.contains("expected 4"));
+        // TASK-0476: PROTOCOL_VERSION bumped 4→5; use the constant to future-proof.
+        assert!(nack.reason.contains(&format!("expected {}", PROTOCOL_VERSION)));
         assert!(nack.reason.contains("got 0"));
         let result = accept_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));

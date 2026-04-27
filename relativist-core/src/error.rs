@@ -33,6 +33,19 @@ pub enum NetError {
 
     #[error("deserialization error: {0}")]
     Deserialize(String),
+
+    /// SPEC-22 R9: free-list post-condition violated.
+    ///
+    /// Returned by `Net::validate_free_list` when an entry in `free_list`
+    /// corresponds to a `Some` slot in the arena (the slot was not properly
+    /// cleared before the ID was recycled, or the free-list was corrupted).
+    #[error("free-list invalid: id {id} — {reason}")]
+    FreeListInvalid {
+        /// The offending AgentId.
+        id: AgentId,
+        /// Human-readable explanation of the violation.
+        reason: &'static str,
+    },
 }
 
 /// Errors from the reduction engine.
@@ -77,6 +90,26 @@ pub enum PartitionError {
     NewRangeTooSmall {
         partition_size: u32,
         range_size: u32,
+    },
+
+    /// SPEC-22 §3.4 R30 — returned by `build_subnet_with_config` when
+    /// `sparse_build == false` AND `id_range_size > 4 × live_count`.
+    ///
+    /// Guards against the M5 memory pathology: a dense arena of size
+    /// `id_range_size` with very few live agents wastes up to 800 MiB
+    /// per partition. Callers must either set `sparse_build: true` or
+    /// reduce the id_range to satisfy the 4× threshold.
+    #[error(
+        "dense allocation exceeds threshold: partition {partition_index} has id_range_size={id_range_size} but live_count={live_count} (threshold: id_range_size <= 4 × live_count)"
+    )]
+    DenseAllocationExceedsThreshold {
+        /// Zero-based index of the partition that triggered the guard.
+        partition_index: usize,
+        /// Size of the id_range (`id_range.end - id_range.start`) as `u64`
+        /// to avoid overflow when the range spans the full u32 space.
+        id_range_size: u64,
+        /// Number of live agents in the partition's worker_agents list.
+        live_count: u64,
     },
 }
 

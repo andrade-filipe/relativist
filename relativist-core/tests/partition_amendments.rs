@@ -71,6 +71,13 @@ fn make_p0() -> Partition {
         next_id: 14,
         root: None,
         freeport_redirects: HashMap::new(),
+        free_list: Vec::new(),
+        id_range: None,
+        border_entries_shadow: None,
+        recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
+        is_in_delta_round: false,
+        #[cfg(debug_assertions)]
+        protected_tombstones: None,
     };
 
     Partition {
@@ -680,6 +687,13 @@ fn ec_j_redex_queue_symmetric_pair_is_remapped() {
         next_id: 2,
         root: None,
         freeport_redirects: HashMap::new(),
+        free_list: Vec::new(),
+        id_range: None,
+        border_entries_shadow: None,
+        recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
+        is_in_delta_round: false,
+        #[cfg(debug_assertions)]
+        protected_tombstones: None,
     };
 
     let p = Partition {
@@ -826,6 +840,13 @@ fn ec_l_remap_next_id_postcondition_at_large_range_start() {
         next_id: 2,
         root: None,
         freeport_redirects: HashMap::new(),
+        free_list: Vec::new(),
+        id_range: None,
+        border_entries_shadow: None,
+        recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
+        is_in_delta_round: false,
+        #[cfg(debug_assertions)]
+        protected_tombstones: None,
     };
 
     let p = Partition {

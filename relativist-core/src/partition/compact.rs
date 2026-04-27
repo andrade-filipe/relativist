@@ -110,6 +110,13 @@ impl CompactSubnet {
             next_id: self.next_id,
             root: self.root,
             freeport_redirects: std::collections::HashMap::new(),
+            free_list: Vec::new(),
+            id_range: None,
+            border_entries_shadow: None,
+            recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
+            is_in_delta_round: false,
+            #[cfg(debug_assertions)]
+            protected_tombstones: None,
         }
     }
 }
