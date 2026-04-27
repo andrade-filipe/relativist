@@ -23,6 +23,13 @@ impl RetainedInitial {
 }
 
 /// SPEC-20 R23c: most recent committed state, refreshed atomically.
+///
+/// **Durability (Phase D Option A — QA-001 D):** `RetainedStateRegistry`
+/// is in-memory only; coordinator restart drops all retained state and
+/// any in-flight departures abort. Persistent recovery is **out of scope**
+/// for SPEC-20 v2.0 and tracked separately for v2.1. v2.0 ships with
+/// `elastic_departure = false` so this limitation does not affect any
+/// supported flow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(
     feature = "zero-copy",
@@ -30,14 +37,28 @@ impl RetainedInitial {
 )]
 pub enum RetainedLastAcked {
     V1(Partition),
-    /// Placeholder for delta-light (border_graph + last_deltas)
+    /// SPEC-20 R23c-delta — optimized delta-light reclaim path (CONDITIONAL
+    /// on ARG-005). Phase D Option A scope: this variant is never
+    /// constructed today because `elastic_departure = false` is enforced
+    /// by `run_coordinator`. The wire-format payload is the unit type so
+    /// the variant carries no attacker-controllable bytes (QA-008 D); the
+    /// real `(BorderGraph, RoundResult)` payload lands when delta-mode
+    /// reclaim is activated in v2.1.
     DeltaLight {
-        placeholder: String,
+        placeholder: (),
     },
     DeltaCheckpoint(Partition),
 }
 
 /// Registry for all retained partitions in the grid (R23, R31).
+///
+/// **Durability (Phase D Option A — QA-001 D):** state is in-memory only;
+/// coordinator restart drops all retained state and any in-flight
+/// departures abort. Persistent recovery is **out of scope** for SPEC-20
+/// v2.0 and tracked separately for v2.1. v2.0 ships with
+/// `elastic_departure = false` so this limitation does not affect any
+/// supported flow — `materialize_reclaimed_partitions` and the
+/// reconstruct path were removed under Phase D Option A.
 #[derive(Debug, Clone, Default)]
 pub struct RetainedStateRegistry {
     /// retained_initial[w]: round-0 state.
@@ -184,5 +205,104 @@ mod tests {
                 assert_eq!(part.id_range.end, 200);
             }
         }
+    }
+
+    /// MF-006 D / QA-010 D — `release_worker` clears BOTH slots atomically.
+    ///
+    /// SPEC-20 R23a: after a worker is permanently removed from `W_active`,
+    /// its `retained_initial[w]` AND `retained_last_acked[w]` MUST be
+    /// released. Phase D Option A wires `release_worker` at every detected
+    /// departure path; this test fixes the contract so a future regression
+    /// (e.g. a half-fix that only clears one slot) is caught immediately.
+    #[test]
+    fn mf006_release_worker_clears_both_slots() {
+        let mut registry = RetainedStateRegistry::new();
+        registry.register_initial(4, Some(Partition::empty(4)));
+        registry.refresh_last_acked(4, RetainedLastAcked::V1(Partition::empty(4)));
+        assert!(registry.initial.contains_key(&4));
+        assert!(registry.last_acked.contains_key(&4));
+
+        registry.release_worker(4);
+
+        assert!(
+            !registry.initial.contains_key(&4),
+            "release_worker MUST clear initial[w]"
+        );
+        assert!(
+            !registry.last_acked.contains_key(&4),
+            "release_worker MUST clear last_acked[w]"
+        );
+    }
+
+    /// QA-010 D — high-churn registry keeps memory bounded.
+    ///
+    /// 100 workers join, populate state, depart with `release_worker`. After
+    /// the rotation `len() == 0` is the spec-mandated postcondition (R23a +
+    /// NF-011). Pre-Option-A regression: `release_worker` was never called
+    /// → registry grew unboundedly. This test makes the regression observable.
+    #[test]
+    fn qa010_high_churn_release_keeps_registry_empty() {
+        let mut registry = RetainedStateRegistry::new();
+        for wid in 0..100u32 {
+            registry.register_initial(wid, Some(Partition::empty(wid)));
+            registry.refresh_last_acked(wid, RetainedLastAcked::V1(Partition::empty(wid)));
+        }
+        assert_eq!(registry.initial.len(), 100);
+        assert_eq!(registry.last_acked.len(), 100);
+
+        for wid in 0..100u32 {
+            registry.release_worker(wid);
+        }
+
+        assert_eq!(
+            registry.initial.len(),
+            0,
+            "QA-010: retained_initial must drain to zero after full rotation"
+        );
+        assert_eq!(
+            registry.last_acked.len(),
+            0,
+            "QA-010: retained_last_acked must drain to zero after full rotation"
+        );
+    }
+
+    /// MF-006 D — empty registry satisfies bounds for k_eff = 0.
+    ///
+    /// NTH-001 reviewer suggestion folded into Option A's MF-006 quota.
+    /// Documents that `assert_memory_bounds(0)` on a default registry is a
+    /// no-op rather than a debug-assert panic.
+    #[test]
+    fn mf006_empty_registry_bounds_zero_k_eff() {
+        let registry = RetainedStateRegistry::default();
+        registry.assert_memory_bounds(0);
+    }
+
+    /// QA-008 D — `RetainedLastAcked::DeltaLight` payload is unit-sized.
+    ///
+    /// Phase D Option A replaced the wire-eligible `placeholder: String`
+    /// with `placeholder: ()` so an adversarial 4 GiB payload can no longer
+    /// flow through bincode/rkyv to OOM the coordinator. This test pins the
+    /// invariant at the type level: any `DeltaLight` value serializes to a
+    /// size that does not depend on input data.
+    #[test]
+    fn qa008_delta_light_payload_is_unit_sized() {
+        // Two independently-constructed DeltaLight values must encode to
+        // byte-identical bincode output regardless of program state.
+        let a = RetainedLastAcked::DeltaLight { placeholder: () };
+        let b = RetainedLastAcked::DeltaLight { placeholder: () };
+        let bytes_a =
+            bincode::serde::encode_to_vec(&a, bincode::config::standard()).expect("encode a");
+        let bytes_b =
+            bincode::serde::encode_to_vec(&b, bincode::config::standard()).expect("encode b");
+        assert_eq!(
+            bytes_a, bytes_b,
+            "QA-008: DeltaLight encoding must be input-independent"
+        );
+        // The encoded form is just the variant tag: bounded and tiny.
+        assert!(
+            bytes_a.len() < 8,
+            "QA-008: DeltaLight must encode to <8 bytes (got {})",
+            bytes_a.len()
+        );
     }
 }

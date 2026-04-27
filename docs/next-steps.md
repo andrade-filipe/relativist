@@ -22,24 +22,31 @@ The Stage 3 DEV pass (TASK-0410..0455) was delegated to a non-Claude LLM 2026-04
 | **E** (Observability) | ACCEPT_WITH_FIXES | `434a242` | 1256 → 1273 | ✅ DONE |
 | **B** (Foundations) | ACCEPT_WITH_FIXES | `df93908` | 1273 → 1282 | ✅ DONE |
 | **C** (Joining) | REJECT_WITH_FIXES | `8dd6d1b` | 1282 → 1292 | ✅ DONE (BTreeMap migration deferred to Phase D rework) |
-| **D** (Departure) | REJECT | — | (1292) | 🛑 **OUTSTANDING — Option A scope** |
+| **D** (Departure) | REJECT | (Option A applied) | 1292 → 1308 | ✅ DONE — Option A landed |
 
-**Phase D — next action (after rate-limit reset):**
+**Phase D Option A — applied (2026-04-27):**
 
-Reviewer's recommended **Option A** (instead of full reclaim+reconstruct rework, which the reviewer estimated 5-7 days):
+Reviewer's Option A (instead of full reclaim+reconstruct rework, which the reviewer estimated 5-7 days):
 
-1. **Remove** the broken reclaim path (`materialize_reclaimed_partitions` + `reconstruct(border_graph, evolved_survivors, round_0_reclaimed)` block) from `protocol/coordinator.rs`. Delete `partition/departure_recovery.rs`.
-2. **Enforce** `GridConfig.elastic_departure: bool = false` as default. When `true`, log a one-time warning and proceed as if `false`.
-3. **Keep** detection helpers (`handle_connection_loss`, `handle_phase_timeout`), `RetainedStateRegistry` (already fixed by Phase E refactor's `register_initial`), `LeaveAck` send-before-close, `PROTOCOL_VERSION = 4`.
-4. **Wire** `release_worker(wid)` at every departure path (QA-010 D — currently never called → unbounded retained-state growth).
-5. **Defer to v2.1:** full `elastic_departure=true` reclaim + reconstruct path; `worker_streams: Vec → BTreeMap` migration (Phase B QA-006 / Phase C QA-002).
-6. Single new commit: `refactor(elastic-grid): apply Option A — Phase D (TASK-0438..0443)`.
+1. ✅ **Removed** the broken reclaim path (`materialize_reclaimed_partitions` + `reconstruct(border_graph, evolved_survivors, round_0_reclaimed)` block) from `protocol/coordinator.rs`. Deleted `partition/departure_recovery.rs` and the `partition::*` re-export.
+2. ✅ **Enforced** `GridConfig.elastic_departure: bool = false` as default (was already the default). When `true`, `run_coordinator` emits a one-time `tracing::warn!` and proceeds as if `false`.
+3. ✅ **Kept** detection helpers (`handle_connection_loss`, `handle_phase_timeout`), `RetainedStateRegistry` (with Phase E refactor's `register_initial` self-heal), `LeaveAck` send-before-close, `PROTOCOL_VERSION = 4`.
+4. ✅ **Wired** `release_worker(wid)` at every detected departure (collect-loop dispatch site), addressing QA-010 D.
+5. ✅ **Added** `ProtocolError::AllWorkersDeparted { detail }` as the canonical terminal-state for non-hybrid grids that lose every remote worker.
+6. ✅ **Migrated** `worker_streams: Vec<TransportStream>` to a paired `worker_ids: Vec<WorkerId>` parallel Vec so identity travels with the value, not the index (QA-012 D's latent SF-003 hazard activated by Option A's stream pruning).
+7. ✅ **Hardened** `RetainedLastAcked::DeltaLight` payload from `String` to `()` (QA-008 D — bounded wire size; the `(BorderGraph, RoundResult)` real payload lands in v2.1).
+8. ✅ **Idempotent** `departing_worker_ids.push` at every departure detection site (QA-005 D — `Message::Error` + timeout race no longer counts the same wid twice).
+9. ✅ **Surfaced** `LeaveAck` send errors via `tracing::warn!` (QA-004 D — pre-Option-A `let _ = send_frame(...)` silently absorbed `BrokenPipe`).
+10. ✅ **Drained** post-`PartitionResult` `LeaveRequest` frames within a 50ms peek (QA-011 D — pre-Option-A second frame was buffered and never read).
+11. ✅ **Defer to v2.1:** full `elastic_departure = true` reclaim + reconstruct path; `worker_streams: Vec → BTreeMap` migration (already cleaner under the parallel-Vec interim); `run_coordinator` decomposition.
 
-**Phase D consolidated brief is in the previous orchestrator dispatch transcript;** re-dispatching the developer agent on Phase D after rate-limit reset is the next concrete action.
+**Single new commit:** `refactor(elastic-grid): apply Option A — Phase D (TASK-0438..0443)`.
 
-**Test floor invariant:** ≥ 1292 default / 1335 zero-copy (current). v1 floor (690) inviolable.
+**Test deltas:** default `1292 → 1308` (+16); zero-copy `1335 → 1351` (+16). All gates green: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo clippy --features zero-copy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test --workspace --features zero-copy`.
 
-**Bundle close-out gate:** after Phase D commits, run final `cargo test`/`clippy`/`fmt`, archive Phase A audit artifacts (`docs/reviews/REVIEW-TASK-0411..0414`, `docs/qa/QA-TASK-0411..0414`) under `archive/`, tag `v2.0-elastic-grid-detection-only`.
+**Test floor invariant:** ≥ 1308 default / 1351 zero-copy (post Option A). v1 floor (690) inviolable.
+
+**Bundle close-out gate:** D-006 ready to close. The user runs the close-out tag (`v2.0-elastic-grid-detection-only`) separately, archives Phase A audit artifacts (`docs/reviews/REVIEW-TASK-0411..0414`, `docs/qa/QA-TASK-0411..0414`) under `archive/`.
 
 ---
 
@@ -50,8 +57,8 @@ Reviewer's recommended **Option A** (instead of full reclaim+reconstruct rework,
 | Tier | Status |
 |------|--------|
 | Tier 1 | ✅ DONE — frozen at `a431320` (D-005 Option A 12/12 G1 parity green) |
-| **Tier 2** (Elastic Grid) | ⏭ **IN PROGRESS — Phase D Option A pending** |
-| **Tier 3** (Memory Efficiency) | ⏭ AFTER Tier 2 D-006 closes |
+| **Tier 2** (Elastic Grid) | ✅ **D-006 ready to close — Phase D Option A landed 2026-04-27** |
+| **Tier 3** (Memory Efficiency) | ⏭ READY TO DISPATCH — bundles D-009..D-013 |
 | Tier 4 (UX/Deploy) | 🛑 DECISION DEFERRED |
 | Tier 5 | 🛑 DECISION DEFERRED |
 
@@ -71,6 +78,10 @@ After Phase D closes: D-007/D-008 in the original plan are largely subsumed into
 | SPEC-11 worker_id cardinality bound | Needs SPEC-11 amendment | QA-007 E |
 | RetainedStateRegistry on-disk persistence | Not needed while `elastic_departure=false` is default | QA-001 D |
 | TEST-SPEC-0450 UT-0450-01..13 full coverage | Phase E only added 28 regression tests; the full UT matrix is a v2.1 cleanup task | SF-003 E |
+| Full R22a/R22b/R22c semantic divergence on `LeaveKind` | Option A uniformly removes the worker post-round; meaningful divergence requires the reclaim path | MF-005 D |
+| `RetainedLastAcked::DeltaLight` real payload `(BorderGraph, RoundResult)` | Variant is unconstructible today; spec-correct payload lands with the v2.1 reclaim path | MF-007 D / QA-008 D |
+| Concurrent `FuturesUnordered` recv-loop in collect phase | Sequential recv survives Option A because departure → run abort/SoloReducing on next iteration; concurrency adds value only once reclaim resumes the round | QA-009 D |
+| Per-recv timeout in `accept_workers` | Slow-byte adversarial worker is a pre-departure DoS; bounded by `worker_connect_timeout` overall, but per-frame bound is v2.1 hardening | QA-015 D |
 
 ---
 

@@ -20,7 +20,11 @@ pub use border_graph::{
     MintedAgent, PendingCommutation,
 };
 pub use core::merge;
-pub(crate) use grid::reconstruct;
+// `grid::reconstruct` was re-exported here for the Phase D reclaim path in
+// `protocol/coordinator.rs`. Phase D Option A (2026-04-27) removed the
+// reclaim path; the function still exists in `grid.rs` (and is exercised by
+// its own unit tests) and will be re-exported when the v2.1 reclaim path
+// re-introduces a public caller.
 pub use grid::run_grid;
 pub(crate) use grid::run_grid_entry;
 pub use helpers::{drain_stale_redexes, rebuild_free_port_index};

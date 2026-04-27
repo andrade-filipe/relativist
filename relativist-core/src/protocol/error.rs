@@ -59,6 +59,20 @@ pub enum ProtocolError {
     #[error("fatal error: {0}")]
     Fatal(String),
 
+    /// SPEC-20 §3.3 R26 (Phase D Option A): all participating workers have
+    /// departed and no executor remains.
+    ///
+    /// Under `elastic_departure = false` (the v2.0 default), any detected
+    /// departure (heartbeat timeout, connection loss, or `LeaveRequest`)
+    /// causes the worker's stream to be removed from the active set; if
+    /// the active set drains to zero AND `hybrid_coordinator = false`, this
+    /// error is returned. In hybrid mode the coordinator instead falls
+    /// through to `SoloReducing` and continues alone (R27). This variant
+    /// distinguishes the "all workers gone" terminal state from a generic
+    /// `Fatal` so observability tooling can key on it explicitly.
+    #[error("all workers departed: {detail}")]
+    AllWorkersDeparted { detail: String },
+
     /// Frame header carries flag bits that this build does not recognise (SPEC-18 R19).
     #[error("unknown frame flags: 0b{flags:08b}")]
     UnknownFlags { flags: u8 },
@@ -130,6 +144,9 @@ mod tests {
             },
             ProtocolError::AuthFailed { reason: "R".into() },
             ProtocolError::Fatal("F".into()),
+            ProtocolError::AllWorkersDeparted {
+                detail: "all gone".into(),
+            },
             ProtocolError::UnknownFlags { flags: 4 },
             ProtocolError::DecompressionFailed("D".into()),
             ProtocolError::VersionMismatch {

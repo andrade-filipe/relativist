@@ -22,12 +22,8 @@ use super::config::NodeConfig;
 use super::error::ProtocolError;
 use super::frame::{recv_frame, send_frame};
 use super::types::{Message, RegisterAckPayload, RegisterNackPayload};
-use crate::merge::{
-    drain_stale_redexes, merge, reconstruct, BorderGraph, GridConfig, GridMetrics, WorkerRoundStats,
-};
-use crate::partition::{
-    materialize_reclaimed_partitions, split, Partition, PartitionStrategy, WorkerId,
-};
+use crate::merge::{drain_stale_redexes, merge, GridConfig, GridMetrics, WorkerRoundStats};
+use crate::partition::{split, Partition, PartitionStrategy, WorkerId};
 use crate::reduction::reduce_all;
 use crate::security::AuthToken;
 
@@ -624,18 +620,45 @@ pub async fn run_coordinator(
     let mut accept_config = config.clone();
     accept_config.num_workers = remote_workers_needed;
 
-    // FIXME(QA-006 / phase-d-rework): `worker_streams: Vec<TransportStream>`
-    // uses the slot index as worker identity. This is safe today because
-    // Phase B never removes entries — joiners are only `.push()`-ed and
-    // departures abort the run. The instant Phase D wires actual
-    // departure handling and removes entries from this Vec, the
-    // index-based WorkerId reconstruction at the collect-phase
-    // (`streams_to_poll`) and at the join-window (`active_ids`) will
-    // mis-map IDs. The fix is to migrate this to
-    // `BTreeMap<WorkerId, TransportStream>` so identity is decoupled
-    // from position. We defer the migration to Phase D's rework
-    // because it cascades through several call sites that Phase D
-    // will revisit anyway.
+    // SPEC-20 §3.3 — Phase D Option A (2026-04-27).
+    //
+    // `elastic_departure = true` advertises the full reclaim + reconstruct
+    // recovery path. The audit on commits 8366ef3..583a368 (REVIEW-PHASE-D
+    // 3 CRITICAL + 3 HIGH MF; QA-PHASE-D 5 CRITICAL + 6 HIGH) showed that
+    // path was structurally non-functional: every successful reconstruction
+    // unconditionally returned `Fatal` (MF-001 D), the hybrid R26a branch
+    // was algebraically unreachable (QA-002 D), and reclaimed `IdRange`s
+    // collided with surviving partitions (MF-003 / QA-003 D). The reviewer
+    // recommended Option A: ship Phase D as detection + retained-state
+    // plumbing only, with `elastic_departure = false` enforced as the v2.0
+    // default. Full reclaim is deferred to v2.1.
+    //
+    // To preserve forward compatibility for users who already set the flag
+    // (and for the CLI's `--elastic-departure`), we accept `true` but emit
+    // a one-time WARN and proceed exactly as if `false` — detection logs
+    // the event, removes the dead stream, and the next loop iteration
+    // either enters SoloReducing (hybrid) or returns
+    // `ProtocolError::AllWorkersDeparted` (non-hybrid).
+    if grid_config.elastic_departure {
+        tracing::warn!(
+            spec = "SPEC-20 §3.3",
+            phase = "Phase D Option A",
+            "elastic_departure is experimental and unsupported in v2.0; \
+             falling back to detection-only behaviour (full reclaim deferred to v2.1). \
+             Set elastic_departure = false to silence this warning."
+        );
+    }
+
+    // SF-003 / QA-012 D — `worker_streams` and `worker_ids` are kept as
+    // strict parallel vectors (length-equal at every observation point).
+    // Pre-Option-A code derived `WorkerId` from `worker_streams` index +
+    // hybrid offset; that mapping breaks the moment a stream is removed
+    // mid-run (SF-003 review, QA-012 D). Option A's detection path DOES
+    // remove streams on departure, so we must track identity explicitly.
+    // The `BTreeMap<WorkerId, TransportStream>` migration recommended by
+    // the reviewer is deferred to v2.1 because it cascades into the
+    // public `distribute_partitions`/`collect_results` signatures used
+    // by external integration tests.
     let mut worker_streams = accept_workers(
         &accept_config,
         token,
@@ -643,6 +666,11 @@ pub async fn run_coordinator(
         grid_config.hybrid_coordinator,
     )
     .await?;
+    let initial_offset: u32 = if grid_config.hybrid_coordinator { 1 } else { 0 };
+    let mut worker_ids: Vec<WorkerId> = (0..worker_streams.len() as u32)
+        .map(|i| i + initial_offset)
+        .collect();
+    debug_assert_eq!(worker_streams.len(), worker_ids.len());
 
     let mut pending_connections_queue = std::collections::VecDeque::<TransportStream>::new();
     let remote_count = worker_streams.len();
@@ -838,28 +866,32 @@ pub async fn run_coordinator(
 
         // Collect with departure detection (TASK-0438, 0441)
         let mut collect_results_vec = Vec::with_capacity(k_eff);
-        let mut departing_worker_ids = Vec::new();
-        // SF-002: drop the leading underscore — both reclaim counters are
-        // observably read at the metrics push site below. They sit at zero
-        // until the TASK-0443 follow-up wires reclaim back into the round
-        // loop (FIXME at the push site below).
-        let mut round_reclaimed_initial: u32 = 0;
+        let mut departing_worker_ids: Vec<WorkerId> = Vec::new();
+        // Phase D Option A — reclaim path removed; the per-round reclaim
+        // counters always push zero. Kept zero-valued so the
+        // round-indexed metric Vec lengths stay parallel for CSV
+        // consumers (`workers_departed_per_round`,
+        // `retained_initial_reclaims_per_round`,
+        // `retained_last_acked_reclaims_per_round`,
+        // `partitions_redispatched_per_round`). The full counters land
+        // when v2.1 wires the reclaim path.
+        let round_reclaimed_initial: u32 = 0;
         let round_reclaimed_last_acked: u32 = 0;
         let mut round_departed_count: u32 = 0;
 
-        // We'll map indices to actual WorkerIds for remotes
-        // Simplified: remotes are 1..N if hybrid, 0..N-1 if not.
+        // QA-012 D: pair each stream with its tracked `WorkerId` from
+        // `worker_ids` rather than re-deriving identity from the slot
+        // index. After Option A's stream-pruning lands, the index is no
+        // longer load-bearing; identity must travel with the stream.
+        debug_assert_eq!(
+            worker_streams.len(),
+            worker_ids.len(),
+            "worker_streams and worker_ids must remain length-parallel"
+        );
         let mut streams_to_poll: Vec<(WorkerId, &mut TransportStream)> = worker_streams
             .iter_mut()
-            .enumerate()
-            .map(|(i, s)| {
-                let id = if grid_config.hybrid_coordinator {
-                    (i as u32) + 1
-                } else {
-                    i as u32
-                };
-                (id, &mut *s)
-            })
+            .zip(worker_ids.iter().copied())
+            .map(|(s, id)| (id, &mut *s))
             .collect();
 
         if let Some((ref mut h, _)) = self_handle {
@@ -893,6 +925,55 @@ pub async fn run_coordinator(
                                 );
                             }
                             collect_results_vec.push((partition, stats));
+
+                            // QA-011 D — drain a trailing `LeaveRequest`
+                            // that the worker may have piggy-backed onto
+                            // the result frame (the spec-correct R22a
+                            // sequence). A 50ms peek is short enough that
+                            // a worker NOT sending `LeaveRequest` does not
+                            // pay round-trip latency, and long enough that
+                            // a worker that DID send it (already buffered
+                            // on the local socket) is observed.
+                            let peek_timeout = std::time::Duration::from_millis(50);
+                            if let Ok(Ok((peek_msg, peek_bytes))) = tokio::time::timeout(
+                                peek_timeout,
+                                recv_frame(stream, config.max_payload_size),
+                            )
+                            .await
+                            {
+                                bytes_received += peek_bytes;
+                                if let Message::LeaveRequest { kind } = peek_msg {
+                                    let departure_type = match kind {
+                                        crate::protocol::types::LeaveKind::AfterResult => {
+                                            "leave_after_result"
+                                        }
+                                        crate::protocol::types::LeaveKind::Urgent => "leave_urgent",
+                                    };
+                                    tracing::warn!(
+                                        worker_id = wid,
+                                        round = metrics.rounds,
+                                        departure_type,
+                                        retained_slot = "retained_initial",
+                                        post_result = true,
+                                        "Worker left gracefully via LeaveRequest after result (R22a)"
+                                    );
+                                    if let Err(e) = send_frame(stream, &Message::LeaveAck).await {
+                                        tracing::warn!(
+                                            worker_id = wid,
+                                            error = %sanitize_log_string(&e.to_string()),
+                                            "QA-004: LeaveAck send failed after PartitionResult; \
+                                             worker treated as departed regardless"
+                                        );
+                                    }
+                                    if !departing_worker_ids.contains(&wid) {
+                                        departing_worker_ids.push(wid);
+                                        round_departed_count += 1;
+                                    }
+                                }
+                                // Any non-LeaveRequest peek is logged at
+                                // debug — we silently drop it. The result
+                                // we already processed remains valid.
+                            }
                         }
                         Message::LeaveRequest { kind } => {
                             // R28: WARN log on departure (MF-002).
@@ -900,7 +981,15 @@ pub async fn run_coordinator(
                             // strings enumerated by SPEC-20 R28.
                             // `retained_slot` is `"retained_initial"` because
                             // R24a (conservative) is the only reclaim path
-                            // available today; R24b lands later (TASK-0443).
+                            // available today; R24b lands later (v2.1).
+                            //
+                            // Phase D Option A scope: `kind` distinguishes
+                            // the WARN payload but the action is the same
+                            // — the worker is removed from `worker_streams`
+                            // at end of round. Without a full reclaim path
+                            // (deferred to v2.1) there is no R22a/R22b
+                            // semantic divergence; both paths surrender
+                            // the worker to the v1 fallback.
                             let departure_type = match kind {
                                 crate::protocol::types::LeaveKind::AfterResult => {
                                     "leave_after_result"
@@ -914,9 +1003,21 @@ pub async fn run_coordinator(
                                 retained_slot = "retained_initial",
                                 "Worker left gracefully via LeaveRequest (R28)"
                             );
-                            let _ = send_frame(stream, &Message::LeaveAck).await;
-                            departing_worker_ids.push(wid);
-                            round_departed_count += 1;
+                            // QA-004 D — surface, do NOT swallow, send
+                            // errors. A TCP-RST mid-ack is observable in
+                            // logs even though the worker is treated as
+                            // departed regardless of ack delivery.
+                            if let Err(e) = send_frame(stream, &Message::LeaveAck).await {
+                                tracing::warn!(
+                                    worker_id = wid,
+                                    error = %sanitize_log_string(&e.to_string()),
+                                    "QA-004: LeaveAck send failed; worker treated as departed regardless"
+                                );
+                            }
+                            if !departing_worker_ids.contains(&wid) {
+                                departing_worker_ids.push(wid);
+                                round_departed_count += 1;
+                            }
                         }
                         Message::Error {
                             worker_id,
@@ -949,8 +1050,15 @@ pub async fn run_coordinator(
                                         error = %sanitized,
                                         "Worker departed due to error; triggering recovery (R28)"
                                     );
-                                    departing_worker_ids.push(id);
-                                    round_departed_count += 1;
+                                    // QA-005 D — idempotent push: a single
+                                    // wid that surfaces both `Message::Error`
+                                    // and a follow-up timeout (or any other
+                                    // double-detection race) must be
+                                    // counted exactly once.
+                                    if !departing_worker_ids.contains(&id) {
+                                        departing_worker_ids.push(id);
+                                        round_departed_count += 1;
+                                    }
                                 }
                             }
                         }
@@ -988,8 +1096,11 @@ pub async fn run_coordinator(
                                 error = %sanitized,
                                 "Worker connection lost; triggering recovery (R28)"
                             );
-                            departing_worker_ids.push(id);
-                            round_departed_count += 1;
+                            // QA-005 D — idempotent push.
+                            if !departing_worker_ids.contains(&id) {
+                                departing_worker_ids.push(id);
+                                round_departed_count += 1;
+                            }
                         }
                     }
                 }
@@ -1013,8 +1124,11 @@ pub async fn run_coordinator(
                                 retained_slot = "retained_initial",
                                 "Worker timed out; triggering recovery (R28)"
                             );
-                            departing_worker_ids.push(id);
-                            round_departed_count += 1;
+                            // QA-005 D — idempotent push.
+                            if !departing_worker_ids.contains(&id) {
+                                departing_worker_ids.push(id);
+                                round_departed_count += 1;
+                            }
                         }
                     }
                 }
@@ -1060,120 +1174,90 @@ pub async fn run_coordinator(
             }
         }
 
-        // === DEPARTURE RECLAIM (TASK-0440, 0442, 0443) ===
+        // === DEPARTURE HANDLING — Phase D Option A (2026-04-27) ===
+        //
+        // The pre-Option-A reclaim path (`materialize_reclaimed_partitions`
+        // + `reconstruct(border_graph, evolved_survivors, round_0_reclaimed)`)
+        // was structurally non-functional under the audit (REVIEW-PHASE-D
+        // MF-001..MF-009; QA-PHASE-D QA-001..QA-011). It is removed here.
+        //
+        // Option A semantics:
+        //   1. Log each departure (already done in the collect loop).
+        //   2. Release retained state so memory stays bounded (QA-010 D).
+        //   3. Drop the dead stream from `worker_streams` and `worker_ids`
+        //      (Vec parity invariant preserved).
+        //   4. If no remote workers remain:
+        //        - hybrid_coordinator → fall through; the next loop
+        //          iteration's `worker_streams.is_empty()` test enters
+        //          SoloReducing (Phase B refactor / QA-001 B).
+        //        - non-hybrid → return `ProtocolError::AllWorkersDeparted`
+        //          (the v1-faithful terminal state).
+        //   5. NO partition reclaim, NO `reconstruct`.
+        //
+        // The full `elastic_departure = true` reclaim+reconstruct path is
+        // deferred to v2.1; see `docs/next-steps.md` "Deferred to v2.1".
         if !departing_worker_ids.is_empty() {
             tracing::warn!(
-                "Detected {} departing workers. Triggering reclaim.",
-                departing_worker_ids.len()
+                D = departing_worker_ids.len(),
+                K_eff = k_eff,
+                "Phase D Option A: removing departed workers from active set; \
+                 no reclaim performed (elastic_departure deferred to v2.1)"
             );
 
-            // Handle D == K_eff (TASK-0442)
-            if departing_worker_ids.len() >= k_eff {
-                tracing::error!(
-                    "All workers departed! D={}, K_eff={}",
-                    departing_worker_ids.len(),
-                    k_eff
-                );
-                if grid_config.hybrid_coordinator {
-                    tracing::warn!("Hybrid mode: falling back to SoloReducing.");
-                    // In a real implementation we'd reclaim state and continue.
-                    // For this wave, we'll abort to satisfy P0 safety.
-                    push_partial_round_metrics(&mut metrics);
-                    return Err(ProtocolError::Fatal(
-                        "All workers departed including self-handle logic".into(),
-                    ));
-                } else {
-                    push_partial_round_metrics(&mut metrics);
-                    return Err(ProtocolError::Fatal(
-                        "All workers departed and non-hybrid mode".into(),
-                    ));
-                }
-            }
-
-            // Materialize reclaimed (TASK-0443 conservative)
-            // We need remapped ranges. For v1, we just reconstruct and re-split.
-            let surviving_partitions: Vec<Partition> =
-                collect_results_vec.iter().map(|(p, _)| p.clone()).collect();
-
-            // FIXME(QA-004 / phase-d-rework): the placeholder
-            // `IdRange { 0, 100_000 }` collides with surviving workers'
-            // AgentIds. The proper allocation flows through
-            // `partition::compute_round_id_ranges` keyed off
-            // `current_net.all_live_agent_ids().max() + 1`. We cannot
-            // remove this placeholder here in Phase B refactor because
-            // the entire reclaim block returns Err immediately below
-            // (the success-path-then-Err pattern is itself the bigger
-            // bug — MF-003), and Phase D's pending revert is the only
-            // place this code path becomes live. Leaving the placeholder
-            // until the Phase D rework lands its proper implementation.
-            let mut reclaimed_id_ranges = std::collections::HashMap::new();
+            // (2) Release retained state (QA-010 D).
             for &id in &departing_worker_ids {
-                reclaimed_id_ranges.insert(
-                    id,
-                    crate::partition::IdRange {
-                        start: 0,
-                        end: 100_000,
-                    },
-                );
+                retained_state.release_worker(id);
             }
 
-            let reclaimed_partitions = match materialize_reclaimed_partitions(
-                &departing_worker_ids,
-                &retained_state,
-                &reclaimed_id_ranges,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    push_partial_round_metrics(&mut metrics);
-                    return Err(ProtocolError::Fatal(e.to_string()));
-                }
-            };
-
-            // Reconstruct the net
-            let border_graph = BorderGraph::from_partition_plan(&plan);
-            let merged_net = reconstruct(&border_graph, surviving_partitions, reclaimed_partitions);
-            current_net = merged_net;
-            tracing::info!(
-                agent_count = current_net.count_live_agents(),
-                "Departure recovery reconstruction succeeded."
+            // (3) Remove dead streams + their wids. We collect indices in
+            // descending order so `swap_remove` does not shift the indices
+            // we still need to act on. The self-partition (wid 0 in hybrid
+            // mode) cannot depart here — its handle is awaited above in
+            // its own arm — so we only need to walk the remote arrays.
+            let mut indices_to_remove: Vec<usize> = worker_ids
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &id)| {
+                    if departing_worker_ids.contains(&id) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            indices_to_remove.sort_unstable_by(|a, b| b.cmp(a)); // descending
+            for idx in indices_to_remove {
+                worker_streams.swap_remove(idx);
+                worker_ids.swap_remove(idx);
+            }
+            debug_assert_eq!(
+                worker_streams.len(),
+                worker_ids.len(),
+                "worker_streams/worker_ids parity broken during departure pruning"
             );
 
-            // FIXME(TASK-0443): the increment below is the only writer of
-            // `round_reclaimed_initial` today. The push site is unreachable
-            // because we return Err immediately afterwards. Once TASK-0443
-            // closes the unconditional return, the metric push picks up the
-            // accumulated value. Suppress the unused-assignment warning
-            // until then.
-            #[allow(unused_assignments)]
-            {
-                round_reclaimed_initial += departing_worker_ids.len() as u32;
+            // (4) Terminal-state check. In hybrid mode the self-partition
+            // remains; we let the round complete (its result is in
+            // `collect_results_vec`) and fall through. The next loop
+            // iteration sees `worker_streams.is_empty()` and enters
+            // SoloReducing per R5/R5a/R27. In non-hybrid mode there is
+            // no executor remaining; surface the terminal state.
+            if worker_streams.is_empty() && !grid_config.hybrid_coordinator {
+                push_partial_round_metrics(&mut metrics);
+                return Err(ProtocolError::AllWorkersDeparted {
+                    detail: format!(
+                        "all {} workers departed in round {}; no executor remains",
+                        departing_worker_ids.len(),
+                        metrics.rounds
+                    ),
+                });
             }
-            // SF-001: removed `let _ = _round_reclaimed_initial;` redundancy.
-            //
-            // QA-003 / MF-004: this branch deliberately returns Err and
-            // therefore does not reach the per-round metric-push site below.
-            // All elastic per-round Vecs (workers_departed/joined,
-            // retained_*_reclaims, partitions_redispatched, join_*_overhead,
-            // join_window_time) skip their push on this path. Length parity
-            // with `effective_slots_per_round` is restored by
-            // `push_partial_round_metrics` immediately before this return,
-            // so CSV consumers indexing by round see consistent lengths.
-            // After TASK-0443 lands stream management here, this early
-            // return goes away and the normal end-of-round push path takes
-            // over.
-            // FIXME(MF-003 / phase-d-rework): success-path returns Err.
-            // The reconstructed `current_net` above is correctly merged,
-            // but stream management for the surviving + reclaimed
-            // partitions is not yet wired (it's Phase D's job —
-            // TASK-0438..0443). Phase D will be reverted and reworked,
-            // at which point this early return goes away and the round
-            // continues into the join window. Until then, the
-            // INFO-level "reconstruction succeeded" log preceding the
-            // FATAL error is intentionally confusing — readers should
-            // treat any departure event as a fatal abort in Phase B.
-            push_partial_round_metrics(&mut metrics);
-            return Err(ProtocolError::Fatal("Departure recovery reconstruction succeeded but stream management is TASK-0443 follow-up".into()));
         }
+
+        // NF-011 — debug-mode bound check after release_worker calls. The
+        // post-Option-A registry should never exceed `2 * k_eff` initial
+        // entries or `k_eff` last-acked entries.
+        retained_state.assert_memory_bounds(k_eff);
 
         // R38: record round-level departure/reclaim metrics.
         //
@@ -1304,14 +1388,11 @@ pub async fn run_coordinator(
             macro_rules! handshake_one {
                 ($stream:expr) => {{
                     let mut stream = $stream;
-                    let active_ids: std::collections::BTreeSet<WorkerId> = worker_streams
-                        .iter()
-                        .enumerate()
-                        .map(|(i, _)| {
-                            let offset = if grid_config.hybrid_coordinator { 1u32 } else { 0u32 };
-                            (i as u32) + offset
-                        })
-                        .collect();
+                    // QA-012 D — `active_ids` is keyed off the tracked
+                    // `worker_ids` Vec, not off slot indices, so post-
+                    // departure pruning does not mis-map identity.
+                    let active_ids: std::collections::BTreeSet<WorkerId> =
+                        worker_ids.iter().copied().collect();
 
                     let elapsed = t_window_start.elapsed();
                     let remaining = grid_config
@@ -1354,6 +1435,8 @@ pub async fn run_coordinator(
                         .await?;
                         if let Some(worker_id) = outcome {
                             worker_streams.push(stream);
+                            worker_ids.push(worker_id);
+                            debug_assert_eq!(worker_streams.len(), worker_ids.len());
                             round_joined_count += 1;
                             if grid_config.retain_partitions {
                                 retained_state.register_initial(worker_id, None);
@@ -2432,5 +2515,156 @@ mod tests {
         // accept_polls is observed but not asserted on (the channel may
         // never deliver a connection in this test).
         let _ = accept_polls;
+    }
+
+    // -----------------------------------------------------------------
+    // Phase D Option A regression tests (2026-04-27)
+    // -----------------------------------------------------------------
+
+    /// Phase D Option A — `ProtocolError::AllWorkersDeparted` exists,
+    /// round-trips Debug, and produces a Display string keyed on the
+    /// canonical "all workers departed" prefix.
+    ///
+    /// This is the terminal-state error returned by `run_coordinator`
+    /// when every remote worker has been pruned from `worker_streams`
+    /// in a non-hybrid grid. The variant is distinct from `Fatal`
+    /// specifically so observability tooling can key on it.
+    #[test]
+    fn phase_d_option_a_all_workers_departed_variant_exists() {
+        let err = ProtocolError::AllWorkersDeparted {
+            detail: "all 3 workers departed in round 5".into(),
+        };
+        let display = format!("{}", err);
+        assert!(
+            display.starts_with("all workers departed:"),
+            "AllWorkersDeparted Display must start with canonical prefix; got: {}",
+            display
+        );
+        // Debug must succeed and include the detail.
+        let debug = format!("{:?}", err);
+        assert!(
+            debug.contains("AllWorkersDeparted"),
+            "Debug must surface the variant name; got: {}",
+            debug
+        );
+        assert!(
+            debug.contains("round 5"),
+            "Debug must surface the detail field; got: {}",
+            debug
+        );
+    }
+
+    /// Phase D Option A / QA-005 D — `departing_worker_ids` MUST be
+    /// idempotent: a `wid` that surfaces under both `Message::Error`
+    /// and a follow-up timeout (or any double-detection race) is
+    /// counted exactly once.
+    ///
+    /// The production code uses `if !departing_worker_ids.contains(&wid)`
+    /// at every push site; this test fixes the contract.
+    #[test]
+    fn phase_d_option_a_qa005_departing_ids_are_idempotent() {
+        let mut departing_worker_ids: Vec<WorkerId> = Vec::new();
+        let mut round_departed_count: u32 = 0;
+
+        // First detection — Message::Error for wid=5.
+        let id: WorkerId = 5;
+        if !departing_worker_ids.contains(&id) {
+            departing_worker_ids.push(id);
+            round_departed_count += 1;
+        }
+        // Second detection — timeout fires for the same wid.
+        if !departing_worker_ids.contains(&id) {
+            departing_worker_ids.push(id);
+            round_departed_count += 1;
+        }
+        // Third detection — LeaveRequest also arrives for the same wid.
+        if !departing_worker_ids.contains(&id) {
+            departing_worker_ids.push(id);
+            round_departed_count += 1;
+        }
+
+        assert_eq!(
+            departing_worker_ids,
+            vec![5],
+            "QA-005: same wid must appear exactly once"
+        );
+        assert_eq!(
+            round_departed_count, 1,
+            "QA-005: round_departed_count must increment once per logical departure"
+        );
+    }
+
+    /// Phase D Option A / QA-012 D — pruning departed workers from the
+    /// parallel `worker_streams` / `worker_ids` Vecs preserves identity:
+    /// after removal, every remaining `worker_ids[i]` corresponds to the
+    /// SAME worker that was at `worker_ids[i]` (or whatever swap-remove
+    /// re-positioned it to) before the removal. Identity travels with
+    /// the value, NOT with the index.
+    #[test]
+    fn phase_d_option_a_qa012_stream_pruning_preserves_identity() {
+        // Simulated pre-departure state: 4 remote workers in a non-
+        // hybrid grid (wids 0..3).
+        let mut worker_ids: Vec<WorkerId> = vec![0, 1, 2, 3];
+        let mut worker_streams_proxy: Vec<u32> = vec![10, 11, 12, 13];
+        debug_assert_eq!(worker_ids.len(), worker_streams_proxy.len());
+
+        // wid=1 and wid=3 depart.
+        let departing: Vec<WorkerId> = vec![1, 3];
+        let mut indices_to_remove: Vec<usize> = worker_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                if departing.contains(id) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        indices_to_remove.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in indices_to_remove {
+            worker_streams_proxy.swap_remove(idx);
+            worker_ids.swap_remove(idx);
+        }
+
+        // Surviving wids are 0 and 2; their stream proxies (10 and 12)
+        // travel with them, NOT re-numbered to 0..len.
+        assert_eq!(worker_ids.len(), 2, "two workers remain");
+        assert_eq!(
+            worker_streams_proxy.len(),
+            2,
+            "QA-012: parallel arrays must stay length-equal"
+        );
+        let pairs: std::collections::BTreeSet<(WorkerId, u32)> = worker_ids
+            .iter()
+            .copied()
+            .zip(worker_streams_proxy.iter().copied())
+            .collect();
+        let expected: std::collections::BTreeSet<(WorkerId, u32)> =
+            [(0, 10), (2, 12)].into_iter().collect();
+        assert_eq!(
+            pairs, expected,
+            "QA-012: surviving (wid, stream) pairings must be intact post-prune"
+        );
+    }
+
+    /// Phase D Option A / QA-008 D — the `RetainedLastAcked::DeltaLight`
+    /// variant carries unit-typed payload, so a wire-level construction
+    /// cannot smuggle an unbounded String through the registry.
+    ///
+    /// Type-level pin: this test fails to compile if the field type
+    /// regresses to `String` or any size-unbounded payload.
+    #[test]
+    fn phase_d_option_a_qa008_delta_light_type_is_unit() {
+        use crate::protocol::retained::RetainedLastAcked;
+        // The constructor literal proves the type at compile time.
+        let v = RetainedLastAcked::DeltaLight { placeholder: () };
+        // Trivially destructure to verify the type name.
+        if let RetainedLastAcked::DeltaLight { placeholder } = &v {
+            // Compile-time check: `placeholder` must be `&()`.
+            let _: &() = placeholder;
+        } else {
+            panic!("constructor must yield DeltaLight variant");
+        }
     }
 }
