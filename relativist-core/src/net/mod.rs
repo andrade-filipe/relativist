@@ -5,7 +5,9 @@
 
 pub mod core;
 pub mod debug;
+pub mod sparse;
 pub mod types;
 
 pub use core::*;
+pub use sparse::SparseNet;
 pub use types::*;

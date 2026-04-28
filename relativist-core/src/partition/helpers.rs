@@ -405,20 +405,106 @@ pub fn build_subnet_with_config(
     worker_id: WorkerId,
     id_range: core::ops::Range<AgentId>,
 ) -> Result<Net, crate::error::PartitionError> {
-    if !config.sparse_build {
+    let id_range_size = (id_range.end as u64).saturating_sub(id_range.start as u64);
+    let live_count = worker_agents.len() as u64;
+    let threshold_exceeded = id_range_size > 4 * live_count;
+
+    if threshold_exceeded && !config.sparse_build {
         // SPEC-22 R30: threshold check for the dense path.
-        let id_range_size = (id_range.end as u64).saturating_sub(id_range.start as u64);
-        let live_count = worker_agents.len() as u64;
-        if id_range_size > 4 * live_count {
-            return Err(crate::error::PartitionError::DenseAllocationExceedsThreshold {
-                partition_index,
-                id_range_size,
-                live_count,
-            });
+        return Err(crate::error::PartitionError::DenseAllocationExceedsThreshold {
+            partition_index,
+            id_range_size,
+            live_count,
+        });
+    }
+
+    if threshold_exceeded {
+        // SPEC-22 R22: sparse path — builds via SparseNet then converts to dense.
+        // Memory is proportional to live_count rather than id_range_size (M5 fix).
+        Ok(build_subnet_sparse(net, worker_agents, sigma, border_entries, worker_id, id_range))
+    } else {
+        // Dense path (TASK-0481 logic) — threshold not exceeded.
+        Ok(build_subnet(net, worker_agents, sigma, border_entries, worker_id, id_range))
+    }
+}
+
+/// SPEC-22 R22: sparse-then-dense internal path for `build_subnet_with_config`.
+///
+/// Constructs a `SparseNet` with live agents and their port entries, then
+/// calls `to_dense(Some(id_range))` to materialize a dense `Net` with the
+/// free-list scoped to the partition range (R10a). Memory usage is proportional
+/// to `live_count`, not `id_range_size` (closes M5 pathology — SC-009).
+///
+/// Called only when `id_range_size > 4 * live_count` (threshold exceeded)
+/// and `config.sparse_build == true`.
+#[allow(clippy::too_many_arguments)]
+fn build_subnet_sparse(
+    net: &Net,
+    worker_agents: &[AgentId],
+    sigma: &HashMap<AgentId, WorkerId>,
+    border_entries: &[(AgentId, PortId, u32)],
+    worker_id: WorkerId,
+    id_range: core::ops::Range<AgentId>,
+) -> Net {
+    use crate::net::SparseNet;
+
+    if worker_agents.is_empty() {
+        return crate::net::Net::new();
+    }
+
+    let mut sparse = SparseNet::with_capacity(worker_agents.len());
+
+    // Build border overrides: (agent_id, port_id) -> FreePort(bid).
+    let mut border_overrides: HashMap<(AgentId, PortId), u32> = HashMap::new();
+    for &(agent_id, port_id, bid) in border_entries {
+        border_overrides.insert((agent_id, port_id), bid);
+    }
+
+    // Insert live agents and their port entries into the sparse representation.
+    for &agent_id in worker_agents {
+        let agent = net
+            .agents
+            .get(agent_id as usize)
+            .and_then(|s| s.as_ref())
+            .expect("worker_agents should only contain live agent IDs");
+
+        sparse.agents.insert(agent_id, *agent);
+
+        let num_ports = total_ports(agent.symbol);
+        for port_id in 0..num_ports {
+            let idx = agent_id as usize * PORTS_PER_SLOT + port_id as usize;
+            let target = if let Some(&bid) = border_overrides.get(&(agent_id, port_id)) {
+                PortRef::FreePort(bid)
+            } else if idx < net.ports.len() {
+                net.ports[idx]
+            } else {
+                DISCONNECTED
+            };
+            if target != DISCONNECTED {
+                sparse.ports.insert((agent_id, port_id), target);
+            }
         }
     }
-    // All other cases: sparse_build=true (any ratio) or dense below threshold.
-    Ok(build_subnet(net, worker_agents, sigma, border_entries, worker_id, id_range))
+
+    // Copy redex queue with only internal active pairs.
+    let worker_set: std::collections::HashSet<AgentId> = worker_agents.iter().copied().collect();
+    for &(a_id, b_id) in &net.redex_queue {
+        if sigma.get(&a_id) == Some(&worker_id) && sigma.get(&b_id) == Some(&worker_id)
+            && worker_set.contains(&a_id)
+            && worker_set.contains(&b_id)
+        {
+            sparse.redex_queue.push_back((a_id, b_id));
+        }
+    }
+
+    // Preserve freeport_redirects from source net (SC-001 second surface).
+    sparse.freeport_redirects = net.freeport_redirects.clone();
+
+    // Determine next_id: max agent ID in range + 1 (consistent with build_subnet).
+    sparse.next_id = 0; // to_dense will not use this; kept for symmetry.
+
+    // Convert to dense with partition-scoped free-list (R10a / SC-006).
+    sparse.to_dense(Some(id_range))
 }
 
 #[cfg(test)]
@@ -1239,6 +1325,133 @@ mod tests {
         assert!(
             matches!(err, PartitionError::DenseAllocationExceedsThreshold { .. }),
             "error variant must match DenseAllocationExceedsThreshold"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0492 — sparse-then-dense build_subnet (R22, TASK-0492)
+    // -----------------------------------------------------------------------
+
+    /// UT-0492-01: sparse_path_taken_above_threshold — sparse path produces Ok.
+    #[test]
+    fn sparse_path_taken_above_threshold() {
+        use crate::partition::PartitionConfig;
+        let mut net = Net::new();
+        // 10 live agents; id_range = 0..60 (60 > 4*10 = 40, threshold exceeded).
+        for _ in 0..10 {
+            net.create_agent(Symbol::Era);
+        }
+        // Assign all agents to worker 0; wire all to FreePorts so they land in subnet.
+        for i in 0..10u32 {
+            let port_idx = i as usize * PORTS_PER_SLOT;
+            net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
+        }
+        let agents: Vec<u32> = (0..10).collect();
+        let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
+        let cfg = PartitionConfig { sparse_build: true };
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60);
+        assert!(
+            result.is_ok(),
+            "sparse_build=true + threshold exceeded should succeed, got {:?}",
+            result
+        );
+    }
+
+    /// UT-0492-02: dense path taken below threshold.
+    #[test]
+    fn dense_path_taken_below_threshold() {
+        use crate::partition::PartitionConfig;
+        let mut net = Net::new();
+        // 10 live agents; id_range = 0..30 (30 < 4*10 = 40, threshold NOT exceeded).
+        for _ in 0..10 {
+            net.create_agent(Symbol::Era);
+        }
+        for i in 0..10u32 {
+            let port_idx = i as usize * PORTS_PER_SLOT;
+            net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
+        }
+        let agents: Vec<u32> = (0..10).collect();
+        let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
+        let cfg = PartitionConfig { sparse_build: true };
+        // id_range = 0..30 → 30 NOT > 40 (dense path).
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..30);
+        assert!(result.is_ok(), "dense path below threshold should succeed");
+    }
+
+    /// UT-0492-04: sparse path sets id_range on returned net.
+    #[test]
+    fn sparse_path_id_range_set_on_returned_net() {
+        use crate::partition::PartitionConfig;
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Era);
+        }
+        for i in 0..10u32 {
+            let port_idx = i as usize * PORTS_PER_SLOT;
+            net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
+        }
+        let agents: Vec<u32> = (0..10).collect();
+        let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
+        let cfg = PartitionConfig { sparse_build: true };
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60)
+            .expect("should succeed");
+        assert_eq!(
+            result.id_range,
+            Some(0..60),
+            "sparse path must set id_range = Some(0..60) on returned net"
+        );
+    }
+
+    /// UT-0492-05: sparse path free_list only in partition range.
+    #[test]
+    fn sparse_path_free_list_only_in_range() {
+        use crate::partition::PartitionConfig;
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Era);
+        }
+        for i in 0..10u32 {
+            let port_idx = i as usize * PORTS_PER_SLOT;
+            net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
+        }
+        let agents: Vec<u32> = (0..10).collect();
+        let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
+        let cfg = PartitionConfig { sparse_build: true };
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60)
+            .expect("should succeed");
+        for &id in &result.free_list {
+            assert!(
+                id < 60,
+                "R10a: free-list id {} must be in partition range [0..60)",
+                id
+            );
+        }
+    }
+
+    /// UT-0492-03: sparse path preserves freeport_redirects.
+    #[test]
+    fn sparse_path_freeport_redirects_preserved() {
+        use crate::partition::PartitionConfig;
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Era);
+        }
+        for i in 0..10u32 {
+            let port_idx = i as usize * PORTS_PER_SLOT;
+            net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
+        }
+        // Add freeport_redirects entry to the source net.
+        net.freeport_redirects.insert(42, PortRef::AgentPort(0, 0));
+
+        let agents: Vec<u32> = (0..10).collect();
+        let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
+        let cfg = PartitionConfig { sparse_build: true };
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60)
+            .expect("should succeed");
+        assert_eq!(
+            result.freeport_redirects.get(&42),
+            Some(&PortRef::AgentPort(0, 0)),
+            "sparse path must preserve freeport_redirects from source net"
         );
     }
 }

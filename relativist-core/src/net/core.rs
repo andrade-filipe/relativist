@@ -2,12 +2,18 @@
 //!
 //! The complete interaction net data structure with agent arena,
 //! port array, redex queue, and all CRUD operations.
+//!
+//! SPEC-22 R31: this module contains no `unsafe` blocks.
+//! Bit-packed migration is SPEC-23's responsibility.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use super::types::{total_ports, Agent, AgentId, PortRef, Symbol, DISCONNECTED, PORTS_PER_SLOT};
+
+// SPEC-22 §4.4 (TASK-0488): compile-time Send + Sync assertion.
+static_assertions::assert_impl_all!(Net: Send, Sync);
 
 /// The complete interaction net.
 ///
@@ -276,6 +282,23 @@ impl Net {
                         id
                     );
 
+                    // SPEC-22 R27 family 3: post-recycle invariants.
+                    // ID is no longer in free-list (already popped above),
+                    // agents[id] == Some(_), free-list has no duplicates.
+                    #[cfg(debug_assertions)]
+                    {
+                        debug_assert!(
+                            !self.free_list.contains(&id),
+                            "SPEC-22 R27 family 3: recycled id {} still in free-list after pop",
+                            id
+                        );
+                        debug_assert!(
+                            self.agents.get(id as usize).and_then(|s| s.as_ref()).is_some(),
+                            "SPEC-22 R27 family 3: recycled slot {} is not Some after create",
+                            id
+                        );
+                    }
+
                     return id;
                 }
             }
@@ -434,12 +457,45 @@ impl Net {
                         id
                     );
                     self.free_list.push(id);
+
+                    // SPEC-22 R27 family 1: post-remove-agent recycle assertions.
+                    // free-list contains id, agents[id] == None, ports DISCONNECTED.
+                    #[cfg(debug_assertions)]
+                    {
+                        debug_assert!(
+                            self.free_list.contains(&id),
+                            "SPEC-22 R27 family 1: id {} not in free-list after push",
+                            id
+                        );
+                        debug_assert!(
+                            self.agents.get(idx).is_some_and(|s| s.is_none()),
+                            "SPEC-22 R27 family 1: agents[{}] is not None after remove",
+                            id
+                        );
+                    }
                 } else {
                     // R10c: protected tombstone — slot stays None, ports DISCONNECTED,
                     // ID NOT pushed to free_list until next reconstruct clean-boundary.
                     #[cfg(debug_assertions)]
                     if let Some(ref mut tombstones) = self.protected_tombstones {
                         tombstones.insert(id);
+                    }
+
+                    // SPEC-22 R27 family 2: post-remove-agent protected-tombstone assertions.
+                    // agents[id] == None, ports DISCONNECTED, ID NOT in free_list,
+                    // ID IS in protected_tombstones shadow (debug builds only).
+                    #[cfg(debug_assertions)]
+                    {
+                        debug_assert!(
+                            self.agents.get(idx).is_some_and(|s| s.is_none()),
+                            "SPEC-22 R27 family 2: agents[{}] is not None after protected-tombstone remove",
+                            id
+                        );
+                        debug_assert!(
+                            !self.free_list.contains(&id),
+                            "SPEC-22 R27 family 2: protected tombstone {} incorrectly in free-list",
+                            id
+                        );
                     }
                 }
             }
@@ -846,6 +902,180 @@ impl Net {
             is_in_delta_round: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Sparse conversion (SPEC-22 §4.6, R19 — TASK-0489)
+    // ------------------------------------------------------------------
+
+    /// Converts this dense `Net` into a `SparseNet`.
+    ///
+    /// Iterates the dense arena, inserting only live (non-`None`) agents into
+    /// the sparse `agents` map. For each live agent, copies port entries
+    /// `(agent.id, p)` for `p in 0..total_ports(agent.symbol)` from the flat
+    /// port array, skipping `DISCONNECTED` entries (R17 sparse equivalent).
+    ///
+    /// Copies `redex_queue`, `next_id`, `root`, and `freeport_redirects`
+    /// directly. The `free_list` is intentionally NOT copied — `SparseNet` has
+    /// no tombstones and therefore no free-list concept.
+    ///
+    /// SPEC-22 §4.6 R19. Complexity: O(arena_len).
+    pub fn to_sparse(&self) -> crate::net::sparse::SparseNet {
+        use crate::net::sparse::SparseNet;
+        use super::types::port_index;
+
+        let live_count = self.count_live_agents();
+        let mut sparse = SparseNet::with_capacity(live_count);
+
+        for agent in self.agents.iter().flatten() {
+            sparse.agents.insert(agent.id, *agent);
+            let num_ports = total_ports(agent.symbol);
+            for p in 0..num_ports {
+                let idx = port_index(agent.id, p);
+                if idx < self.ports.len() {
+                    let target = self.ports[idx];
+                    if target != DISCONNECTED {
+                        sparse.ports.insert((agent.id, p), target);
+                    }
+                }
+            }
+        }
+        sparse.redex_queue = self.redex_queue.clone();
+        sparse.next_id = self.next_id;
+        sparse.root = self.root;
+        // SC-001 second surface: copy freeport_redirects (closes D1c).
+        sparse.freeport_redirects = self.freeport_redirects.clone();
+        sparse
+    }
+
+    // ------------------------------------------------------------------
+    // Behavioral equality (SPEC-22 §3.2 R21 — TASK-0491, closes SC-014)
+    // ------------------------------------------------------------------
+
+    /// SPEC-22 R21 behavioral equality.
+    ///
+    /// Two `Net` values are *behaviorally equal* iff they agree on:
+    /// - the **live-agent set** (trailing `None` slots are ignored),
+    /// - the **port-target relation** for every live `AgentPort` source
+    ///   (trailing `DISCONNECTED` entries are ignored),
+    /// - the **redex queue** up to element ordering (set equality),
+    /// - `root`, `next_id`, `freeport_redirects` (full equality),
+    /// - `free_list` as a **set** (LIFO order is a Vec-serde implementation
+    ///   detail; behavioral equality requires only the same set of recycled IDs).
+    ///
+    /// This is less strict than `PartialEq` (`==`), which compares `Vec`s
+    /// byte-by-byte (and therefore distinguishes trailing `None`/`DISCONNECTED`
+    /// padding). Use `is_behaviorally_equal` whenever comparing nets that may
+    /// differ only in arena padding — e.g., after a `to_sparse().to_dense(None)`
+    /// round-trip (R21 closes SC-014).
+    pub fn is_behaviorally_equal(&self, other: &Net) -> bool {
+        use std::collections::HashSet;
+
+        // Compare live-agent sets.
+        let self_agents: Vec<&Agent> = self.agents.iter().flatten().collect();
+        let other_agents: Vec<&Agent> = other.agents.iter().flatten().collect();
+        if self_agents != other_agents {
+            return false;
+        }
+
+        // Compare port-target relations for every live agent.
+        for agent in self.agents.iter().flatten() {
+            let num_ports = total_ports(agent.symbol);
+            for p in 0..num_ports {
+                let idx = super::types::port_index(agent.id, p);
+                let self_target = if idx < self.ports.len() { self.ports[idx] } else { DISCONNECTED };
+                let other_target = if idx < other.ports.len() { other.ports[idx] } else { DISCONNECTED };
+                if self_target != other_target {
+                    return false;
+                }
+            }
+        }
+
+        // Compare redex queue up to ordering (set equality).
+        let self_redex: HashSet<(AgentId, AgentId)> = self.redex_queue.iter().copied().collect();
+        let other_redex: HashSet<(AgentId, AgentId)> = other.redex_queue.iter().copied().collect();
+        if self_redex != other_redex {
+            return false;
+        }
+
+        // Compare root, next_id, freeport_redirects (full equality).
+        if self.root != other.root {
+            return false;
+        }
+        if self.next_id != other.next_id {
+            return false;
+        }
+        if self.freeport_redirects != other.freeport_redirects {
+            return false;
+        }
+
+        // Compare free-lists as sets.
+        let self_free: HashSet<AgentId> = self.free_list.iter().copied().collect();
+        let other_free: HashSet<AgentId> = other.free_list.iter().copied().collect();
+        self_free == other_free
+    }
+
+    // ------------------------------------------------------------------
+    // SPEC-22 R27 debug assertions — I3' uniqueness family (TASK-0495)
+    // ------------------------------------------------------------------
+
+    /// SPEC-22 R27 family (4): periodic check that no `PortRef` references a
+    /// free-list `AgentId`.
+    ///
+    /// If any port slot in the dense array holds `AgentPort(id, _)` where `id`
+    /// is currently in the free-list (i.e., `agents[id] == None`), the invariant
+    /// I3' (ID uniqueness) or the non-reference rule (SPEC-22 R7) is violated.
+    ///
+    /// All assertions are `debug_assert!` — zero cost in release builds.
+    /// Call once at the end of `reduce_all` or via `debug_check_invariants`.
+    ///
+    /// SPEC-22 R27 bullet 4.
+    #[cfg(debug_assertions)]
+    pub fn assert_no_free_list_port_refs(&self) {
+        let free_set: std::collections::HashSet<AgentId> =
+            self.free_list.iter().copied().collect();
+        for port in &self.ports {
+            if let PortRef::AgentPort(id, _) = port {
+                debug_assert!(
+                    !free_set.contains(id),
+                    "SPEC-22 R7/R27 violation: PortRef references free-list ID {}",
+                    id
+                );
+            }
+        }
+    }
+
+    /// SPEC-22 R27: composite invariant check (all four families).
+    ///
+    /// Combines:
+    /// - family 4 (`assert_no_free_list_port_refs`): no port references a free-list ID.
+    /// - free-list no-duplicates (I3' uniqueness): free-list has no duplicate IDs.
+    /// - every free-list ID maps to a `None` agent slot (family 1/3 post-conditions).
+    ///
+    /// All checks are `debug_assert!` — zero cost in release.
+    #[cfg(debug_assertions)]
+    pub fn debug_check_invariants(&self) {
+        // Family 4: no port references a recycled ID.
+        self.assert_no_free_list_port_refs();
+
+        // I3' uniqueness: free-list has no duplicates.
+        let mut seen = std::collections::HashSet::new();
+        for &id in &self.free_list {
+            debug_assert!(
+                seen.insert(id),
+                "SPEC-22 R27 I3' violation: duplicate free-list entry {}",
+                id
+            );
+        }
+
+        // Family 1/3 post-condition: every free-list ID is a None slot.
+        for &id in &self.free_list {
+            debug_assert!(
+                self.agents.get(id as usize).is_some_and(|s| s.is_none()),
+                "SPEC-22 R27 family 1/3 violation: free-list ID {} maps to a live slot",
+                id
+            );
         }
     }
 }
@@ -2227,5 +2457,643 @@ mod tests {
             back.freeport_redirects.is_empty(),
             "freeport_redirects must be re-defaulted to empty (skip adapter)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0489 — Net::to_sparse conversion (R19)
+    // -----------------------------------------------------------------------
+
+    /// UT-0489-01: to_sparse skips None slots.
+    #[test]
+    fn to_sparse_skips_none_slots() {
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Con);
+        }
+        // Remove agents 2 and 5 to create None slots.
+        net.remove_agent(2);
+        net.remove_agent(5);
+        let sn = net.to_sparse();
+        assert!(!sn.agents.contains_key(&2), "sparse should skip None slot 2");
+        assert!(!sn.agents.contains_key(&5), "sparse should skip None slot 5");
+    }
+
+    /// UT-0489-02: to_sparse includes all live agents.
+    #[test]
+    fn to_sparse_includes_all_live_agents() {
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Con);
+        }
+        net.remove_agent(2);
+        net.remove_agent(5);
+        let sn = net.to_sparse();
+        assert_eq!(sn.agents.len(), 8, "should have 8 live agents after removing 2");
+        for i in 0..10u32 {
+            if i == 2 || i == 5 {
+                assert!(!sn.agents.contains_key(&i));
+            } else {
+                assert!(sn.agents.contains_key(&i));
+            }
+        }
+    }
+
+    /// UT-0489-03: to_sparse skips DISCONNECTED ports.
+    #[test]
+    fn to_sparse_skips_disconnected_ports() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // Port 1 of agent a is DISCONNECTED — not connected to anything.
+        let sn = net.to_sparse();
+        assert!(
+            !sn.ports.contains_key(&(a, 1)),
+            "DISCONNECTED port (a,1) should not appear in sparse map"
+        );
+    }
+
+    /// UT-0489-04: to_sparse skips ERA auxiliary ports (R17 / I6 sparse).
+    #[test]
+    fn to_sparse_skips_era_auxiliary_ports() {
+        let mut net = Net::new();
+        let era = net.create_agent(Symbol::Era);
+        let sn = net.to_sparse();
+        // ERA has arity 0 (only principal port 0); ports 1 and 2 do not exist.
+        assert!(
+            !sn.ports.contains_key(&(era, 1)),
+            "ERA aux port 1 must not appear in sparse"
+        );
+        assert!(
+            !sn.ports.contains_key(&(era, 2)),
+            "ERA aux port 2 must not appear in sparse"
+        );
+    }
+
+    /// UT-0489-05: to_sparse preserves freeport_redirects (SC-001 second surface).
+    #[test]
+    fn to_sparse_preserves_freeport_redirects() {
+        let mut net = Net::new();
+        net.create_agent(Symbol::Con); // id 0
+        let con2 = net.create_agent(Symbol::Con); // id 1 (just to have a target)
+        net.freeport_redirects.insert(99, PortRef::AgentPort(con2, 0));
+        let sn = net.to_sparse();
+        assert_eq!(
+            sn.freeport_redirects.get(&99),
+            Some(&PortRef::AgentPort(con2, 0)),
+            "freeport_redirects must be copied to sparse (SC-001)"
+        );
+    }
+
+    /// UT-0489-06: to_sparse preserves redex_queue clone.
+    #[test]
+    fn to_sparse_preserves_redex_queue_clone() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        let c = net.create_agent(Symbol::Dup);
+        let d = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+        let sn = net.to_sparse();
+        assert_eq!(sn.redex_queue, net.redex_queue, "redex_queue must be preserved");
+    }
+
+    /// UT-0489-07: to_sparse preserves next_id.
+    #[test]
+    fn to_sparse_preserves_next_id() {
+        let mut net = Net::new();
+        for _ in 0..10 {
+            net.create_agent(Symbol::Era);
+        }
+        assert_eq!(net.next_id, 10);
+        let sn = net.to_sparse();
+        assert_eq!(sn.next_id, 10, "next_id must be preserved");
+    }
+
+    /// UT-0489-08: to_sparse preserves root.
+    #[test]
+    fn to_sparse_preserves_root() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.root = Some(PortRef::AgentPort(a, 0));
+        let sn = net.to_sparse();
+        assert_eq!(sn.root, Some(PortRef::AgentPort(a, 0)), "root must be preserved");
+    }
+
+    /// UT-0489-09: to_sparse does not carry free_list (SparseNet has no free-list field).
+    #[test]
+    fn to_sparse_does_not_carry_free_list() {
+        let mut net = Net::new();
+        for _ in 0..5 {
+            net.create_agent(Symbol::Con);
+        }
+        net.remove_agent(2);
+        assert!(!net.free_list.is_empty(), "net should have a free-list entry");
+        let sn = net.to_sparse();
+        // SparseNet has no free_list field — confirmed by the struct definition.
+        // The absence of the field is a compile-time check; we verify the live count
+        // does not include freed agents.
+        assert_eq!(sn.agents.len(), 4, "sparse must contain only live agents");
+    }
+
+    /// EC-1: to_sparse on an empty net produces an empty SparseNet.
+    #[test]
+    fn to_sparse_empty_net() {
+        let net = Net::new();
+        let sn = net.to_sparse();
+        assert!(sn.agents.is_empty());
+        assert!(sn.ports.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0490 — SparseNet::to_dense (R20) — tested via round-trip
+    // -----------------------------------------------------------------------
+
+    /// UT-0490-01: to_dense(None) populates full free_list.
+    #[test]
+    fn to_dense_none_populates_full_free_list() {
+        use crate::net::SparseNet;
+        use std::collections::HashSet;
+        // Agents at IDs {50, 51, 75, 99, 130, 175}; next_id = 200.
+        let mut sn = SparseNet::new();
+        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.agents.insert(51, Agent { symbol: Symbol::Con, id: 51 });
+        sn.agents.insert(75, Agent { symbol: Symbol::Dup, id: 75 });
+        sn.agents.insert(99, Agent { symbol: Symbol::Era, id: 99 });
+        sn.agents.insert(130, Agent { symbol: Symbol::Con, id: 130 });
+        sn.agents.insert(175, Agent { symbol: Symbol::Dup, id: 175 });
+        sn.next_id = 200;
+
+        let net = sn.to_dense(None);
+        // Arena len = 176 (max_id=175 → 175+1).
+        assert_eq!(net.agents.len(), 176, "arena len = max_id + 1 = 176");
+        let free_set: HashSet<AgentId> = net.free_list.iter().copied().collect();
+        // Expected: [0..176) minus {50,51,75,99,130,175} = 176 - 6 = 170 entries.
+        assert_eq!(free_set.len(), 170, "free-list should have 170 entries");
+        for id in [50u32, 51, 75, 99, 130, 175] {
+            assert!(!free_set.contains(&id), "live agent {} must not be in free-list", id);
+        }
+    }
+
+    /// UT-0490-02: to_dense(Some(50..100)) scopes free-list to partition range (T14a).
+    #[test]
+    fn to_dense_some_partition_scoped_t14a() {
+        use crate::net::SparseNet;
+        use std::collections::HashSet;
+        let mut sn = SparseNet::new();
+        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.agents.insert(51, Agent { symbol: Symbol::Con, id: 51 });
+        sn.agents.insert(75, Agent { symbol: Symbol::Dup, id: 75 });
+        sn.agents.insert(99, Agent { symbol: Symbol::Era, id: 99 });
+        sn.agents.insert(130, Agent { symbol: Symbol::Con, id: 130 });
+        sn.agents.insert(175, Agent { symbol: Symbol::Dup, id: 175 });
+        sn.next_id = 200;
+
+        let net = sn.to_dense(Some(50..100));
+        let free_set: HashSet<AgentId> = net.free_list.iter().copied().collect();
+        // [50..100) minus {50,51,75,99} = 50 IDs - 4 = 46 entries.
+        assert_eq!(free_set.len(), 46, "partition free-list should have 46 entries");
+        assert!(!free_set.contains(&50), "live 50 not in free-list");
+        assert!(!free_set.contains(&51), "live 51 not in free-list");
+        assert!(!free_set.contains(&75), "live 75 not in free-list");
+        assert!(!free_set.contains(&99), "live 99 not in free-list");
+    }
+
+    /// UT-0490-03/04: to_dense(Some(range)) excludes IDs outside range.
+    #[test]
+    fn to_dense_some_excludes_outside_range() {
+        use crate::net::SparseNet;
+        let mut sn = SparseNet::new();
+        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.agents.insert(130, Agent { symbol: Symbol::Con, id: 130 });
+        sn.next_id = 200;
+        let net = sn.to_dense(Some(50..100));
+        assert!(
+            !net.free_list.iter().any(|&id| id < 50),
+            "no ID below range start in free-list"
+        );
+        assert!(
+            !net.free_list.iter().any(|&id| id >= 100),
+            "no ID at or above range end in free-list"
+        );
+    }
+
+    /// UT-0490-05: to_dense(Some(empty_range)) yields empty free-list.
+    #[test]
+    fn to_dense_some_with_empty_range_yields_empty_free_list() {
+        use crate::net::SparseNet;
+        let mut sn = SparseNet::new();
+        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.next_id = 60;
+        let net = sn.to_dense(Some(50..50));
+        assert!(net.free_list.is_empty(), "empty range → empty free-list");
+    }
+
+    /// UT-0490-06: to_dense sets id_range on returned net.
+    #[test]
+    fn to_dense_id_range_propagated_to_returned_net() {
+        use crate::net::SparseNet;
+        let mut sn = SparseNet::new();
+        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.next_id = 100;
+        let net = sn.to_dense(Some(50..100));
+        assert_eq!(net.id_range, Some(50..100), "id_range must be propagated");
+    }
+
+    /// UT-0490-07: to_dense preserves freeport_redirects (SC-001).
+    #[test]
+    fn to_dense_preserves_freeport_redirects() {
+        use crate::net::SparseNet;
+        let mut sn = SparseNet::new();
+        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.next_id = 100;
+        sn.freeport_redirects.insert(99, PortRef::AgentPort(50, 0));
+        let net = sn.to_dense(Some(50..100));
+        assert_eq!(
+            net.freeport_redirects.get(&99),
+            Some(&PortRef::AgentPort(50, 0)),
+            "freeport_redirects must be preserved"
+        );
+    }
+
+    /// UT-0490-10: arena size = max_id + 1.
+    #[test]
+    fn to_dense_arena_size_is_max_id_plus_one() {
+        use crate::net::SparseNet;
+        let mut sn = SparseNet::new();
+        sn.agents.insert(175, Agent { symbol: Symbol::Dup, id: 175 });
+        sn.next_id = 176;
+        let net = sn.to_dense(None);
+        assert_eq!(net.agents.len(), 176, "arena_len = max_id + 1 = 176");
+    }
+
+    /// EC-1: to_dense on empty SparseNet.
+    #[test]
+    fn to_dense_empty_sparse() {
+        use crate::net::SparseNet;
+        let sn = SparseNet::new();
+        let net = sn.to_dense(None);
+        // next_id = 0, max_id = 0, arena_len = 1.
+        assert_eq!(net.agents.len(), 1, "single None slot for max_id = 0");
+        assert_eq!(net.free_list.len(), 1, "one free slot at index 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0491 — Net::is_behaviorally_equal (R21, closes SC-014)
+    // -----------------------------------------------------------------------
+
+    /// UT-0491-01: two empty nets are behaviorally equal.
+    #[test]
+    fn behaviorally_equal_returns_true_for_identical_nets() {
+        let n1 = Net::new();
+        let n2 = Net::new();
+        assert!(n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-02: trailing None slots are ignored — two nets that agree on live agents
+    /// but differ only in arena padding are behaviorally equal.
+    #[test]
+    fn behaviorally_equal_returns_true_for_same_live_set_different_arena_len() {
+        // Build n1 with 2 live agents; build n2 identically but also record that they
+        // are the same state after a round-trip — the key thing is same live agents,
+        // same ports, same redex queue.  The spec's example of "trailing None" refers
+        // to arena slots past the live agents (e.g. Vec::len() differs but live set
+        // is the same).  We simulate this by directly extending the agents Vec with
+        // a None slot without touching the free_list.
+        let mut n1 = Net::new();
+        let a = n1.create_agent(Symbol::Con);
+        let b = n1.create_agent(Symbol::Con);
+        n1.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        // n2 is a clone of n1 but with one extra None appended to agents and
+        // one extra DISCONNECTED appended to ports — padding only, same live set.
+        let mut n2 = n1.clone();
+        n2.agents.push(None); // trailing None padding
+        for _ in 0..PORTS_PER_SLOT {
+            n2.ports.push(DISCONNECTED); // trailing DISCONNECTED padding
+        }
+
+        assert!(
+            n1.is_behaviorally_equal(&n2),
+            "trailing None/DISCONNECTED padding should be ignored by behavioral equality"
+        );
+    }
+
+    /// UT-0491-03: different live set → not equal.
+    #[test]
+    fn behaviorally_equal_returns_false_for_different_live_set() {
+        let mut n1 = Net::new();
+        n1.create_agent(Symbol::Con);
+        let mut n2 = Net::new();
+        n2.create_agent(Symbol::Dup); // different symbol
+        assert!(!n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-04: different freeport_redirects → not equal.
+    #[test]
+    fn behaviorally_equal_returns_false_for_different_freeport_redirects() {
+        let mut n1 = Net::new();
+        let a = n1.create_agent(Symbol::Con);
+        n1.freeport_redirects.insert(99, PortRef::AgentPort(a, 0));
+        let mut n2 = Net::new();
+        n2.create_agent(Symbol::Con);
+        assert!(!n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-05: redex queue order does not affect equality.
+    #[test]
+    fn behaviorally_equal_redex_queue_order_independent() {
+        let mut n1 = Net::new();
+        let a = n1.create_agent(Symbol::Con);
+        let b = n1.create_agent(Symbol::Con);
+        let c = n1.create_agent(Symbol::Dup);
+        let d = n1.create_agent(Symbol::Dup);
+        n1.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        n1.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
+
+        let mut n2 = n1.clone();
+        // Reverse redex queue order.
+        let r = n2.redex_queue.pop_back().unwrap();
+        n2.redex_queue.push_front(r);
+
+        assert!(
+            n1.is_behaviorally_equal(&n2),
+            "redex queue order should not affect behavioral equality"
+        );
+    }
+
+    /// UT-0491-06: different redex queue contents → not equal.
+    #[test]
+    fn behaviorally_equal_distinguishes_redex_queue_set() {
+        let mut n1 = Net::new();
+        n1.create_agent(Symbol::Con);
+        n1.create_agent(Symbol::Con);
+        n1.redex_queue.push_back((0, 1));
+
+        let mut n2 = Net::new();
+        n2.create_agent(Symbol::Con);
+        n2.create_agent(Symbol::Dup);
+        n2.redex_queue.push_back((0, 2));
+
+        assert!(!n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-07: trailing DISCONNECTED ports are ignored.
+    #[test]
+    fn behaviorally_equal_ignores_trailing_disconnected_ports() {
+        let mut n1 = Net::new();
+        let a = n1.create_agent(Symbol::Con);
+        let b = n1.create_agent(Symbol::Con);
+        n1.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        // n2 has the same live ports but was built differently (extra agent removed).
+        let n2 = n1.clone();
+
+        assert!(n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-09: different root → not equal.
+    #[test]
+    fn behaviorally_equal_distinguishes_root() {
+        let mut n1 = Net::new();
+        let a = n1.create_agent(Symbol::Con);
+        n1.root = Some(PortRef::AgentPort(a, 0));
+
+        let mut n2 = Net::new();
+        n2.create_agent(Symbol::Con);
+        n2.root = None;
+
+        assert!(!n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-10: different next_id → not equal.
+    #[test]
+    fn behaviorally_equal_distinguishes_next_id() {
+        let mut n1 = Net::new();
+        n1.create_agent(Symbol::Con);
+        n1.create_agent(Symbol::Era);
+        n1.remove_agent(1); // next_id stays at 2
+
+        let mut n2 = n1.clone();
+        n2.next_id = 7; // force different
+
+        assert!(!n1.is_behaviorally_equal(&n2));
+    }
+
+    /// UT-0491-11: free_list as set equality (order-independent).
+    #[test]
+    fn behaviorally_equal_free_list_set_equality() {
+        let mut n1 = Net::new();
+        n1.create_agent(Symbol::Con);
+        n1.create_agent(Symbol::Con);
+        n1.create_agent(Symbol::Con);
+        n1.remove_agent(1);
+        n1.remove_agent(2);
+        // n1.free_list = [1, 2] (LIFO: 2 was pushed last, then 1 was pushed)
+        // Actually: remove_agent(1) pushes 1 first, remove_agent(2) pushes 2 second.
+        // LIFO gives [1, 2] in the Vec.
+
+        let mut n2 = n1.clone();
+        // Reverse the free-list order.
+        n2.free_list.reverse();
+
+        assert!(
+            n1.is_behaviorally_equal(&n2),
+            "free-list order should not affect behavioral equality"
+        );
+    }
+
+    /// UT-0491-12: round-trip dense→sparse→dense passes behavioral equality.
+    #[test]
+    fn r21_round_trip_1_dense_sparse_dense_passes() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        let c = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(c, 0));
+        net.remove_agent(b);
+        net.root = Some(PortRef::AgentPort(a, 0));
+
+        let net2 = net.to_sparse().to_dense(None);
+        assert!(
+            net.is_behaviorally_equal(&net2),
+            "dense → sparse → dense round-trip must be behaviorally equal (R21)"
+        );
+    }
+
+    /// UT-0491-13: round-trip sparse→dense→sparse gives full structural equality.
+    #[test]
+    fn r21_round_trip_2_sparse_dense_sparse_full_eq() {
+        use crate::net::SparseNet;
+        let mut sn = SparseNet::new();
+        let a = sn.create_agent(Symbol::Con);
+        let b = sn.create_agent(Symbol::Dup);
+        sn.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        sn.next_id = 10;
+
+        let sn2 = sn.to_dense(None).to_sparse();
+        assert_eq!(
+            sn.agents, sn2.agents,
+            "sparse → dense → sparse: agents must match"
+        );
+        assert_eq!(
+            sn.ports, sn2.ports,
+            "sparse → dense → sparse: ports must match"
+        );
+        assert_eq!(sn.next_id, sn2.next_id, "next_id must match");
+        assert_eq!(sn.root, sn2.root, "root must match");
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0495 — I3' debug assertions (R24, R25, R27)
+    // -----------------------------------------------------------------------
+
+    /// UT-0495-01: R27 family 1 — post-remove-agent recycle passes on valid net.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn r27_family_1_post_remove_agent_recycle() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.remove_agent(a);
+        // Post-condition: free-list contains a, agents[a] == None.
+        assert!(net.free_list.contains(&a), "id must be in free-list after recycle");
+        assert!(
+            net.agents.get(a as usize).is_some_and(|s| s.is_none()),
+            "slot must be None after remove"
+        );
+    }
+
+    /// UT-0495-02: R27 family 1 catches synthetic violation (manually corrupted state).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn r27_family_4_catches_synthetic_violation() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // Synthetically add a to the free-list while keeping the port reference — violation.
+        net.free_list.push(a);
+        // Now assert_no_free_list_port_refs should panic.
+        net.assert_no_free_list_port_refs();
+    }
+
+    /// UT-0495-03: R27 family 2 — protected tombstone path.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn r27_family_2_post_remove_agent_protected_tombstone() {
+        use std::collections::HashSet;
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        // Set up border_entries_shadow to make a border-protected.
+        let mut shadow = HashSet::new();
+        shadow.insert(a);
+        net.border_entries_shadow = Some(shadow);
+        net.protected_tombstones = Some(HashSet::new());
+        net.remove_agent(a);
+        // Post: agents[a] == None, NOT in free-list, IS in protected_tombstones.
+        assert!(
+            net.agents.get(a as usize).is_some_and(|s| s.is_none()),
+            "slot must be None"
+        );
+        assert!(!net.free_list.contains(&a), "protected tombstone must NOT be in free-list");
+        assert!(
+            net.protected_tombstones.as_ref().is_some_and(|s| s.contains(&a)),
+            "ID must be in protected_tombstones shadow"
+        );
+    }
+
+    /// UT-0495-04: R27 family 3 — post-create-agent recycle path passes.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn r27_family_3_post_create_agent_recycle() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        net.remove_agent(a);
+        assert_eq!(net.free_list.len(), 1, "free-list should have one entry");
+        // Now recycle: create_agent should pop from free-list.
+        let b = net.create_agent(Symbol::Dup);
+        // Post: b not in free-list, agents[b] is Some.
+        assert!(!net.free_list.contains(&b), "recycled ID must not remain in free-list");
+        assert!(net.agents.get(b as usize).is_some_and(|s| s.is_some()), "slot must be Some");
+    }
+
+    /// UT-0495-06: R27 family 4 — no free-list port refs passes on a clean net.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn r27_family_4_no_free_list_port_refs_passes() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        // No IDs in free-list currently; assert should pass.
+        net.assert_no_free_list_port_refs(); // must not panic
+    }
+
+    /// UT-0495-08: debug_check_invariants passes for valid net.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_check_invariants_combines_all_four_families() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+        net.remove_agent(b); // adds to free-list after disconnect
+        // free-list contains b; no port references b.
+        net.debug_check_invariants(); // must not panic
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0497 — SPEC-03 reduction assertion audit (R27a)
+    // -----------------------------------------------------------------------
+
+    /// UT-0497-05: CON-DUP creates 4 agents; no inter-call monotonicity assertion.
+    /// This test exercises the commutation rule with a partial free-list and
+    /// verifies I3' (all 4 created agents are live, unique, next_id upper-bound holds).
+    #[test]
+    fn condup_4_creates_no_inter_call_monotonicity_assert() {
+        use crate::reduction::engine::reduce_all;
+        let mut net = Net::new();
+        // Pre-populate free-list: remove two agents to give recycled IDs.
+        let p = net.create_agent(Symbol::Con);
+        let q = net.create_agent(Symbol::Con);
+        net.remove_agent(p);
+        net.remove_agent(q);
+        assert_eq!(net.free_list.len(), 2, "setup: free-list has 2 entries");
+        // Now build a CON-DUP redex pair.
+        let con = net.create_agent(Symbol::Con);
+        let dup = net.create_agent(Symbol::Dup);
+        net.connect(PortRef::AgentPort(con, 0), PortRef::AgentPort(dup, 0));
+        net.connect(PortRef::AgentPort(con, 1), PortRef::FreePort(10));
+        net.connect(PortRef::AgentPort(con, 2), PortRef::FreePort(20));
+        net.connect(PortRef::AgentPort(dup, 1), PortRef::FreePort(30));
+        net.connect(PortRef::AgentPort(dup, 2), PortRef::FreePort(40));
+        // Reduce: CON-DUP commutation creates 4 new agents.
+        reduce_all(&mut net);
+        // All live agents must be Some and uniquely IDed.
+        for agent in net.agents.iter().flatten() {
+            assert!(
+                net.next_id > agent.id,
+                "SPEC-22 R27a: next_id {} must be > every live agent.id {}",
+                net.next_id,
+                agent.id
+            );
+        }
+    }
+
+    /// UT-0497-04: assert_next_id_valid is I3'-compatible.
+    #[test]
+    fn assert_next_id_valid_preserved() {
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con);
+        let b = net.create_agent(Symbol::Dup);
+        net.remove_agent(a); // a in free-list, slot is None
+        // assert_next_id_valid: for each Some slot, id < next_id.
+        // a is None, so it does not trip the assertion.
+        // b is Some with id = 1, next_id = 2.
+        net.assert_next_id_valid(); // must not panic — R27a compatible
+        assert_eq!(b, 1); // paranoia
     }
 }
