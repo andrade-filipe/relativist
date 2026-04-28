@@ -1,8 +1,10 @@
 //! DualTree benchmark (SPEC-09 R13).
 
+use crate::bench::streaming::dual_tree_stream;
 use crate::bench::{Benchmark, BenchmarkId};
 use crate::io::generators;
 use crate::net::Net;
+use crate::partition::streaming::AgentBatch;
 
 /// DualTree: mirrored CON trees that annihilate completely (SPEC-09 R13).
 ///
@@ -21,6 +23,18 @@ impl Benchmark for DualTree {
 
     fn make_net(&self, size: u32) -> Net {
         generators::dual_tree(size)
+    }
+
+    /// Native streaming override (SPEC-21 R12 SHOULD, R14 forward references).
+    ///
+    /// Emits agents in bottom-up BFS order (leaves first). Child→parent wires
+    /// use `Pending` directives when the parent hasn't been emitted yet.
+    fn make_net_stream(
+        &self,
+        size: u32,
+        chunk_size: usize,
+    ) -> Box<dyn Iterator<Item = AgentBatch>> {
+        dual_tree_stream(size, chunk_size)
     }
 
     fn default_sizes(&self) -> Vec<u32> {

@@ -1,8 +1,10 @@
 //! EP-Annihilation benchmarks: ERA, CON, DUP (SPEC-09 R9-R11).
 
+use crate::bench::streaming::ep_annihilation_stream;
 use crate::bench::{Benchmark, BenchmarkId};
 use crate::io::generators;
 use crate::net::Net;
+use crate::partition::streaming::AgentBatch;
 
 /// EP-Annihilation ERA: N ERA-ERA pairs, Profile A (SPEC-09 R9).
 pub struct EPAnnihilation;
@@ -18,6 +20,18 @@ impl Benchmark for EPAnnihilation {
 
     fn make_net(&self, size: u32) -> Net {
         generators::ep_annihilation(size)
+    }
+
+    /// Native streaming override (SPEC-21 R12 MUST).
+    ///
+    /// Emits ERA-ERA pairs in bounded batches without materializing the full
+    /// net first. Each batch is independent (no cross-batch wires, R13).
+    fn make_net_stream(
+        &self,
+        size: u32,
+        chunk_size: usize,
+    ) -> Box<dyn Iterator<Item = AgentBatch>> {
+        ep_annihilation_stream(size, chunk_size)
     }
 
     fn default_sizes(&self) -> Vec<u32> {

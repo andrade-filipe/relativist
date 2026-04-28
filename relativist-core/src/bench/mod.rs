@@ -9,10 +9,12 @@ pub mod csv;
 pub mod isomorphism;
 pub mod memory;
 pub mod stats;
+pub mod streaming;
 pub mod suite;
 pub mod validate;
 
 use crate::net::Net;
+use crate::partition::streaming::AgentBatch;
 
 /// Benchmark identifier (SPEC-09 Section 4.1, R8).
 ///
@@ -94,7 +96,44 @@ pub trait Benchmark {
     fn describe(&self, size: u32) -> String;
 
     /// Generate the input net for the specified size.
+    ///
+    /// This is the **source-of-truth** materialization path (SPEC-21 R11).
+    /// It MUST remain a required method so that the `make_net_stream` default
+    /// impl has a reliable fallback. Do NOT add a default impl here.
     fn make_net(&self, size: u32) -> Net;
+
+    /// Generate the net as a streaming iterator of `AgentBatch` values.
+    ///
+    /// # Default implementation (SPEC-21 R10)
+    ///
+    /// The default wraps `make_net(size)` in a **single `AgentBatch`** containing
+    /// all agents and their resolved connections. This is memory-equivalent to v1
+    /// (the full net is materialized first) but preserves the streaming API so
+    /// that all 13 existing implementations remain valid without changes (closes
+    /// SC-008).
+    ///
+    /// Generators that benefit from native streaming (e.g., `ep_annihilation`,
+    /// R12 MUST) SHOULD override this method to avoid the materialize-then-wrap
+    /// memory cost.
+    ///
+    /// # Chunk-size argument in the default path
+    ///
+    /// For the default impl, `chunk_size` is **ignored** — the net is always
+    /// emitted as a single batch. The argument exists only for API uniformity
+    /// with native streaming overrides.
+    ///
+    /// # Isomorphism contract (R11 / T6)
+    ///
+    /// `make_net_stream(size, chunk_size).collect()` MUST be agent-isomorphic
+    /// to `make_net(size)` for all `chunk_size` values (verified by T6 in
+    /// TASK-0567).
+    fn make_net_stream(
+        &self,
+        size: u32,
+        _chunk_size: usize,
+    ) -> Box<dyn Iterator<Item = AgentBatch>> {
+        streaming::default_chunked_iter(self.make_net(size))
+    }
 
     /// Default sizes for this benchmark (logarithmic variation, R24).
     fn default_sizes(&self) -> Vec<u32>;
