@@ -20,6 +20,7 @@ pub mod helpers;
 pub mod remap;
 pub mod split;
 pub mod strategy;
+pub mod streaming;
 pub mod types;
 
 // Re-exports: convenience access via `crate::partition::*`
@@ -28,4 +29,8 @@ pub use helpers::{classify_wires, compute_id_ranges, max_freeport_id, WireClassi
 pub use remap::remap_partition_ids;
 pub use split::split;
 pub use strategy::{ContiguousIdStrategy, PartitionStrategy};
+pub use streaming::{
+    AgentBatch, ChunkedPartitionResult, ConnectionDirective, StreamingPartitionStats,
+    StreamingPartitionStrategy,
+};
 pub use types::{IdRange, LeaveKind, Partition, PartitionConfig, PartitionPlan, WorkerId};
