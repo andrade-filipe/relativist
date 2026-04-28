@@ -482,7 +482,13 @@ fn build_subnet_sparse(
     use crate::net::SparseNet;
 
     if worker_agents.is_empty() {
-        return crate::net::Net::new();
+        // QA-D009-009: must preserve id_range and next_id even for empty partitions.
+        // R10a and elastic-grid resize (SPEC-20) require workers with zero live agents
+        // to still have a valid id_range and next_id so allocations do not collide.
+        let mut net = crate::net::Net::new();
+        net.id_range = Some(id_range.clone());
+        net.next_id = id_range.start;
+        return net;
     }
 
     let mut sparse = SparseNet::with_capacity(worker_agents.len());
@@ -1697,6 +1703,31 @@ mod tests {
             !subnet.free_list.contains(&a),
             "QA-D009-003: border-referenced id {} must NOT appear in free_list after remove_agent under delta mode",
             a
+        );
+    }
+
+    /// QA-D009-009: build_subnet_sparse with empty worker_agents must preserve
+    /// id_range and set next_id correctly — not return a default Net::new().
+    #[test]
+    fn qa_d009_009_build_subnet_sparse_empty_preserves_id_range() {
+        use crate::partition::PartitionConfig;
+        let net = Net::new();
+        let sigma: HashMap<AgentId, WorkerId> = HashMap::new();
+        let cfg = PartitionConfig { sparse_build: true };
+
+        let result = build_subnet_with_config(&cfg, 0, &net, &[], &sigma, &[], 0, 50..200)
+            .expect("build_subnet_with_config should succeed for empty partition");
+
+        assert_eq!(
+            result.id_range,
+            Some(50..200),
+            "QA-D009-009: empty sparse partition must preserve id_range (got {:?})",
+            result.id_range
+        );
+        assert_eq!(
+            result.next_id, 50,
+            "QA-D009-009: empty sparse partition must set next_id = id_range.start (got {})",
+            result.next_id
         );
     }
 }

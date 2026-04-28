@@ -994,8 +994,6 @@ impl Net {
     /// differ only in arena padding — e.g., after a `to_sparse().to_dense(None)`
     /// round-trip (R21 closes SC-014).
     pub fn is_behaviorally_equal(&self, other: &Net) -> bool {
-        use std::collections::HashSet;
-
         // Compare live-agent sets.
         let self_agents: Vec<&Agent> = self.agents.iter().flatten().collect();
         let other_agents: Vec<&Agent> = other.agents.iter().flatten().collect();
@@ -1024,9 +1022,12 @@ impl Net {
             }
         }
 
-        // Compare redex queue up to ordering (set equality).
-        let self_redex: HashSet<(AgentId, AgentId)> = self.redex_queue.iter().copied().collect();
-        let other_redex: HashSet<(AgentId, AgentId)> = other.redex_queue.iter().copied().collect();
+        // Compare redex queue as a sorted multiset (QA-D009-007: multiplicity matters).
+        // Order-independence is preserved by sorting, but duplicates are NOT discarded.
+        let mut self_redex: Vec<(AgentId, AgentId)> = self.redex_queue.iter().copied().collect();
+        let mut other_redex: Vec<(AgentId, AgentId)> = other.redex_queue.iter().copied().collect();
+        self_redex.sort_unstable();
+        other_redex.sort_unstable();
         if self_redex != other_redex {
             return false;
         }
@@ -1042,10 +1043,9 @@ impl Net {
             return false;
         }
 
-        // Compare free-lists as sets.
-        let self_free: HashSet<AgentId> = self.free_list.iter().copied().collect();
-        let other_free: HashSet<AgentId> = other.free_list.iter().copied().collect();
-        self_free == other_free
+        // Compare free-lists with full order sensitivity (QA-D009-008: LIFO order matters).
+        // R5 mandates LIFO; two nets with reversed free_lists allocate different IDs next.
+        self.free_list == other.free_list
     }
 
     // ------------------------------------------------------------------
@@ -3256,26 +3256,27 @@ mod tests {
         assert!(!n1.is_behaviorally_equal(&n2));
     }
 
-    /// UT-0491-11: free_list as set equality (order-independent).
+    /// UT-0491-11: free_list order-sensitive equality (R5 LIFO; QA-D009-008).
+    /// Two nets that differ only in free_list LIFO order MUST NOT be behaviorally
+    /// equal — the next create_agent call returns different IDs on each.
     #[test]
-    fn behaviorally_equal_free_list_set_equality() {
+    fn behaviorally_equal_free_list_order_matters() {
         let mut n1 = Net::new();
         n1.create_agent(Symbol::Con);
         n1.create_agent(Symbol::Con);
         n1.create_agent(Symbol::Con);
         n1.remove_agent(1);
         n1.remove_agent(2);
-        // n1.free_list = [1, 2] (LIFO: 2 was pushed last, then 1 was pushed)
-        // Actually: remove_agent(1) pushes 1 first, remove_agent(2) pushes 2 second.
-        // LIFO gives [1, 2] in the Vec.
+        // n1.free_list = [1, 2]: remove_agent(1) pushes 1, then remove_agent(2) pushes 2.
+        // LIFO: next pop returns 2.
 
         let mut n2 = n1.clone();
-        // Reverse the free-list order.
+        // Reverse the free-list order: next pop returns 1 instead of 2.
         n2.free_list.reverse();
 
         assert!(
-            n1.is_behaviorally_equal(&n2),
-            "free-list order should not affect behavioral equality"
+            !n1.is_behaviorally_equal(&n2),
+            "free-list LIFO order must affect behavioral equality (R5, QA-D009-008)"
         );
     }
 
@@ -3484,5 +3485,47 @@ mod tests {
                              // b is Some with id = 1, next_id = 2.
         net.assert_next_id_valid(); // must not panic — R27a compatible
         assert_eq!(b, 1); // paranoia
+    }
+
+    // -----------------------------------------------------------------------
+    // QA-D009-007/008 — is_behaviorally_equal redex multiplicity + free_list LIFO
+    // -----------------------------------------------------------------------
+
+    /// QA-D009-007: is_behaviorally_equal must treat redex_queue as a multiset,
+    /// not a set. Two nets that differ only in duplicate redex entries MUST NOT
+    /// be equal (multiplicity matters for correctness diagnostics).
+    #[test]
+    fn qa_d009_007_is_behaviorally_equal_redex_multiplicity_differs() {
+        let mut a = Net::new();
+        let p = a.create_agent(Symbol::Con);
+        let q = a.create_agent(Symbol::Con);
+        a.connect(PortRef::AgentPort(p, 0), PortRef::AgentPort(q, 0));
+        // a.redex_queue = [(p, q)]
+
+        let mut b = a.clone();
+        b.redex_queue.push_back((p, q));
+        b.redex_queue.push_back((p, q));
+        // b.redex_queue = [(p, q), (p, q), (p, q)] — three copies
+
+        assert!(
+            !a.is_behaviorally_equal(&b),
+            "QA-D009-007: nets with different redex_queue multiplicity must NOT be behaviorally equal"
+        );
+    }
+
+    /// QA-D009-008: is_behaviorally_equal must respect free_list LIFO order.
+    /// Two nets identical except for reversed free_list MUST NOT be equal,
+    /// because next create_agent returns a different ID on each.
+    #[test]
+    fn qa_d009_008_is_behaviorally_equal_free_list_order_sensitive() {
+        let mut a = Net::new();
+        a.free_list = vec![5, 3]; // LIFO: next pop returns 3
+        let mut b = a.clone();
+        b.free_list = vec![3, 5]; // LIFO: next pop returns 5
+
+        assert!(
+            !a.is_behaviorally_equal(&b),
+            "QA-D009-008: nets with reversed free_list must NOT be behaviorally equal (R5 LIFO)"
+        );
     }
 }
