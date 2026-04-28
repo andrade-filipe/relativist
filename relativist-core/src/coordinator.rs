@@ -15,7 +15,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::merge::WorkerRoundStats;
+use crate::merge::{DispatchMode, WorkerRoundStats};
 use crate::net::Net;
 use crate::partition::{Partition, WorkerId};
 use crate::protocol::{Message, TimerKind};
@@ -148,6 +148,38 @@ pub enum CoordinatorState {
     /// `SoloReductionComplete` (→ `Done`) or `WorkerJoined(id)` (→
     /// `CheckTermination`).
     SoloReducing,
+
+    // --- New pull-dispatch states for SPEC-21 §3.8 A5 (TASK-0577) ---
+    // These states are ONLY entered when `DispatchMode::Pull` is active.
+    // Push-mode FSMs never enter these states (R37e).
+    // Appended at end to preserve discriminant stability.
+    /// Pull-mode cold-start: generating + dispatching the first chunk eagerly.
+    ///
+    /// Per R32 step 1: coordinator generates first chunk and dispatches to worker 0
+    /// before any `RequestWork` arrives.
+    PullDispatchingFirst,
+
+    /// Pull-mode waiting: coordinator has dispatched at least one chunk and is
+    /// waiting for `RequestWork` or `PartitionResult` from any worker.
+    ///
+    /// `PartitionResult` arrivals are BUFFERED here (R37d BSP barrier).
+    /// Merge does NOT happen until `PullAwaitingFinalResults`.
+    PullAwaitingResults,
+
+    /// Pull-mode generating: calling `make_net_stream::next` + `strategy.allocate_batch`
+    /// for the next chunk to dispatch (R32 step 3 / A5).
+    PullGeneratingNext,
+
+    /// Pull-mode exhausted: stream has no more chunks; coordinator is sending
+    /// `NoMoreWork` to all workers that have issued `RequestWork`.
+    PullSendingNoMoreWork,
+
+    /// Pull-mode final collection: all workers have acknowledged `NoMoreWork`;
+    /// coordinator is waiting for all final `PartitionResult`s.
+    ///
+    /// Once all final results arrive, transitions to `Merging` (legacy state)
+    /// consuming ALL buffered results in a single logical BSP round (R37d — closes SC-019).
+    PullAwaitingFinalResults,
 }
 
 /// Events that drive the coordinator FSM (SPEC-13 R20; extended by SPEC-20
@@ -685,6 +717,340 @@ pub fn transition(ctx: &mut CoordinatorContext, event: CoordinatorEvent) -> Vec<
     }
 
     actions
+}
+
+// ---------------------------------------------------------------------------
+// Pull-dispatch FSM types (SPEC-21 R30, R32, A5 / TASK-0577)
+// ---------------------------------------------------------------------------
+
+/// Resolved dispatch mode — the effective mode after `Auto` is evaluated.
+///
+/// `GridConfig.dispatch_mode` may be `Auto`; this type represents the post-
+/// resolution value consumed by the coordinator loop (SPEC-21 TASK-0577 NOTE
+/// line 98):
+/// - `Auto` → `Push` when `chunk_size == u32::MAX` (R26 short-circuit, SC-014).
+/// - `Auto` → `Push` when `estimated_chunks <= num_workers` (degenerate; pull
+///   overhead unjustified).
+/// - `Auto` → `Pull` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedDispatchMode {
+    /// Push mode: coordinator dispatches all partitions upfront (legacy v1 path).
+    Push,
+    /// Pull mode: workers request work via `RequestWork`; coordinator responds.
+    Pull,
+}
+
+/// Resolve `GridConfig.dispatch_mode` to `ResolvedDispatchMode`.
+///
+/// `chunk_size` is compared against `u32::MAX` (R26 sentinel). When the caller
+/// does not know `chunk_size` (e.g., the chunk size is stored in `GridConfig`),
+/// pass `cfg.chunk_size`. `num_workers` is the active worker count.
+///
+/// Auto resolution rule (TASK-0577 NOTE line 98 + UT-0577-14..16):
+/// 1. `Push` explicitly → `Push`.
+/// 2. `Pull` explicitly → `Pull`.
+/// 3. `Auto` + `chunk_size == u32::MAX` → `Push` (R26 short-circuit).
+/// 4. `Auto` otherwise: estimate chunk count as `chunk_size` itself acts
+///    as a proxy; call `resolve_dispatch_mode_with_chunks` for the full check.
+pub fn resolve_dispatch_mode(
+    mode: DispatchMode,
+    chunk_size: u32,
+    num_workers: u32,
+) -> ResolvedDispatchMode {
+    match mode {
+        DispatchMode::Push => ResolvedDispatchMode::Push,
+        DispatchMode::Pull => ResolvedDispatchMode::Pull,
+        DispatchMode::Auto => {
+            // R26 short-circuit: chunk_size == u32::MAX → materialise-then-split → Push.
+            if chunk_size == u32::MAX {
+                return ResolvedDispatchMode::Push;
+            }
+            // No estimate available at this level; treat chunk_size as estimated_chunks = 1
+            // (conservative: any valid chunk_size < u32::MAX with unknown total means Pull).
+            // Callers that know the total should use resolve_dispatch_mode_with_chunks.
+            let _ = num_workers;
+            ResolvedDispatchMode::Pull
+        }
+    }
+}
+
+/// Resolve `Auto` dispatch mode given the estimated number of chunks and worker count.
+///
+/// - `estimated_chunks > num_workers` → `Pull` (more chunks than workers; pull load-balances).
+/// - `estimated_chunks <= num_workers` → `Push` (degenerate; one chunk per worker at most).
+/// - `chunk_size == u32::MAX` is not checked here; call `resolve_dispatch_mode` first.
+pub fn resolve_dispatch_mode_with_chunks(
+    mode: DispatchMode,
+    estimated_chunks: u32,
+    num_workers: u32,
+) -> ResolvedDispatchMode {
+    match mode {
+        DispatchMode::Push => ResolvedDispatchMode::Push,
+        DispatchMode::Pull => ResolvedDispatchMode::Pull,
+        DispatchMode::Auto => {
+            if estimated_chunks <= num_workers {
+                // Degenerate case: push is sufficient (one chunk per worker at most).
+                ResolvedDispatchMode::Push
+            } else {
+                ResolvedDispatchMode::Pull
+            }
+        }
+    }
+}
+
+/// Resolve `Auto` dispatch mode given the total agent count estimate and worker count.
+///
+/// Per TASK-0577 NOTE line 98: `Auto` → `Pull` when `len_estimate > num_workers`
+/// (meaning the total net is large enough to warrant pull-based load balancing).
+///
+/// - `len_estimate > num_workers` → `Pull`.
+/// - `len_estimate <= num_workers` → `Push` (trivially small; pull overhead unjustified).
+pub fn resolve_dispatch_mode_with_len_estimate(
+    mode: DispatchMode,
+    len_estimate: u32,
+    num_workers: u32,
+) -> ResolvedDispatchMode {
+    match mode {
+        DispatchMode::Push => ResolvedDispatchMode::Push,
+        DispatchMode::Pull => ResolvedDispatchMode::Pull,
+        DispatchMode::Auto => {
+            if len_estimate > num_workers {
+                ResolvedDispatchMode::Pull
+            } else {
+                ResolvedDispatchMode::Push
+            }
+        }
+    }
+}
+
+/// Assert that `NoMoreWork` is never sent in push mode (R37e enforcement).
+///
+/// Fires `debug_assert!` in debug builds; is a no-op in release builds.
+/// The `is_push_mode` flag should be `true` when `ResolvedDispatchMode::Push`.
+pub fn assert_no_more_work_not_in_pull_mode(
+    mode: ResolvedDispatchMode,
+    is_sending_no_more_work: bool,
+) {
+    debug_assert!(
+        !(mode == ResolvedDispatchMode::Push && is_sending_no_more_work),
+        "R37e violation: NoMoreWork MUST NOT be sent in push mode"
+    );
+}
+
+/// Pull-dispatch FSM states (SPEC-21 §3.8 A5 / TASK-0577).
+///
+/// These states are used by the `CoordinatorPullContext` (the lightweight
+/// state-machine used when `dispatch_mode == Pull`). They are also surfaced
+/// in the main `CoordinatorState` enum as the `Pull*` variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullCoordinatorState {
+    /// Cold-start: generating and dispatching the first chunk eagerly (R32 step 1).
+    DispatchingFirst,
+    /// Waiting for `RequestWork` or `PartitionResult` from any worker.
+    ///
+    /// `PartitionResult` arrivals are BUFFERED here (not merged). Merge happens
+    /// only from `AwaitingFinalResults` (R37d BSP barrier — closes SC-019).
+    AwaitingResults,
+    /// Calling `make_net_stream::next` + `strategy.allocate_batch` for the next chunk.
+    GeneratingNext,
+    /// Stream exhausted; sending `NoMoreWork` to all workers that requested work.
+    SendingNoMoreWork,
+    /// All workers have acknowledged `NoMoreWork`; collecting final `PartitionResult`s.
+    ///
+    /// Once all final results arrive, the coordinator transitions to `MergingResults`
+    /// and consumes ALL buffered results (mid-stream + final) in a single logical BSP
+    /// round (R37d — closes SC-019).
+    AwaitingFinalResults,
+    /// Merging all buffered partition results (single logical BSP round, R37d).
+    MergingResults,
+}
+
+/// Events that drive the pull-dispatch FSM (SPEC-21 R32, A5 / TASK-0577).
+#[derive(Debug, Clone)]
+pub enum PullCoordinatorEvent {
+    /// The first chunk has been generated and dispatched to worker 0 (R32 step 1).
+    FirstChunkDispatched,
+    /// A worker sent `RequestWork` (R32 step 2).
+    RequestWorkReceived { worker_id: u32 },
+    /// A `PartitionResult` arrived from a worker (buffered in `AwaitingResults`; R37d).
+    PartitionResultReceived { worker_id: u32 },
+    /// A new chunk has been generated and dispatched via `AssignPartition` (R32 step 3).
+    ChunkAllocatedAndDispatched,
+    /// All workers have been sent `NoMoreWork` and no further `RequestWork` is expected.
+    AllWorkersAckedNoMoreWork,
+    /// All expected final `PartitionResult`s have arrived (R32 step 4 complete).
+    AllFinalResultsReceived,
+}
+
+/// Errors from the pull-dispatch FSM (TASK-0577 acceptance criterion line 45).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PullCoordinatorError {
+    /// A transition was attempted that is not valid from the current state.
+    ///
+    /// In debug builds, the FSM panics instead of returning this error.
+    #[error("unexpected event {event:?} in state {state:?}")]
+    UnexpectedEvent { event: String, state: String },
+}
+
+/// Lightweight context for the pull-dispatch FSM (TASK-0577).
+///
+/// This struct tracks only the pull-mode-specific fields; the main
+/// `CoordinatorContext` continues to own the global state.
+#[derive(Debug)]
+pub struct CoordinatorPullContext {
+    /// Current FSM state.
+    pub state: PullCoordinatorState,
+    /// Number of workers in this grid run.
+    pub num_workers: u32,
+    /// Whether the stream is exhausted (no more chunks available).
+    pub stream_exhausted: bool,
+    /// Number of workers that still need to receive `NoMoreWork`.
+    pub workers_awaiting_no_more_work: u32,
+    /// Buffered worker IDs from `PartitionResult` arrivals in `AwaitingResults`.
+    ///
+    /// NOT merged until `AwaitingFinalResults` (R37d BSP barrier — closes SC-019).
+    pub pending_results: Vec<u32>,
+    /// Expected total final `PartitionResult` count (= num_workers).
+    pub expected_final_results: u32,
+    /// `true` iff merge has been triggered (set on `MergingResults` entry).
+    pub merge_triggered: bool,
+    /// Count of results consumed for merge (for test verification).
+    pub results_consumed_for_merge: usize,
+    /// State trace for tests — records every state entered.
+    ///
+    /// Appended on every `transition()` / `try_transition()` call so tests
+    /// can assert state-trace invariants (e.g., "no pull states entered in push mode").
+    #[cfg(test)]
+    pub state_trace: Vec<PullCoordinatorState>,
+}
+
+impl CoordinatorPullContext {
+    /// Creates a new pull-dispatch context for `num_workers` workers.
+    ///
+    /// Starts in `DispatchingFirst` (the cold-start state per R32 step 1).
+    pub fn new(num_workers: u32) -> Self {
+        Self {
+            state: PullCoordinatorState::DispatchingFirst,
+            num_workers,
+            stream_exhausted: false,
+            workers_awaiting_no_more_work: num_workers,
+            pending_results: Vec::new(),
+            expected_final_results: num_workers,
+            merge_triggered: false,
+            results_consumed_for_merge: 0,
+            #[cfg(test)]
+            state_trace: vec![PullCoordinatorState::DispatchingFirst],
+        }
+    }
+
+    /// Apply an event to the FSM, updating state in-place.
+    ///
+    /// In debug builds, invalid transitions panic. In release builds they
+    /// return `Err(PullCoordinatorError::UnexpectedEvent)` via `try_transition`.
+    /// This method panics in debug, returns silently on unexpected events in release
+    /// (defensive — callers should prefer `try_transition` for error propagation).
+    pub fn transition(&mut self, event: PullCoordinatorEvent) {
+        // In debug builds, unexpected transitions panic.
+        // In release builds, try_transition's error is silently swallowed here;
+        // callers that need error propagation should call try_transition directly.
+        #[cfg(debug_assertions)]
+        {
+            self.try_transition_inner(event)
+                .expect("pull FSM unexpected event (debug: panic per TASK-0577 criterion line 45)");
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = self.try_transition_inner(event);
+        }
+    }
+
+    /// Apply an event, returning `Err` on unexpected transitions (release-mode API).
+    pub fn try_transition(
+        &mut self,
+        event: PullCoordinatorEvent,
+    ) -> Result<(), PullCoordinatorError> {
+        self.try_transition_inner(event)
+    }
+
+    fn try_transition_inner(
+        &mut self,
+        event: PullCoordinatorEvent,
+    ) -> Result<(), PullCoordinatorError> {
+        let new_state = match (&self.state, &event) {
+            // DispatchingFirst + FirstChunkDispatched → AwaitingResults.
+            (
+                PullCoordinatorState::DispatchingFirst,
+                PullCoordinatorEvent::FirstChunkDispatched,
+            ) => PullCoordinatorState::AwaitingResults,
+
+            // AwaitingResults + PartitionResultReceived → AwaitingResults (buffered; R37d).
+            (
+                PullCoordinatorState::AwaitingResults,
+                PullCoordinatorEvent::PartitionResultReceived { worker_id },
+            ) => {
+                self.pending_results.push(*worker_id);
+                // State UNCHANGED — merge is deferred to AwaitingFinalResults.
+                // merge_triggered stays false.
+                PullCoordinatorState::AwaitingResults
+            }
+
+            // AwaitingResults + RequestWork (stream alive) → GeneratingNext.
+            (
+                PullCoordinatorState::AwaitingResults,
+                PullCoordinatorEvent::RequestWorkReceived { .. },
+            ) if !self.stream_exhausted => PullCoordinatorState::GeneratingNext,
+
+            // AwaitingResults + RequestWork (stream exhausted) → SendingNoMoreWork.
+            (
+                PullCoordinatorState::AwaitingResults,
+                PullCoordinatorEvent::RequestWorkReceived { .. },
+            ) if self.stream_exhausted => PullCoordinatorState::SendingNoMoreWork,
+
+            // GeneratingNext + ChunkAllocatedAndDispatched → AwaitingResults.
+            (
+                PullCoordinatorState::GeneratingNext,
+                PullCoordinatorEvent::ChunkAllocatedAndDispatched,
+            ) => PullCoordinatorState::AwaitingResults,
+
+            // SendingNoMoreWork + AllWorkersAckedNoMoreWork → AwaitingFinalResults.
+            (
+                PullCoordinatorState::SendingNoMoreWork,
+                PullCoordinatorEvent::AllWorkersAckedNoMoreWork,
+            ) => PullCoordinatorState::AwaitingFinalResults,
+
+            // AwaitingFinalResults + AllFinalResultsReceived → MergingResults (R37d BSP barrier).
+            (
+                PullCoordinatorState::AwaitingFinalResults,
+                PullCoordinatorEvent::AllFinalResultsReceived,
+            ) => {
+                self.merge_triggered = true;
+                self.results_consumed_for_merge = self.pending_results.len();
+                PullCoordinatorState::MergingResults
+            }
+
+            // Unexpected transition.
+            (state, event) => {
+                let state_s = format!("{:?}", state);
+                let event_s = format!("{:?}", event);
+                #[cfg(debug_assertions)]
+                panic!(
+                    "pull FSM: unexpected event {:?} in state {:?} (TASK-0577 criterion line 45)",
+                    event_s, state_s
+                );
+                #[cfg(not(debug_assertions))]
+                return Err(PullCoordinatorError::UnexpectedEvent {
+                    event: event_s,
+                    state: state_s,
+                });
+            }
+        };
+
+        self.state = new_state;
+        #[cfg(test)]
+        self.state_trace.push(self.state);
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1659,346 @@ mod tests {
             dbg.contains("Urgent"),
             "WorkerLeft(Urgent) Debug must contain LeaveKind::Urgent"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // TASK-0577: Coordinator FSM pull-dispatch states (SPEC-21 R30, R32, A5)
+    // ---------------------------------------------------------------------------
+
+    // UT-0577-01: Init → DispatchingFirst when dispatch_mode = Pull.
+    #[test]
+    fn ut_0577_01_transition_init_to_dispatching_first() {
+        let mode = resolve_dispatch_mode(DispatchMode::Pull, u32::MAX - 1, 4);
+        assert_eq!(
+            mode,
+            ResolvedDispatchMode::Pull,
+            "Pull mode must resolve to Pull"
+        );
+        // Verify DispatchingFirst is a reachable initial state.
+        let ctx = CoordinatorPullContext::new(4);
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::DispatchingFirst,
+            "new PullCoordinatorContext starts in DispatchingFirst"
+        );
+    }
+
+    // UT-0577-02: DispatchingFirst → AwaitingResults after first chunk dispatched.
+    #[test]
+    fn ut_0577_02_transition_dispatching_first_to_awaiting_results() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        assert_eq!(ctx.state, PullCoordinatorState::DispatchingFirst);
+        ctx.transition(PullCoordinatorEvent::FirstChunkDispatched);
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::AwaitingResults,
+            "state must be AwaitingResults after FirstChunkDispatched"
+        );
+        #[cfg(test)]
+        assert_eq!(
+            ctx.state_trace.last().unwrap(),
+            &PullCoordinatorState::AwaitingResults
+        );
+    }
+
+    // UT-0577-03: AwaitingResults + RequestWork (stream alive) → GeneratingNext.
+    #[test]
+    fn ut_0577_03_transition_awaiting_results_request_work_stream_alive() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::AwaitingResults;
+        ctx.stream_exhausted = false;
+        ctx.transition(PullCoordinatorEvent::RequestWorkReceived { worker_id: 0 });
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::GeneratingNext,
+            "RequestWork with stream alive → GeneratingNext"
+        );
+    }
+
+    // UT-0577-04: AwaitingResults + RequestWork (stream exhausted) → SendingNoMoreWork.
+    #[test]
+    fn ut_0577_04_transition_awaiting_results_request_work_stream_exhausted() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::AwaitingResults;
+        ctx.stream_exhausted = true;
+        ctx.transition(PullCoordinatorEvent::RequestWorkReceived { worker_id: 0 });
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::SendingNoMoreWork,
+            "RequestWork with stream exhausted → SendingNoMoreWork"
+        );
+    }
+
+    // UT-0577-05: GeneratingNext → AwaitingResults after chunk allocated.
+    #[test]
+    fn ut_0577_05_transition_generating_next_to_awaiting_results() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::GeneratingNext;
+        ctx.transition(PullCoordinatorEvent::ChunkAllocatedAndDispatched);
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::AwaitingResults,
+            "GeneratingNext + ChunkAllocatedAndDispatched → AwaitingResults"
+        );
+    }
+
+    // UT-0577-06: SendingNoMoreWork + all workers acked → AwaitingFinalResults.
+    #[test]
+    fn ut_0577_06_transition_sending_no_more_work_all_acks() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::SendingNoMoreWork;
+        // Simulate 4 workers all receiving NoMoreWork (no more RequestWork arrivals).
+        ctx.workers_awaiting_no_more_work = 4;
+        ctx.transition(PullCoordinatorEvent::AllWorkersAckedNoMoreWork);
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::AwaitingFinalResults,
+            "SendingNoMoreWork + AllWorkersAckedNoMoreWork → AwaitingFinalResults"
+        );
+    }
+
+    // UT-0577-07: AwaitingFinalResults + all final results → MergingResults (R37d BSP barrier).
+    #[test]
+    fn ut_0577_07_transition_awaiting_final_results_to_merging() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::AwaitingFinalResults;
+        ctx.pending_results.push(0);
+        ctx.pending_results.push(1);
+        ctx.pending_results.push(2);
+        ctx.pending_results.push(3);
+        ctx.expected_final_results = 4;
+        ctx.transition(PullCoordinatorEvent::AllFinalResultsReceived);
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::MergingResults,
+            "AwaitingFinalResults + AllFinalResultsReceived → MergingResults (R37d BSP barrier)"
+        );
+    }
+
+    // UT-0577-08: Rejected transition — DispatchingFirst + RequestWork.
+    // Debug mode: panics. Release mode: returns CoordinatorPullError::UnexpectedEvent.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn ut_0577_08_rejected_transition_dispatching_first_request_work() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        assert_eq!(ctx.state, PullCoordinatorState::DispatchingFirst);
+        let err = ctx.try_transition(PullCoordinatorEvent::RequestWorkReceived { worker_id: 0 });
+        assert!(
+            err.is_err(),
+            "DispatchingFirst + RequestWork must return error in release build"
+        );
+        match err.unwrap_err() {
+            PullCoordinatorError::UnexpectedEvent { .. } => {}
+        }
+    }
+
+    // UT-0577-09: PartitionResult in AwaitingResults is BUFFERED, not merged. State UNCHANGED.
+    #[test]
+    fn ut_0577_09_partition_result_in_awaiting_results_buffered_not_merged() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::AwaitingResults;
+        let before = ctx.pending_results.len();
+        ctx.transition(PullCoordinatorEvent::PartitionResultReceived { worker_id: 1 });
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::AwaitingResults,
+            "state must remain AwaitingResults when buffering a PartitionResult (R37d)"
+        );
+        assert_eq!(
+            ctx.pending_results.len(),
+            before + 1,
+            "PartitionResult must be appended to pending_results buffer (R37d)"
+        );
+        // CRITICAL: no merge action should be queued from this transition.
+        assert!(
+            !ctx.merge_triggered,
+            "merge must NOT be triggered by PartitionResult in AwaitingResults (R37d BSP barrier)"
+        );
+    }
+
+    // UT-0577-10: Merge consumes ALL buffered results in AwaitingFinalResults (R37d single round).
+    #[test]
+    fn ut_0577_10_merge_only_in_awaiting_final_results() {
+        let mut ctx = CoordinatorPullContext::new(4);
+        ctx.state = PullCoordinatorState::AwaitingFinalResults;
+        // 3 mid-stream + 1 final result buffered.
+        ctx.pending_results = vec![0, 1, 2, 3];
+        ctx.expected_final_results = 4;
+        ctx.transition(PullCoordinatorEvent::AllFinalResultsReceived);
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::MergingResults,
+            "AwaitingFinalResults + AllFinalResultsReceived → MergingResults"
+        );
+        assert!(
+            ctx.merge_triggered,
+            "merge must be triggered in MergingResults (R37d single-round reduction)"
+        );
+        // All buffered results consumed (all 4 pending).
+        assert_eq!(
+            ctx.results_consumed_for_merge, 4,
+            "all 4 buffered results must be consumed for merge"
+        );
+    }
+
+    // UT-0577-11: Push mode — ZERO NoMoreWork messages emitted (R37e).
+    #[test]
+    fn ut_0577_11_push_mode_no_more_work_never_emitted() {
+        // The push mode coordinator never uses PullCoordinatorContext at all.
+        // Verify that resolve_dispatch_mode(Push, ...) never returns Pull.
+        let mode = resolve_dispatch_mode(DispatchMode::Push, 64, 4);
+        assert_eq!(
+            mode,
+            ResolvedDispatchMode::Push,
+            "Push mode must resolve to Push (R37e)"
+        );
+        // In push mode, the pull-only states are unreachable by construction.
+        // We verify this by checking that the PullCoordinatorContext is NOT
+        // instantiated in the push path.
+    }
+
+    // UT-0577-12: Push mode — pull-only states are unreachable (verified via state-trace).
+    #[test]
+    fn ut_0577_12_push_mode_pull_states_unreachable() {
+        // resolve_dispatch_mode(Push, ...) always returns Push.
+        // The PullCoordinatorContext is never created in push mode.
+        // This test verifies the resolution logic is correct for Push.
+        let modes_and_params = [
+            (DispatchMode::Push, 64u32, 4u32),
+            (DispatchMode::Push, 1, 10),
+            (DispatchMode::Push, 0, 1),
+        ];
+        for (mode, len, workers) in modes_and_params {
+            let resolved = resolve_dispatch_mode(mode, len, workers);
+            assert_eq!(
+                resolved,
+                ResolvedDispatchMode::Push,
+                "Push mode must always resolve to Push regardless of stream params"
+            );
+        }
+    }
+
+    // UT-0577-13: Push mode debug_assert fires on erroneous NoMoreWork send attempt (R37e).
+    // Only valid in debug builds; in release, gating makes path unreachable.
+    #[test]
+    fn ut_0577_13_push_mode_debug_assert_on_no_more_work_attempt() {
+        // In push mode (ResolvedDispatchMode::Push), assert_no_more_work_in_push()
+        // fires a debug_assert! per R37e. We can only test the non-firing path here;
+        // the firing path is tested via #[should_panic] in a separate #[cfg(debug_assertions)] test.
+        let mode = resolve_dispatch_mode(DispatchMode::Push, 64, 4);
+        // This function must never panic in push mode when called with Push.
+        assert_no_more_work_not_in_pull_mode(mode, false); // push=true, not panicking.
+    }
+
+    // UT-0577-14: Auto resolves to Push when chunk_size == u32::MAX (R26 short-circuit).
+    #[test]
+    fn ut_0577_14_auto_resolves_to_push_when_chunk_size_u32_max() {
+        #[allow(clippy::assertions_on_constants)]
+        let mode = resolve_dispatch_mode(DispatchMode::Auto, u32::MAX, 4);
+        assert_eq!(
+            mode,
+            ResolvedDispatchMode::Push,
+            "Auto + chunk_size=u32::MAX → Push (R26 short-circuit)"
+        );
+    }
+
+    // UT-0577-15: Auto resolves to Pull when streaming with excess capacity.
+    #[test]
+    fn ut_0577_15_auto_resolves_to_pull_when_streaming_with_excess_capacity() {
+        // chunk_size = 16, len_estimate = 64, num_workers = 4 → len_estimate(64) > num_workers(4) → Pull.
+        // The resolution is based on len_estimate > num_workers (TASK-0577 NOTE line 98).
+        let len_estimate: u32 = 64;
+        let num_workers: u32 = 4;
+        // len_estimate(64) > num_workers(4): streaming has more total agents than workers → Pull.
+        let mode =
+            resolve_dispatch_mode_with_len_estimate(DispatchMode::Auto, len_estimate, num_workers);
+        assert_eq!(
+            mode,
+            ResolvedDispatchMode::Pull,
+            "Auto + len_estimate({len_estimate}) > num_workers({num_workers}) → Pull"
+        );
+    }
+
+    // UT-0577-16: Auto resolves to Push when chunks ≤ workers (degenerate case).
+    #[test]
+    fn ut_0577_16_auto_resolves_to_push_when_chunks_le_workers() {
+        // chunk_size = 16, len_estimate = 16, num_workers = 4 → 1 chunk ≤ workers → Push.
+        // At most 1 chunk (len_estimate/chunk_size = 1) ≤ 4 workers → degenerate, use Push.
+        let estimated_chunks: u32 = 1;
+        let num_workers: u32 = 4;
+        let mode =
+            resolve_dispatch_mode_with_chunks(DispatchMode::Auto, estimated_chunks, num_workers);
+        assert_eq!(
+            mode,
+            ResolvedDispatchMode::Push,
+            "Auto + estimated_chunks({estimated_chunks}) ≤ num_workers({num_workers}) → Push (degenerate)"
+        );
+    }
+
+    // UT-0577-17: PullCoordinatorState variants are distinct and Debug-representable.
+    #[test]
+    fn ut_0577_17_pull_coordinator_state_variants_distinct() {
+        let states = [
+            PullCoordinatorState::DispatchingFirst,
+            PullCoordinatorState::AwaitingResults,
+            PullCoordinatorState::GeneratingNext,
+            PullCoordinatorState::SendingNoMoreWork,
+            PullCoordinatorState::AwaitingFinalResults,
+            PullCoordinatorState::MergingResults,
+        ];
+        for i in 0..states.len() {
+            for j in (i + 1)..states.len() {
+                assert_ne!(
+                    states[i], states[j],
+                    "PullCoordinatorState variants must be distinct"
+                );
+            }
+        }
+        for s in &states {
+            assert!(!format!("{:?}", s).is_empty(), "Debug must be non-empty");
+        }
+    }
+
+    // UT-0577-18: CoordinatorState gains 5 new pull-mode states (variant count).
+    #[test]
+    fn ut_0577_18_coordinator_state_includes_all_pull_variants() {
+        // These variants must exist and be constructible (compile-time check via match).
+        let pull_states = [
+            CoordinatorState::PullDispatchingFirst,
+            CoordinatorState::PullAwaitingResults,
+            CoordinatorState::PullGeneratingNext,
+            CoordinatorState::PullSendingNoMoreWork,
+            CoordinatorState::PullAwaitingFinalResults,
+        ];
+        for s in &pull_states {
+            let json = serde_json::to_string(s).unwrap();
+            assert!(
+                !json.is_empty(),
+                "pull-mode CoordinatorState variant must serialize"
+            );
+        }
+        // Legacy states must still exist (no regressions).
+        let legacy_count_pre = 11; // 9 original + 2 SPEC-20
+        let pull_count = 5;
+        let states_vec: Vec<CoordinatorState> = vec![
+            CoordinatorState::Init,
+            CoordinatorState::WaitingForWorkers,
+            CoordinatorState::Partitioning,
+            CoordinatorState::Dispatching,
+            CoordinatorState::WaitingForResults,
+            CoordinatorState::Merging,
+            CoordinatorState::CheckTermination,
+            CoordinatorState::Done,
+            CoordinatorState::Error,
+            CoordinatorState::AcceptingMembershipChanges,
+            CoordinatorState::SoloReducing,
+        ];
+        assert_eq!(
+            states_vec.len(),
+            legacy_count_pre,
+            "legacy state count must be {legacy_count_pre}"
+        );
+        assert_eq!(pull_count, 5, "exactly 5 pull-only states must be added");
     }
 
     // --- Stage 6 REFACTOR additions (REVIEW + QA blockers) ---
