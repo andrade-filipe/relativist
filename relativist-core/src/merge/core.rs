@@ -153,6 +153,67 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
     }
 
     // --- Step 3: Restore boundary connections (R4-R7, R12-R14) ---
+    //
+    // FreePort-chain resolution (SC-015 closure):
+    //
+    // When a local reduction inside a partition links two border FreePorts
+    // together (e.g. CON-CON rule connects FreePort(A) ↔ FreePort(B)),
+    // `rebuild_free_port_index` records this as a FreePort redirect:
+    // `free_port_index[A] = FreePort(B)` and `free_port_index[B] = FreePort(A)`.
+    //
+    // Naively connecting port_X to FreePort(B) leaves the two AgentPorts that
+    // "own" A and B (in other partitions) connected only to dangling FreePorts
+    // instead of to each other. This helper resolves the chain: if one endpoint
+    // is FreePort(bid_Y) and bid_Y is also a tracked border, the AgentPort on
+    // the OTHER side of bid_Y is the true intended connection partner.
+    //
+    // The `max_chain_depth` guard prevents infinite loops in case of degenerate
+    // FreePort cycles (which should not occur in well-formed nets, but we guard
+    // defensively). Depth 8 is sufficient for all realistic partition depths.
+    let resolve_freeport_chain = |initial: PortRef| -> PortRef {
+        let mut current = initial;
+        const MAX_CHAIN_DEPTH: usize = 8;
+        for _ in 0..MAX_CHAIN_DEPTH {
+            if let PortRef::FreePort(bid_y) = current {
+                if borders.contains_key(&bid_y) {
+                    // Find the AgentPort endpoint of bid_y (prefer AgentPort over FreePort).
+                    let mut resolved: Option<PortRef> = None;
+                    for partition in &partitions {
+                        if let Some(&port_ref) = partition.free_port_index.get(&bid_y) {
+                            match port_ref {
+                                PortRef::AgentPort(_, _) => {
+                                    resolved = Some(port_ref);
+                                    break; // AgentPort is the terminal; stop searching
+                                }
+                                PortRef::FreePort(_) => {
+                                    // Another FreePort redirect — continue the chain.
+                                    if resolved.is_none() {
+                                        resolved = Some(port_ref);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match resolved {
+                        Some(r) if r != current => {
+                            current = r;
+                            // If we found an AgentPort, stop immediately.
+                            if matches!(current, PortRef::AgentPort(_, _)) {
+                                break;
+                            }
+                        }
+                        _ => break, // No further resolution possible.
+                    }
+                } else {
+                    break; // Not a border FreePort — it's a Lafont interface port.
+                }
+            } else {
+                break; // AgentPort — already resolved.
+            }
+        }
+        current
+    };
+
     let mut border_redex_count: u32 = 0;
 
     for (border_id, (_orig_a, _orig_b)) in &borders {
@@ -171,10 +232,14 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
 
         match (current_a, current_b) {
             (Some(port_a), Some(port_b)) => {
+                // Resolve any FreePort-chain redirects produced by local reductions
+                // that linked two border FreePorts (SC-015 closure).
+                let resolved_a = resolve_freeport_chain(port_a);
+                let resolved_b = resolve_freeport_chain(port_b);
                 // Restore the boundary wire (R5)
                 // connect() auto-detects redexes (SPEC-02, R13)
-                result.connect(port_a, port_b);
-                if is_principal_pair(port_a, port_b) {
+                result.connect(resolved_a, resolved_b);
+                if is_principal_pair(resolved_a, resolved_b) {
                     border_redex_count += 1;
                 }
             }

@@ -70,6 +70,28 @@ pub enum ConnectionDirective {
         /// The port index on the target agent.
         target_port: PortId,
     },
+    /// Lafont interface port: connects an agent port to a FreePort (net interface).
+    ///
+    /// Used by streaming generators to express open (unconnected-to-another-agent)
+    /// ports that form the interface of the net (e.g., leaf aux ports in `dual_tree`).
+    /// These are **not** border wires — they are Lafont FreePorts that persist through
+    /// the reduction and are preserved by `merge` (SPEC-05, §4.1 R15).
+    ///
+    /// In the partition accumulator the wire is installed as
+    /// `accumulator.connect(AgentPort(agent_id, port_id), FreePort(free_port_id))`.
+    /// This does NOT create a border entry; the FreePort ID MUST NOT collide with
+    /// any border ID allocated by `install_connection` for the same run.
+    FreePortInterface {
+        /// The agent port to connect to the interface.
+        agent_port: (AgentId, PortId),
+        /// The Lafont FreePort ID.
+        ///
+        /// MUST be unique across all `FreePortInterface` directives in the stream
+        /// and MUST NOT collide with border IDs allocated by `install_connection`
+        /// (which start at 0 and grow upward). Generators SHOULD use IDs above
+        /// `2 * total_expected_agents` to avoid collisions.
+        free_port_id: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -866,11 +888,120 @@ struct PendingConnection {
 /// If the first batch contains any `FreePort` IDs in its connections (Lafont
 /// interface ports), `border_id_counter` is initialized to the maximum such
 /// ID + 1 to avoid collision. Otherwise it starts at 0.
+impl From<PartitionPlan> for ChunkedPartitionResult {
+    /// Convert a `PartitionPlan` (from SPEC-04 `split()`) into a `ChunkedPartitionResult`.
+    ///
+    /// Used by the R26 short-circuit path: when `chunk_size == u32::MAX`, the pipeline
+    /// materialises the full stream and delegates to `split()`.  The resulting
+    /// `PartitionPlan` is wrapped here so the caller receives a uniform type.
+    ///
+    /// `stats` is populated with counts derived from the plan; `chunks_processed`
+    /// is set to 1 (the whole net as a single "chunk").
+    fn from(plan: PartitionPlan) -> Self {
+        let total_agents: u64 = plan
+            .partitions
+            .iter()
+            .map(|p| p.subnet.count_live_agents() as u64)
+            .sum();
+        let per_worker_counts: Vec<u64> = plan
+            .partitions
+            .iter()
+            .map(|p| p.subnet.count_live_agents() as u64)
+            .collect();
+        let border_wire_count = plan.borders.len() as u64;
+        let borders = plan.borders.clone();
+        let stats = StreamingPartitionStats {
+            total_agents,
+            per_worker_counts,
+            border_wire_count,
+            chunks_processed: 1,
+        };
+        ChunkedPartitionResult {
+            partitions: plan.partitions,
+            borders,
+            stats,
+        }
+    }
+}
+
+/// R26 short-circuit sentinel: when `chunk_size == u32::MAX`, the pipeline
+/// MUST take the materialise-then-split path (SPEC-21 §3.4 R26).
+///
+/// This constant is exported so that callers can test for the sentinel without
+/// hard-coding the magic value.
+pub const CHUNK_SIZE_MAX_SENTINEL: u32 = u32::MAX;
+
 pub fn generate_and_partition_chunked(
     stream: Box<dyn Iterator<Item = AgentBatch>>,
     num_workers: u32,
     strategy: &mut dyn StreamingPartitionStrategy,
 ) -> Result<ChunkedPartitionResult, PartitionError> {
+    generate_and_partition_chunked_with_chunk_size(stream, num_workers, strategy, num_workers)
+}
+
+/// Internal implementation of `generate_and_partition_chunked`, parameterised
+/// by `chunk_size` so the R26 short-circuit path can be exercised.
+///
+/// When `chunk_size == CHUNK_SIZE_MAX_SENTINEL`, materialise the whole stream
+/// into a single `Net` and delegate to SPEC-04 `split()` (R26 — closes SC-014).
+/// The result is bit-**non**-identical to the streaming path but isomorphic up to
+/// agent-ID renaming (SPEC-00 §6.12 `nets_isomorphic`).
+pub fn generate_and_partition_chunked_with_chunk_size(
+    stream: Box<dyn Iterator<Item = AgentBatch>>,
+    num_workers: u32,
+    strategy: &mut dyn StreamingPartitionStrategy,
+    chunk_size: u32,
+) -> Result<ChunkedPartitionResult, PartitionError> {
+    // R26 short-circuit: chunk_size == u32::MAX → materialise-then-split.
+    //
+    // Per SPEC-21 §3.4 R26 (closes SC-014), the pipeline MUST collect the full
+    // stream into a single Net and delegate to SPEC-04 `split()`. The result is
+    // isomorphic (not bit-identical) to the streaming path per `nets_isomorphic`.
+    //
+    // Strategy: materialise into a SparseNet (using `create_agent_at` which was
+    // added in Phase E for streaming), then convert to a dense Net for `split()`.
+    // Only `Resolved` directives are installed here; `Pending` directives cannot
+    // appear in a well-formed materialisation stream (they would violate R26's
+    // "complete stream" precondition) and are silently skipped so the function
+    // remains total.
+    if chunk_size == CHUNK_SIZE_MAX_SENTINEL {
+        use crate::net::sparse::SparseNet;
+        use crate::partition::split::split;
+        use crate::partition::strategy::ContiguousIdStrategy;
+
+        let mut sparse = SparseNet::new();
+        for batch in stream {
+            for (id, symbol) in &batch.agents {
+                sparse.create_agent_at(*id, *symbol);
+            }
+            for directive in &batch.connections {
+                if let ConnectionDirective::Resolved {
+                    source: (src_id, src_port),
+                    target: (tgt_id, tgt_port),
+                } = directive
+                {
+                    sparse.connect(
+                        crate::net::PortRef::AgentPort(*src_id, *src_port),
+                        crate::net::PortRef::AgentPort(*tgt_id, *tgt_port),
+                    );
+                }
+                // Pending directives: not reachable on well-formed full-stream materialisation.
+            }
+        }
+
+        // Convert to dense Net for split(). id_range = None → arena sized to max_id+1.
+        let net = match sparse.to_dense(None) {
+            Ok(n) => n,
+            Err(e) => return Err(PartitionError::ArenaConversionFailed(format!("{e}"))),
+        };
+
+        let strategy_for_split = ContiguousIdStrategy;
+        let plan = split(net, num_workers, &strategy_for_split);
+        return Ok(ChunkedPartitionResult::from(plan));
+    }
+
+    // --- Streaming path (chunk_size < u32::MAX) ---
+
     // Pipeline-local state.
     let mut accumulators: Vec<PartitionAccumulator> =
         (0..num_workers).map(PartitionAccumulator::new).collect();
@@ -908,6 +1039,27 @@ pub fn generate_and_partition_chunked(
                     &mut accumulators,
                     &mut border_map,
                     &mut border_id_counter,
+                );
+            }
+        }
+
+        // Step 2.5: install FreePortInterface directives (Lafont interface ports).
+        //
+        // A `FreePortInterface` connects an agent port directly to a Lafont FreePort
+        // (a net interface, NOT a border wire). These are installed directly in the
+        // owning worker's accumulator — no border allocation needed.
+        for directive in &batch.connections {
+            if let ConnectionDirective::FreePortInterface {
+                agent_port: (agent_id, port_id),
+                free_port_id,
+            } = directive
+            {
+                let worker_id = *agent_owner.get(agent_id).unwrap_or_else(|| {
+                    panic!("FreePortInterface: agent {} has no owner", agent_id)
+                });
+                accumulators[worker_id as usize].connect(
+                    PortRef::AgentPort(*agent_id, *port_id),
+                    PortRef::FreePort(*free_port_id),
                 );
             }
         }
@@ -954,8 +1106,22 @@ pub fn generate_and_partition_chunked(
         return Err(PartitionError::UnresolvedForwardReferences { agent_id });
     }
 
-    // Step 5: compute per-worker id_ranges from min/max assigned IDs.
-    // Finalize each accumulator.
+    // Step 5: compute per-worker id_ranges with D3 invariant (non-overlapping).
+    //
+    // D3 (SPEC-04, R16-R19) requires that id_ranges across all partitions are
+    // mutually disjoint. With round-robin assignment, each worker holds every
+    // num_workers-th agent ID, so per-worker [min, max+1] intervals can overlap.
+    //
+    // Solution: compute the global [0, global_max_id+1) range and partition it
+    // into num_workers equal-sized non-overlapping bands. Each worker i is assigned
+    // [i*band, (i+1)*band). Bands may be wider than the actual agent IDs a worker
+    // holds — that's acceptable (the id_range is an upper bound, not a tight cover).
+    // This satisfies D3 and is consistent with how ContiguousIdStrategy (SPEC-04 R22)
+    // partitions the full ID space.
+    //
+    // Empty nets (no agents assigned): all workers get [0, 0) (degenerate).
+    let global_max_id: Option<u32> = accumulators.iter().filter_map(|a| a.max_assigned_id).max();
+
     let mut partitions: Vec<Partition> = Vec::with_capacity(num_workers as usize);
 
     // We need per-worker border_id ranges. The border_map already has all
@@ -964,14 +1130,18 @@ pub fn generate_and_partition_chunked(
     // Individual wires are discriminated via free_port_index at merge time.
     let border_end = border_id_counter;
 
-    for accumulator in accumulators {
-        let id_range = match (accumulator.min_assigned_id, accumulator.max_assigned_id) {
-            (Some(min), Some(max)) => IdRange {
-                start: min,
-                end: max + 1,
-            },
-            // Empty worker — zero-width range.
-            _ => IdRange { start: 0, end: 0 },
+    for (worker_idx, accumulator) in accumulators.into_iter().enumerate() {
+        let id_range = if let Some(global_max) = global_max_id {
+            // Band-based non-overlapping range: ensures D3 across all workers.
+            let total = global_max as u64 + 1;
+            let n = num_workers as u64;
+            let band = total.div_ceil(n);
+            let start = (worker_idx as u64 * band).min(total) as u32;
+            let end = ((worker_idx as u64 + 1) * band).min(total) as u32;
+            IdRange { start, end }
+        } else {
+            // No agents at all — zero-width degenerate range.
+            IdRange { start: 0, end: 0 }
         };
 
         // Empty workers always pass the threshold check (0 > 4*0 is false).

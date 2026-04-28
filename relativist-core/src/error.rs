@@ -158,6 +158,13 @@ pub enum PartitionError {
         /// AgentId referenced in a Pending directive that was never emitted.
         agent_id: AgentId,
     },
+
+    /// SPEC-21 R26 (R26 short-circuit path) — returned when the arena
+    /// conversion from `SparseNet` to dense `Net` fails during materialisation.
+    ///
+    /// This error is only reachable from the R26 path (`chunk_size == u32::MAX`).
+    #[error("arena conversion failed during R26 materialise-then-split path: {0}")]
+    ArenaConversionFailed(String),
 }
 
 /// Errors from the merge subsystem.

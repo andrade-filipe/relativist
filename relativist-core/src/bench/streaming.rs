@@ -344,12 +344,21 @@ fn build_dual_tree_batches(depth: u32, chunk_size: usize) -> Vec<AgentBatch> {
 
         let mut connections: Vec<ConnectionDirective> = Vec::new();
 
+        // FreePort ID base: above all agent IDs (0..2*nodes_per_tree).
+        // Left tree leaf FreePorts:  freeport_base + (child_lo_idx - nodes_per_tree)
+        // Right tree leaf FreePorts: freeport_base + (nodes_per_tree + 1) + (child_lo_idx - nodes_per_tree)
+        // This gives 2*(nodes_per_tree+1) unique IDs, all above the agent ID space,
+        // safely separated from border IDs (which start at 0 and grow slowly upward).
+        let freeport_base = 2 * nodes_per_tree;
+        let freeport_right_offset = nodes_per_tree + 1;
+
         for &(eid, lo_idx) in batch_slice {
             // Determine tree membership.
             // Left tree: emission IDs 0..(nodes_per_tree-1).
             // Right tree: emission IDs nodes_per_tree..(2*nodes_per_tree-1).
             let is_right = eid >= nodes_per_tree;
             let tree_offset_eid = if is_right { nodes_per_tree } else { 0 };
+            let tree_fp_offset = if is_right { freeport_right_offset } else { 0 };
 
             // Child → parent wire (every non-root node).
             if lo_idx > 0 {
@@ -381,6 +390,37 @@ fn build_dual_tree_batches(depth: u32, chunk_size: usize) -> Vec<AgentBatch> {
                         target_port: parent_port,
                     });
                 }
+            }
+
+            // Leaf aux-port connections (FreePortInterface directives).
+            //
+            // For each CON node, aux ports 1 (left child) and 2 (right child)
+            // connect to children. If a child position is outside the tree
+            // (child_lo_idx >= nodes_per_tree), the child is a Lafont FreePort
+            // (the net interface — equivalent to a FreePort leaf in the batch
+            // `dual_tree` generator). We emit a FreePortInterface directive so
+            // the pipeline installs the wire directly without border allocation.
+            //
+            // FreePort ID formula (unique per child position per tree):
+            //   freeport_base + tree_fp_offset + (child_lo_idx - nodes_per_tree)
+            let left_child_lo = 2 * lo_idx + 1;
+            let right_child_lo = 2 * lo_idx + 2;
+
+            if left_child_lo >= nodes_per_tree {
+                // Left aux port (port 1) connects to a leaf FreePort.
+                let fp_id = freeport_base + tree_fp_offset + (left_child_lo - nodes_per_tree);
+                connections.push(ConnectionDirective::FreePortInterface {
+                    agent_port: (eid, 1u8),
+                    free_port_id: fp_id,
+                });
+            }
+            if right_child_lo >= nodes_per_tree {
+                // Right aux port (port 2) connects to a leaf FreePort.
+                let fp_id = freeport_base + tree_fp_offset + (right_child_lo - nodes_per_tree);
+                connections.push(ConnectionDirective::FreePortInterface {
+                    agent_port: (eid, 2u8),
+                    free_port_id: fp_id,
+                });
             }
 
             // Left root → right root wire (emitted when left root is processed).
