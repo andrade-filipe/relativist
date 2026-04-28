@@ -313,6 +313,12 @@ impl Net {
         }
 
         // Fresh allocation path (SPEC-22 R3 fall-through).
+        // QA-D009-013: guard against u32 overflow; explicit panic in both debug and release.
+        assert!(
+            self.next_id < u32::MAX,
+            "AgentId space exhausted: next_id has reached u32::MAX ({})",
+            u32::MAX
+        );
         let id = self.next_id;
         self.next_id += 1;
 
@@ -655,6 +661,12 @@ impl Net {
     /// function; it only affects which `None` slots are available for reuse.
     ///
     /// Complexity: O(A) where A is the arena length.
+    ///
+    /// TODO(QA-D009-012, perf): this is O(arena_len), not O(live_count). A deserialized
+    /// Net with a sparse-but-large arena (e.g., one live agent at a high ID) pays O(A)
+    /// on every call. Fix by maintaining a `live_count: u32` field on `Net`, updated by
+    /// `create_agent` (+1 on fresh path), `remove_agent` (-1), and recomputed once on
+    /// deserialization. Tracked in TASK-0510.
     pub fn count_live_agents(&self) -> usize {
         // SPEC-22 R11: agents.iter().flatten() naturally excludes None slots
         // (free-list entries correspond to None slots and are skipped).
@@ -3485,6 +3497,21 @@ mod tests {
                              // b is Some with id = 1, next_id = 2.
         net.assert_next_id_valid(); // must not panic — R27a compatible
         assert_eq!(b, 1); // paranoia
+    }
+
+    // -----------------------------------------------------------------------
+    // QA-D009-013 — Net::create_agent next_id overflow guard
+    // -----------------------------------------------------------------------
+
+    /// QA-D009-013: create_agent panics with a clear message when next_id == u32::MAX
+    /// and the free-list is empty. The overflow is caught before wrapping to 0.
+    #[test]
+    #[should_panic(expected = "AgentId space exhausted")]
+    fn qa_d009_013_dense_create_agent_panics_at_id_overflow() {
+        let mut net = Net::new();
+        net.next_id = u32::MAX;
+        // Free-list is empty; must go down the fresh-allocation path.
+        net.create_agent(Symbol::Era);
     }
 
     // -----------------------------------------------------------------------

@@ -104,6 +104,12 @@ impl SparseNet {
     ///
     /// Complexity: O(1) amortized (SPEC-22 R15).
     pub fn create_agent(&mut self, symbol: Symbol) -> AgentId {
+        // QA-D009-013: guard against u32 overflow; explicit panic in both debug and release.
+        assert!(
+            self.next_id < u32::MAX,
+            "AgentId space exhausted: next_id has reached u32::MAX ({})",
+            u32::MAX
+        );
         let id = self.next_id;
         self.next_id += 1;
         self.agents.insert(id, Agent { symbol, id });
@@ -433,6 +439,12 @@ impl SparseNet {
     /// ERA agent are silently dropped (R17 — sparse equivalent of I6).
     fn write_port(&mut self, port: PortRef, target: PortRef) {
         if let PortRef::AgentPort(id, p) = port {
+            // QA-D009-014: catch misordered call sequences (connect before create_agent).
+            debug_assert!(
+                self.agents.contains_key(&id),
+                "write_port: agent {} not found — connect called before create_agent?",
+                id
+            );
             // R17: skip ERA auxiliary port slots (port 1, 2 of ERA agents).
             if let Some(agent) = self.agents.get(&id) {
                 if p >= total_ports(agent.symbol) {
@@ -852,5 +864,36 @@ mod tests {
             }
             other => panic!("expected InvalidIdRange, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // QA-D009-013: SparseNet::create_agent next_id overflow guard
+    // -----------------------------------------------------------------------
+
+    /// QA-D009-013: create_agent panics when next_id is u32::MAX (no free-list slot).
+    /// The overflow is caught by a checked_add assertion rather than silent wrap.
+    #[test]
+    #[should_panic(expected = "AgentId space exhausted")]
+    fn qa_d009_013_sparse_create_agent_panics_at_id_overflow() {
+        let mut sn = SparseNet::new();
+        sn.next_id = u32::MAX;
+        // Free-list is empty; must go down the fresh-allocation path.
+        // checked_add on u32::MAX should panic with "AgentId space exhausted".
+        sn.create_agent(Symbol::Era);
+    }
+
+    // -----------------------------------------------------------------------
+    // QA-D009-014: SparseNet::write_port unguarded ERA aux port
+    // -----------------------------------------------------------------------
+
+    /// QA-D009-014: write_port with a port for an agent that doesn't exist yet
+    /// must trigger a debug_assert in debug builds (misordered call detection).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "write_port: agent")]
+    fn qa_d009_014_sparse_write_port_panics_for_unknown_agent_in_debug() {
+        let mut sn = SparseNet::new();
+        // Call connect directly for an agent that was never created (id = 99).
+        sn.connect(PortRef::AgentPort(99, 0), PortRef::AgentPort(0, 0));
     }
 }
