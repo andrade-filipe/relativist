@@ -845,11 +845,19 @@ mod tests {
         // by the 2 new ERAs created within interact_eras (SPEC-22 free-list reuse).
         // Verify: if slot `a` is occupied, it must hold an ERA (not the original CON).
         if let Some(recycled) = net.get_agent(a) {
-            assert_eq!(recycled.symbol, Symbol::Era, "slot `a` was recycled but not as ERA");
+            assert_eq!(
+                recycled.symbol,
+                Symbol::Era,
+                "slot `a` was recycled but not as ERA"
+            );
         }
         // Slot `b` also recycled or None.
         if let Some(recycled) = net.get_agent(b) {
-            assert_eq!(recycled.symbol, Symbol::Era, "slot `b` was recycled but not as ERA");
+            assert_eq!(
+                recycled.symbol,
+                Symbol::Era,
+                "slot `b` was recycled but not as ERA"
+            );
         }
         // Total live: x, y + 2 new ERAs = 4
         assert_eq!(net.count_live_agents(), 4);
@@ -899,10 +907,18 @@ mod tests {
         // Original DUP (a) and ERA (b) are removed; their slots may be recycled.
         // Verify: if slot is occupied, it must hold an ERA (SPEC-22 free-list reuse).
         if let Some(recycled) = net.get_agent(a) {
-            assert_eq!(recycled.symbol, Symbol::Era, "slot `a` recycled but not as ERA");
+            assert_eq!(
+                recycled.symbol,
+                Symbol::Era,
+                "slot `a` recycled but not as ERA"
+            );
         }
         if let Some(recycled) = net.get_agent(b) {
-            assert_eq!(recycled.symbol, Symbol::Era, "slot `b` recycled but not as ERA");
+            assert_eq!(
+                recycled.symbol,
+                Symbol::Era,
+                "slot `b` recycled but not as ERA"
+            );
         }
         // Total live: x, y + 2 new ERAs = 4
         assert_eq!(net.count_live_agents(), 4);
@@ -1325,7 +1341,11 @@ mod tests {
         // reused by the 4 new agents. We enumerate ALL live agents.
         // After interact_comm: 4 new agents total (started with 2, removed 2, created 4).
         let all_agents: Vec<_> = net.live_agents().copied().collect();
-        assert_eq!(all_agents.len(), 4, "expected 4 live agents after CON-DUP commutation");
+        assert_eq!(
+            all_agents.len(),
+            4,
+            "expected 4 live agents after CON-DUP commutation"
+        );
 
         // Find the 2 new DUPs (inheriting CON's aux port targets: FreePort(10), FreePort(20))
         let dup_agents: Vec<_> = all_agents

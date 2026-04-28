@@ -411,20 +411,36 @@ pub fn build_subnet_with_config(
 
     if threshold_exceeded && !config.sparse_build {
         // SPEC-22 R30: threshold check for the dense path.
-        return Err(crate::error::PartitionError::DenseAllocationExceedsThreshold {
-            partition_index,
-            id_range_size,
-            live_count,
-        });
+        return Err(
+            crate::error::PartitionError::DenseAllocationExceedsThreshold {
+                partition_index,
+                id_range_size,
+                live_count,
+            },
+        );
     }
 
     if threshold_exceeded {
         // SPEC-22 R22: sparse path — builds via SparseNet then converts to dense.
         // Memory is proportional to live_count rather than id_range_size (M5 fix).
-        Ok(build_subnet_sparse(net, worker_agents, sigma, border_entries, worker_id, id_range))
+        Ok(build_subnet_sparse(
+            net,
+            worker_agents,
+            sigma,
+            border_entries,
+            worker_id,
+            id_range,
+        ))
     } else {
         // Dense path (TASK-0481 logic) — threshold not exceeded.
-        Ok(build_subnet(net, worker_agents, sigma, border_entries, worker_id, id_range))
+        Ok(build_subnet(
+            net,
+            worker_agents,
+            sigma,
+            border_entries,
+            worker_id,
+            id_range,
+        ))
     }
 }
 
@@ -489,7 +505,8 @@ fn build_subnet_sparse(
     // Copy redex queue with only internal active pairs.
     let worker_set: std::collections::HashSet<AgentId> = worker_agents.iter().copied().collect();
     for &(a_id, b_id) in &net.redex_queue {
-        if sigma.get(&a_id) == Some(&worker_id) && sigma.get(&b_id) == Some(&worker_id)
+        if sigma.get(&a_id) == Some(&worker_id)
+            && sigma.get(&b_id) == Some(&worker_id)
             && worker_set.contains(&a_id)
             && worker_set.contains(&b_id)
         {
@@ -1062,39 +1079,58 @@ mod tests {
         use std::collections::HashSet;
         let mut net = Net::new();
         // Create 200 agents (IDs 0..199)
-        for _ in 0..200 { net.create_agent(Symbol::Con); }
+        for _ in 0..200 {
+            net.create_agent(Symbol::Con);
+        }
         // Remove 4 agents
         net.remove_agent(50);
         net.remove_agent(75);
         net.remove_agent(90);
         net.remove_agent(150);
         // Partition 0: id_range 0..100
-        let p0_agents: Vec<_> = (0u32..100).filter(|&id| net.get_agent(id).is_some()).collect();
+        let p0_agents: Vec<_> = (0u32..100)
+            .filter(|&id| net.get_agent(id).is_some())
+            .collect();
         let sigma: HashMap<AgentId, WorkerId> = (0u32..200)
-            .filter_map(|id| net.get_agent(id).map(|_| (id, if id < 100 { 0 } else { 1 })))
+            .filter_map(|id| {
+                net.get_agent(id)
+                    .map(|_| (id, if id < 100 { 0 } else { 1 }))
+            })
             .collect();
         let p0 = build_subnet(&net, &p0_agents, &sigma, &[], 0, 0..100);
         let free_ids: HashSet<AgentId> = p0.free_list.iter().copied().collect();
         assert!(free_ids.contains(&50), "R10a: 50 must be in p0 free_list");
         assert!(free_ids.contains(&75), "R10a: 75 must be in p0 free_list");
         assert!(free_ids.contains(&90), "R10a: 90 must be in p0 free_list");
-        assert!(!free_ids.contains(&150), "R10a: 150 is in partition 1, must NOT be in p0 free_list");
+        assert!(
+            !free_ids.contains(&150),
+            "R10a: 150 is in partition 1, must NOT be in p0 free_list"
+        );
     }
 
     /// UT-0481-02: build_subnet excludes out-of-range None slots.
     #[test]
     fn build_subnet_excludes_out_of_range_none_slots() {
         let mut net = Net::new();
-        for _ in 0..200 { net.create_agent(Symbol::Con); }
+        for _ in 0..200 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(50);
         net.remove_agent(150); // partition 1 only
-        let p0_agents: Vec<_> = (0u32..100).filter(|&id| net.get_agent(id).is_some()).collect();
+        let p0_agents: Vec<_> = (0u32..100)
+            .filter(|&id| net.get_agent(id).is_some())
+            .collect();
         let sigma: HashMap<AgentId, WorkerId> = (0u32..200)
-            .filter_map(|id| net.get_agent(id).map(|_| (id, if id < 100 { 0 } else { 1 })))
+            .filter_map(|id| {
+                net.get_agent(id)
+                    .map(|_| (id, if id < 100 { 0 } else { 1 }))
+            })
             .collect();
         let p0 = build_subnet(&net, &p0_agents, &sigma, &[], 0, 0..100);
-        assert!(!p0.free_list.iter().any(|&id| id >= 100),
-            "R10a: free_list must not contain ids >= 100");
+        assert!(
+            !p0.free_list.iter().any(|&id| id >= 100),
+            "R10a: free_list must not contain ids >= 100"
+        );
     }
 
     /// UT-0481-03: partition 1 only contains partition 1 freed agents.
@@ -1102,17 +1138,27 @@ mod tests {
     fn build_subnet_partition_1_only_contains_partition_1_freed() {
         use std::collections::HashSet;
         let mut net = Net::new();
-        for _ in 0..200 { net.create_agent(Symbol::Con); }
+        for _ in 0..200 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(50);
         net.remove_agent(150);
-        let p1_agents: Vec<_> = (100u32..200).filter(|&id| net.get_agent(id).is_some()).collect();
+        let p1_agents: Vec<_> = (100u32..200)
+            .filter(|&id| net.get_agent(id).is_some())
+            .collect();
         let sigma: HashMap<AgentId, WorkerId> = (0u32..200)
-            .filter_map(|id| net.get_agent(id).map(|_| (id, if id < 100 { 0 } else { 1 })))
+            .filter_map(|id| {
+                net.get_agent(id)
+                    .map(|_| (id, if id < 100 { 0 } else { 1 }))
+            })
             .collect();
         let p1 = build_subnet(&net, &p1_agents, &sigma, &[], 1, 100..200);
         let free_ids: HashSet<AgentId> = p1.free_list.iter().copied().collect();
         assert!(free_ids.contains(&150), "R10a: 150 must be in p1 free_list");
-        assert!(!free_ids.contains(&50), "R10a: 50 is in partition 0, must NOT be in p1 free_list");
+        assert!(
+            !free_ids.contains(&50),
+            "R10a: 50 is in partition 0, must NOT be in p1 free_list"
+        );
     }
 
     /// UT-0481-04: empty id_range yields empty free_list.
@@ -1122,15 +1168,22 @@ mod tests {
         let a = net.create_agent(Symbol::Con);
         let sigma = make_sigma(&[(a, 0)]);
         let p = build_subnet(&net, &[a], &sigma, &[], 0, 0..0);
-        assert!(p.free_list.is_empty(), "degenerate range: free_list must be empty");
+        assert!(
+            p.free_list.is_empty(),
+            "degenerate range: free_list must be empty"
+        );
     }
 
     /// UT-0481-05: id_range clamped to arena_len (no out-of-bounds panic).
     #[test]
     fn build_subnet_id_range_clamped_to_arena_len() {
         let mut net = Net::new();
-        for _ in 0..100 { net.create_agent(Symbol::Con); }
-        let agents_in_range: Vec<_> = (0u32..100).filter(|&id| net.get_agent(id).is_some()).collect();
+        for _ in 0..100 {
+            net.create_agent(Symbol::Con);
+        }
+        let agents_in_range: Vec<_> = (0u32..100)
+            .filter(|&id| net.get_agent(id).is_some())
+            .collect();
         let sigma: HashMap<AgentId, WorkerId> = (0u32..100)
             .filter_map(|id| net.get_agent(id).map(|_| (id, 0u32)))
             .collect();
@@ -1138,7 +1191,10 @@ mod tests {
         let p = build_subnet(&net, &agents_in_range, &sigma, &[], 0, 100..300);
         // No agents in [100..300) — all slots live in [0..100), but range starts at 100
         // so free_list is empty (arena_len is 100; clamped end = min(300, 100) = 100 > 100 = false)
-        assert!(p.free_list.is_empty(), "clamped range [100..100) yields empty free_list");
+        assert!(
+            p.free_list.is_empty(),
+            "clamped range [100..100) yields empty free_list"
+        );
     }
 
     /// UT-0481-06: build_subnet sets id_range on returned net.
@@ -1148,18 +1204,26 @@ mod tests {
         let a = net.create_agent(Symbol::Con);
         let sigma = make_sigma(&[(a, 0)]);
         let p = build_subnet(&net, &[a], &sigma, &[], 0, 0..100);
-        assert_eq!(p.id_range, Some(0..100), "R10a: id_range must be set on subnet");
+        assert_eq!(
+            p.id_range,
+            Some(0..100),
+            "R10a: id_range must be set on subnet"
+        );
     }
 
     /// UT-0481-07: LIFO-compatible push order (ascending push -> LIFO top is highest).
     #[test]
     fn build_subnet_lifo_compatible_push_order() {
         let mut net = Net::new();
-        for _ in 0..100 { net.create_agent(Symbol::Con); }
+        for _ in 0..100 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(50);
         net.remove_agent(75);
         net.remove_agent(90);
-        let p0_agents: Vec<_> = (0u32..100).filter(|&id| net.get_agent(id).is_some()).collect();
+        let p0_agents: Vec<_> = (0u32..100)
+            .filter(|&id| net.get_agent(id).is_some())
+            .collect();
         let sigma: HashMap<AgentId, WorkerId> = (0u32..100)
             .filter_map(|id| net.get_agent(id).map(|_| (id, 0u32)))
             .collect();
@@ -1178,7 +1242,10 @@ mod tests {
     #[test]
     fn sparse_build_default_is_true() {
         let cfg = crate::partition::PartitionConfig::default();
-        assert!(cfg.sparse_build, "SPEC-22 R30: sparse_build default must be true");
+        assert!(
+            cfg.sparse_build,
+            "SPEC-22 R30: sparse_build default must be true"
+        );
     }
 
     // UT-0484-02: sparse_build=false, id_range == 4 * live_count (boundary, not exceeded)
@@ -1200,13 +1267,14 @@ mod tests {
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
-        let cfg = PartitionConfig { sparse_build: false };
-        let result = build_subnet_with_config(
-            &cfg, 0, &net, &agents, &sigma, &[], 0, 0..40,
-        );
+        let cfg = PartitionConfig {
+            sparse_build: false,
+        };
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..40);
         assert!(
             result.is_ok(),
-            "boundary not exceeded (id_range=40, live=10): must succeed, got {:?}", result
+            "boundary not exceeded (id_range=40, live=10): must succeed, got {:?}",
+            result
         );
     }
 
@@ -1214,8 +1282,8 @@ mod tests {
     // -> build_subnet_with_config returns Err(DenseAllocationExceedsThreshold).
     #[test]
     fn sparse_build_false_above_threshold_rejects() {
-        use crate::partition::PartitionConfig;
         use crate::error::PartitionError;
+        use crate::partition::PartitionConfig;
 
         // 10 live agents, id_range = 0..50 (50 > 4 * 10 = 40, exceeds)
         let mut net = Net::new();
@@ -1229,10 +1297,10 @@ mod tests {
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
-        let cfg = PartitionConfig { sparse_build: false };
-        let result = build_subnet_with_config(
-            &cfg, 0, &net, &agents, &sigma, &[], 0, 0..50,
-        );
+        let cfg = PartitionConfig {
+            sparse_build: false,
+        };
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..50);
         assert!(
             matches!(
                 result,
@@ -1261,20 +1329,19 @@ mod tests {
 
         let cfg = PartitionConfig { sparse_build: true };
         // id_range = 0..50 (50 > 4*10; threshold exceeded) but sparse_build=true -> Ok
-        let result = build_subnet_with_config(
-            &cfg, 0, &net, &agents, &sigma, &[], 0, 0..50,
-        );
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..50);
         assert!(
             result.is_ok(),
-            "sparse_build=true: must not reject above threshold, got {:?}", result
+            "sparse_build=true: must not reject above threshold, got {:?}",
+            result
         );
     }
 
     // UT-0484-05: error fields contain the actual id_range_size and live_count.
     #[test]
     fn error_field_id_range_size_correct() {
-        use crate::partition::PartitionConfig;
         use crate::error::PartitionError;
+        use crate::partition::PartitionConfig;
 
         // id_range = 0..500, live_count = 100 → id_range_size=500, live=100
         let mut net = Net::new();
@@ -1288,17 +1355,20 @@ mod tests {
         let agents: Vec<u32> = (0..100).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
-        let cfg = PartitionConfig { sparse_build: false };
-        let result = build_subnet_with_config(
-            &cfg, 7, &net, &agents, &sigma, &[], 0, 0..500,
-        );
+        let cfg = PartitionConfig {
+            sparse_build: false,
+        };
+        let result = build_subnet_with_config(&cfg, 7, &net, &agents, &sigma, &[], 0, 0..500);
         match result {
             Err(PartitionError::DenseAllocationExceedsThreshold {
                 partition_index,
                 id_range_size,
                 live_count,
             }) => {
-                assert_eq!(partition_index, 7, "partition_index must match the passed index");
+                assert_eq!(
+                    partition_index, 7,
+                    "partition_index must match the passed index"
+                );
                 assert_eq!(id_range_size, 500, "id_range_size must be 500");
                 assert_eq!(live_count, 100, "live_count must be 100");
             }
@@ -1320,7 +1390,8 @@ mod tests {
         let s = format!("{:?}", err);
         assert!(
             s.contains("DenseAllocationExceedsThreshold"),
-            "error variant must be Debug-printable: {}", s
+            "error variant must be Debug-printable: {}",
+            s
         );
         assert!(
             matches!(err, PartitionError::DenseAllocationExceedsThreshold { .. }),

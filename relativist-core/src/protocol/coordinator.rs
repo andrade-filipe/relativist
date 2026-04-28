@@ -1735,7 +1735,9 @@ mod tests {
         };
         assert!(nack.reason.contains("protocol version mismatch"));
         // TASK-0476: PROTOCOL_VERSION bumped 4→5; use the constant to future-proof.
-        assert!(nack.reason.contains(&format!("expected {}", PROTOCOL_VERSION)));
+        assert!(nack
+            .reason
+            .contains(&format!("expected {}", PROTOCOL_VERSION)));
         assert!(nack.reason.contains("got 1"));
         let result = accept_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));
@@ -1768,7 +1770,9 @@ mod tests {
         };
         assert!(nack.reason.contains("protocol version mismatch"));
         // TASK-0476: PROTOCOL_VERSION bumped 4→5; use the constant to future-proof.
-        assert!(nack.reason.contains(&format!("expected {}", PROTOCOL_VERSION)));
+        assert!(nack
+            .reason
+            .contains(&format!("expected {}", PROTOCOL_VERSION)));
         assert!(nack.reason.contains("got 0"));
         let result = accept_handle.await.unwrap();
         assert!(matches!(result, Err(ProtocolError::Timeout { .. })));

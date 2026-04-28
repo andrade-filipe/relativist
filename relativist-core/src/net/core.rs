@@ -215,8 +215,8 @@ impl Net {
     pub fn create_agent(&mut self, symbol: Symbol) -> AgentId {
         // SPEC-22 R10b Strategy A: skip the free-list entirely during a
         // delta-mode round when the policy is DisableUnderDelta.
-        let skip_recycle = self.is_in_delta_round
-            && self.recycle_policy == RecyclePolicy::DisableUnderDelta;
+        let skip_recycle =
+            self.is_in_delta_round && self.recycle_policy == RecyclePolicy::DisableUnderDelta;
 
         if !skip_recycle {
             // SPEC-22 R5 (LIFO): try to pop the most recently freed ID.
@@ -224,8 +224,7 @@ impl Net {
             if let Some(id) = self.free_list.pop() {
                 // SPEC-22 R10b Strategy B: if the ID is border-protected, re-push
                 // and fall through to fresh allocation for this call.
-                if self.recycle_policy == RecyclePolicy::BorderClean
-                    && self.is_border_protected(id)
+                if self.recycle_policy == RecyclePolicy::BorderClean && self.is_border_protected(id)
                 {
                     self.free_list.push(id);
                     // Fall through to fresh allocation below.
@@ -249,7 +248,10 @@ impl Net {
 
                     // SPEC-22 R4(b): re-initialize slot.
                     debug_assert!(
-                        self.agents.get(id as usize).and_then(|s| s.as_ref()).is_none(),
+                        self.agents
+                            .get(id as usize)
+                            .and_then(|s| s.as_ref())
+                            .is_none(),
                         "SPEC-22 R4: recycled slot {} is not None (free-list invariant violated)",
                         id
                     );
@@ -293,7 +295,10 @@ impl Net {
                             id
                         );
                         debug_assert!(
-                            self.agents.get(id as usize).and_then(|s| s.as_ref()).is_some(),
+                            self.agents
+                                .get(id as usize)
+                                .and_then(|s| s.as_ref())
+                                .is_some(),
                             "SPEC-22 R27 family 3: recycled slot {} is not Some after create",
                             id
                         );
@@ -556,10 +561,7 @@ impl Net {
         // tombstone recovery path — works in both release and debug builds).
         if let Some(shadow) = self.border_entries_shadow.take() {
             for id in shadow {
-                if self
-                    .agents
-                    .get(id as usize)
-                    .is_none_or(|s| s.is_none())
+                if self.agents.get(id as usize).is_none_or(|s| s.is_none())
                     && !self.free_list.contains(&id)
                 {
                     self.free_list.push(id);
@@ -575,10 +577,7 @@ impl Net {
                 .map(|s| s.iter().copied().collect())
                 .unwrap_or_default();
             for id in ids {
-                if self
-                    .agents
-                    .get(id as usize)
-                    .is_none_or(|s| s.is_none())
+                if self.agents.get(id as usize).is_none_or(|s| s.is_none())
                     && !self.free_list.contains(&id)
                 {
                     self.free_list.push(id);
@@ -792,7 +791,7 @@ impl Net {
             recycle_policy: recycle_policy_a,
             is_in_delta_round: _delta_a,
             #[cfg(debug_assertions)]
-            protected_tombstones: _pt_a,
+                protected_tombstones: _pt_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -807,7 +806,7 @@ impl Net {
             recycle_policy: _rp_b,
             is_in_delta_round: _delta_b,
             #[cfg(debug_assertions)]
-            protected_tombstones: _pt_b,
+                protected_tombstones: _pt_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -922,8 +921,8 @@ impl Net {
     ///
     /// SPEC-22 §4.6 R19. Complexity: O(arena_len).
     pub fn to_sparse(&self) -> crate::net::sparse::SparseNet {
-        use crate::net::sparse::SparseNet;
         use super::types::port_index;
+        use crate::net::sparse::SparseNet;
 
         let live_count = self.count_live_agents();
         let mut sparse = SparseNet::with_capacity(live_count);
@@ -984,8 +983,16 @@ impl Net {
             let num_ports = total_ports(agent.symbol);
             for p in 0..num_ports {
                 let idx = super::types::port_index(agent.id, p);
-                let self_target = if idx < self.ports.len() { self.ports[idx] } else { DISCONNECTED };
-                let other_target = if idx < other.ports.len() { other.ports[idx] } else { DISCONNECTED };
+                let self_target = if idx < self.ports.len() {
+                    self.ports[idx]
+                } else {
+                    DISCONNECTED
+                };
+                let other_target = if idx < other.ports.len() {
+                    other.ports[idx]
+                } else {
+                    DISCONNECTED
+                };
                 if self_target != other_target {
                     return false;
                 }
@@ -1033,8 +1040,7 @@ impl Net {
     /// SPEC-22 R27 bullet 4.
     #[cfg(debug_assertions)]
     pub fn assert_no_free_list_port_refs(&self) {
-        let free_set: std::collections::HashSet<AgentId> =
-            self.free_list.iter().copied().collect();
+        let free_set: std::collections::HashSet<AgentId> = self.free_list.iter().copied().collect();
         for port in &self.ports {
             if let PortRef::AgentPort(id, _) = port {
                 debug_assert!(
@@ -1789,14 +1795,20 @@ mod tests {
     #[test]
     fn net_new_initializes_empty_free_list() {
         let net = Net::new();
-        assert!(net.free_list.is_empty(), "R8: free_list must be empty on Net::new()");
+        assert!(
+            net.free_list.is_empty(),
+            "R8: free_list must be empty on Net::new()"
+        );
     }
 
     /// UT-0471-02: Net::with_capacity initializes empty free_list.
     #[test]
     fn net_with_capacity_initializes_empty_free_list() {
         let net = Net::with_capacity(100);
-        assert!(net.free_list.is_empty(), "R8: capacity hint does not pre-alloc free_list");
+        assert!(
+            net.free_list.is_empty(),
+            "R8: capacity hint does not pre-alloc free_list"
+        );
     }
 
     /// UT-0471-03: serde round-trip preserves empty free_list field.
@@ -1805,7 +1817,10 @@ mod tests {
         let net = Net::new();
         let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
         let net2: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
-        assert!(net2.free_list.is_empty(), "serde round-trip must preserve empty free_list");
+        assert!(
+            net2.free_list.is_empty(),
+            "serde round-trip must preserve empty free_list"
+        );
     }
 
     /// UT-0471-04: Clone preserves free_list content.
@@ -1856,27 +1871,43 @@ mod tests {
         let id0 = net.create_agent(Symbol::Con);
         assert_eq!(id0, 0);
         net.remove_agent(0);
-        assert_eq!(net.free_list, vec![0], "remove_agent should push to free_list");
+        assert_eq!(
+            net.free_list,
+            vec![0],
+            "remove_agent should push to free_list"
+        );
         assert_eq!(net.next_id, 1, "next_id unchanged after remove");
         // Now recycle
         let id_reused = net.create_agent(Symbol::Dup);
         assert_eq!(id_reused, 0, "R3/R5: must pop from free_list (LIFO)");
-        assert_eq!(net.next_id, 1, "R4(c): next_id must NOT increment on recycle");
+        assert_eq!(
+            net.next_id, 1,
+            "R4(c): next_id must NOT increment on recycle"
+        );
         assert!(net.free_list.is_empty(), "free_list drained after recycle");
-        assert!(net.agents[0].is_some_and(|a| a.symbol == Symbol::Dup), "R4: slot reinitialized with new symbol");
+        assert!(
+            net.agents[0].is_some_and(|a| a.symbol == Symbol::Dup),
+            "R4: slot reinitialized with new symbol"
+        );
     }
 
     /// UT-0472-03: recycle does not grow the arena.
     #[test]
     fn create_agent_recycle_does_not_grow_arena() {
         let mut net = Net::new();
-        for _ in 0..5 { net.create_agent(Symbol::Con); }
+        for _ in 0..5 {
+            net.create_agent(Symbol::Con);
+        }
         assert_eq!(net.agents.len(), 5);
         net.remove_agent(2); // free_list = [2]
         let pre_len = net.agents.len();
         let id = net.create_agent(Symbol::Era);
         assert_eq!(id, 2, "should recycle slot 2");
-        assert_eq!(net.agents.len(), pre_len, "R4(c): arena must not expand on recycle");
+        assert_eq!(
+            net.agents.len(),
+            pre_len,
+            "R4(c): arena must not expand on recycle"
+        );
     }
 
     /// UT-0472-04: recycle re-initializes port slots to DISCONNECTED.
@@ -1893,8 +1924,12 @@ mod tests {
         assert_eq!(id2, id, "should recycle same slot");
         // R4(b): all port slots DISCONNECTED after recycle
         for p in 0..3u8 {
-            assert_eq!(net.ports[port_index(id2, p)], DISCONNECTED,
-                "R4(b): port {} must be DISCONNECTED after recycle", p);
+            assert_eq!(
+                net.ports[port_index(id2, p)],
+                DISCONNECTED,
+                "R4(b): port {} must be DISCONNECTED after recycle",
+                p
+            );
         }
     }
 
@@ -1903,8 +1938,11 @@ mod tests {
     fn create_agent_returned_id_is_consistent() {
         let mut net = Net::new();
         let id = net.create_agent(Symbol::Con);
-        assert_eq!(net.agents[id as usize].unwrap().id, id,
-            "postcondition: stored ID must equal returned ID");
+        assert_eq!(
+            net.agents[id as usize].unwrap().id,
+            id,
+            "postcondition: stored ID must equal returned ID"
+        );
     }
 
     /// UT-0472-06: postcondition Some with correct symbol for all 3 symbols.
@@ -1913,8 +1951,12 @@ mod tests {
         for symbol in [Symbol::Con, Symbol::Dup, Symbol::Era] {
             let mut net = Net::new();
             let id = net.create_agent(symbol);
-            assert_eq!(net.agents[id as usize].unwrap().symbol, symbol,
-                "postcondition: symbol must match for {:?}", symbol);
+            assert_eq!(
+                net.agents[id as usize].unwrap().symbol,
+                symbol,
+                "postcondition: symbol must match for {:?}",
+                symbol
+            );
         }
     }
 
@@ -1930,8 +1972,15 @@ mod tests {
         net.create_agent(Symbol::Con); // id=1
         net.create_agent(Symbol::Con); // id=2
         net.remove_agent(1);
-        assert!(net.free_list.contains(&1), "R2: free_list must contain removed id");
-        assert_eq!(net.free_list.last(), Some(&1), "LIFO: last element must be the removed id");
+        assert!(
+            net.free_list.contains(&1),
+            "R2: free_list must contain removed id"
+        );
+        assert_eq!(
+            net.free_list.last(),
+            Some(&1),
+            "LIFO: last element must be the removed id"
+        );
     }
 
     /// UT-0473-02: remove_agent marks slot None.
@@ -1956,12 +2005,21 @@ mod tests {
         net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(c, 2));
         net.remove_agent(a);
         // Partners' ports are also disconnected (bidirectional)
-        assert_eq!(net.get_target(PortRef::AgentPort(b, 0)), DISCONNECTED,
-            "b's port must be DISCONNECTED after a is removed");
-        assert_eq!(net.get_target(PortRef::AgentPort(c, 1)), DISCONNECTED,
-            "c port 1 must be DISCONNECTED after a is removed");
-        assert_eq!(net.get_target(PortRef::AgentPort(c, 2)), DISCONNECTED,
-            "c port 2 must be DISCONNECTED after a is removed");
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(b, 0)),
+            DISCONNECTED,
+            "b's port must be DISCONNECTED after a is removed"
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(c, 1)),
+            DISCONNECTED,
+            "c port 1 must be DISCONNECTED after a is removed"
+        );
+        assert_eq!(
+            net.get_target(PortRef::AgentPort(c, 2)),
+            DISCONNECTED,
+            "c port 2 must be DISCONNECTED after a is removed"
+        );
     }
 
     /// UT-0473-04: freeport_redirects purged on recycle (SC-001 second surface).
@@ -1970,11 +2028,13 @@ mod tests {
         let mut net = Net::new();
         net.create_agent(Symbol::Con); // id=0
         net.create_agent(Symbol::Con); // id=1
-        // Manually insert a freeport_redirects entry keyed by 1
+                                       // Manually insert a freeport_redirects entry keyed by 1
         net.freeport_redirects.insert(1, PortRef::AgentPort(0, 1));
         net.remove_agent(1);
-        assert!(!net.freeport_redirects.contains_key(&1),
-            "SC-001: freeport_redirects entry keyed by removed id must be purged");
+        assert!(
+            !net.freeport_redirects.contains_key(&1),
+            "SC-001: freeport_redirects entry keyed by removed id must be purged"
+        );
     }
 
     /// UT-0473-05: only the removed id's freeport_redirects entry is purged.
@@ -1988,7 +2048,10 @@ mod tests {
         net.freeport_redirects.insert(1, PortRef::AgentPort(0, 1));
         net.freeport_redirects.insert(2, PortRef::AgentPort(0, 2));
         net.remove_agent(1);
-        assert!(!net.freeport_redirects.contains_key(&1), "id 1 must be purged");
+        assert!(
+            !net.freeport_redirects.contains_key(&1),
+            "id 1 must be purged"
+        );
         assert!(net.freeport_redirects.contains_key(&0), "id 0 must remain");
         assert!(net.freeport_redirects.contains_key(&2), "id 2 must remain");
     }
@@ -2001,8 +2064,11 @@ mod tests {
         net.remove_agent(a);
         let free_list_len = net.free_list.len();
         net.remove_agent(a); // second remove on same id
-        assert_eq!(net.free_list.len(), free_list_len,
-            "second remove must NOT push to free_list again");
+        assert_eq!(
+            net.free_list.len(),
+            free_list_len,
+            "second remove must NOT push to free_list again"
+        );
     }
 
     /// UT-0473-07: is_border_protected returns false in pure net context.
@@ -2014,8 +2080,10 @@ mod tests {
         let mut net2 = Net::new();
         let id = net2.create_agent(Symbol::Con);
         net2.remove_agent(id);
-        assert!(net2.free_list.contains(&id),
-            "in pure net (no border_entries_shadow), remove must push to free_list");
+        assert!(
+            net2.free_list.contains(&id),
+            "in pure net (no border_entries_shadow), remove must push to free_list"
+        );
         // Reference the pure net to avoid unused-variable warning
         let _ = &net;
     }
@@ -2030,7 +2098,11 @@ mod tests {
         let mut net = Net::new();
         net.free_list.push(7);
         net.free_list.push(11);
-        assert_eq!(net.free_list.pop(), Some(11), "R5 LIFO: most recent push is first pop");
+        assert_eq!(
+            net.free_list.pop(),
+            Some(11),
+            "R5 LIFO: most recent push is first pop"
+        );
         assert_eq!(net.free_list.pop(), Some(7));
     }
 
@@ -2045,12 +2117,18 @@ mod tests {
         net.remove_agent(id);
         assert!(net.free_list.contains(&id));
         // Artificially recreate the slot to make remove_agent think the agent still exists
-        net.agents[id as usize] = Some(Agent { symbol: Symbol::Con, id });
+        net.agents[id as usize] = Some(Agent {
+            symbol: Symbol::Con,
+            id,
+        });
         // Second remove should trigger debug_assert (R6 duplicate check)
         let result = panic::catch_unwind(move || {
             net.remove_agent(id);
         });
-        assert!(result.is_err(), "R6: debug_assert must fire on duplicate free_list push");
+        assert!(
+            result.is_err(),
+            "R6: debug_assert must fire on duplicate free_list push"
+        );
     }
 
     /// UT-0474-03 (release-only): duplicate push does NOT panic.
@@ -2061,7 +2139,10 @@ mod tests {
         let id = net.create_agent(Symbol::Con);
         net.remove_agent(id);
         // Re-insert agent slot to simulate second remove
-        net.agents[id as usize] = Some(Agent { symbol: Symbol::Con, id });
+        net.agents[id as usize] = Some(Agent {
+            symbol: Symbol::Con,
+            id,
+        });
         // In release, this should NOT panic (debug_assert is compiled out)
         net.remove_agent(id); // Should silently push duplicate
     }
@@ -2089,23 +2170,34 @@ mod tests {
     #[test]
     fn serde_round_trip_preserves_free_list_order() {
         let mut net = Net::new();
-        for _ in 0..5 { net.create_agent(Symbol::Con); } // IDs 0-4
+        for _ in 0..5 {
+            net.create_agent(Symbol::Con);
+        } // IDs 0-4
         net.remove_agent(1); // free_list = [1]
         net.remove_agent(3); // free_list = [1, 3]
         let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
         let net2: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
-        assert_eq!(net2.free_list, vec![1, 3], "serde round-trip must preserve free_list order");
+        assert_eq!(
+            net2.free_list,
+            vec![1, 3],
+            "serde round-trip must preserve free_list order"
+        );
     }
 
     /// UT-0475-03: validate_free_list returns Ok on valid state.
     #[test]
     fn validate_free_list_returns_ok_on_valid_state() {
         let mut net = Net::new();
-        for _ in 0..5 { net.create_agent(Symbol::Con); }
+        for _ in 0..5 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(1);
         net.remove_agent(3);
         // agents[1] and agents[3] are None, free_list = [1, 3]
-        assert!(net.validate_free_list().is_ok(), "R9: validate_free_list must return Ok on valid state");
+        assert!(
+            net.validate_free_list().is_ok(),
+            "R9: validate_free_list must return Ok on valid state"
+        );
     }
 
     /// UT-0475-04: validate_free_list rejects Some slot.
@@ -2117,20 +2209,27 @@ mod tests {
         // Synthetic invalid state: free_list contains id but slot is Some
         net.free_list.push(id);
         let result = net.validate_free_list();
-        assert!(matches!(result, Err(NetError::FreeListInvalid { id: fid, reason: "slot is Some" }) if fid == id),
-            "R9: validate_free_list must return FreeListInvalid when slot is Some");
+        assert!(
+            matches!(result, Err(NetError::FreeListInvalid { id: fid, reason: "slot is Some" }) if fid == id),
+            "R9: validate_free_list must return FreeListInvalid when slot is Some"
+        );
     }
 
     /// UT-0475-05: serde round-trip then validate passes.
     #[test]
     fn serde_round_trip_then_validate_passes() {
         let mut net = Net::new();
-        for _ in 0..5 { net.create_agent(Symbol::Con); }
+        for _ in 0..5 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(1);
         net.remove_agent(3);
         let bytes = crate::protocol::bincode_v2::encode(&net).unwrap();
         let net2: Net = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
-        assert!(net2.validate_free_list().is_ok(), "R9: validate after round-trip must pass");
+        assert!(
+            net2.validate_free_list().is_ok(),
+            "R9: validate after round-trip must pass"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2141,13 +2240,19 @@ mod tests {
     #[test]
     fn count_live_excludes_free_list_entries() {
         let mut net = Net::new();
-        for _ in 0..10 { net.create_agent(Symbol::Con); }
+        for _ in 0..10 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(0);
         net.remove_agent(2);
         net.remove_agent(4);
         net.remove_agent(6);
         net.remove_agent(8);
-        assert_eq!(net.count_live_agents(), 5, "R11: count must exclude free-list slots");
+        assert_eq!(
+            net.count_live_agents(),
+            5,
+            "R11: count must exclude free-list slots"
+        );
         assert_eq!(net.free_list.len(), 5, "free_list must have 5 entries");
     }
 
@@ -2156,23 +2261,39 @@ mod tests {
     fn count_live_zero_after_full_removal_with_free_list() {
         let mut net = Net::new();
         let ids: Vec<_> = (0..10).map(|_| net.create_agent(Symbol::Con)).collect();
-        for id in ids { net.remove_agent(id); }
-        assert_eq!(net.count_live_agents(), 0, "R11: count must be 0 after all removed");
-        assert_eq!(net.free_list.len(), 10, "free_list must have all 10 entries");
+        for id in ids {
+            net.remove_agent(id);
+        }
+        assert_eq!(
+            net.count_live_agents(),
+            0,
+            "R11: count must be 0 after all removed"
+        );
+        assert_eq!(
+            net.free_list.len(),
+            10,
+            "free_list must have all 10 entries"
+        );
     }
 
     /// UT-0477-04: count_live increments on create with recycle.
     #[test]
     fn count_live_increments_on_create_with_recycle() {
         let mut net = Net::new();
-        for _ in 0..5 { net.create_agent(Symbol::Con); } // 5 live
+        for _ in 0..5 {
+            net.create_agent(Symbol::Con);
+        } // 5 live
         net.remove_agent(0);
         net.remove_agent(1);
         net.remove_agent(2); // 3 free, 2 live
         assert_eq!(net.count_live_agents(), 2);
         assert_eq!(net.free_list.len(), 3);
         net.create_agent(Symbol::Dup); // recycles one from free_list
-        assert_eq!(net.count_live_agents(), 3, "count must increment on recycle-create");
+        assert_eq!(
+            net.count_live_agents(),
+            3,
+            "count must increment on recycle-create"
+        );
         assert_eq!(net.free_list.len(), 2, "free_list must shrink by 1");
     }
 
@@ -2190,8 +2311,16 @@ mod tests {
             net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
         }
         reduce_all(&mut net);
-        assert_eq!(net.count_live_agents(), 0, "R11: annihilation net must have 0 live agents");
-        assert_eq!(net.free_list.len(), 200, "free_list must hold all 200 freed agents");
+        assert_eq!(
+            net.count_live_agents(),
+            0,
+            "R11: annihilation net must have 0 live agents"
+        );
+        assert_eq!(
+            net.free_list.len(),
+            200,
+            "free_list must hold all 200 freed agents"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2215,9 +2344,11 @@ mod tests {
         // Create and remove to get free_list=[50] scenario requires creating 51 agents
         // Instead, directly populate to avoid debug_assert overhead: use fresh alloc then inject
         // First create agents to fill arena up to id 50
-        for _ in 0..51 { net.create_agent(Symbol::Con); } // IDs 0..50
+        for _ in 0..51 {
+            net.create_agent(Symbol::Con);
+        } // IDs 0..50
         net.remove_agent(50); // free_list = [50]
-        // Now create_agent should pop 50 (in range 0..100)
+                              // Now create_agent should pop 50 (in range 0..100)
         let id = net.create_agent(Symbol::Con);
         assert_eq!(id, 50, "R10: in-range pop must succeed");
     }
@@ -2231,16 +2362,21 @@ mod tests {
         net.id_range = Some(0..100);
         // Synthetic invalid state: inject out-of-range id into free_list
         // Need arena to be large enough to contain slot 150
-        for _ in 0..151 { net.create_agent(Symbol::Con); }
+        for _ in 0..151 {
+            net.create_agent(Symbol::Con);
+        }
         net.remove_agent(150); // would normally push 150 to free_list
-        // But 150 is outside 0..100; simulate the violation by directly injecting
-        // (the remove_agent will have pushed it since id_range check is only in create_agent)
+                               // But 150 is outside 0..100; simulate the violation by directly injecting
+                               // (the remove_agent will have pushed it since id_range check is only in create_agent)
         assert!(net.free_list.contains(&150));
         // Creating an agent should pop 150, and the debug_assert in create_agent fires
         let result = panic::catch_unwind(move || {
             net.create_agent(Symbol::Con);
         });
-        assert!(result.is_err(), "R10: debug_assert must fire on out-of-range pop");
+        assert!(
+            result.is_err(),
+            "R10: debug_assert must fire on out-of-range pop"
+        );
     }
 
     /// UT-0480-06: build_subnet sets id_range on returned net.
@@ -2262,8 +2398,11 @@ mod tests {
     #[test]
     fn default_recycle_policy_is_disable_under_delta() {
         let net = Net::new();
-        assert_eq!(net.recycle_policy, RecyclePolicy::DisableUnderDelta,
-            "R10b: default policy must be DisableUnderDelta");
+        assert_eq!(
+            net.recycle_policy,
+            RecyclePolicy::DisableUnderDelta,
+            "R10b: default policy must be DisableUnderDelta"
+        );
     }
 
     /// UT-0482-02: RecyclePolicy serde round-trip.
@@ -2272,7 +2411,11 @@ mod tests {
         let policy = RecyclePolicy::BorderClean;
         let bytes = crate::protocol::bincode_v2::encode(&policy).unwrap();
         let back: RecyclePolicy = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
-        assert_eq!(back, RecyclePolicy::BorderClean, "RecyclePolicy must round-trip through bincode");
+        assert_eq!(
+            back,
+            RecyclePolicy::BorderClean,
+            "RecyclePolicy must round-trip through bincode"
+        );
     }
 
     /// UT-0482-03: is_border_protected returns false in pure net context.
@@ -2292,14 +2435,16 @@ mod tests {
     fn is_border_protected_returns_true_for_border_id() {
         let mut net = Net::new();
         let id = net.create_agent(Symbol::Con); // id=0
-        // Populate border_entries_shadow with id 0
+                                                // Populate border_entries_shadow with id 0
         let mut shadow = std::collections::HashSet::new();
         shadow.insert(id);
         net.border_entries_shadow = Some(shadow);
         // Remove the agent: should NOT push to free_list (protected)
         net.remove_agent(id);
-        assert!(!net.free_list.contains(&id),
-            "R10c: border-protected id must NOT be pushed to free_list");
+        assert!(
+            !net.free_list.contains(&id),
+            "R10c: border-protected id must NOT be pushed to free_list"
+        );
     }
 
     /// UT-0482-05: is_border_protected returns false for non-border id.
@@ -2308,14 +2453,16 @@ mod tests {
         let mut net = Net::new();
         let id0 = net.create_agent(Symbol::Con); // id=0
         let id1 = net.create_agent(Symbol::Con); // id=1
-        // Only protect id0
+                                                 // Only protect id0
         let mut shadow = std::collections::HashSet::new();
         shadow.insert(id0);
         net.border_entries_shadow = Some(shadow);
         // Remove id1: NOT protected, so must push to free_list
         net.remove_agent(id1);
-        assert!(net.free_list.contains(&id1),
-            "R10b: non-border id must be pushed to free_list");
+        assert!(
+            net.free_list.contains(&id1),
+            "R10b: non-border id must be pushed to free_list"
+        );
     }
 
     /// UT-0482-06: Strategy A skips pop during delta round.
@@ -2324,13 +2471,19 @@ mod tests {
         let mut net = Net::new();
         let id = net.create_agent(Symbol::Con);
         net.remove_agent(id); // free_list = [id]
-        // Enable delta round + DisableUnderDelta (Strategy A)
+                              // Enable delta round + DisableUnderDelta (Strategy A)
         net.is_in_delta_round = true;
         net.recycle_policy = RecyclePolicy::DisableUnderDelta;
         let next_before = net.next_id;
         let new_id = net.create_agent(Symbol::Con);
-        assert_eq!(new_id, next_before, "R10b Strategy A: must fall through to fresh alloc during delta");
-        assert!(net.free_list.contains(&id), "free_list must still contain the id (not popped)");
+        assert_eq!(
+            new_id, next_before,
+            "R10b Strategy A: must fall through to fresh alloc during delta"
+        );
+        assert!(
+            net.free_list.contains(&id),
+            "free_list must still contain the id (not popped)"
+        );
     }
 
     /// UT-0482-07: Strategy A pops when NOT in delta round.
@@ -2339,11 +2492,14 @@ mod tests {
         let mut net = Net::new();
         let id = net.create_agent(Symbol::Con);
         net.remove_agent(id); // free_list = [id]
-        // NOT in delta round
+                              // NOT in delta round
         net.is_in_delta_round = false;
         net.recycle_policy = RecyclePolicy::DisableUnderDelta;
         let new_id = net.create_agent(Symbol::Con);
-        assert_eq!(new_id, id, "R10b Strategy A: must pop from free_list when not in delta round");
+        assert_eq!(
+            new_id, id,
+            "R10b Strategy A: must pop from free_list when not in delta round"
+        );
     }
 
     /// UT-0482-08: Strategy B pops non-border id during delta round.
@@ -2352,7 +2508,7 @@ mod tests {
         let mut net = Net::new();
         let id0 = net.create_agent(Symbol::Con); // id=0
         let id1 = net.create_agent(Symbol::Con); // id=1
-        // id0 is border-protected, id1 is not
+                                                 // id0 is border-protected, id1 is not
         let mut shadow = std::collections::HashSet::new();
         shadow.insert(id0);
         net.border_entries_shadow = Some(shadow);
@@ -2380,10 +2536,19 @@ mod tests {
         net.recycle_policy = RecyclePolicy::BorderClean;
         // create_agent: pops id=0, sees it's border-protected, re-pushes, falls through to fresh
         let new_id = net.create_agent(Symbol::Con);
-        assert_ne!(new_id, id, "R10b Strategy B: border-protected id must NOT be returned");
-        assert_eq!(new_id, next_before_remove, "R10b Strategy B: must fall through to fresh alloc");
+        assert_ne!(
+            new_id, id,
+            "R10b Strategy B: border-protected id must NOT be returned"
+        );
+        assert_eq!(
+            new_id, next_before_remove,
+            "R10b Strategy B: must fall through to fresh alloc"
+        );
         // The border id is re-pushed back
-        assert!(net.free_list.contains(&id), "border id must be re-pushed after rejection");
+        assert!(
+            net.free_list.contains(&id),
+            "border id must be re-pushed after rejection"
+        );
     }
 
     /// UT-0482-10: R10c protected tombstone on remove_agent.
@@ -2397,8 +2562,14 @@ mod tests {
         net.border_entries_shadow = Some(shadow);
         net.is_in_delta_round = true;
         net.remove_agent(id);
-        assert!(net.agents[id as usize].is_none(), "slot must be None after remove");
-        assert!(!net.free_list.contains(&id), "R10c: border-protected id must NOT be in free_list");
+        assert!(
+            net.agents[id as usize].is_none(),
+            "slot must be None after remove"
+        );
+        assert!(
+            !net.free_list.contains(&id),
+            "R10c: border-protected id must NOT be in free_list"
+        );
     }
 
     /// UT-0482-11: protected tombstone drained at reconstruct.
@@ -2411,11 +2582,20 @@ mod tests {
         net.border_entries_shadow = Some(shadow);
         net.is_in_delta_round = true;
         net.remove_agent(id);
-        assert!(!net.free_list.contains(&id), "pre-reconstruct: id not in free_list");
+        assert!(
+            !net.free_list.contains(&id),
+            "pre-reconstruct: id not in free_list"
+        );
         // Drain tombstones
         net.reconstruct_drain_tombstones();
-        assert!(net.free_list.contains(&id), "post-reconstruct: tombstone must be drained to free_list");
-        assert!(!net.is_in_delta_round, "reconstruct must reset is_in_delta_round");
+        assert!(
+            net.free_list.contains(&id),
+            "post-reconstruct: tombstone must be drained to free_list"
+        );
+        assert!(
+            !net.is_in_delta_round,
+            "reconstruct must reset is_in_delta_round"
+        );
     }
 
     /// UT-0482-12: non-distributed context unaffected by recycle_policy.
@@ -2426,7 +2606,10 @@ mod tests {
         let id = net.create_agent(Symbol::Con);
         net.remove_agent(id); // pushed to free_list
         let recycled_id = net.create_agent(Symbol::Dup); // should pop from free_list
-        assert_eq!(recycled_id, id, "non-distributed context: recycle must work normally");
+        assert_eq!(
+            recycled_id, id,
+            "non-distributed context: recycle must work normally"
+        );
     }
 
     /// UT-0353-04: Net round-trips through rkyv with a small, connected
@@ -2474,8 +2657,14 @@ mod tests {
         net.remove_agent(2);
         net.remove_agent(5);
         let sn = net.to_sparse();
-        assert!(!sn.agents.contains_key(&2), "sparse should skip None slot 2");
-        assert!(!sn.agents.contains_key(&5), "sparse should skip None slot 5");
+        assert!(
+            !sn.agents.contains_key(&2),
+            "sparse should skip None slot 2"
+        );
+        assert!(
+            !sn.agents.contains_key(&5),
+            "sparse should skip None slot 5"
+        );
     }
 
     /// UT-0489-02: to_sparse includes all live agents.
@@ -2488,7 +2677,11 @@ mod tests {
         net.remove_agent(2);
         net.remove_agent(5);
         let sn = net.to_sparse();
-        assert_eq!(sn.agents.len(), 8, "should have 8 live agents after removing 2");
+        assert_eq!(
+            sn.agents.len(),
+            8,
+            "should have 8 live agents after removing 2"
+        );
         for i in 0..10u32 {
             if i == 2 || i == 5 {
                 assert!(!sn.agents.contains_key(&i));
@@ -2536,7 +2729,8 @@ mod tests {
         let mut net = Net::new();
         net.create_agent(Symbol::Con); // id 0
         let con2 = net.create_agent(Symbol::Con); // id 1 (just to have a target)
-        net.freeport_redirects.insert(99, PortRef::AgentPort(con2, 0));
+        net.freeport_redirects
+            .insert(99, PortRef::AgentPort(con2, 0));
         let sn = net.to_sparse();
         assert_eq!(
             sn.freeport_redirects.get(&99),
@@ -2556,7 +2750,10 @@ mod tests {
         let d = net.create_agent(Symbol::Dup);
         net.connect(PortRef::AgentPort(c, 0), PortRef::AgentPort(d, 0));
         let sn = net.to_sparse();
-        assert_eq!(sn.redex_queue, net.redex_queue, "redex_queue must be preserved");
+        assert_eq!(
+            sn.redex_queue, net.redex_queue,
+            "redex_queue must be preserved"
+        );
     }
 
     /// UT-0489-07: to_sparse preserves next_id.
@@ -2578,7 +2775,11 @@ mod tests {
         let a = net.create_agent(Symbol::Con);
         net.root = Some(PortRef::AgentPort(a, 0));
         let sn = net.to_sparse();
-        assert_eq!(sn.root, Some(PortRef::AgentPort(a, 0)), "root must be preserved");
+        assert_eq!(
+            sn.root,
+            Some(PortRef::AgentPort(a, 0)),
+            "root must be preserved"
+        );
     }
 
     /// UT-0489-09: to_sparse does not carry free_list (SparseNet has no free-list field).
@@ -2589,7 +2790,10 @@ mod tests {
             net.create_agent(Symbol::Con);
         }
         net.remove_agent(2);
-        assert!(!net.free_list.is_empty(), "net should have a free-list entry");
+        assert!(
+            !net.free_list.is_empty(),
+            "net should have a free-list entry"
+        );
         let sn = net.to_sparse();
         // SparseNet has no free_list field — confirmed by the struct definition.
         // The absence of the field is a compile-time check; we verify the live count
@@ -2617,12 +2821,48 @@ mod tests {
         use std::collections::HashSet;
         // Agents at IDs {50, 51, 75, 99, 130, 175}; next_id = 200.
         let mut sn = SparseNet::new();
-        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
-        sn.agents.insert(51, Agent { symbol: Symbol::Con, id: 51 });
-        sn.agents.insert(75, Agent { symbol: Symbol::Dup, id: 75 });
-        sn.agents.insert(99, Agent { symbol: Symbol::Era, id: 99 });
-        sn.agents.insert(130, Agent { symbol: Symbol::Con, id: 130 });
-        sn.agents.insert(175, Agent { symbol: Symbol::Dup, id: 175 });
+        sn.agents.insert(
+            50,
+            Agent {
+                symbol: Symbol::Con,
+                id: 50,
+            },
+        );
+        sn.agents.insert(
+            51,
+            Agent {
+                symbol: Symbol::Con,
+                id: 51,
+            },
+        );
+        sn.agents.insert(
+            75,
+            Agent {
+                symbol: Symbol::Dup,
+                id: 75,
+            },
+        );
+        sn.agents.insert(
+            99,
+            Agent {
+                symbol: Symbol::Era,
+                id: 99,
+            },
+        );
+        sn.agents.insert(
+            130,
+            Agent {
+                symbol: Symbol::Con,
+                id: 130,
+            },
+        );
+        sn.agents.insert(
+            175,
+            Agent {
+                symbol: Symbol::Dup,
+                id: 175,
+            },
+        );
         sn.next_id = 200;
 
         let net = sn.to_dense(None);
@@ -2632,7 +2872,11 @@ mod tests {
         // Expected: [0..176) minus {50,51,75,99,130,175} = 176 - 6 = 170 entries.
         assert_eq!(free_set.len(), 170, "free-list should have 170 entries");
         for id in [50u32, 51, 75, 99, 130, 175] {
-            assert!(!free_set.contains(&id), "live agent {} must not be in free-list", id);
+            assert!(
+                !free_set.contains(&id),
+                "live agent {} must not be in free-list",
+                id
+            );
         }
     }
 
@@ -2642,18 +2886,58 @@ mod tests {
         use crate::net::SparseNet;
         use std::collections::HashSet;
         let mut sn = SparseNet::new();
-        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
-        sn.agents.insert(51, Agent { symbol: Symbol::Con, id: 51 });
-        sn.agents.insert(75, Agent { symbol: Symbol::Dup, id: 75 });
-        sn.agents.insert(99, Agent { symbol: Symbol::Era, id: 99 });
-        sn.agents.insert(130, Agent { symbol: Symbol::Con, id: 130 });
-        sn.agents.insert(175, Agent { symbol: Symbol::Dup, id: 175 });
+        sn.agents.insert(
+            50,
+            Agent {
+                symbol: Symbol::Con,
+                id: 50,
+            },
+        );
+        sn.agents.insert(
+            51,
+            Agent {
+                symbol: Symbol::Con,
+                id: 51,
+            },
+        );
+        sn.agents.insert(
+            75,
+            Agent {
+                symbol: Symbol::Dup,
+                id: 75,
+            },
+        );
+        sn.agents.insert(
+            99,
+            Agent {
+                symbol: Symbol::Era,
+                id: 99,
+            },
+        );
+        sn.agents.insert(
+            130,
+            Agent {
+                symbol: Symbol::Con,
+                id: 130,
+            },
+        );
+        sn.agents.insert(
+            175,
+            Agent {
+                symbol: Symbol::Dup,
+                id: 175,
+            },
+        );
         sn.next_id = 200;
 
         let net = sn.to_dense(Some(50..100));
         let free_set: HashSet<AgentId> = net.free_list.iter().copied().collect();
         // [50..100) minus {50,51,75,99} = 50 IDs - 4 = 46 entries.
-        assert_eq!(free_set.len(), 46, "partition free-list should have 46 entries");
+        assert_eq!(
+            free_set.len(),
+            46,
+            "partition free-list should have 46 entries"
+        );
         assert!(!free_set.contains(&50), "live 50 not in free-list");
         assert!(!free_set.contains(&51), "live 51 not in free-list");
         assert!(!free_set.contains(&75), "live 75 not in free-list");
@@ -2665,8 +2949,20 @@ mod tests {
     fn to_dense_some_excludes_outside_range() {
         use crate::net::SparseNet;
         let mut sn = SparseNet::new();
-        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
-        sn.agents.insert(130, Agent { symbol: Symbol::Con, id: 130 });
+        sn.agents.insert(
+            50,
+            Agent {
+                symbol: Symbol::Con,
+                id: 50,
+            },
+        );
+        sn.agents.insert(
+            130,
+            Agent {
+                symbol: Symbol::Con,
+                id: 130,
+            },
+        );
         sn.next_id = 200;
         let net = sn.to_dense(Some(50..100));
         assert!(
@@ -2684,7 +2980,13 @@ mod tests {
     fn to_dense_some_with_empty_range_yields_empty_free_list() {
         use crate::net::SparseNet;
         let mut sn = SparseNet::new();
-        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.agents.insert(
+            50,
+            Agent {
+                symbol: Symbol::Con,
+                id: 50,
+            },
+        );
         sn.next_id = 60;
         let net = sn.to_dense(Some(50..50));
         assert!(net.free_list.is_empty(), "empty range → empty free-list");
@@ -2695,7 +2997,13 @@ mod tests {
     fn to_dense_id_range_propagated_to_returned_net() {
         use crate::net::SparseNet;
         let mut sn = SparseNet::new();
-        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.agents.insert(
+            50,
+            Agent {
+                symbol: Symbol::Con,
+                id: 50,
+            },
+        );
         sn.next_id = 100;
         let net = sn.to_dense(Some(50..100));
         assert_eq!(net.id_range, Some(50..100), "id_range must be propagated");
@@ -2706,7 +3014,13 @@ mod tests {
     fn to_dense_preserves_freeport_redirects() {
         use crate::net::SparseNet;
         let mut sn = SparseNet::new();
-        sn.agents.insert(50, Agent { symbol: Symbol::Con, id: 50 });
+        sn.agents.insert(
+            50,
+            Agent {
+                symbol: Symbol::Con,
+                id: 50,
+            },
+        );
         sn.next_id = 100;
         sn.freeport_redirects.insert(99, PortRef::AgentPort(50, 0));
         let net = sn.to_dense(Some(50..100));
@@ -2722,7 +3036,13 @@ mod tests {
     fn to_dense_arena_size_is_max_id_plus_one() {
         use crate::net::SparseNet;
         let mut sn = SparseNet::new();
-        sn.agents.insert(175, Agent { symbol: Symbol::Dup, id: 175 });
+        sn.agents.insert(
+            175,
+            Agent {
+                symbol: Symbol::Dup,
+                id: 175,
+            },
+        );
         sn.next_id = 176;
         let net = sn.to_dense(None);
         assert_eq!(net.agents.len(), 176, "arena_len = max_id + 1 = 176");
@@ -2958,7 +3278,10 @@ mod tests {
         let a = net.create_agent(Symbol::Con);
         net.remove_agent(a);
         // Post-condition: free-list contains a, agents[a] == None.
-        assert!(net.free_list.contains(&a), "id must be in free-list after recycle");
+        assert!(
+            net.free_list.contains(&a),
+            "id must be in free-list after recycle"
+        );
         assert!(
             net.agents.get(a as usize).is_some_and(|s| s.is_none()),
             "slot must be None after remove"
@@ -2998,9 +3321,14 @@ mod tests {
             net.agents.get(a as usize).is_some_and(|s| s.is_none()),
             "slot must be None"
         );
-        assert!(!net.free_list.contains(&a), "protected tombstone must NOT be in free-list");
         assert!(
-            net.protected_tombstones.as_ref().is_some_and(|s| s.contains(&a)),
+            !net.free_list.contains(&a),
+            "protected tombstone must NOT be in free-list"
+        );
+        assert!(
+            net.protected_tombstones
+                .as_ref()
+                .is_some_and(|s| s.contains(&a)),
             "ID must be in protected_tombstones shadow"
         );
     }
@@ -3016,8 +3344,14 @@ mod tests {
         // Now recycle: create_agent should pop from free-list.
         let b = net.create_agent(Symbol::Dup);
         // Post: b not in free-list, agents[b] is Some.
-        assert!(!net.free_list.contains(&b), "recycled ID must not remain in free-list");
-        assert!(net.agents.get(b as usize).is_some_and(|s| s.is_some()), "slot must be Some");
+        assert!(
+            !net.free_list.contains(&b),
+            "recycled ID must not remain in free-list"
+        );
+        assert!(
+            net.agents.get(b as usize).is_some_and(|s| s.is_some()),
+            "slot must be Some"
+        );
     }
 
     /// UT-0495-06: R27 family 4 — no free-list port refs passes on a clean net.
@@ -3041,7 +3375,7 @@ mod tests {
         let b = net.create_agent(Symbol::Dup);
         net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         net.remove_agent(b); // adds to free-list after disconnect
-        // free-list contains b; no port references b.
+                             // free-list contains b; no port references b.
         net.debug_check_invariants(); // must not panic
     }
 
@@ -3090,9 +3424,9 @@ mod tests {
         let a = net.create_agent(Symbol::Con);
         let b = net.create_agent(Symbol::Dup);
         net.remove_agent(a); // a in free-list, slot is None
-        // assert_next_id_valid: for each Some slot, id < next_id.
-        // a is None, so it does not trip the assertion.
-        // b is Some with id = 1, next_id = 2.
+                             // assert_next_id_valid: for each Some slot, id < next_id.
+                             // a is None, so it does not trip the assertion.
+                             // b is Some with id = 1, next_id = 2.
         net.assert_next_id_valid(); // must not panic — R27a compatible
         assert_eq!(b, 1); // paranoia
     }

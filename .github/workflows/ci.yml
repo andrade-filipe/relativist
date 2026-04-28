@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v2-development]
   pull_request:
-    branches: [main]
+    branches: [main, v2-development]
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +27,39 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # SPEC-22 R23 (TASK-0493): SparseNet MUST NOT be imported in src/reduction/.
+      # The reduction engine relies on O(1) indexed Vec access; HashMap has a
+      # 5-10× constant-factor overhead (AC-006 HVM2 flat-array, AC-001 Haskell Map).
+      - name: Lint — SparseNet import boundary (SPEC-22 R23)
+        run: |
+          if grep -rn \
+            -e "use crate::net::sparse::SparseNet" \
+            -e "use crate::net::SparseNet" \
+            -e "net::sparse::SparseNet" \
+            relativist-core/src/reduction/; then
+            echo "ERROR: SparseNet import found in src/reduction/ — violates SPEC-22 R23."
+            echo "The reduction engine must use the dense Net representation."
+            exit 1
+          fi
+          echo "OK: no SparseNet imports in src/reduction/ (SPEC-22 R23 satisfied)."
+
+      # SPEC-22 R31 (TASK-0498): SPEC-22 implementation files must contain no unsafe blocks.
+      # Future bit-packed migration is SPEC-23's responsibility.
+      - name: Lint — safe-Rust-only audit (SPEC-22 R31)
+        run: |
+          if grep -rn \
+            -e "unsafe[[:space:]]*{" \
+            relativist-core/src/net/ \
+            relativist-core/src/partition/ \
+            relativist-core/src/merge/ \
+            relativist-core/src/reduction/; then
+            echo "ERROR: unsafe block found in SPEC-22 implementation files."
+            echo "SPEC-22 R31: all SPEC-22 implementations must be safe Rust."
+            echo "If this is intentional, escalate to SPEC-23."
+            exit 1
+          fi
+          echo "OK: no unsafe blocks in SPEC-22 implementation files (SPEC-22 R31 satisfied)."
 
       - name: Test
         run: cargo test

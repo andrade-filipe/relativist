@@ -560,7 +560,8 @@ mod tests {
 
         let mut net = Net::new();
         net.agents.resize(arena_size, None);
-        net.ports.resize(arena_size * crate::net::PORTS_PER_SLOT, DISCONNECTED);
+        net.ports
+            .resize(arena_size * crate::net::PORTS_PER_SLOT, DISCONNECTED);
 
         // Connect each live Era agent's principal port (p=0) to a unique Lafont
         // FreePort. FreePort(u32::MAX) is the DISCONNECTED sentinel — must avoid it.
@@ -709,7 +710,10 @@ mod tests {
         let live0: Vec<u32> = (0..100).filter(|&id| id != 50).collect();
         let p0 = make_partition_with_free_list(0, &live0, &[50], 0..100);
         // Set id_range explicitly on subnet
-        assert!(p0.subnet.id_range.is_some(), "test setup: id_range must be Some");
+        assert!(
+            p0.subnet.id_range.is_some(),
+            "test setup: id_range must be Some"
+        );
 
         let plan = PartitionPlan {
             partitions: vec![p0],

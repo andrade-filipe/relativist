@@ -194,9 +194,7 @@ impl SparseNet {
     /// Complexity: O(1) amortized (R15).
     pub fn get_target(&self, port: PortRef) -> PortRef {
         match port {
-            PortRef::AgentPort(id, p) => {
-                self.ports.get(&(id, p)).copied().unwrap_or(DISCONNECTED)
-            }
+            PortRef::AgentPort(id, p) => self.ports.get(&(id, p)).copied().unwrap_or(DISCONNECTED),
             PortRef::FreePort(_) => DISCONNECTED,
         }
     }
@@ -257,12 +255,20 @@ impl SparseNet {
     ///
     /// SPEC-22 §4.6 R20 (closes SC-006).
     pub fn to_dense(&self, id_range: Option<core::ops::Range<AgentId>>) -> crate::net::Net {
-        use crate::net::core::{RecyclePolicy, Net};
+        use crate::net::core::{Net, RecyclePolicy};
         use crate::net::types::port_index;
 
         // Determine arena size.
+        // SPEC-22 R20 / EC-3: arena_len = max(max_id + 1, range.end) so that
+        // partition-scoped free-list covers the full requested range even when
+        // range.end > max_id + 1 (e.g., an empty partition or a partition whose
+        // live agents are clustered at the low end of a wide range).
         let max_id = self.agents.keys().max().copied().unwrap_or(0);
-        let arena_len = max_id as usize + 1;
+        let range_end = match &id_range {
+            Some(r) => r.end as usize,
+            None => 0,
+        };
+        let arena_len = (max_id as usize + 1).max(range_end);
 
         // Allocate dense storage.
         let mut agents: Vec<Option<Agent>> = vec![None; arena_len];
@@ -282,8 +288,9 @@ impl SparseNet {
         }
 
         // Free-list construction (SC-006 fix).
+        // hi is range.end (already within arena_len by construction above).
         let (lo, hi) = match &id_range {
-            Some(r) => (r.start as usize, (r.end as usize).min(arena_len)),
+            Some(r) => (r.start as usize, r.end as usize),
             None => (0, arena_len),
         };
         let mut free_list = Vec::new();
@@ -338,7 +345,10 @@ impl SparseNet {
                         self.ports.get(&(b_id, b_p)),
                         Some(&PortRef::AgentPort(a_id, a_p)),
                         "SPEC-22 R26 I1 violation: ({},{}) -> ({},{}) but reverse missing",
-                        a_id, a_p, b_id, b_p
+                        a_id,
+                        a_p,
+                        b_id,
+                        b_p
                     );
                 }
 
@@ -418,7 +428,10 @@ mod tests {
     #[test]
     fn sparse_with_capacity_pre_allocates_buckets() {
         let sn = SparseNet::with_capacity(100);
-        assert!(sn.agents.capacity() >= 100, "agents capacity should be >= 100");
+        assert!(
+            sn.agents.capacity() >= 100,
+            "agents capacity should be >= 100"
+        );
         assert!(
             sn.ports.capacity() >= 100 * PORTS_PER_SLOT,
             "ports capacity should be >= 100 * PORTS_PER_SLOT"
@@ -508,10 +521,7 @@ mod tests {
         let a = sn.create_agent(Symbol::Con);
         let b = sn.create_agent(Symbol::Con);
         // Principal-principal connect.
-        sn.connect(
-            PortRef::AgentPort(a, 0),
-            PortRef::AgentPort(b, 0),
-        );
+        sn.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         sn.remove_agent(a);
         assert!(!sn.agents.contains_key(&a), "agent 0 should be removed");
         assert!(
@@ -603,7 +613,10 @@ mod tests {
         let id = sn.create_agent(Symbol::Con);
         assert_eq!(
             sn.get_agent(id),
-            Some(&Agent { symbol: Symbol::Con, id: 0 })
+            Some(&Agent {
+                symbol: Symbol::Con,
+                id: 0
+            })
         );
     }
 
