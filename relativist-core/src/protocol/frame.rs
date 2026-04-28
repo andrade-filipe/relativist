@@ -1325,6 +1325,9 @@ mod tests {
                 Message::LeaveRequest { .. } => {}
                 Message::LeaveAck => {}
                 Message::JoinNack { .. } => {}
+                // SPEC-21 R31 — pull-dispatch variants (discriminants 17..=18).
+                Message::RequestWork { .. } => {}
+                Message::NoMoreWork => {}
             }
         }
 
@@ -1438,6 +1441,9 @@ mod tests {
                     reason: crate::protocol::types::JoinNackReason::ElasticJoinDisabled,
                 },
             ),
+            // SPEC-21 R31 — pull-dispatch variants.
+            ("RequestWork", Message::RequestWork { worker_id: 0 }),
+            ("NoMoreWork", Message::NoMoreWork),
         ]
     }
 

@@ -1,6 +1,6 @@
-//! Protocol message types (SPEC-06 + SPEC-19 §3.4).
+//! Protocol message types (SPEC-06 + SPEC-19 §3.4 + SPEC-20 R35 + SPEC-21 R31).
 //!
-//! Defines the Message enum with 12 variants covering all
+//! Defines the Message enum with 19 variants covering all
 //! coordinator-worker communication.
 //!
 //! Variant ownership, by spec:
@@ -12,9 +12,13 @@
 //! - **SPEC-19 §3.4** (delta protocol) — discriminants 7..=11:
 //!   `InitialPartition`, `RoundStart`, `RoundResult`,
 //!   `FinalStateRequest`, `FinalStateResult`.
+//! - **SPEC-20 R35** (elastic grid) — discriminants 12..=16:
+//!   `JoinRequest`, `JoinAck`, `LeaveRequest`, `LeaveAck`, `JoinNack`.
+//! - **SPEC-21 R31** (pull-dispatch) — discriminants 17..=18:
+//!   `RequestWork`, `NoMoreWork`.
 //!
-//! SPEC-06 is the canonical owner of the Message enum definition. The
-//! SPEC-19 §3.4 additions preserve R37 discriminant stability by
+//! SPEC-06 is the canonical owner of the Message enum definition. All
+//! subsequent additions preserve R37 discriminant stability by
 //! appending strictly at the tail (R37).
 
 use serde::{Deserialize, Serialize};
@@ -31,17 +35,21 @@ use crate::partition::{Partition, WorkerId};
 /// with the direction (Coordinator->Worker or Worker->Coordinator) and the
 /// FSM state in which it is expected.
 ///
-/// The enum has 12 variants: 4 defined by SPEC-06 (core protocol), 3
-/// defined by SPEC-10 (registration/authentication), and 5 defined by
-/// SPEC-19 §3.4 (delta protocol). SPEC-06 is the canonical owner of the
-/// Message enum definition; the SPEC-19 additions ride the same bincode
-/// v2 path established by SPEC-18.
+/// The enum has 19 variants: 4 defined by SPEC-06 (core protocol), 3
+/// defined by SPEC-10 (registration/authentication), 5 defined by
+/// SPEC-19 §3.4 (delta protocol), 5 defined by SPEC-20 (elastic grid),
+/// and 2 defined by SPEC-21 R31 (pull-dispatch: `RequestWork`,
+/// `NoMoreWork`). SPEC-06 is the canonical owner of the Message enum
+/// definition; all subsequent additions ride the same bincode v2 path
+/// established by SPEC-18 and preserve discriminant stability by
+/// appending strictly at the tail.
 ///
 /// IMPORTANT: New variants MUST be appended at the end of this enum to
 /// preserve bincode discriminant stability (SPEC-06 R5, SPEC-19 R37,
-/// SPEC-20 R37). `#[non_exhaustive]` forces external matchers to include
-/// wildcard arms; new variants MAY be added in any future spec revision
-/// without breaking downstream builds (Phase B refactor MF-004 / QA-009).
+/// SPEC-20 R37, SPEC-21 R31). `#[non_exhaustive]` forces external
+/// matchers to include wildcard arms; new variants MAY be added in any
+/// future spec revision without breaking downstream builds (Phase B
+/// refactor MF-004 / QA-009).
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -242,6 +250,38 @@ pub enum Message {
         /// Structured reason for rejection.
         reason: JoinNackReason,
     },
+
+    // === SPEC-21 §3.6 R31 — Pull-dispatch variants (discriminants 17..=18) ===
+    //
+    // These two variants extend the push-based dispatch model with a
+    // pull-based alternative (SPEC-21 R30). Under pull dispatch, workers
+    // request work instead of having it pushed unconditionally.
+    //
+    // Appended at the END to preserve bincode discriminant stability
+    // (SPEC-06 R5, SPEC-19 R37, SPEC-20 R37 — append-only invariant).
+    //
+    // SPEC-21 §3.8 A2 (amendment to SPEC-06): these variants are the
+    // production-side closure of the wire amendment introduced by
+    // TASK-0511 at the spec-amendment level.
+    /// Worker requests the next streaming chunk from the coordinator.
+    /// Worker -> Coordinator. Emitted when the worker has finished
+    /// reducing its current chunk and is ready for the next one
+    /// (SPEC-21 R32 step 2).
+    ///
+    /// Discriminant: 17 (SPEC-21 R31).
+    RequestWork {
+        /// Identifier of the requesting worker.
+        worker_id: WorkerId,
+    },
+
+    /// Coordinator signals that no more chunks are available.
+    /// Coordinator -> Worker. Emitted after the last chunk has been
+    /// dispatched to a worker that issued `RequestWork` (SPEC-21 R32
+    /// step 4). Workers receiving this MUST transition to their
+    /// convergence-wait state (R37e).
+    ///
+    /// Discriminant: 18 (SPEC-21 R31).
+    NoMoreWork,
 }
 
 // Departure kind for `LeaveRequest` (SPEC-20 R21).
@@ -463,6 +503,9 @@ mod tests {
             Message::JoinNack {
                 reason: JoinNackReason::ElasticJoinDisabled,
             },
+            // SPEC-21 R31 — pull-dispatch variants.
+            Message::RequestWork { worker_id: 7 },
+            Message::NoMoreWork,
         ];
 
         for msg in &variants {
@@ -1278,6 +1321,9 @@ mod tests {
                     reason: JoinNackReason::ElasticJoinDisabled,
                 },
             ),
+            // SPEC-21 R31 — pull-dispatch variants (discriminants 17..=18).
+            (17, Message::RequestWork { worker_id: 0 }),
+            (18, Message::NoMoreWork),
         ];
 
         for (expected_disc, msg) in &cases {
@@ -1298,7 +1344,7 @@ mod tests {
         // Extend this assertion when the enum grows.
         assert_eq!(
             cases.len(),
-            17,
+            19,
             "R37: the discriminant-stability test MUST cover all current \
              Message variants; update `cases` when a variant is appended",
         );
