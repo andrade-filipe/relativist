@@ -30,7 +30,7 @@ pub use remap::remap_partition_ids;
 pub use split::split;
 pub use strategy::{ContiguousIdStrategy, PartitionStrategy};
 pub use streaming::{
-    AgentBatch, ChunkedPartitionResult, ConnectionDirective, StreamingPartitionStats,
-    StreamingPartitionStrategy,
+    AgentBatch, ChunkedPartitionResult, ConnectionDirective, FennelStreamingStrategy,
+    RoundRobinStreamingStrategy, StreamingPartitionStats, StreamingPartitionStrategy,
 };
 pub use types::{IdRange, LeaveKind, Partition, PartitionConfig, PartitionPlan, WorkerId};

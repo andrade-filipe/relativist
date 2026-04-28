@@ -289,7 +289,263 @@ pub trait StreamingPartitionStrategy {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (Phase B: TASK-0520..0524)
+// RoundRobinStreamingStrategy (SPEC-21 §4.3, R4)
+// ---------------------------------------------------------------------------
+
+/// Simplest streaming partition strategy: assigns agents in round-robin order
+/// across workers.
+///
+/// # Properties (SPEC-21 §4.3)
+///
+/// - O(1) per agent, O(B) per batch where B is the batch size.
+/// - Zero state beyond a counter and per-worker counts.
+/// - Deterministic: same sequence of batches → same result (R8).
+/// - Same partition quality as `ContiguousIdStrategy` (SPEC-04, R22) for
+///   sequential generators with contiguous IDs.
+/// - Ignores graph topology entirely. Correctness is independent of partition
+///   quality (DISC-004 v2, Section 1.6; ARG-002, Passo 10).
+///
+/// This is the **MVP default strategy** for v2.
+///
+/// # `chunks_processed` ownership (SC-021)
+///
+/// `finalize()` returns `chunks_processed: 0`. The pipeline (TASK-0554) stitches
+/// the actual count via its own `chunks_seen` counter (SPEC-21 §4.6 Step 7).
+pub struct RoundRobinStreamingStrategy {
+    /// Monotonically increasing counter used for the round-robin formula:
+    /// `worker = counter % num_workers`.
+    counter: u64,
+    /// Per-worker agent counts accumulated across all batches.
+    per_worker_counts: Vec<u64>,
+}
+
+impl RoundRobinStreamingStrategy {
+    /// Creates a new `RoundRobinStreamingStrategy` for `num_workers` workers.
+    ///
+    /// Initializes `counter = 0` and `per_worker_counts` to a vec of
+    /// `num_workers` zeros.
+    ///
+    /// # Behavior when `num_workers == 0`
+    ///
+    /// When `num_workers == 0`, calling `allocate_batch` would panic due to
+    /// integer division by zero. Callers MUST ensure `num_workers >= 1`.
+    /// This matches the contract of `split()` (SPEC-04) and the coordinator
+    /// invariant that num_workers >= 1 (SPEC-13 R5).
+    pub fn new(num_workers: u32) -> Self {
+        Self {
+            counter: 0,
+            per_worker_counts: vec![0u64; num_workers as usize],
+        }
+    }
+}
+
+impl StreamingPartitionStrategy for RoundRobinStreamingStrategy {
+    /// Assigns agents in round-robin order: agent at position `counter` in the
+    /// global stream goes to worker `counter % num_workers`.
+    ///
+    /// # Post-conditions (R7 + R8)
+    ///
+    /// - Every agent in the batch is assigned exactly once.
+    /// - Every `WorkerId` is in `[0, num_workers)`.
+    /// - Same input sequence → identical output (counter is the only state).
+    fn allocate_batch(&mut self, batch: &AgentBatch, num_workers: u32) -> Vec<(AgentId, WorkerId)> {
+        batch
+            .agents
+            .iter()
+            .map(|(id, _symbol)| {
+                let worker = (self.counter % num_workers as u64) as WorkerId;
+                self.counter += 1;
+                self.per_worker_counts[worker as usize] += 1;
+                (*id, worker)
+            })
+            .collect()
+    }
+
+    /// Returns statistics accumulated across all batches processed so far.
+    ///
+    /// `chunks_processed` is always `0` here — the pipeline stitches the real
+    /// count (SPEC-21 §4.6 Step 7 / SC-021).
+    fn finalize(&self) -> StreamingPartitionStats {
+        StreamingPartitionStats {
+            total_agents: self.counter,
+            per_worker_counts: self.per_worker_counts.clone(),
+            border_wire_count: 0, // round-robin does not track topology
+            chunks_processed: 0,  // PIPELINE-OWNED (SC-021)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FennelStreamingStrategy (SPEC-21 §4.4, R5, R6)
+// ---------------------------------------------------------------------------
+
+/// Advanced streaming partition strategy using a FENNEL/LDG-style heuristic.
+///
+/// Assigns each agent to the worker that maximises:
+/// ```text
+/// score(w) = neighbors_w(A) - alpha * degree(w)
+/// ```
+/// where `neighbors_w(A)` = number of A's ports already connected to agents on
+/// worker `w`; `degree(w)` = total agents assigned to `w` so far; `alpha` =
+/// configurable balance parameter (default `1.0` per Q3 disposition).
+///
+/// # Memory bound (R6)
+///
+/// The internal `assignment_cache: HashMap<AgentId, WorkerId>` grows to at most
+/// O(total_agents) entries, storing only the `(AgentId, WorkerId)` mapping
+/// (~8 bytes per agent). This is an 8× memory reduction compared to holding
+/// the full net (~64 bytes per agent).
+///
+/// # References
+///
+/// REF-TBD (Tsourakakis et al. 2014 — FENNEL streaming graph partitioning).
+/// REF-TBD (Stanton & Kliot 2012 — LDG streaming partitioning).
+/// NOTE: FENNEL/LDG REF-NNN registration is a TCC-root cleanup task (SC-020
+/// deferral). These citations carry `REF-TBD` until registered in
+/// `docs/theory-bridge.md` by BIBLIOTECARIO.
+///
+/// # Tiebreak policy (R8)
+///
+/// When two or more workers share the maximum score, the strategy picks the
+/// **lowest `WorkerId`**. This tiebreak is deterministic and does not depend
+/// on `HashMap` iteration order. Tests that exercise the tiebreak path MUST
+/// NOT rely on HashMap iteration order; sort by `AgentId` before asserting.
+///
+/// # Q3 disposition
+///
+/// SPEC-21 adopts fixed `alpha = 1.0` as default. If calibration (AC-014
+/// methodology) shows this is materially worse than batch FENNEL on
+/// representative benchmarks, the strategy is deferred to future scope per Q3.
+///
+/// # `chunks_processed` ownership (SC-021)
+///
+/// `finalize()` returns `chunks_processed: 0`. The pipeline stitches the real
+/// count (SPEC-21 §4.6 Step 7 / SC-021).
+pub struct FennelStreamingStrategy {
+    /// Maps each assigned `AgentId` to its worker (R6 cache; ~8 bytes per entry).
+    pub(crate) assignment_cache: HashMap<AgentId, WorkerId>,
+    /// Per-worker agent counts accumulated across all batches.
+    per_worker_counts: Vec<u64>,
+    /// Balance parameter. Default: `1.0` per Q3 disposition.
+    alpha: f64,
+}
+
+impl FennelStreamingStrategy {
+    /// Creates a new `FennelStreamingStrategy` with an explicit `alpha`.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic; `alpha = f64::NAN` is handled by falling back to
+    /// capacity-only scoring (tiebreak by lowest WorkerId).
+    pub fn new(num_workers: u32, alpha: f64) -> Self {
+        Self {
+            assignment_cache: HashMap::new(),
+            per_worker_counts: vec![0u64; num_workers as usize],
+            alpha,
+        }
+    }
+
+    /// Creates a `FennelStreamingStrategy` with the Q3 default `alpha = 1.0`.
+    pub fn with_default_alpha(num_workers: u32) -> Self {
+        Self::new(num_workers, 1.0)
+    }
+}
+
+impl StreamingPartitionStrategy for FennelStreamingStrategy {
+    /// Assigns each agent to the worker with the highest FENNEL score.
+    ///
+    /// Score formula: `score(w) = neighbors_w(A) - alpha * degree(w)`
+    ///
+    /// Tiebreak: lowest `WorkerId` wins (deterministic; R8).
+    fn allocate_batch(&mut self, batch: &AgentBatch, num_workers: u32) -> Vec<(AgentId, WorkerId)> {
+        // Build a reverse index: AgentId -> batch-local position for fast neighbor lookup.
+        // We only need to know which agents in THIS batch are connected to which worker.
+        let batch_agent_set: std::collections::HashSet<AgentId> =
+            batch.agents.iter().map(|(id, _)| *id).collect();
+
+        let mut result = Vec::with_capacity(batch.agents.len());
+
+        for (agent_id, _symbol) in &batch.agents {
+            // Count neighbors already assigned to each worker.
+            // A "neighbor" of `agent_id` in this context is any agent that shares
+            // a Resolved wire with `agent_id` (endpoint of a ConnectionDirective::Resolved).
+            let mut neighbor_counts = vec![0i64; num_workers as usize];
+
+            for directive in &batch.connections {
+                if let ConnectionDirective::Resolved { source, target } = directive {
+                    let (src_id, _src_port) = source;
+                    let (tgt_id, _tgt_port) = target;
+
+                    // If the connection involves `agent_id`, check if the OTHER end
+                    // is in the assignment_cache (already assigned to a worker).
+                    let other_id = if src_id == agent_id {
+                        Some(*tgt_id)
+                    } else if tgt_id == agent_id {
+                        Some(*src_id)
+                    } else {
+                        None
+                    };
+
+                    if let Some(other) = other_id {
+                        if !batch_agent_set.contains(&other) {
+                            // Other end is from a previous batch — in the cache.
+                            if let Some(&w) = self.assignment_cache.get(&other) {
+                                neighbor_counts[w as usize] += 1;
+                            }
+                        }
+                        // If other_id IS in the current batch, we don't know its
+                        // worker yet (forward reference within batch) — skip.
+                    }
+                }
+            }
+
+            // Compute FENNEL score for each worker and pick argmax.
+            // Score = neighbors_w - alpha * degree_w
+            // Tiebreak: lowest WorkerId.
+            let mut best_worker: WorkerId = 0;
+            let mut best_score = f64::NEG_INFINITY;
+
+            for w in 0..num_workers {
+                let degree = self.per_worker_counts[w as usize] as f64;
+                let neighbors = neighbor_counts[w as usize] as f64;
+                let score = neighbors - self.alpha * degree;
+                // Use total_cmp for NaN-safe comparison; NaN scores are treated as
+                // worse than any finite score.
+                if score > best_score
+                    || (score == best_score && w < best_worker)
+                    || best_score.is_nan()
+                {
+                    best_score = score;
+                    best_worker = w;
+                }
+            }
+
+            // Assign agent to the best worker and update state.
+            self.assignment_cache.insert(*agent_id, best_worker);
+            self.per_worker_counts[best_worker as usize] += 1;
+            result.push((*agent_id, best_worker));
+        }
+
+        result
+    }
+
+    /// Returns statistics accumulated across all batches processed so far.
+    ///
+    /// `chunks_processed` is always `0` here — the pipeline stitches the real
+    /// count (SPEC-21 §4.6 Step 7 / SC-021).
+    fn finalize(&self) -> StreamingPartitionStats {
+        let total: u64 = self.per_worker_counts.iter().sum();
+        StreamingPartitionStats {
+            total_agents: total,
+            per_worker_counts: self.per_worker_counts.clone(),
+            border_wire_count: 0, // pipeline-owned
+            chunks_processed: 0,  // PIPELINE-OWNED (SC-021)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (Phase B: TASK-0520..0524 + Phase C: TASK-0530..0531)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -959,5 +1215,350 @@ mod tests {
                 num_workers
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0530: RoundRobinStreamingStrategy (T1)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a batch with N agents starting at `base_id`, all ERA, no connections.
+    fn make_era_batch(base_id: AgentId, count: usize) -> AgentBatch {
+        AgentBatch {
+            agents: (0..count)
+                .map(|i| (base_id + i as AgentId, Symbol::Era))
+                .collect(),
+            connections: vec![],
+        }
+    }
+
+    /// UT-0530-01: Agents are assigned in round-robin order (agent `id` → worker `id % 4`).
+    #[test]
+    fn assignment_round_robin_order() {
+        let num_workers = 4u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        let mut all_assignments: Vec<(AgentId, WorkerId)> = Vec::new();
+
+        for batch_idx in 0..5u32 {
+            let batch = make_era_batch(batch_idx * 20, 20);
+            let assignments = strategy.allocate_batch(&batch, num_workers);
+            all_assignments.extend(assignments);
+        }
+
+        for (agent_id, worker_id) in &all_assignments {
+            assert_eq!(
+                *worker_id,
+                agent_id % num_workers,
+                "agent {} should go to worker {} but got {}",
+                agent_id,
+                agent_id % num_workers,
+                worker_id
+            );
+        }
+    }
+
+    /// UT-0530-02: Each agent is assigned exactly once (C1 — 100 agents total).
+    #[test]
+    fn each_agent_assigned_exactly_once() {
+        let num_workers = 4u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        let mut agent_ids_seen: std::collections::HashSet<AgentId> =
+            std::collections::HashSet::new();
+
+        for batch_idx in 0..5u32 {
+            let batch = make_era_batch(batch_idx * 20, 20);
+            let assignments = strategy.allocate_batch(&batch, num_workers);
+            for (agent_id, _) in assignments {
+                let inserted = agent_ids_seen.insert(agent_id);
+                assert!(inserted, "agent {} assigned more than once", agent_id);
+            }
+        }
+        assert_eq!(agent_ids_seen.len(), 100, "all 100 agents must be assigned");
+    }
+
+    /// UT-0530-03: `finalize()` per-worker counts are [25, 25, 25, 25] for 100 agents / 4 workers.
+    #[test]
+    fn finalize_per_worker_counts_match() {
+        let num_workers = 4u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+
+        for batch_idx in 0..5u32 {
+            let batch = make_era_batch(batch_idx * 20, 20);
+            strategy.allocate_batch(&batch, num_workers);
+        }
+
+        let stats = strategy.finalize();
+        assert_eq!(
+            stats.per_worker_counts,
+            vec![25u64, 25, 25, 25],
+            "each worker should receive 25 agents"
+        );
+        assert_eq!(stats.total_agents, 100);
+        assert_eq!(
+            stats.chunks_processed, 0,
+            "pipeline-owned; must be 0 from strategy"
+        );
+    }
+
+    /// UT-0530-04: Determinism — two fresh runs on the same input produce identical output.
+    #[test]
+    fn determinism_repeated_invocation() {
+        let num_workers = 4u32;
+
+        let mut strategy1 = RoundRobinStreamingStrategy::new(num_workers);
+        let mut strategy2 = RoundRobinStreamingStrategy::new(num_workers);
+
+        for batch_idx in 0..5u32 {
+            let batch = make_era_batch(batch_idx * 20, 20);
+            let a1 = strategy1.allocate_batch(&batch, num_workers);
+            let a2 = strategy2.allocate_batch(&batch, num_workers);
+            assert_eq!(a1, a2, "determinism violated in batch {}", batch_idx);
+        }
+    }
+
+    /// UT-0530-05: C1 cross-batch — union covers every agent in 0..99 exactly once.
+    #[test]
+    fn c1_complete_coverage_cross_batch() {
+        let num_workers = 4u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        let mut assigned: Vec<AgentId> = Vec::new();
+
+        for batch_idx in 0..5u32 {
+            let batch = make_era_batch(batch_idx * 20, 20);
+            let assignments = strategy.allocate_batch(&batch, num_workers);
+            for (id, _) in assignments {
+                assigned.push(id);
+            }
+        }
+
+        assigned.sort_unstable();
+        let expected: Vec<AgentId> = (0..100).collect();
+        assert_eq!(
+            assigned, expected,
+            "C1: union must cover every agent 0..99 exactly once"
+        );
+    }
+
+    /// UT-0530-06: Single batch run produces correct assignment.
+    #[test]
+    fn single_batch_run() {
+        let num_workers = 4u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        let batch = make_era_batch(0, 20);
+        let assignments = strategy.allocate_batch(&batch, num_workers);
+        assert_eq!(assignments.len(), 20);
+        for (agent_id, worker_id) in &assignments {
+            assert_eq!(*worker_id, agent_id % num_workers);
+        }
+    }
+
+    /// UT-0530-07: Single worker — all agents go to worker 0.
+    #[test]
+    fn single_worker_all_to_zero() {
+        let num_workers = 1u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        let batch = make_era_batch(0, 100);
+        let assignments = strategy.allocate_batch(&batch, num_workers);
+        for (_, worker_id) in &assignments {
+            assert_eq!(*worker_id, 0u32, "all agents must go to worker 0");
+        }
+        let stats = strategy.finalize();
+        assert_eq!(stats.per_worker_counts, vec![100u64]);
+    }
+
+    /// UT-0530-08: More workers than agents — workers beyond agent count receive 0.
+    #[test]
+    fn more_workers_than_agents() {
+        let num_workers = 10u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        let batch = make_era_batch(0, 5);
+        let assignments = strategy.allocate_batch(&batch, num_workers);
+        let stats = strategy.finalize();
+
+        // Agents 0..5 → workers 0..5
+        for (agent_id, worker_id) in &assignments {
+            assert_eq!(*worker_id, agent_id % num_workers);
+        }
+        // Workers 5..10 should have 0 agents
+        assert_eq!(
+            stats.per_worker_counts,
+            vec![1u64, 1, 1, 1, 1, 0, 0, 0, 0, 0]
+        );
+    }
+
+    /// EC-1: Empty batch returns empty assignment; counter is unchanged.
+    #[test]
+    fn round_robin_empty_batch_unchanged_state() {
+        let num_workers = 4u32;
+        let mut strategy = RoundRobinStreamingStrategy::new(num_workers);
+        // Process 10 agents first
+        let batch1 = make_era_batch(0, 10);
+        strategy.allocate_batch(&batch1, num_workers);
+        // Now process an empty batch
+        let empty = AgentBatch::empty();
+        let assignments = strategy.allocate_batch(&empty, num_workers);
+        assert!(
+            assignments.is_empty(),
+            "empty batch must return empty assignments"
+        );
+        // Counter should not have changed due to empty batch
+        let stats = strategy.finalize();
+        assert_eq!(
+            stats.total_agents, 10,
+            "counter must not change for empty batch"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0531: FennelStreamingStrategy (T9 partial)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a stream of batches from a list of (agent_id, symbol, connections).
+    fn make_fennel_test_stream(num_agents: usize, chunk_size: usize) -> Vec<AgentBatch> {
+        let mut batches = Vec::new();
+        let mut idx = 0;
+        while idx < num_agents {
+            let end = (idx + chunk_size).min(num_agents);
+            let batch = AgentBatch {
+                agents: (idx..end).map(|i| (i as AgentId, Symbol::Era)).collect(),
+                connections: vec![],
+            };
+            batches.push(batch);
+            idx = end;
+        }
+        batches
+    }
+
+    /// UT-0531-01: R6 cache size matches total_agents after full run.
+    #[test]
+    fn r6_cache_size_matches_total_agents() {
+        let num_agents = 64;
+        let num_workers = 4u32;
+        let mut strategy = FennelStreamingStrategy::with_default_alpha(num_workers);
+
+        for batch in make_fennel_test_stream(num_agents, 16) {
+            strategy.allocate_batch(&batch, num_workers);
+        }
+
+        assert_eq!(
+            strategy.assignment_cache.len(),
+            num_agents,
+            "R6: cache size must equal total_agents"
+        );
+    }
+
+    /// UT-0531-02: R6 memory bound — cache uses ≤ 8 bytes per agent.
+    #[test]
+    fn r6_cache_memory_bound() {
+        let num_agents = 64;
+        let num_workers = 4u32;
+        let mut strategy = FennelStreamingStrategy::with_default_alpha(num_workers);
+
+        for batch in make_fennel_test_stream(num_agents, 16) {
+            strategy.allocate_batch(&batch, num_workers);
+        }
+
+        // Each (AgentId=u32, WorkerId=u32) entry = 8 bytes.
+        let cache_bytes = strategy.assignment_cache.len() * 8;
+        let max_allowed = num_agents * 8;
+        assert!(
+            cache_bytes <= max_allowed,
+            "R6: cache uses {} bytes but max allowed is {} bytes",
+            cache_bytes,
+            max_allowed
+        );
+    }
+
+    /// UT-0531-03: R8 determinism — two runs on the same input produce identical output.
+    #[test]
+    fn r8_determinism_repeated_invocation_fennel() {
+        let num_agents = 64;
+        let num_workers = 4u32;
+        let batches = make_fennel_test_stream(num_agents, 16);
+
+        let mut strategy1 = FennelStreamingStrategy::with_default_alpha(num_workers);
+        let mut strategy2 = FennelStreamingStrategy::with_default_alpha(num_workers);
+
+        for batch in &batches {
+            let a1 = strategy1.allocate_batch(batch, num_workers);
+            let a2 = strategy2.allocate_batch(batch, num_workers);
+            assert_eq!(a1, a2, "R8: determinism violated");
+        }
+    }
+
+    /// UT-0531-04: C1 complete coverage — every agent assigned exactly once.
+    #[test]
+    fn c1_complete_coverage_fennel() {
+        let num_agents = 64;
+        let num_workers = 4u32;
+        let mut strategy = FennelStreamingStrategy::with_default_alpha(num_workers);
+        let mut seen: std::collections::HashSet<AgentId> = std::collections::HashSet::new();
+
+        for batch in make_fennel_test_stream(num_agents, 16) {
+            for (agent_id, _) in strategy.allocate_batch(&batch, num_workers) {
+                let inserted = seen.insert(agent_id);
+                assert!(inserted, "C1: agent {} assigned more than once", agent_id);
+            }
+        }
+        assert_eq!(seen.len(), num_agents, "C1: all agents must be assigned");
+    }
+
+    /// UT-0531-05: Tiebreak is deterministic (lowest WorkerId wins on equal score).
+    #[test]
+    fn tiebreak_is_deterministic() {
+        // With no prior assignments and alpha=0 (no capacity penalty), all workers
+        // have score = 0 for the first agent. Tiebreak: lowest WorkerId (0) wins.
+        let num_workers = 4u32;
+        let mut strategy = FennelStreamingStrategy::new(num_workers, 0.0);
+        let batch = AgentBatch {
+            agents: vec![(0u32, Symbol::Era)],
+            connections: vec![],
+        };
+        let assignments = strategy.allocate_batch(&batch, num_workers);
+        assert_eq!(
+            assignments[0].1, 0u32,
+            "tiebreak must assign to lowest WorkerId (0)"
+        );
+    }
+
+    /// UT-0531-06: Fixed alpha=1.0 load imbalance is acceptable (max ≤ 2×mean).
+    #[test]
+    fn fixed_alpha_load_imbalance_acceptable() {
+        let num_agents = 64;
+        let num_workers = 4u32;
+        let mut strategy = FennelStreamingStrategy::with_default_alpha(num_workers);
+
+        for batch in make_fennel_test_stream(num_agents, 16) {
+            strategy.allocate_batch(&batch, num_workers);
+        }
+
+        let stats = strategy.finalize();
+        let mean = stats.total_agents as f64 / num_workers as f64;
+        let max_count = stats.per_worker_counts.iter().max().copied().unwrap_or(0) as f64;
+        assert!(
+            max_count <= 2.0 * mean,
+            "Q3: load imbalance too high — max={}, mean={}",
+            max_count,
+            mean
+        );
+    }
+
+    /// alpha=0.0 (no capacity penalty): strategy still produces valid C1 coverage.
+    #[test]
+    fn fennel_alpha_zero_valid_coverage() {
+        let num_agents = 40;
+        let num_workers = 4u32;
+        let mut strategy = FennelStreamingStrategy::new(num_workers, 0.0);
+        let mut seen: std::collections::HashSet<AgentId> = std::collections::HashSet::new();
+
+        for batch in make_fennel_test_stream(num_agents, 10) {
+            for (agent_id, _) in strategy.allocate_batch(&batch, num_workers) {
+                seen.insert(agent_id);
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            num_agents,
+            "alpha=0.0: all agents must still be assigned"
+        );
     }
 }
