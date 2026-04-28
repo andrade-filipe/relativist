@@ -179,6 +179,13 @@ fn push_partial_round_metrics(metrics: &mut GridMetrics) {
 ///   nets serialized with v4 do not carry `free_list`; deserialization
 ///   returns `Err(ProtocolError::UnsupportedVersion)` rather than silently
 ///   inflating an empty list (conservative safety posture per SPEC-22 §6).
+// TODO(spec-realign, MF-001): SPEC-18 §4.7 constant table and R28 text still
+// say "bump from 2 to 3" / "PROTOCOL_VERSION: u8 = 3", which are stale after
+// the D-006 elastic-grid bump (v2→v4) that preceded D-009. The actual deployed
+// values are PREVIOUS_LIVE_VERSION = 4, PROTOCOL_VERSION = 5 (v4→v5).
+// SPEC-22 R9a similarly says "from 2 to 3". All three spec lines need updating
+// by ESPECIALISTA EM SPECS. See REVIEW-PHASE-D009-spec22-arena-2026-04-27.md §MF-001
+// and SPEC-18 lines 163/538-539, SPEC-22 line 71.
 pub const PROTOCOL_VERSION: u8 = 5;
 
 /// The protocol version immediately preceding the current one.

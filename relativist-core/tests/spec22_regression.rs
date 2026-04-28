@@ -124,7 +124,7 @@ fn spec22_serde_round_trip_dense_sparse_dense() {
     net.root = Some(PortRef::AgentPort(a, 0));
 
     // Baseline: no removed agents, empty free-list — round-trip is lossless.
-    let net2 = net.to_sparse().to_dense(None);
+    let net2 = net.to_sparse().to_dense(None).unwrap();
     // Compare live-agent set, ports, redex, root, next_id, freeport_redirects.
     // (is_behaviorally_equal also checks free-list as sets; both are empty here.)
     assert!(
@@ -199,7 +199,7 @@ fn spec22_sparse_to_dense_t14a_partition_scoped() {
     sn.next_id = 200;
 
     // Partition 0: [50..100). Live IDs in range: {50, 51, 75, 99}. Free count: 46.
-    let p0 = sn.to_dense(Some(50..100));
+    let p0 = sn.to_dense(Some(50..100)).unwrap();
     let p0_free: HashSet<u32> = p0.free_list.iter().copied().collect();
     assert_eq!(
         p0_free.len(),
@@ -223,13 +223,17 @@ fn spec22_sparse_to_dense_t14a_partition_scoped() {
     );
     assert_eq!(p0.id_range, Some(50..100), "id_range must be propagated");
 
-    // Partition 1: [100..200). Live IDs in range: {130, 175}. Free count: 98.
-    let p1 = sn.to_dense(Some(100..200));
+    // Partition 1: [100..200). Live IDs in range: {130, 175}.
+    // arena_len = max_id + 1 = 175 + 1 = 176 (QA-D009-005 bounded arena).
+    // Free-list covers existing None slots in [100..min(200, 176)) = [100..176).
+    // That is 76 IDs - 2 live = 74 free. IDs 176..200 are fresh-allocation zone
+    // (handled via next_id), not pre-allocated in the arena.
+    let p1 = sn.to_dense(Some(100..200)).unwrap();
     let p1_free: HashSet<u32> = p1.free_list.iter().copied().collect();
     assert_eq!(
         p1_free.len(),
-        98,
-        "T14a partition [100..200): 100 IDs - 2 live = 98 free"
+        74,
+        "T14a partition [100..200): arena [100..176) - 2 live = 74 free (bounded arena)"
     );
     assert!(!p1_free.contains(&130), "live 130 not in free-list");
     assert!(!p1_free.contains(&175), "live 175 not in free-list");
@@ -273,7 +277,7 @@ fn spec22_grid_g1_sparse_build_subnet_round_trip() {
     sn.next_id = 10;
 
     // Partition range [0..60) → sparse path would be triggered (60 > 4*10).
-    let mut subnet = sn.to_dense(Some(0..60));
+    let mut subnet = sn.to_dense(Some(0..60)).unwrap();
 
     // Structural assertions (G1-level).
     assert_eq!(
@@ -287,14 +291,18 @@ fn spec22_grid_g1_sparse_build_subnet_round_trip() {
         "id_range must be set to partition range [0..60)"
     );
     // Free-list must only contain IDs in [0..60) that are None slots.
+    // QA-D009-005: arena_len = max_id + 1 = 10 (IDs 0..9 are live).
+    // The free-list only covers existing None arena slots: [0..min(60,10)) = [0..10).
+    // All 10 slots are live → free_list is empty. IDs 10..60 are fresh-allocation
+    // zone accessed via next_id, not pre-allocated in the arena.
     for &id in &subnet.free_list {
         assert!(id < 60, "free-list ID {} must be in range [0..60)", id);
     }
-    // Free-list size: 60 total - 10 live = 50 entries.
+    // With bounded-arena design: 10 live agents fill all 10 arena slots → 0 free.
     assert_eq!(
         subnet.free_list.len(),
-        50,
-        "free-list must have 50 entries (60 IDs - 10 live)"
+        0,
+        "free-list: all 10 arena slots are live (bounded arena); fresh IDs via next_id"
     );
 
     // Reduce: ERA agents connected to FreePorts have no redexes — result unchanged.

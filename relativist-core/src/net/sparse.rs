@@ -239,6 +239,16 @@ impl SparseNet {
     // Conversions (SPEC-22 §4.6, R20)
     // ------------------------------------------------------------------
 
+    /// Hard upper bound on the dense arena slot count (QA-D009-005).
+    ///
+    /// Prevents a malformed or attacker-controlled `max_id` near `u32::MAX`
+    /// from triggering a multi-GiB allocation. 16 million slots × 3 ports ×
+    /// 8 bytes/slot ≈ 384 MiB — well within process limits for test and
+    /// small-scale grid runs, and safely below the 256 MiB protocol frame cap.
+    /// Large-scale deployment should use partition-scoped `id_range` calls with
+    /// properly bounded ranges rather than single-arena whole-net conversions.
+    pub const MAX_DENSE_ARENA_SLOTS: usize = 1 << 24; // 16_777_216
+
     /// Converts this `SparseNet` into a dense `Net`.
     ///
     /// Computes `max_id = agents.keys().max()`, allocates a `Vec<Option<Agent>>`
@@ -253,22 +263,56 @@ impl SparseNet {
     ///
     /// Copies `redex_queue`, `next_id`, `root`, and `freeport_redirects`.
     ///
+    /// # Errors
+    ///
+    /// - `Err(NetError::InvalidIdRange)` if `id_range.start > id_range.end` (QA-D009-006).
+    /// - `Err(NetError::DenseAllocationExceedsThreshold)` if the computed `arena_len`
+    ///   exceeds `MAX_DENSE_ARENA_SLOTS` (QA-D009-005 DoS guard).
+    ///
     /// SPEC-22 §4.6 R20 (closes SC-006).
-    pub fn to_dense(&self, id_range: Option<core::ops::Range<AgentId>>) -> crate::net::Net {
+    pub fn to_dense(
+        &self,
+        id_range: Option<core::ops::Range<AgentId>>,
+    ) -> Result<crate::net::Net, crate::error::NetError> {
         use crate::net::core::{Net, RecyclePolicy};
         use crate::net::types::port_index;
 
+        // QA-D009-006: validate id_range before any arithmetic.
+        if let Some(ref r) = id_range {
+            if r.start > r.end {
+                return Err(crate::error::NetError::InvalidIdRange {
+                    start: r.start,
+                    end: r.end,
+                });
+            }
+        }
+
         // Determine arena size.
-        // SPEC-22 R20 / EC-3: arena_len = max(max_id + 1, range.end) so that
-        // partition-scoped free-list covers the full requested range even when
-        // range.end > max_id + 1 (e.g., an empty partition or a partition whose
-        // live agents are clustered at the low end of a wide range).
+        // SPEC-22 R20: arena_len = max_id + 1, sized to fit all live agent IDs.
+        // The arena is bounded by the highest live agent ID, NOT by the end of the
+        // assigned id_range. Free-list scanning is clamped to agents that actually
+        // exist in the arena; IDs above max_id are allocated freshly via next_id.
+        //
+        // QA-D009-005: do NOT extend arena_len to range.end — that was the source
+        // of unbounded GiB allocations when range spans up to u32::MAX. The previous
+        // max(max_id+1, range_end) design caused 34+ GiB allocation for a partition
+        // with 1 live agent at ID=1 and range=[100000..u32::MAX).
         let max_id = self.agents.keys().max().copied().unwrap_or(0);
-        let range_end = match &id_range {
-            Some(r) => r.end as usize,
-            None => 0,
-        };
-        let arena_len = (max_id as usize + 1).max(range_end);
+        let arena_len = max_id as usize + 1;
+
+        // QA-D009-005: hard allocation cap — reject arenas that would allocate
+        // more than MAX_DENSE_ARENA_SLOTS slots (≈384 MiB for agents+ports).
+        // With the arena_len = max_id+1 fix above this guard is a belt-and-braces
+        // defence against an adversarially large max_id (e.g., from a deserialized
+        // SparseNet with a single agent at ID = u32::MAX - 1).
+        let live_count = self.agents.len();
+        if arena_len > Self::MAX_DENSE_ARENA_SLOTS {
+            return Err(crate::error::NetError::DenseAllocationExceedsThreshold {
+                arena_len,
+                max: Self::MAX_DENSE_ARENA_SLOTS,
+                live_count,
+            });
+        }
 
         // Allocate dense storage.
         let mut agents: Vec<Option<Agent>> = vec![None; arena_len];
@@ -287,22 +331,30 @@ impl SparseNet {
             }
         }
 
-        // Free-list construction (SC-006 fix).
-        // hi is range.end (already within arena_len by construction above).
-        let (lo, hi) = match &id_range {
+        // Free-list construction (SC-006 fix, QA-D009-005 bounded).
+        // Clamp hi to arena_len: IDs above max_id do not have arena slots and
+        // are allocated freshly via next_id. The id_range upper bound may be much
+        // larger than arena_len (e.g., a partition range of [100000..u32::MAX) for
+        // a worker that holds agents at IDs 0-10). We only add None slots that
+        // actually exist in the arena.
+        let (lo, hi_unclamped) = match &id_range {
             Some(r) => (r.start as usize, r.end as usize),
             None => (0, arena_len),
         };
+        let hi = hi_unclamped.min(arena_len);
+        let lo = lo.min(arena_len); // lo is clamped too (defensive)
         let mut free_list = Vec::new();
-        for (i, slot) in agents[lo..hi].iter().enumerate() {
-            if slot.is_none() {
-                free_list.push((lo + i) as AgentId);
+        if lo < hi {
+            for (i, slot) in agents[lo..hi].iter().enumerate() {
+                if slot.is_none() {
+                    free_list.push((lo + i) as AgentId);
+                }
             }
         }
 
         let id_range_clone = id_range.clone();
 
-        Net {
+        Ok(Net {
             agents,
             ports,
             redex_queue: self.redex_queue.clone(),
@@ -316,7 +368,7 @@ impl SparseNet {
             is_in_delta_round: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
-        }
+        })
     }
 
     // ------------------------------------------------------------------

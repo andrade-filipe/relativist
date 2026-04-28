@@ -605,6 +605,8 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         join_window_min: std::time::Duration::from_millis(args.join_window_min_ms),
         join_window_max: std::time::Duration::from_millis(args.join_window_max_ms),
         solo_budget: args.solo_budget,
+        // SPEC-22 R10b: default to Strategy A (conservative).
+        recycle_under_delta: crate::net::core::RecyclePolicy::DisableUnderDelta,
     }
     .normalize()
 }

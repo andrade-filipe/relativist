@@ -7,9 +7,9 @@ use crate::net::{AgentId, Net, PortRef};
 #[cfg(debug_assertions)]
 use std::collections::HashSet;
 
-use super::helpers::{build_subnet, classify_wires, compute_id_ranges};
+use super::helpers::{build_subnet_with_config, classify_wires, compute_id_ranges};
 use super::strategy::PartitionStrategy;
-use super::types::{IdRange, Partition, PartitionPlan, WorkerId};
+use super::types::{IdRange, Partition, PartitionConfig, PartitionPlan, WorkerId};
 
 /// Splits a net into `num_workers` partitions using the given strategy.
 ///
@@ -42,23 +42,40 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
     let id_ranges = compute_id_ranges(num_workers, net.next_id);
     let mut partitions = Vec::with_capacity(num_workers as usize);
 
+    // SPEC-22 R22/R30: use the config-driven path that applies the sparse
+    // threshold guard and routes to SparseNet when id_range_size > 4 × live_count.
+    // Default config has sparse_build: true — the sparse path is always taken
+    // when the threshold is exceeded, never returning DenseAllocationExceedsThreshold.
+    let partition_config = PartitionConfig::default();
+
     for i in 0..num_workers as usize {
-        // SPEC-22 R10a: pass the partition's id_range so build_subnet can
-        // populate the free_list with in-range None slots.
+        // SPEC-22 R10a / R22: pass the partition's id_range so build_subnet_with_config
+        // can route to sparse path when threshold is exceeded (M5 fix), or dense path
+        // otherwise, and populate the free_list with in-range None slots.
         let id_range_for_subnet = id_ranges[i].start..id_ranges[i].end;
-        let mut subnet = build_subnet(
+        let mut subnet = build_subnet_with_config(
+            &partition_config,
+            i,
             &net,
             &worker_agents[i],
             &sigma,
             &wire_class.border_entries[i],
             i as WorkerId,
             id_range_for_subnet,
-        );
+        )
+        .unwrap_or_else(|e| {
+            // DenseAllocationExceedsThreshold is unreachable when sparse_build: true
+            // (the sparse path is always taken above the threshold). This arm exists
+            // only for future callers passing sparse_build: false.
+            panic!("build_subnet_with_config failed unexpectedly: {e}");
+        });
 
         // Set next_id: max(id_range.start, max_agent_id + 1)
+        // sparse path sets next_id = id_range.start; dense path sets next_id = 0.
+        // Ensure max_agent_id + 1 is also respected (I3' upper bound).
         let max_agent_id = worker_agents[i].iter().copied().max();
-        subnet.next_id =
-            std::cmp::max(id_ranges[i].start, max_agent_id.map(|m| m + 1).unwrap_or(0));
+        let min_next_id = max_agent_id.map(|m| m + 1).unwrap_or(0);
+        subnet.next_id = std::cmp::max(subnet.next_id, min_next_id);
 
         // R28: Root port propagation
         subnet.root = propagate_root(&net, &sigma, i as WorkerId);
@@ -204,6 +221,51 @@ mod tests {
     use super::*;
     use crate::net::{PortRef, Symbol};
     use crate::partition::strategy::ContiguousIdStrategy;
+
+    // MF-002 regression: split() must route through build_subnet_with_config.
+    //
+    // Verified directly via build_subnet_with_config:
+    // - sparse_build=false + id_range_size >> 4*live_count → Err (guard fires)
+    // - sparse_build=true (default) + same ratio → Ok (sparse path transparently used)
+    // split() now delegates to build_subnet_with_config with the default config,
+    // so the sparse path is reachable from the production entry point.
+    #[test]
+    fn mf002_build_subnet_with_config_enforces_threshold() {
+        use crate::partition::{helpers::build_subnet_with_config, PartitionConfig};
+
+        let mut net = Net::new();
+        // 1 agent; id_range_size=1000 >> 4*1=4 → threshold exceeded
+        let a = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
+
+        let agents = vec![a];
+        let sigma: std::collections::HashMap<_, _> = [(a, 0u32)].into_iter().collect();
+
+        // sparse_build=false → Err when threshold exceeded
+        let strict_cfg = PartitionConfig {
+            sparse_build: false,
+        };
+        assert!(
+            build_subnet_with_config(&strict_cfg, 0, &net, &agents, &sigma, &[], 0, 0..1000)
+                .is_err(),
+            "MF-002: sparse_build=false with exceeded threshold must return Err"
+        );
+
+        // sparse_build=true (default) → Ok (sparse path taken)
+        let default_cfg = PartitionConfig::default();
+        let result =
+            build_subnet_with_config(&default_cfg, 0, &net, &agents, &sigma, &[], 0, 0..1000);
+        assert!(
+            result.is_ok(),
+            "MF-002: default config (sparse_build=true) must succeed via sparse path"
+        );
+        let subnet = result.unwrap();
+        // SF-001: next_id = id_range.start = 0 from sparse path
+        assert_eq!(
+            subnet.next_id, 0,
+            "MF-002/SF-001: sparse path next_id = id_range.start = 0"
+        );
+    }
 
     // T1: split with n=1 returns single partition
     #[test]

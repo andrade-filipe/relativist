@@ -43,8 +43,11 @@ pub struct Net {
     /// before reducing (SPEC-02 R17, SPEC-01 I4).
     pub redex_queue: VecDeque<(AgentId, AgentId)>,
 
-    /// Next AgentId to be assigned. Strictly greater than any AgentId
-    /// in use. Incremented on each agent creation (SPEC-01 I3).
+    /// Monotonic upper bound on assigned `AgentId`s. Strictly greater than
+    /// any `AgentId` ever assigned (live, in the free-list, or previously
+    /// freed and re-assigned). Incremented only on fresh allocations (when
+    /// the free-list is empty or recycling is disabled); recycled-slot
+    /// creations leave `next_id` unchanged. (SPEC-01 I3', SPEC-22 R3/R10).
     pub next_id: AgentId,
 
     /// Root port: the AgentPort connected to the external observation point.
@@ -2865,7 +2868,7 @@ mod tests {
         );
         sn.next_id = 200;
 
-        let net = sn.to_dense(None);
+        let net = sn.to_dense(None).unwrap();
         // Arena len = 176 (max_id=175 → 175+1).
         assert_eq!(net.agents.len(), 176, "arena len = max_id + 1 = 176");
         let free_set: HashSet<AgentId> = net.free_list.iter().copied().collect();
@@ -2930,7 +2933,7 @@ mod tests {
         );
         sn.next_id = 200;
 
-        let net = sn.to_dense(Some(50..100));
+        let net = sn.to_dense(Some(50..100)).unwrap();
         let free_set: HashSet<AgentId> = net.free_list.iter().copied().collect();
         // [50..100) minus {50,51,75,99} = 50 IDs - 4 = 46 entries.
         assert_eq!(
@@ -2964,7 +2967,7 @@ mod tests {
             },
         );
         sn.next_id = 200;
-        let net = sn.to_dense(Some(50..100));
+        let net = sn.to_dense(Some(50..100)).unwrap();
         assert!(
             !net.free_list.iter().any(|&id| id < 50),
             "no ID below range start in free-list"
@@ -2988,7 +2991,7 @@ mod tests {
             },
         );
         sn.next_id = 60;
-        let net = sn.to_dense(Some(50..50));
+        let net = sn.to_dense(Some(50..50)).unwrap();
         assert!(net.free_list.is_empty(), "empty range → empty free-list");
     }
 
@@ -3005,7 +3008,7 @@ mod tests {
             },
         );
         sn.next_id = 100;
-        let net = sn.to_dense(Some(50..100));
+        let net = sn.to_dense(Some(50..100)).unwrap();
         assert_eq!(net.id_range, Some(50..100), "id_range must be propagated");
     }
 
@@ -3023,7 +3026,7 @@ mod tests {
         );
         sn.next_id = 100;
         sn.freeport_redirects.insert(99, PortRef::AgentPort(50, 0));
-        let net = sn.to_dense(Some(50..100));
+        let net = sn.to_dense(Some(50..100)).unwrap();
         assert_eq!(
             net.freeport_redirects.get(&99),
             Some(&PortRef::AgentPort(50, 0)),
@@ -3044,7 +3047,7 @@ mod tests {
             },
         );
         sn.next_id = 176;
-        let net = sn.to_dense(None);
+        let net = sn.to_dense(None).unwrap();
         assert_eq!(net.agents.len(), 176, "arena_len = max_id + 1 = 176");
     }
 
@@ -3053,7 +3056,7 @@ mod tests {
     fn to_dense_empty_sparse() {
         use crate::net::SparseNet;
         let sn = SparseNet::new();
-        let net = sn.to_dense(None);
+        let net = sn.to_dense(None).unwrap();
         // next_id = 0, max_id = 0, arena_len = 1.
         assert_eq!(net.agents.len(), 1, "single None slot for max_id = 0");
         assert_eq!(net.free_list.len(), 1, "one free slot at index 0");
@@ -3236,7 +3239,7 @@ mod tests {
         net.remove_agent(b);
         net.root = Some(PortRef::AgentPort(a, 0));
 
-        let net2 = net.to_sparse().to_dense(None);
+        let net2 = net.to_sparse().to_dense(None).unwrap();
         assert!(
             net.is_behaviorally_equal(&net2),
             "dense → sparse → dense round-trip must be behaviorally equal (R21)"
@@ -3253,7 +3256,7 @@ mod tests {
         sn.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
         sn.next_id = 10;
 
-        let sn2 = sn.to_dense(None).to_sparse();
+        let sn2 = sn.to_dense(None).unwrap().to_sparse();
         assert_eq!(
             sn.agents, sn2.agents,
             "sparse → dense → sparse: agents must match"

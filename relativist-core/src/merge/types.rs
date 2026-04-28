@@ -513,6 +513,27 @@ pub struct GridConfig {
     /// SPEC-20 R33a: Solo budget (max interactions in SoloReducing state).
     #[serde(default = "default_solo_budget")]
     pub solo_budget: u32,
+
+    /// SPEC-22 R10b / §3.8 A10 / SPEC-19 R12a: recycle policy for delta-mode rounds.
+    ///
+    /// Controls whether workers may pop from the free-list during a delta-mode round,
+    /// preventing G1 violations when `BorderGraph` slot-id stability is required.
+    ///
+    /// - `DisableUnderDelta` (default, Strategy A): workers MUST NOT pop from the
+    ///   free-list during a delta-mode round; `create_agent` falls through to fresh
+    ///   `next_id` allocation. The free-list is drained at the next clean partition
+    ///   boundary (`reconstruct` per SPEC-19 R38).
+    /// - `BorderClean` (Strategy B): workers MAY pop from the free-list only if the
+    ///   popped ID is NOT in the partition's `border_entries_shadow`. Border-referenced
+    ///   IDs are re-pushed and a fresh allocation is returned instead.
+    ///
+    /// This field is the grid-level configuration knob. At `build_subnet` time the
+    /// coordinator/dispatcher copies this value into `Net.recycle_policy` for each
+    /// worker's subnet (SF-003 fix: moves the public control surface to GridConfig
+    /// as specified in SPEC-22 R10b).
+    #[serde(default)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub recycle_under_delta: crate::net::core::RecyclePolicy,
 }
 
 impl Default for GridConfig {
@@ -534,6 +555,8 @@ impl Default for GridConfig {
             join_window_min: Duration::from_millis(50),
             join_window_max: Duration::from_millis(500),
             solo_budget: 10_000,
+            // SPEC-22 R10b: default is Strategy A (conservative, G1-safe).
+            recycle_under_delta: crate::net::core::RecyclePolicy::DisableUnderDelta,
         }
     }
 }

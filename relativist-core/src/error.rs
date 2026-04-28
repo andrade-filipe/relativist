@@ -38,7 +38,8 @@ pub enum NetError {
     ///
     /// Returned by `Net::validate_free_list` when an entry in `free_list`
     /// corresponds to a `Some` slot in the arena (the slot was not properly
-    /// cleared before the ID was recycled, or the free-list was corrupted).
+    /// cleared before the ID was recycled, or the free-list was corrupted),
+    /// OR when a duplicate entry is detected (R6 violation).
     #[error("free-list invalid: id {id} — {reason}")]
     FreeListInvalid {
         /// The offending AgentId.
@@ -46,6 +47,38 @@ pub enum NetError {
         /// Human-readable explanation of the violation.
         reason: &'static str,
     },
+
+    /// SPEC-22 R20 / QA-D009-005: `SparseNet::to_dense` allocation guard.
+    ///
+    /// Returned when the computed arena length exceeds `MAX_DENSE_ARENA_SLOTS`.
+    /// An attacker-controlled `max_id` near `u32::MAX` would otherwise produce
+    /// a multi-GiB allocation request (DoS surface). Callers must either
+    /// provide a bounded `id_range` or restructure the SparseNet.
+    #[error(
+        "dense arena allocation would exceed threshold: arena_len={arena_len} > max={max} \
+         (live_count={live_count}); use a bounded id_range or reduce the agent ID spread"
+    )]
+    DenseAllocationExceedsThreshold {
+        arena_len: usize,
+        max: usize,
+        live_count: usize,
+    },
+
+    /// SPEC-22 R20 / QA-D009-006: inverted `id_range` passed to `SparseNet::to_dense`.
+    ///
+    /// Returned when `id_range.start > id_range.end`. An inverted range is a
+    /// caller bug or attacker-supplied malformed state; panicking is worse than
+    /// returning a graceful error.
+    #[error("invalid id_range: start={start} > end={end}")]
+    InvalidIdRange { start: u32, end: u32 },
+
+    /// QA-D009-011 / SPEC-22 R3: `AgentId` space exhausted.
+    ///
+    /// Returned by `create_agent` when `next_id == u32::MAX` (would overflow on
+    /// the next fresh allocation). Workers should treat this as a fatal ID-space
+    /// exhaustion and signal the coordinator.
+    #[error("agent ID space exhausted: next_id would overflow u32::MAX")]
+    AgentIdOverflow,
 }
 
 /// Errors from the reduction engine.

@@ -517,11 +517,44 @@ fn build_subnet_sparse(
     // Preserve freeport_redirects from source net (SC-001 second surface).
     sparse.freeport_redirects = net.freeport_redirects.clone();
 
-    // Determine next_id: max agent ID in range + 1 (consistent with build_subnet).
-    sparse.next_id = 0; // to_dense will not use this; kept for symmetry.
+    // SPEC-22 R10 / R3: next_id must be at least id_range.start so that fresh
+    // allocations stay within the partition's assigned range. The caller (split.rs)
+    // may increase this further based on max_agent_id. Setting to id_range.start
+    // here matches the dense path's invariant; to_dense copies self.next_id verbatim.
+    // Previous comment "to_dense will not use this" was incorrect — to_dense copies
+    // self.next_id into Net::next_id directly (SF-001 fix).
+    sparse.next_id = id_range.start;
 
     // Convert to dense with partition-scoped free-list (R10a / SC-006).
-    sparse.to_dense(Some(id_range))
+    // QA-D009-005: to_dense is now fallible; propagate allocation errors.
+    // The id_range supplied here is always bounded (from compute_id_ranges),
+    // so DenseAllocationExceedsThreshold should only fire for adversarially
+    // large ranges. The caller (build_subnet_with_config) already guards against
+    // the M5 density pathology; this catch handles the residual DoS surface.
+    match sparse.to_dense(Some(id_range)) {
+        Ok(net) => net,
+        Err(crate::error::NetError::DenseAllocationExceedsThreshold {
+            arena_len,
+            max,
+            live_count,
+        }) => {
+            // This should not be reached when the caller supplied a bounded range.
+            // Returning Net::new() is safer than panicking; the caller will see an
+            // empty subnet and can handle it gracefully.
+            tracing::warn!(
+                arena_len,
+                max,
+                live_count,
+                "build_subnet_sparse: to_dense allocation cap hit; returning empty Net"
+            );
+            crate::net::Net::new()
+        }
+        Err(e) => {
+            // InvalidIdRange or other unexpected error — caller supplied bad range.
+            tracing::warn!(error = %e, "build_subnet_sparse: to_dense error; returning empty Net");
+            crate::net::Net::new()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1497,6 +1530,52 @@ mod tests {
                 id
             );
         }
+    }
+
+    /// SF-001 regression: sparse path must set next_id = id_range.start.
+    ///
+    /// When `build_subnet_with_config` takes the sparse path, the returned Net's
+    /// `next_id` must equal `id_range.start` (not 0). If next_id == 0, a
+    /// subsequent `create_agent` would return AgentId 0, potentially colliding
+    /// with agents already allocated in a different partition (I3'/D4 violation).
+    #[test]
+    fn sf001_sparse_path_next_id_equals_id_range_start() {
+        use crate::partition::PartitionConfig;
+
+        // Build a pathological partition: live_count = 5, id_range_size = 100
+        // (100 > 4 * 5 = 20) → threshold exceeded → sparse path is taken.
+        let mut net = Net::new();
+        // Create 5 agents with IDs 0..4 (they were in the original net).
+        let mut agents_vec: Vec<AgentId> = Vec::new();
+        for _ in 0..5 {
+            agents_vec.push(net.create_agent(Symbol::Era));
+        }
+
+        let sigma: HashMap<AgentId, WorkerId> = agents_vec.iter().map(|&id| (id, 0u32)).collect();
+        let cfg = PartitionConfig { sparse_build: true };
+
+        // id_range starts at 50: this simulates a partition that owns ID range [50..150).
+        // The original net agents (0..4) are below this range — that's fine; they were
+        // assigned to this worker by σ, not by range. The point is that new allocations
+        // from build_subnet must start at id_range.start (50), not at 0.
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents_vec, &sigma, &[], 0, 50..150)
+            .expect("sparse path should succeed");
+
+        // SF-001: next_id must be id_range.start (50), NOT 0.
+        assert_eq!(
+            result.next_id, 50,
+            "SF-001: sparse path must set next_id = id_range.start (50), got {}",
+            result.next_id
+        );
+
+        // Subsequent create_agent must not collide with existing agents.
+        let mut result_mut = result;
+        let new_id = result_mut.create_agent(Symbol::Con);
+        assert!(
+            !agents_vec.contains(&new_id),
+            "SF-001: create_agent after sparse build returned existing agent id {}",
+            new_id
+        );
     }
 
     /// UT-0492-03: sparse path preserves freeport_redirects.
