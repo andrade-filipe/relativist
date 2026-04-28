@@ -144,6 +144,20 @@ pub enum PartitionError {
         /// Number of live agents in the partition's worker_agents list.
         live_count: u64,
     },
+
+    /// SPEC-21 R19 — returned by `generate_and_partition_chunked` when the
+    /// pending-connection store is non-empty after the stream is exhausted.
+    ///
+    /// Indicates that a generator emitted a `Pending` directive whose target
+    /// agent was never generated. This is a generator bug: every `Pending`
+    /// directive MUST have its target agent appear in a subsequent batch.
+    #[error(
+        "unresolved forward reference: pending connection targeting agent {agent_id} was never resolved"
+    )]
+    UnresolvedForwardReferences {
+        /// AgentId referenced in a Pending directive that was never emitted.
+        agent_id: AgentId,
+    },
 }
 
 /// Errors from the merge subsystem.

@@ -116,6 +116,35 @@ impl SparseNet {
         id
     }
 
+    /// Creates an agent with the given symbol at a **specific** `AgentId`.
+    ///
+    /// Unlike [`create_agent`], this method inserts the agent at `id` without
+    /// consuming `next_id`. It is used by the streaming pipeline
+    /// (`PartitionAccumulator::add_agent`, TASK-0551) where the generator has
+    /// pre-assigned IDs (R15 monotonicity contract).
+    ///
+    /// # Invariants
+    ///
+    /// - `id` MUST NOT already be present in `agents` (I3' uniqueness, SPEC-22
+    ///   R14). In debug builds this is enforced by a `debug_assert!`. In release
+    ///   builds the existing entry is silently overwritten (HashMap::insert).
+    /// - `next_id` is updated to `max(next_id, id + 1)` so that subsequent
+    ///   `create_agent()` calls continue to produce fresh IDs above `id`.
+    ///
+    /// Complexity: O(1) amortized (SPEC-22 R15).
+    pub fn create_agent_at(&mut self, id: AgentId, symbol: Symbol) {
+        debug_assert!(
+            !self.agents.contains_key(&id),
+            "create_agent_at: id {} already exists in SparseNet (I3' uniqueness violation)",
+            id
+        );
+        self.agents.insert(id, Agent { symbol, id });
+        // Keep next_id ahead of all assigned IDs so create_agent() stays fresh.
+        if id >= self.next_id {
+            self.next_id = id.saturating_add(1);
+        }
+    }
+
     /// Removes an agent from the net.
     ///
     /// Removes the agent's entry from `agents` and all port entries for its

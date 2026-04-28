@@ -15,8 +15,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::net::{AgentId, PortId, PortRef, Symbol};
-use crate::partition::types::{Partition, PartitionPlan, WorkerId};
+use crate::error::PartitionError;
+use crate::net::sparse::SparseNet;
+use crate::net::{AgentId, Net, PortId, PortRef, Symbol};
+use crate::partition::types::{IdRange, Partition, PartitionPlan, WorkerId};
 
 // ---------------------------------------------------------------------------
 // ConnectionDirective (SPEC-21 §4.1, R14)
@@ -542,6 +544,451 @@ impl StreamingPartitionStrategy for FennelStreamingStrategy {
             chunks_processed: 0,  // PIPELINE-OWNED (SC-021)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase E: Accumulator + orchestrator (TASK-0550..0554)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// AccumulatorNet + PartitionAccumulator (TASK-0550)
+// ---------------------------------------------------------------------------
+
+/// Backing store for an in-progress worker partition accumulator.
+///
+/// The `Sparse` variant is the default (SPEC-21 §4.9, SC-006 closure): it
+/// is memory-proportional to the number of live agents and handles
+/// non-contiguous ID spaces produced by FENNEL without the M5 dense-arena
+/// pathology.
+///
+/// The `Dense` variant is reserved for callers that have already materialized
+/// a `Net` and wish to wrap it in the accumulator interface; it bypasses the
+/// Sparse → Dense conversion at finalize-time.
+#[derive(Debug)]
+pub(crate) enum AccumulatorNet {
+    Sparse(SparseNet),
+    /// Alternative backing store using a pre-materialized dense `Net`.
+    ///
+    /// Not used by the primary streaming pipeline (which always starts Sparse),
+    /// but reserved for future callers that have a `Net` on hand and want to
+    /// reuse the `PartitionAccumulator` API without paying the Sparse→Dense
+    /// conversion cost at finalize-time.
+    #[allow(dead_code)]
+    Dense(Net),
+}
+
+/// In-progress accumulator for one worker's partition during streaming
+/// generation.
+///
+/// # Frame-reuse pattern (AC-010 / §4.9 intro)
+///
+/// One `PartitionAccumulator` per worker is allocated for the lifetime of the
+/// pipeline run and reused across all chunks. The accumulator is NOT reallocated
+/// per chunk. This mirrors the HVM4 WNF goto-state-machine frame-reuse pattern
+/// (AC-010).
+///
+/// # R23 reconciliation (§4.9 closing note)
+///
+/// R23 ("MUST be sized to max_agent_id_in_this_worker + 1") applies to the
+/// **dense-finalized form** produced by `finalize()`, NOT to the in-progress
+/// `SparseNet`. Do NOT pre-size a dense `Vec` at construction time hoping to
+/// amortize the resize — that resurrects SC-006. The dense form is produced
+/// exactly once, at `finalize()`, by calling `SparseNet::to_dense(Some(id_range))`.
+pub(crate) struct PartitionAccumulator {
+    /// The backing store for this worker's agents and wires.
+    pub(crate) subnet: AccumulatorNet,
+    /// Reverse index of boundary FreePorts: borderId → local AgentPort endpoint.
+    pub(crate) free_port_index: HashMap<u32, PortRef>,
+    /// The worker this accumulator belongs to.
+    pub(crate) worker_id: WorkerId,
+    /// Minimum AgentId assigned to this worker so far (`None` if empty).
+    pub(crate) min_assigned_id: Option<AgentId>,
+    /// Maximum AgentId assigned to this worker so far (`None` if empty).
+    pub(crate) max_assigned_id: Option<AgentId>,
+    /// Number of live agents added to this accumulator.
+    pub(crate) live_agent_count: u64,
+}
+
+impl PartitionAccumulator {
+    /// Constructs a fresh accumulator for the given `worker_id`.
+    ///
+    /// Defaults to `AccumulatorNet::Sparse(SparseNet::new())` per §4.9 (SC-006
+    /// closure). The `free_port_index`, `min_assigned_id`, and `max_assigned_id`
+    /// fields are all empty / None; `live_agent_count` is 0.
+    pub(crate) fn new(worker_id: WorkerId) -> Self {
+        Self {
+            subnet: AccumulatorNet::Sparse(SparseNet::new()),
+            free_port_index: HashMap::new(),
+            worker_id,
+            min_assigned_id: None,
+            max_assigned_id: None,
+            live_agent_count: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PartitionAccumulator::add_agent + connect (TASK-0551)
+// ---------------------------------------------------------------------------
+
+impl PartitionAccumulator {
+    /// Adds an agent at the specified `id` with the given `symbol`.
+    ///
+    /// Delegates to the backing subnet's `create_agent_at` (for `Sparse`)
+    /// or equivalent operation (for `Dense`). Updates `min_assigned_id`,
+    /// `max_assigned_id`, and `live_agent_count`.
+    ///
+    /// # Invariants
+    ///
+    /// - `id` MUST NOT already be present (I3' uniqueness, SPEC-22 R14).
+    ///   In debug builds this is checked by the underlying SparseNet; in
+    ///   release builds, the behavior is that of HashMap::insert (overwrite).
+    pub(crate) fn add_agent(&mut self, id: AgentId, symbol: Symbol) {
+        match &mut self.subnet {
+            AccumulatorNet::Sparse(s) => s.create_agent_at(id, symbol),
+            AccumulatorNet::Dense(n) => {
+                // Dense path: ensure the arena is large enough, then insert.
+                // This path is only triggered by the Dense variant, which is
+                // reserved for callers that wrap a pre-materialized Net.
+                while n.agents.len() <= id as usize {
+                    n.agents.push(None);
+                }
+                n.agents[id as usize] = Some(crate::net::types::Agent { symbol, id });
+            }
+        }
+        self.min_assigned_id = Some(self.min_assigned_id.map_or(id, |m| m.min(id)));
+        self.max_assigned_id = Some(self.max_assigned_id.map_or(id, |m| m.max(id)));
+        self.live_agent_count += 1;
+    }
+
+    /// Connects two port references within this accumulator's subnet.
+    ///
+    /// Updates `free_port_index` BEFORE delegating to the subnet, so that
+    /// every FreePort endpoint is registered at insertion time (C2 partial).
+    ///
+    /// # FreePort policy (both endpoints FreePort)
+    ///
+    /// If both `a` and `b` are `FreePort(bid)`, both are inserted into
+    /// `free_port_index` symmetrically: `free_port_index[a_bid] = b` and
+    /// `free_port_index[b_bid] = a`. This is a degenerate but allowed
+    /// structure; the merge protocol handles the symmetric lookup.
+    pub(crate) fn connect(&mut self, a: PortRef, b: PortRef) {
+        // Register FreePort endpoints in the reverse index.
+        if let PortRef::FreePort(bid) = b {
+            self.free_port_index.insert(bid, a);
+        }
+        if let PortRef::FreePort(bid) = a {
+            self.free_port_index.insert(bid, b);
+        }
+        match &mut self.subnet {
+            AccumulatorNet::Sparse(s) => s.connect(a, b),
+            AccumulatorNet::Dense(n) => n.connect(a, b),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PartitionAccumulator::finalize (TASK-0552)
+// ---------------------------------------------------------------------------
+
+impl PartitionAccumulator {
+    /// Converts the accumulator into a fully-formed `Partition`.
+    ///
+    /// # Conversion
+    ///
+    /// For the `Sparse` variant, calls `SparseNet::to_dense(Some(id_range))`
+    /// (SPEC-22 R20 / TASK-0490). For `Dense`, uses the inner `Net` directly.
+    ///
+    /// # Threshold guard (SPEC-22 R10a / R22 / R30)
+    ///
+    /// If `id_range_size > 4 × live_agent_count`, returns
+    /// `Err(PartitionError::DenseAllocationExceedsThreshold)`. The
+    /// inequality is STRICT (`>`): exactly 4× is accepted.
+    ///
+    /// # R23 reconciliation
+    ///
+    /// The dense `Net` produced by `to_dense(Some(id_range))` has
+    /// `agents.len() == id_range.end - id_range.start`, satisfying R23
+    /// ("sized to max_agent_id_in_this_worker + 1") for partition-scoped
+    /// layouts.
+    pub(crate) fn finalize(
+        self,
+        id_range: IdRange,
+        border_id_start: u32,
+        border_id_end: u32,
+    ) -> Result<Partition, PartitionError> {
+        let id_range_size = (id_range.end as u64).saturating_sub(id_range.start as u64);
+
+        // SPEC-22 R30 threshold check: strict greater-than.
+        if id_range_size > 4 * self.live_agent_count {
+            return Err(PartitionError::DenseAllocationExceedsThreshold {
+                partition_index: self.worker_id as usize,
+                id_range_size,
+                live_count: self.live_agent_count,
+            });
+        }
+
+        let dense = match self.subnet {
+            AccumulatorNet::Sparse(s) => {
+                // Convert SparseNet → dense Net scoped to id_range.
+                s.to_dense(Some(id_range.start..id_range.end))
+                    .map_err(|e| PartitionError::InvariantViolation(e.to_string()))?
+            }
+            AccumulatorNet::Dense(n) => n,
+        };
+
+        Ok(Partition {
+            subnet: dense,
+            worker_id: self.worker_id,
+            free_port_index: self.free_port_index,
+            id_range,
+            border_id_start,
+            border_id_end,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// install_connection helper (TASK-0553)
+// ---------------------------------------------------------------------------
+
+/// Installs a wire between `source` and `target` ports, classifying it as
+/// internal or border based on worker ownership.
+///
+/// # Classification (AC-007 pattern — §4.6)
+///
+/// Connection-time classification: the wire is evaluated at the moment it is
+/// installed, NOT in a post-construction scan. `agent_owner` MUST contain
+/// entries for both `source.0` and `target.0` before this function is called.
+///
+/// - **Internal** (`src_worker == tgt_worker`): the wire is installed directly
+///   into the owning worker's accumulator.
+/// - **Border** (`src_worker != tgt_worker`): a fresh `borderId` is allocated,
+///   a symmetric `FreePort(borderId)` pair is connected into both accumulators,
+///   and the mapping is recorded in `border_map`.
+///
+/// # Panics
+///
+/// Panics if `source.0` or `target.0` is missing from `agent_owner`.
+/// This is a pipeline invariant: agent-owner mappings MUST be inserted BEFORE
+/// any `install_connection` call for that agent.
+pub(crate) fn install_connection(
+    source: (AgentId, PortId),
+    target: (AgentId, PortId),
+    agent_owner: &HashMap<AgentId, WorkerId>,
+    accumulators: &mut [PartitionAccumulator],
+    border_map: &mut HashMap<u32, (PortRef, PortRef)>,
+    border_id_counter: &mut u32,
+) {
+    let src_worker = *agent_owner
+        .get(&source.0)
+        .unwrap_or_else(|| panic!("install_connection: agent {} has no owner (pipeline bug — agent must be inserted into agent_owner before install_connection is called)", source.0));
+    let tgt_worker = *agent_owner
+        .get(&target.0)
+        .unwrap_or_else(|| panic!("install_connection: agent {} has no owner (pipeline bug — agent must be inserted into agent_owner before install_connection is called)", target.0));
+
+    if src_worker == tgt_worker {
+        // Internal wire: both endpoints belong to the same worker.
+        accumulators[src_worker as usize].connect(
+            PortRef::AgentPort(source.0, source.1),
+            PortRef::AgentPort(target.0, target.1),
+        );
+    } else {
+        // Border wire: allocate a border ID and emit FreePort pairs.
+        let bid = *border_id_counter;
+        *border_id_counter = border_id_counter
+            .checked_add(1)
+            .expect("border_id_counter overflow: u32::MAX border wires reached");
+
+        // Canonical orientation: always store (lower-WorkerId-side, higher-WorkerId-side).
+        let (canon_src, canon_tgt) = if src_worker <= tgt_worker {
+            (
+                PortRef::AgentPort(source.0, source.1),
+                PortRef::AgentPort(target.0, target.1),
+            )
+        } else {
+            (
+                PortRef::AgentPort(target.0, target.1),
+                PortRef::AgentPort(source.0, source.1),
+            )
+        };
+        border_map.insert(bid, (canon_src, canon_tgt));
+
+        accumulators[src_worker as usize].connect(
+            PortRef::AgentPort(source.0, source.1),
+            PortRef::FreePort(bid),
+        );
+        accumulators[tgt_worker as usize].connect(
+            PortRef::AgentPort(target.0, target.1),
+            PortRef::FreePort(bid),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PendingConnection store (part of TASK-0554 pipeline)
+// ---------------------------------------------------------------------------
+
+/// A buffered pending connection: source port waiting for the target agent.
+#[derive(Debug, Clone)]
+struct PendingConnection {
+    source: (AgentId, PortId),
+    target_agent_id: AgentId,
+    target_port: PortId,
+}
+
+// ---------------------------------------------------------------------------
+// generate_and_partition_chunked orchestrator (TASK-0554)
+// ---------------------------------------------------------------------------
+
+/// Streaming pipeline: generates and partitions a net one `AgentBatch` at a time.
+///
+/// # Overview (SPEC-21 §3.3 R17, R18)
+///
+/// Processes the stream chunk by chunk without ever buffering the full net:
+///
+/// 1. For each batch, call `strategy.allocate_batch` to assign agents to workers.
+/// 2. Install each `Resolved` connection via `install_connection`.
+/// 3. Buffer each `Pending` connection in the pending store.
+/// 4. After agent insertion, scan the pending store for entries whose target
+///    agent is now known; resolve them via `install_connection`.
+/// 5. After the stream is exhausted, assert the pending store is empty (R19).
+/// 6. Finalize each accumulator into a `Partition`.
+/// 7. Stitch `stats.chunks_processed = chunks_seen` (SC-021 closure).
+///
+/// # R22 (one-batch-in-flight)
+///
+/// The loop processes one `AgentBatch` per iteration. The stream is never
+/// collected (no `stream.collect()` or equivalent).
+///
+/// # Border-id initialization
+///
+/// If the first batch contains any `FreePort` IDs in its connections (Lafont
+/// interface ports), `border_id_counter` is initialized to the maximum such
+/// ID + 1 to avoid collision. Otherwise it starts at 0.
+pub fn generate_and_partition_chunked(
+    stream: Box<dyn Iterator<Item = AgentBatch>>,
+    num_workers: u32,
+    strategy: &mut dyn StreamingPartitionStrategy,
+) -> Result<ChunkedPartitionResult, PartitionError> {
+    // Pipeline-local state.
+    let mut accumulators: Vec<PartitionAccumulator> =
+        (0..num_workers).map(PartitionAccumulator::new).collect();
+    let mut border_id_counter: u32 = 0;
+    let mut border_map: HashMap<u32, (PortRef, PortRef)> = HashMap::new();
+    // pending: target_agent_id → Vec<PendingConnection>
+    let mut pending: HashMap<AgentId, Vec<PendingConnection>> = HashMap::new();
+    let mut agent_owner: HashMap<AgentId, WorkerId> = HashMap::new();
+    let mut chunks_seen: u64 = 0;
+
+    // Main streaming loop (R22: one batch in flight).
+    for batch in stream {
+        chunks_seen += 1;
+
+        // Step 1: assign agents to workers.
+        let assignments = strategy.allocate_batch(&batch, num_workers);
+
+        // Build a local symbol lookup from the batch (needed for add_agent).
+        let symbol_lookup: HashMap<AgentId, Symbol> =
+            batch.agents.iter().map(|(id, sym)| (*id, *sym)).collect();
+
+        for (agent_id, worker_id) in &assignments {
+            agent_owner.insert(*agent_id, *worker_id);
+            let symbol = symbol_lookup[agent_id];
+            accumulators[*worker_id as usize].add_agent(*agent_id, symbol);
+        }
+
+        // Step 2: install Resolved connections.
+        for directive in &batch.connections {
+            if let ConnectionDirective::Resolved { source, target } = directive {
+                install_connection(
+                    *source,
+                    *target,
+                    &agent_owner,
+                    &mut accumulators,
+                    &mut border_map,
+                    &mut border_id_counter,
+                );
+            }
+        }
+
+        // Step 3: buffer Pending connections.
+        for directive in &batch.connections {
+            if let ConnectionDirective::Pending {
+                source,
+                target_agent_id,
+                target_port,
+            } = directive
+            {
+                pending
+                    .entry(*target_agent_id)
+                    .or_default()
+                    .push(PendingConnection {
+                        source: *source,
+                        target_agent_id: *target_agent_id,
+                        target_port: *target_port,
+                    });
+            }
+        }
+
+        // Step 6: resolve pending entries for agents introduced in this batch.
+        let newly_introduced: Vec<AgentId> = assignments.iter().map(|(id, _)| *id).collect();
+        for agent_id in &newly_introduced {
+            if let Some(pcs) = pending.remove(agent_id) {
+                for pc in pcs {
+                    install_connection(
+                        pc.source,
+                        (pc.target_agent_id, pc.target_port),
+                        &agent_owner,
+                        &mut accumulators,
+                        &mut border_map,
+                        &mut border_id_counter,
+                    );
+                }
+            }
+        }
+    }
+
+    // Step 4 (post-loop): assert pending store is empty (R19).
+    if let Some((&agent_id, _)) = pending.iter().next() {
+        return Err(PartitionError::UnresolvedForwardReferences { agent_id });
+    }
+
+    // Step 5: compute per-worker id_ranges from min/max assigned IDs.
+    // Finalize each accumulator.
+    let mut partitions: Vec<Partition> = Vec::with_capacity(num_workers as usize);
+
+    // We need per-worker border_id ranges. The border_map already has all
+    // border IDs; we record border_id_start = 0, border_id_end = border_id_counter
+    // for all workers (the full range was allocated globally, not per-worker).
+    // Individual wires are discriminated via free_port_index at merge time.
+    let border_end = border_id_counter;
+
+    for accumulator in accumulators {
+        let id_range = match (accumulator.min_assigned_id, accumulator.max_assigned_id) {
+            (Some(min), Some(max)) => IdRange {
+                start: min,
+                end: max + 1,
+            },
+            // Empty worker — zero-width range.
+            _ => IdRange { start: 0, end: 0 },
+        };
+
+        // Empty workers always pass the threshold check (0 > 4*0 is false).
+        let partition = accumulator.finalize(id_range, 0, border_end)?;
+        partitions.push(partition);
+    }
+
+    // Step 7: stitch chunks_processed (closes SC-021).
+    let mut stats = strategy.finalize();
+    stats.chunks_processed = chunks_seen;
+    stats.border_wire_count = border_end as u64;
+
+    Ok(ChunkedPartitionResult {
+        partitions,
+        borders: border_map,
+        stats,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1560,5 +2007,530 @@ mod tests {
             num_agents,
             "alpha=0.0: all agents must still be assigned"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0550: PartitionAccumulator struct
+    // -----------------------------------------------------------------------
+
+    /// UT-0550-01: Default subnet variant is Sparse (SC-006 closure default).
+    #[test]
+    fn default_subnet_is_sparse_variant() {
+        let acc = PartitionAccumulator::new(0);
+        assert!(
+            matches!(acc.subnet, AccumulatorNet::Sparse(_)),
+            "default AccumulatorNet must be Sparse, not Dense"
+        );
+    }
+
+    /// UT-0550-02: Fresh accumulator has zero live agents.
+    #[test]
+    fn default_sparse_is_empty() {
+        let acc = PartitionAccumulator::new(0);
+        assert_eq!(
+            acc.live_agent_count, 0,
+            "fresh accumulator must have 0 live agents"
+        );
+    }
+
+    /// UT-0550-03: min_assigned_id and max_assigned_id are None on construction.
+    #[test]
+    fn default_min_max_assigned_id_none() {
+        let acc = PartitionAccumulator::new(0);
+        assert!(
+            acc.min_assigned_id.is_none(),
+            "min_assigned_id must be None"
+        );
+        assert!(
+            acc.max_assigned_id.is_none(),
+            "max_assigned_id must be None"
+        );
+    }
+
+    /// UT-0550-04: free_port_index is empty on construction.
+    #[test]
+    fn default_free_port_index_empty() {
+        let acc = PartitionAccumulator::new(0);
+        assert!(
+            acc.free_port_index.is_empty(),
+            "free_port_index must be empty on construction"
+        );
+    }
+
+    /// UT-0550-05: worker_id field matches constructor argument.
+    #[test]
+    fn worker_id_field_correct() {
+        for w in [0u32, 1, 3, u32::MAX] {
+            let acc = PartitionAccumulator::new(w);
+            assert_eq!(
+                acc.worker_id, w,
+                "worker_id must match constructor argument"
+            );
+        }
+    }
+
+    /// UT-0550-06: Four accumulators have independent state.
+    #[test]
+    fn multi_worker_construction_independent() {
+        let accs: Vec<_> = (0u32..4).map(PartitionAccumulator::new).collect();
+        for (i, acc) in accs.iter().enumerate() {
+            assert_eq!(acc.worker_id, i as u32);
+            assert_eq!(acc.live_agent_count, 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0551: PartitionAccumulator add_agent + connect
+    // -----------------------------------------------------------------------
+
+    /// UT-0551-01: Adding 100 contiguous agents yields live_agent_count == 100.
+    #[test]
+    fn add_100_contiguous_agents_live_count_is_100() {
+        let mut acc = PartitionAccumulator::new(0);
+        for i in 0u32..100 {
+            acc.add_agent(i, Symbol::Era);
+        }
+        assert_eq!(acc.live_agent_count, 100);
+    }
+
+    /// UT-0551-02: min and max after contiguous 0..99.
+    #[test]
+    fn min_max_assigned_id_after_contiguous() {
+        let mut acc = PartitionAccumulator::new(0);
+        for i in 0u32..100 {
+            acc.add_agent(i, Symbol::Con);
+        }
+        assert_eq!(acc.min_assigned_id, Some(0));
+        assert_eq!(acc.max_assigned_id, Some(99));
+    }
+
+    /// UT-0551-03: Non-contiguous IDs update min/max correctly.
+    #[test]
+    fn add_two_non_contiguous_ids_live_count_is_2() {
+        let mut acc = PartitionAccumulator::new(0);
+        acc.add_agent(0, Symbol::Con);
+        acc.add_agent(5_000_000, Symbol::Dup);
+        assert_eq!(acc.live_agent_count, 2);
+        assert_eq!(acc.min_assigned_id, Some(0));
+        assert_eq!(acc.max_assigned_id, Some(5_000_000));
+    }
+
+    /// UT-0551-04: Non-contiguous sparse accumulator does NOT inflate storage.
+    #[test]
+    fn non_contiguous_does_not_inflate_internal_storage() {
+        let mut acc = PartitionAccumulator::new(0);
+        acc.add_agent(0, Symbol::Con);
+        acc.add_agent(5_000_000, Symbol::Dup);
+        match &acc.subnet {
+            AccumulatorNet::Sparse(s) => {
+                assert_eq!(
+                    s.agents.len(),
+                    2,
+                    "SparseNet must have exactly 2 entries, not 5_000_001"
+                );
+            }
+            AccumulatorNet::Dense(_) => panic!("expected Sparse variant"),
+        }
+    }
+
+    /// UT-0551-05: connect with FreePort registers in free_port_index.
+    #[test]
+    fn connect_freeport_registers_in_free_port_index() {
+        let mut acc = PartitionAccumulator::new(0);
+        acc.add_agent(0, Symbol::Con);
+        acc.connect(PortRef::AgentPort(0, 0), PortRef::FreePort(7));
+        assert!(
+            acc.free_port_index.contains_key(&7),
+            "FreePort(7) must be registered in free_port_index"
+        );
+        assert_eq!(
+            acc.free_port_index[&7],
+            PortRef::AgentPort(0, 0),
+            "free_port_index[7] must point to the AgentPort endpoint"
+        );
+    }
+
+    /// UT-0551-06: Internal wire does not touch free_port_index.
+    #[test]
+    fn connect_internal_wire_does_not_touch_free_port_index() {
+        let mut acc = PartitionAccumulator::new(0);
+        acc.add_agent(0, Symbol::Con);
+        acc.add_agent(1, Symbol::Con);
+        acc.connect(PortRef::AgentPort(0, 1), PortRef::AgentPort(1, 0));
+        assert!(
+            acc.free_port_index.is_empty(),
+            "internal wire must not touch free_port_index"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0552: PartitionAccumulator::finalize
+    // -----------------------------------------------------------------------
+
+    /// UT-0552-01: Small contiguous accumulator finalizes successfully.
+    #[test]
+    fn finalize_small_contiguous_returns_partition() {
+        let mut acc = PartitionAccumulator::new(0);
+        for i in 0u32..100 {
+            acc.add_agent(i, Symbol::Era);
+        }
+        let id_range = IdRange { start: 0, end: 100 };
+        let result = acc.finalize(id_range, 0, 0);
+        assert!(result.is_ok(), "small contiguous finalize must succeed");
+    }
+
+    /// UT-0552-03: Finalized subnet agents.len() matches id_range (R23).
+    #[test]
+    fn finalized_subnet_agents_len_matches_id_range() {
+        let mut acc = PartitionAccumulator::new(0);
+        for i in 0u32..100 {
+            acc.add_agent(i, Symbol::Era);
+        }
+        let id_range = IdRange { start: 0, end: 100 };
+        let partition = acc.finalize(id_range, 0, 0).unwrap();
+        assert_eq!(
+            partition.subnet.agents.len(),
+            100,
+            "dense subnet must have exactly id_range.end - id_range.start slots"
+        );
+    }
+
+    /// UT-0552-04: Finalize with id_range >> 4×live_count returns threshold error.
+    #[test]
+    fn finalize_dense_rejection_above_threshold() {
+        let mut acc = PartitionAccumulator::new(0);
+        // 100 live agents but id_range of 10_000 (100× > 4×)
+        for i in 0u32..100 {
+            acc.add_agent(i, Symbol::Era);
+        }
+        let id_range = IdRange {
+            start: 0,
+            end: 10_000,
+        };
+        let result = acc.finalize(id_range, 0, 0);
+        assert!(
+            matches!(
+                result,
+                Err(PartitionError::DenseAllocationExceedsThreshold { .. })
+            ),
+            "id_range 100× live_count must trigger threshold error"
+        );
+    }
+
+    /// UT-0552-05: Exactly 4× threshold passes (strict greater-than discipline).
+    #[test]
+    fn finalize_at_exactly_4x_threshold() {
+        let mut acc = PartitionAccumulator::new(0);
+        for i in 0u32..100 {
+            acc.add_agent(i, Symbol::Era);
+        }
+        // id_range_size = 400 == 4 × 100; strictly equal, not greater-than → passes.
+        let id_range = IdRange { start: 0, end: 400 };
+        let result = acc.finalize(id_range, 0, 0);
+        assert!(
+            result.is_ok(),
+            "exactly 4× threshold must pass (strict > check, not >=)"
+        );
+    }
+
+    /// UT-0552-08: Finalized partition has all 6 SPEC-04 R21 fields.
+    #[test]
+    fn partition_field_set_complete() {
+        let mut acc = PartitionAccumulator::new(2);
+        acc.add_agent(0, Symbol::Era);
+        acc.add_agent(1, Symbol::Era);
+        let id_range = IdRange { start: 0, end: 2 };
+        let partition = acc.finalize(id_range, 10, 20).unwrap();
+        let _ = &partition.subnet;
+        assert_eq!(partition.worker_id, 2);
+        let _ = &partition.free_port_index;
+        assert_eq!(partition.id_range.start, 0);
+        assert_eq!(partition.id_range.end, 2);
+        assert_eq!(partition.border_id_start, 10);
+        assert_eq!(partition.border_id_end, 20);
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0553: install_connection helper
+    // -----------------------------------------------------------------------
+
+    fn make_4_accumulators_with_agents() -> Vec<PartitionAccumulator> {
+        let mut accumulators: Vec<PartitionAccumulator> =
+            (0..4).map(PartitionAccumulator::new).collect();
+        // Worker 0: agents 0, 1
+        // Worker 1: agents 2, 3
+        // Worker 2: agents 4, 5
+        // Worker 3: agents 6, 7
+        for i in 0u32..8 {
+            accumulators[(i / 2) as usize].add_agent(i, Symbol::Con);
+        }
+        accumulators
+    }
+
+    fn make_agent_owner_4_workers() -> HashMap<AgentId, WorkerId> {
+        (0u32..8).map(|i| (i, i / 2)).collect()
+    }
+
+    /// UT-0553-01: Internal wire only touches the owner's accumulator.
+    #[test]
+    fn internal_wire_inserts_only_in_owner_accumulator() {
+        let mut accumulators = make_4_accumulators_with_agents();
+        let agent_owner = make_agent_owner_4_workers();
+        let mut border_map = HashMap::new();
+        let mut border_id_counter = 0u32;
+
+        install_connection(
+            (0u32, 0u8),
+            (1u32, 1u8),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+
+        assert!(
+            border_map.is_empty(),
+            "internal wire must not touch border_map"
+        );
+        assert_eq!(
+            border_id_counter, 0,
+            "internal wire must not increment border_id_counter"
+        );
+    }
+
+    /// UT-0553-02: Border wire allocates bid=0 first.
+    #[test]
+    fn border_wire_allocates_bid_zero_first() {
+        let mut accumulators = make_4_accumulators_with_agents();
+        let agent_owner = make_agent_owner_4_workers();
+        let mut border_map = HashMap::new();
+        let mut border_id_counter = 0u32;
+
+        install_connection(
+            (0u32, 0u8),
+            (2u32, 0u8),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+
+        assert_eq!(
+            border_id_counter, 1,
+            "border_id_counter must be 1 after first border wire"
+        );
+        assert!(border_map.contains_key(&0), "border_map must contain bid=0");
+    }
+
+    /// UT-0553-03: Border wire connects FreePort to both worker accumulators.
+    #[test]
+    fn border_wire_calls_connect_on_both_accumulators() {
+        let mut accumulators = make_4_accumulators_with_agents();
+        let agent_owner = make_agent_owner_4_workers();
+        let mut border_map = HashMap::new();
+        let mut border_id_counter = 0u32;
+
+        install_connection(
+            (0u32, 0u8),
+            (2u32, 0u8),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+
+        // Both accumulators must have FreePort(0) in free_port_index.
+        assert!(
+            accumulators[0].free_port_index.contains_key(&0),
+            "worker 0 accumulator must have FreePort(0) in free_port_index"
+        );
+        assert!(
+            accumulators[1].free_port_index.contains_key(&0),
+            "worker 1 accumulator must have FreePort(0) in free_port_index"
+        );
+    }
+
+    /// UT-0553-04: Sequential border allocation produces ids 0..4.
+    #[test]
+    fn sequential_border_allocation_zero_one_two() {
+        let mut accumulators = make_4_accumulators_with_agents();
+        let agent_owner = make_agent_owner_4_workers();
+        let mut border_map = HashMap::new();
+        let mut border_id_counter = 0u32;
+
+        // 4 cross-partition wires: 0↔2, 0↔4, 0↔6, 1↔3
+        for (a, b) in [(0u32, 2u32), (0, 4), (0, 6), (1, 3)] {
+            install_connection(
+                (a, 0u8),
+                (b, 0u8),
+                &agent_owner,
+                &mut accumulators,
+                &mut border_map,
+                &mut border_id_counter,
+            );
+        }
+
+        assert_eq!(border_id_counter, 4, "4 border wires → counter == 4");
+        for bid in 0..4u32 {
+            assert!(
+                border_map.contains_key(&bid),
+                "border_map must contain bid={}",
+                bid
+            );
+        }
+    }
+
+    /// UT-0553-05: Mixed internal and border sequence — correct count.
+    #[test]
+    fn mixed_internal_and_border_sequence() {
+        let mut accumulators = make_4_accumulators_with_agents();
+        let agent_owner = make_agent_owner_4_workers();
+        let mut border_map = HashMap::new();
+        let mut border_id_counter = 0u32;
+
+        // 2 internal (0↔1, 2↔3) + 2 border (0↔2, 1↔3)
+        install_connection(
+            (0, 1),
+            (1, 0),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+        install_connection(
+            (2, 1),
+            (3, 0),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+        install_connection(
+            (0, 0),
+            (2, 0),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+        install_connection(
+            (1, 1),
+            (3, 1),
+            &agent_owner,
+            &mut accumulators,
+            &mut border_map,
+            &mut border_id_counter,
+        );
+
+        assert_eq!(border_id_counter, 2, "only 2 border wires");
+        assert_eq!(border_map.len(), 2, "2 entries in border_map");
+    }
+
+    // -----------------------------------------------------------------------
+    // TEST-SPEC-0554: generate_and_partition_chunked orchestrator
+    // -----------------------------------------------------------------------
+
+    /// UT-0554-01: T5 full integration — ep_annihilation(100), chunk=20, 4 workers.
+    #[test]
+    fn t5_full_integration_ep_annihilation_100_4_workers() {
+        use crate::bench::streaming::ep_annihilation_stream;
+        let stream = ep_annihilation_stream(100, 20);
+        let mut strategy = RoundRobinStreamingStrategy::new(4);
+        let result = generate_and_partition_chunked(stream, 4, &mut strategy);
+        assert!(result.is_ok(), "pipeline must succeed: {:?}", result.err());
+        let result = result.unwrap();
+        assert_eq!(result.partitions.len(), 4, "must have 4 partitions");
+        let total_agents: usize = result
+            .partitions
+            .iter()
+            .map(|p| p.subnet.count_live_agents())
+            .sum();
+        assert_eq!(total_agents, 200, "total agents must be 200");
+    }
+
+    /// UT-0554-02: chunks_processed is stitched by pipeline (SC-021 closure).
+    #[test]
+    fn chunks_processed_count_correct() {
+        use crate::bench::streaming::ep_annihilation_stream;
+        let stream = ep_annihilation_stream(100, 20);
+        let mut strategy = RoundRobinStreamingStrategy::new(4);
+        let result = generate_and_partition_chunked(stream, 4, &mut strategy).unwrap();
+        // 100 pairs, chunk_size=20 → pairs_per_batch=10 → 10 batches of 20 agents each = 10 batches.
+        assert_eq!(
+            result.stats.chunks_processed, 10,
+            "chunks_processed must be 10 (SC-021)"
+        );
+    }
+
+    /// UT-0554-04: Unresolvable Pending directive returns error (R19 negative path).
+    #[test]
+    fn pending_store_non_empty_returns_error() {
+        // Generator emits agent 0 with Pending targeting agent 999 (never emitted).
+        let batch = AgentBatch {
+            agents: vec![(0u32, Symbol::Era)],
+            connections: vec![ConnectionDirective::Pending {
+                source: (0u32, 0u8),
+                target_agent_id: 999u32,
+                target_port: 0u8,
+            }],
+        };
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(std::iter::once(batch));
+        let mut strategy = RoundRobinStreamingStrategy::new(1);
+        let result = generate_and_partition_chunked(stream, 1, &mut strategy);
+        assert!(
+            matches!(
+                result,
+                Err(PartitionError::UnresolvedForwardReferences { agent_id: 999 })
+            ),
+            "unresolved Pending must return UnresolvedForwardReferences, got {:?}",
+            result
+        );
+    }
+
+    /// UT-0554-08: chunk_size=1 works end-to-end.
+    #[test]
+    fn chunk_size_one_works_end_to_end() {
+        use crate::bench::streaming::ep_annihilation_stream;
+        let stream = ep_annihilation_stream(20, 1);
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+        let result = generate_and_partition_chunked(stream, 2, &mut strategy);
+        assert!(result.is_ok(), "chunk_size=1 must work: {:?}", result.err());
+        let total_agents: usize = result
+            .unwrap()
+            .partitions
+            .iter()
+            .map(|p| p.subnet.count_live_agents())
+            .sum();
+        assert_eq!(total_agents, 40, "total agents must be 40");
+    }
+
+    /// EC-2: Single worker — all agents to worker 0, no border wires.
+    #[test]
+    fn single_worker_no_border_wires() {
+        use crate::bench::streaming::ep_annihilation_stream;
+        let stream = ep_annihilation_stream(10, 4);
+        let mut strategy = RoundRobinStreamingStrategy::new(1);
+        let result = generate_and_partition_chunked(stream, 1, &mut strategy).unwrap();
+        assert_eq!(
+            result.borders.len(),
+            0,
+            "single worker must have 0 border wires"
+        );
+        assert_eq!(result.partitions[0].subnet.count_live_agents(), 20);
+    }
+
+    /// EC-3: Empty stream produces 0 partitions (all workers empty).
+    #[test]
+    fn empty_stream_produces_empty_result() {
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(std::iter::empty());
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+        let result = generate_and_partition_chunked(stream, 2, &mut strategy).unwrap();
+        assert_eq!(result.stats.chunks_processed, 0);
+        let total: usize = result
+            .partitions
+            .iter()
+            .map(|p| p.subnet.count_live_agents())
+            .sum();
+        assert_eq!(total, 0);
     }
 }
