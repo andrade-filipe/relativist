@@ -259,6 +259,8 @@ pub fn remap_partition_ids(
         is_in_delta_round: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
+        #[cfg(debug_assertions)]
+        free_list_pops: 0,
     };
 
     Ok(Partition {
@@ -317,6 +319,8 @@ mod tests {
             is_in_delta_round: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
+            #[cfg(debug_assertions)]
+            free_list_pops: 0,
         };
 
         Partition {

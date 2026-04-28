@@ -78,6 +78,8 @@ fn make_p0() -> Partition {
         is_in_delta_round: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
+        #[cfg(debug_assertions)]
+        free_list_pops: 0,
     };
 
     Partition {
@@ -694,6 +696,8 @@ fn ec_j_redex_queue_symmetric_pair_is_remapped() {
         is_in_delta_round: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
+        #[cfg(debug_assertions)]
+        free_list_pops: 0,
     };
 
     let p = Partition {
@@ -847,6 +851,8 @@ fn ec_l_remap_next_id_postcondition_at_large_range_start() {
         is_in_delta_round: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
+        #[cfg(debug_assertions)]
+        free_list_pops: 0,
     };
 
     let p = Partition {

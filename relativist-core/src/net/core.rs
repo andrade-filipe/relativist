@@ -116,6 +116,16 @@ pub struct Net {
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub protected_tombstones: Option<HashSet<AgentId>>,
+
+    /// SPEC-21 R37b / TASK-0589 (debug-only): cumulative count of successful
+    /// free-list pops. Incremented each time `create_agent` takes the recycle
+    /// path (SPEC-22 R3/R5 free-list branch). Zero under Strategy A + streaming.
+    ///
+    /// Gated on `debug_assertions` to stay at zero overhead in release builds.
+    #[cfg(debug_assertions)]
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub free_list_pops: u64,
 }
 
 /// SPEC-22 R10b: recycling strategy for delta-mode rounds.
@@ -174,6 +184,8 @@ impl Net {
             is_in_delta_round: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
+            #[cfg(debug_assertions)]
+            free_list_pops: 0,
         }
     }
 
@@ -199,6 +211,8 @@ impl Net {
             is_in_delta_round: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
+            #[cfg(debug_assertions)]
+            free_list_pops: 0,
         }
     }
 
@@ -305,6 +319,8 @@ impl Net {
                             "SPEC-22 R27 family 3: recycled slot {} is not Some after create",
                             id
                         );
+                        // TASK-0589: count successful pops for test observability.
+                        self.free_list_pops += 1;
                     }
 
                     return id;
@@ -829,6 +845,8 @@ impl Net {
             is_in_delta_round: _delta_a,
             #[cfg(debug_assertions)]
                 protected_tombstones: _pt_a,
+            #[cfg(debug_assertions)]
+                free_list_pops: _flp_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -844,6 +862,8 @@ impl Net {
             is_in_delta_round: _delta_b,
             #[cfg(debug_assertions)]
                 protected_tombstones: _pt_b,
+            #[cfg(debug_assertions)]
+                free_list_pops: _flp_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -938,6 +958,8 @@ impl Net {
             is_in_delta_round: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
+            #[cfg(debug_assertions)]
+            free_list_pops: 0,
         }
     }
 
@@ -3553,6 +3575,224 @@ mod tests {
         assert!(
             !a.is_behaviorally_equal(&b),
             "QA-D009-008: nets with reversed free_list must NOT be behaviorally equal (R5 LIFO)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0589 — SPEC-21 R37b Strategy A broadening: streaming_active gate
+    // -----------------------------------------------------------------------
+    //
+    // These tests verify that `Net::create_agent` skips the free-list under
+    // Strategy A when either `delta_mode` OR `streaming_active` is set.
+    // The proxy for `streaming_active` is `is_in_delta_round` (set by
+    // `WorkerPullContext::enter_streaming_mode`; TASK-0578 Wave 5).
+    //
+    // Source: TEST-SPEC-0589 UT-0589-01..08.
+
+    /// UT-0589-01: Strategy A — streaming + delta_mode → zero free-list pops.
+    ///
+    /// Canonical fixture: non-empty free-list; `is_in_delta_round = true` (proxy for
+    /// `delta_mode = true` AND `streaming_active = true`); policy = DisableUnderDelta.
+    /// Expect: fresh allocation, free-list untouched, `free_list_pops == 0`.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn ut_0589_01_streaming_active_strategy_a_no_pop_during_chunk() {
+        let mut net = Net::new();
+        // Populate free-list via a prior remove.
+        let id0 = net.create_agent(Symbol::Con);
+        net.remove_agent(id0); // free_list = [id0]
+        assert_eq!(net.free_list.len(), 1, "setup: free_list must be non-empty");
+
+        // Simulate streaming + delta active (is_in_delta_round is the unified proxy).
+        net.is_in_delta_round = true;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        let next_before = net.next_id;
+
+        let new_id = net.create_agent(Symbol::Era);
+
+        assert_eq!(
+            new_id, next_before,
+            "UT-0589-01: Strategy A must fall through to fresh alloc (delta+streaming)"
+        );
+        assert!(
+            net.free_list.contains(&id0),
+            "UT-0589-01: free_list must still hold the id (not popped)"
+        );
+        assert_eq!(
+            net.free_list_pops, 0,
+            "UT-0589-01: free_list_pops counter must be zero (Strategy A gate active)"
+        );
+    }
+
+    /// UT-0589-02: Strategy A — streaming_active=true, delta_mode=false → still zero pops.
+    ///
+    /// Per R37b broadening: gate triggers on `(delta_mode || streaming_active)`.
+    /// When streaming_active is the only active flag, pop must still be skipped.
+    /// `is_in_delta_round` serves as the proxy (set by `enter_streaming_mode`).
+    #[test]
+    #[cfg(debug_assertions)]
+    fn ut_0589_02_streaming_active_no_delta_strategy_a_no_pop() {
+        let mut net = Net::new();
+        let id0 = net.create_agent(Symbol::Dup);
+        net.remove_agent(id0);
+
+        // Only streaming_active is set (proxied by is_in_delta_round); no separate delta flag.
+        net.is_in_delta_round = true;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        let next_before = net.next_id;
+
+        let new_id = net.create_agent(Symbol::Con);
+
+        assert_eq!(
+            new_id, next_before,
+            "UT-0589-02: broadening — streaming_active alone must skip free-list pop"
+        );
+        assert_eq!(
+            net.free_list_pops, 0,
+            "UT-0589-02: no pops when streaming_active is set under DisableUnderDelta"
+        );
+    }
+
+    /// UT-0589-03: Strategy A — push mode (streaming_inactive, delta_inactive) → pops normally.
+    ///
+    /// SPEC-22 R3 path must be UNCHANGED in push mode. With `is_in_delta_round = false`,
+    /// the gate does not trigger and the free-list is popped.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn ut_0589_03_push_no_delta_strategy_a_pop_normally() {
+        let mut net = Net::new();
+        let id0 = net.create_agent(Symbol::Con);
+        net.remove_agent(id0);
+        assert_eq!(net.free_list.len(), 1, "setup: free_list must be non-empty");
+
+        // Push mode: both flags off.
+        net.is_in_delta_round = false;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+
+        let recycled = net.create_agent(Symbol::Era);
+
+        assert_eq!(
+            recycled, id0,
+            "UT-0589-03: SPEC-22 R3 pop must occur in push/non-delta mode"
+        );
+        assert!(
+            net.free_list.is_empty(),
+            "UT-0589-03: free_list must be empty after successful pop"
+        );
+        assert_eq!(
+            net.free_list_pops, 1,
+            "UT-0589-03: free_list_pops counter must be 1 after one successful pop"
+        );
+    }
+
+    /// UT-0589-06: gate condition — `(is_in_delta_round) && DisableUnderDelta` covers R37b.
+    ///
+    /// Verifies the combined disjunction by toggling `is_in_delta_round` around a create_agent
+    /// call and checking counter transitions. When flag is OFF then ON, pops = 1 then 1 (no
+    /// additional pop on the gated call).
+    #[test]
+    #[cfg(debug_assertions)]
+    fn ut_0589_06_gate_condition_extends_disjunction() {
+        let mut net = Net::new();
+        let id0 = net.create_agent(Symbol::Con);
+        let id1 = net.create_agent(Symbol::Era);
+        net.remove_agent(id0);
+        net.remove_agent(id1);
+        // free_list = [id0, id1] (LIFO: pop returns id1 first)
+
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+
+        // Gate OFF → pop occurs.
+        net.is_in_delta_round = false;
+        let first = net.create_agent(Symbol::Dup);
+        assert_eq!(first, id1, "UT-0589-06: first call pops LIFO head");
+        assert_eq!(net.free_list_pops, 1, "UT-0589-06: one pop so far");
+
+        // Gate ON → pop suppressed.
+        net.is_in_delta_round = true;
+        let next_before = net.next_id;
+        let second = net.create_agent(Symbol::Con);
+        assert_eq!(second, next_before, "UT-0589-06: gate active → fresh alloc");
+        assert_eq!(
+            net.free_list_pops, 1,
+            "UT-0589-06: counter unchanged (no pop on gated call)"
+        );
+        // id0 still in free_list (not popped).
+        assert!(
+            net.free_list.contains(&id0),
+            "UT-0589-06: id0 must remain in free_list (gate blocked pop)"
+        );
+    }
+
+    /// UT-0589-07: free_list_pops counter is zero across full streaming gate.
+    ///
+    /// Multi-step sequence: 4 creates, 4 removes, then enable gate and do 4 creates.
+    /// Verifies counter stays at 0 throughout the gated region.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn ut_0589_07_free_list_pops_counter_zero_during_streaming() {
+        let mut net = Net::new();
+        // Build up a non-trivial free-list.
+        let ids: Vec<AgentId> = (0..4).map(|_| net.create_agent(Symbol::Con)).collect();
+        for id in &ids {
+            net.remove_agent(*id);
+        }
+        assert_eq!(
+            net.free_list.len(),
+            4,
+            "setup: free_list must have 4 entries"
+        );
+
+        // Streaming gate on.
+        net.is_in_delta_round = true;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        let pops_before = net.free_list_pops;
+
+        // 4 creates while gated — all must be fresh.
+        for _ in 0..4 {
+            net.create_agent(Symbol::Era);
+        }
+
+        assert_eq!(
+            net.free_list_pops, pops_before,
+            "UT-0589-07: no pops during streaming gate (counter must not change)"
+        );
+        assert_eq!(
+            net.free_list.len(),
+            4,
+            "UT-0589-07: free_list unchanged (all creates were fresh)"
+        );
+    }
+
+    /// UT-0589-08: free_list_pops counter is positive in push mode (positive control).
+    ///
+    /// Ensures the counter actually increments when the gate is off, confirming
+    /// the debug counter is functioning correctly.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn ut_0589_08_free_list_pops_counter_nonzero_in_push_mode() {
+        let mut net = Net::new();
+        let ids: Vec<AgentId> = (0..4).map(|_| net.create_agent(Symbol::Con)).collect();
+        for id in &ids {
+            net.remove_agent(*id);
+        }
+
+        // Push mode — gate off.
+        net.is_in_delta_round = false;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+
+        // 4 creates — all must pop from free-list.
+        for _ in 0..4 {
+            net.create_agent(Symbol::Era);
+        }
+
+        assert_eq!(
+            net.free_list_pops, 4,
+            "UT-0589-08: push mode must produce 4 free-list pops (positive control)"
+        );
+        assert!(
+            net.free_list.is_empty(),
+            "UT-0589-08: free_list must be empty after 4 pops"
         );
     }
 }

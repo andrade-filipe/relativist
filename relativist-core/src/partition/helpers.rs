@@ -389,6 +389,8 @@ pub fn build_subnet(
         is_in_delta_round: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
+        #[cfg(debug_assertions)]
+        free_list_pops: 0,
     }
 }
 
