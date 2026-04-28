@@ -1,7 +1,8 @@
 # SPEC-06: Wire Protocol
 
-**Status:** Revised v3
+**Status:** Revised v3.1 — `Message` enum amended per SPEC-21 §3.8 A2 (`RequestWork`/`NoMoreWork` variants + PROTOCOL_VERSION sequencing)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle)
+**Amends:** SPEC-21 §3.8 A2 (`Message` enum gains `RequestWork { worker_id: WorkerId }` and `NoMoreWork`; PROTOCOL_VERSION bump per defensive `PREVIOUS_LIVE_VERSION + 1` language; SPEC-21 R31, R37c)
 **Gray zones resolved:** ---
 **References consumed:** REF-001, REF-002, REF-003, REF-004, REF-013, REF-014
 **Discussions consumed:** DISC-005 v2 (cross-boundary protocol, serialization format), DISC-006 v2 (communication overhead, granularity, bincode vs [Int] comparison), DISC-008 v2 (shared-to-distributed transition, serialization as operational cost)
@@ -56,6 +57,21 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 - `Error`: reports an irrecoverable error during reduction.
 - `Register`: worker registration request with optional authentication token. Defined by SPEC-10 Section 4.3.
 **(MUST)**
+
+**R3a. Pull-Dispatch Variants (Amendment A2 — SPEC-21 §3.8 A2 / R31).** When the streaming pipeline (SPEC-21 §3.3 R17) is active under `DispatchMode::Pull` (SPEC-21 R34), the `Message` enum MUST include two additional variants:
+
+```rust
+RequestWork { worker_id: WorkerId },  // Worker -> Coordinator
+NoMoreWork,                            // Coordinator -> Worker
+```
+
+`RequestWork` is sent by the worker to indicate readiness for a new chunk. `NoMoreWork` is sent by the coordinator when the generator stream is exhausted. Both variants MUST be appended at the end of the `Message` enum (after `RegisterNack`) per R5 discriminant-stability rule, MUST serialize through SPEC-18 wire-format-v2 serde without modification to the framing layer (length-prefixed, bincode-encoded), and are mode-agnostic at the wire layer (per SPEC-21 R37e) but mode-specific at the FSM layer (push mode MUST NOT emit them; coordinators MUST NOT emit `NoMoreWork` in push mode; workers MUST NOT add defensive `NoMoreWork` handling to push-mode transitions). **(MUST when `DispatchMode::Pull`; ABSENT-FROM-WIRE when `DispatchMode::Push`)**
+
+> **Amendment A2 (SPEC-21 §3.8 A2 / R31, R37c, R37e):** Closes SC-001 part 1. The variants are required by R30-R32 pull dispatch. FSM-level scoping discipline lives in SPEC-13 §3.5/§3.6 (per SPEC-21 §3.8 A5).
+
+**R3b. PROTOCOL_VERSION Sequencing (Amendment A2 — SPEC-21 §3.8 A2 / R37c).** The `PROTOCOL_VERSION` constant (canonically owned by SPEC-18 §4.7 / R28; surfaced via `RegisterPayload.protocol_version`) MUST be bumped using **defensive `PREVIOUS_LIVE_VERSION + 1` language** rather than a hardcoded absolute integer. Concretely: `PROTOCOL_VERSION ← PREVIOUS_LIVE_VERSION + 1` (= 6 at the time of writing, given the current value 5 from SPEC-22 D-009 Phase A landing). This defensive sequencing prevents merge-order reshuffling between SPEC-20 / SPEC-21 / SPEC-22 from silently producing wrong absolute version numbers (mirrors SPEC-22 R9a / TASK-0476 precedent and the SPEC-20 R37 v3-vs-v4 pattern). Pre-bump deserializers MUST reject post-bump payloads with `ProtocolError::UnsupportedVersion`, mirroring SPEC-22 R10b's rejection clause. **(MUST)**
+
+> **Amendment A2 (SPEC-21 §3.8 A2 / R37c):** Closes SC-001 part 1 (version-bump half). The version bump itself happens in TASK-0576 (production), which depends on TASK-0476 (SPEC-22 wire-version-bump precedent). See also SPEC-18 R28 / §4.7 for the canonical constant declaration site.
 
 **R4.** Every variant of the `Message` enum MUST be serializable and deserializable via serde + bincode (confirmed technical decision, SPEC-02 R24). **(MUST)**
 
@@ -303,6 +319,23 @@ pub enum Message {
     /// Registration rejected. Coordinator -> Worker.
     /// Connection MUST be closed after sending this.
     RegisterNack(RegisterNackPayload),
+
+    // === Pull-Dispatch (SPEC-21 §3.8 A2 / R31) ===
+    //
+    // Active only under DispatchMode::Pull (SPEC-21 R34). Push-mode coordinators
+    // MUST NOT emit NoMoreWork; push-mode workers MUST NOT emit RequestWork.
+    // Variants are appended at end per R5 discriminant-stability rule.
+
+    /// Worker requests a new chunk after sending `PartitionResult`.
+    /// Worker -> Coordinator.
+    /// Sent in the worker's `AwaitingChunkAfterResult` state (SPEC-13 §3.6).
+    RequestWork { worker_id: WorkerId },
+
+    /// Coordinator signals that the generator stream is exhausted.
+    /// Coordinator -> Worker.
+    /// Sent in the coordinator's `SendingNoMoreWork` state (SPEC-13 §3.5).
+    /// The worker transitions to `FinalReduction` upon receipt.
+    NoMoreWork,
 }
 
 /// Registration payload. Defined by SPEC-10 Section 4.3.

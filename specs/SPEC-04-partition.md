@@ -1,8 +1,8 @@
 # SPEC-04: Net Partitioning
 
-**Status:** Revised v3.1 — §4.5 build_subnet amended per SPEC-22 §3.8 A7 (per-partition free-list + 4× sparse threshold)
+**Status:** Revised v3.2 — R12 amended per SPEC-21 §3.8 A1 (border-id allocation for streaming pipeline); §4.5 amended per SPEC-21 §3.8 A8 (split() unchanged; chunked pipeline additive)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine)
-**Amends:** SPEC-22 §3.8 A7 (build_subnet — populate per-partition free-list + sparse-build threshold)
+**Amends:** SPEC-22 §3.8 A7 (build_subnet — populate per-partition free-list + sparse-build threshold); SPEC-21 §3.8 A1 (R12 — dual-path border-id allocation: batch vs streaming); SPEC-21 §3.8 A8 (§4.5 — split() unchanged; chunked pipeline is an additive alternative entry point)
 **Gray zones resolved:** Z2 (partitioning strategy for IC nets)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, premises P1-P5), DISC-004 v2 (formal partitioning of IC nets, conditions C1-C3, allocation function, wire classification, isomorphism theorem)
@@ -82,7 +82,14 @@ These conditions are necessary and sufficient for invariant D1 (SPEC-01) to hold
 
 where `bid` is a unique border ID. The border map MUST record `bid -> (AgentPort(a1, p1), AgentPort(a2, p2))`. **(MUST)**
 
-**R12.** Border IDs MUST be globally unique and MUST NOT collide with pre-existing FreePort IDs in the net. New border IDs MUST start from `max_existing_freeport_id + 1` (AC-002: `borderStart = maxFreePortId(netWires) + 1`). **(MUST)**
+**R12.** Border IDs MUST be globally unique and MUST NOT collide with pre-existing FreePort IDs in the net. Border ID allocation depends on the partitioning entry point:
+
+- **Batch path (`split()` when `chunk_size = u32::MAX`):** New border IDs MUST start from `max_existing_freeport_id + 1` (AC-002: `borderStart = maxFreePortId(netWires) + 1`). This requires a single global scan of the full net before partitioning.
+- **Streaming path (`generate_and_partition_chunked`, SPEC-21 §3.3 R17):** Border IDs MUST start at 0 and increment monotonically when no Lafont FreePorts are present in any batch, OR at `max_lafont_freeport_id_in_first_batch + 1` when the first batch carries Lafont FreePorts. Generators that emit Lafont FreePorts SHOULD emit ALL of them in the first batch to simplify the discovery scan (SPEC-21 R29b). The `Partition.border_id_start` and `Partition.border_id_end` (R15a) MUST be set to the global range `[0, border_id_counter)` (or shifted by `max_lafont_freeport_id + 1` when Lafont FreePorts exist).
+
+The two paths produce non-overlapping but distinct border-id ranges; tests that exercise both `split()` and `generate_and_partition_chunked` MUST account for this (different absolute integers, same internal C3-bijectivity guarantee). **(MUST)**
+
+> **Amendment A1 (SPEC-21 §3.8 A1 / R29b):** The dual-path policy above closes SC-018. The streaming pipeline cannot perform a single global scan of "the full net" because the full net does not exist until the stream is exhausted. The first-batch scan is the streaming-equivalent of the batch path's pre-partition scan. See SPEC-21 §3.3 R17 (`generate_and_partition_chunked`) and §4.8 (partition `border_id_start`/`border_id_end` propagation).
 
 **R13.** Each partition MUST maintain a FreePort index (`HashMap<u32, PortRef>`) that maps each `borderId` present in that partition to the local `AgentPort` connected to the corresponding `FreePort(bid)`. This index enables O(1) lookup during merge, eliminating the linear scan of the Haskell prototype (`freePortNeighbor`, AC-002 L3). **(MUST)**
 
@@ -279,6 +286,8 @@ A `DISCONNECTED` target (transient state during reduction, cf. SPEC-02) is ignor
 To avoid processing each border wire twice (once from each side), the split MUST use the convention: a border wire is DETECTED only from the side with the smaller AgentId (`a.id < b.id`), but FreePort entries are generated for BOTH partitions in a single pass. Both `border_entries[sigma(a)]` and `border_entries[sigma(b)]` receive an entry from the same detection step.
 
 ### 4.5 The split Algorithm
+
+> **Amendment A8 (SPEC-21 §3.8 A8 / SC-001 part 4):** `split()` is UNCHANGED — same semantics, same R-numbers (R6/R12/R16-R18/R28). The chunked pipeline introduced by SPEC-21 (`generate_and_partition_chunked`, §3.3 R17) is an ALTERNATIVE entry point, selected when `GridConfig.chunk_size != u32::MAX`. The two paths produce structurally compatible output: `split()` returns `PartitionPlan`; `generate_and_partition_chunked` returns `ChunkedPartitionResult { partitions, borders, stats }`, which is convertible to `PartitionPlan` per SPEC-21 R20-R21. `split()` remains the fallback for the v1 backward-compat path under SPEC-21 R26 (short-circuit when `chunk_size = u32::MAX`). The two entry points are non-overlapping but coexistent. This clarification documents the additive nature explicitly so that downstream readers of SPEC-04 are not surprised by SPEC-21's parallel pipeline.
 
 ```
 fn split(net: &Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> PartitionPlan

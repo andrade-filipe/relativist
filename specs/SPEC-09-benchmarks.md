@@ -1,7 +1,8 @@
 # SPEC-09: Benchmark Suite
 
-**Status:** Revised v3.1.1 — per-benchmark round columns split into lenient/strict, cascade_cross benchmark added, and R17d (ChurchSumOfSquares) aligned with implementation (pre-encoded Church squares folded by `wire_add_into`)
+**Status:** Revised v3.1.2 — R2 amended per SPEC-21 §3.8 A4 (`Benchmark` trait gains `make_net_stream` with default impl)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-12 (User I/O -- canonical generators), SPEC-14 (Arithmetic Encoding -- Church numeral benchmarks)
+**Amends:** SPEC-21 §3.8 A4 (R2 — `Benchmark` trait gains `fn make_net_stream(&self, size, chunk_size) -> Box<dyn Iterator<Item = AgentBatch>>` with default impl that wraps `make_net`; SPEC-21 R10, R11, R12)
 **Gray zones resolved:** Z4 (communication overhead vs. parallelism benefit), Z6 (scalability transfer from shared to distributed memory), Z7 (work granularity)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-007 (Casanova 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015), REF-017 (Foster, Kesselman, Tuecke 2001)
 **Discussions consumed:** DISC-003 v2 (strong confluence to distributed determinism, P1-P5), DISC-006 v2 (overhead anatomy, break-even analysis, workload profiles), DISC-008 v2 (shared-to-distributed transition, 6 operational dimensions)
@@ -54,7 +55,32 @@ pub trait Benchmark {
     fn describe(&self, size: u32) -> String;
 
     /// Generate the input net for the specified size.
+    /// This is the source-of-truth materialization path; it remains a
+    /// required method (no default impl) so the streaming default has a
+    /// fallback. See SPEC-21 R11.
     fn make_net(&self, size: u32) -> Net;
+
+    /// Generate the input net as a streaming iterator of `AgentBatch`.
+    /// Default implementation (per SPEC-21 §3.8 A4 / R10): collect the
+    /// eager net via `make_net` and slice it into chunks via the
+    /// `default_chunked_iter` helper (lives in `src/bench/streaming.rs`,
+    /// see SPEC-21 §3.2 R10). The default-impl path materializes the net
+    /// then slices it (memory-equivalent to v1; no streaming benefit, but
+    /// no break). Generators that benefit from native streaming (per
+    /// SPEC-21 R12: `ep_annihilation` MUST override; others SHOULD)
+    /// override this method. R10 ↔ R11 isomorphism contract: when the
+    /// streaming variant is collected, it MUST produce a net isomorphic
+    /// to `make_net(size)` (T6, §7.2 of SPEC-21).
+    ///
+    /// All 13 existing SPEC-09 implementations remain valid without
+    /// per-implementation edits via this default impl.
+    fn make_net_stream(
+        &self,
+        size: u32,
+        chunk_size: usize,
+    ) -> Box<dyn Iterator<Item = AgentBatch>> {
+        Box::new(default_chunked_iter(self.make_net(size), chunk_size))
+    }
 
     /// Default sizes for this benchmark (logarithmic variation).
     fn default_sizes(&self) -> Vec<u32>;
@@ -64,6 +90,22 @@ pub trait Benchmark {
     fn verify(&self, sequential_result: &Net, distributed_result: &Net) -> bool;
 }
 ```
+
+> **Amendment A4 (SPEC-21 §3.8 A4 / R10, R11, R12):** Closes SC-008. The default-impl decision is the lower-friction choice and matches SPEC-09's posture of additive trait extensions. Without the default, the trait change would force ~520 LoC of mechanical implementation across 13 benchmarks even for those that derive no benefit from streaming. Total Phase B effort estimate: ~30 LoC for the trait amendment + `default_chunked_iter` helper, plus per-generator overrides on opt-in basis. The `AgentBatch` type is defined in SPEC-21 §4.1. Native-streaming overrides per benchmark:
+>
+> | Benchmark | Native streaming benefit | Override status |
+> |-----------|--------------------------|-----------------|
+> | `ep_annihilation` (R9 family) | YES — independent ERA-ERA pairs, no cross-batch wires | OVERRIDE per SPEC-21 R12 MUST |
+> | `ep_annihilation_con` (R10) | YES — independent CON-CON pairs | OVERRIDE per R12 SHOULD |
+> | `ep_annihilation_dup` (R11) | YES — independent DUP-DUP pairs | OVERRIDE per R12 SHOULD |
+> | `dual_tree` | YES — but requires forward references (SPEC-21 §4.7) | OVERRIDE per R12 SHOULD |
+> | `mixed_net` | NO — small fixed sizes; default-impl path acceptable | DEFAULT |
+> | `church_add` (SPEC-14) | TBD — depends on encoder API stability | DEFAULT |
+> | `church_mul` (SPEC-14) | TBD | DEFAULT |
+> | `m5_*` (M5 milestone family) | YES — large nets benefit most | OVERRIDE per R12 SHOULD (deferred to M5 tasks) |
+> | Remaining benchmarks | NO (small / synthetic) | DEFAULT |
+>
+> No regression risk: existing test counts pass via the default-impl path until a benchmark explicitly opts into override.
 
 **R3.** The framework MUST execute a sequential baseline (`reduce_all`) for each (benchmark, size) combination before any distributed execution. The sequential result MUST be preserved for correctness verification across all worker configurations. **(MUST)**
 

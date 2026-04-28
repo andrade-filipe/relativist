@@ -26,15 +26,18 @@ All 6 SDD stages shipped. Test floor advanced **1308 → 1464 default / 1351 →
 
 **Deferred to follow-up:** QA-D009-001 (CompactSubnet wire format silently drops free_list) — requires SPEC-19 amendment. Tracked as `docs/backlog/TASK-0595-compactsubnet-free-list-followup.md`.
 
-### D-010: Online / Streaming Graph Partitioning — NEXT
+### D-010: Online / Streaming Graph Partitioning — Phase A CLOSED 2026-04-27
 
 **Spec:** SPEC-21 §3 (streaming partition strategy trait).
 **Prereqs:** SparseNet + free-list (delivered by D-009 ✅).
 **Tasks:** TASK-0510..0554 + 0565/0567/0568/0575-0578/0588-0591 already split (Pre-DEV Wave 2 second half closed in `131ca26`); 49 TEST-SPECs already written.
-**Stage:** 3 — DEV (Stages 1 SPLITTING and 2 TESTS are DONE; nothing to do at Stages 0-2).
-**Test floor entering D-010:** 1464 default / 1507 zero-copy. v1 floor: 690.
 
-**Next action:** invoke the **developer** agent for D-010 Phase B implementation. Pre-DEV split structure already in `docs/backlog/`; consult `BACKLOG.md` for the SPEC-21 task block.
+**Phase A — Spec amendments A1..A8 (TASK-0510..0517):** ✅ LANDED 2026-04-27. SPEC-21 §3.8 amendments propagated verbatim into 7 predecessor specs (SPEC-04 takes both A1+A8). Closure log: `docs/spec-reviews/CLOSURE-D010-amendments-A1A8-2026-04-27.md`. PROTOCOL_VERSION uses defensive `PREVIOUS_LIVE_VERSION + 1` language per task constraint. Spec-only diff: 7 files, 180 insertions, 13 deletions; no code/tests touched.
+
+**Stage:** 3 — DEV (Stages 1 SPLITTING, 2 TESTS, and Phase A amendment landing are DONE).
+**Test floor entering D-010 Phase B:** 1464 default / 1507 zero-copy. v1 floor: 690.
+
+**Next action:** invoke the **developer** agent for D-010 Phase B implementation. Pre-DEV split structure already in `docs/backlog/`; consult `BACKLOG.md` for the SPEC-21 task block. The PROTOCOL_VERSION bump itself is TASK-0576 (production), depending on TASK-0476 (SPEC-22 wire-version-bump precedent already landed in D-009 Phase B).
 
 ---
 

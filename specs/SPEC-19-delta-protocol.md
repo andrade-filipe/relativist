@@ -1,8 +1,8 @@
 # SPEC-19: Delta Protocol and Stateful Workers
 
-**Status:** Draft — §3.2 R8-R12 amended per SPEC-22 §3.8 A10 (BorderGraph recycle-policy-aware contract)
+**Status:** Draft — §3.2 R8-R12 amended per SPEC-22 §3.8 A10 (BorderGraph recycle-policy-aware contract); §3.2 amended per SPEC-21 §3.8 A7 (BorderGraph gains `extend_with_chunk_borders` method)
 **Depends on:** SPEC-01 (Invariants), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-17 (Transport Abstraction), SPEC-18 (Wire Format v2)
-**Amends:** SPEC-22 §3.8 A10 (§3.2 BorderGraph — recycle-protection under delta mode; RecyclePolicy, protected tombstones)
+**Amends:** SPEC-22 §3.8 A10 (§3.2 BorderGraph — recycle-protection under delta mode; RecyclePolicy, protected tombstones); SPEC-21 §3.8 A7 (§3.2 BorderGraph gains `extend_with_chunk_borders(&mut self, new_borders: &HashMap<u32, (PortRef, PortRef)>)` for incremental border merging under `delta_mode && streaming_active`; SPEC-21 R37f)
 **Amends:** SPEC-01 G1, D3, D6; SPEC-05 R24-R30a; SPEC-06 R2, R3
 **ROADMAP items:** 2.26 (Delta-Only Protocol with Stateful Workers), 2.34 (Coordinator-Free Round), 2.35 (Delta-Based Merge with BorderGraph)
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-005 (Mackie & Pinto 2002), REF-013 (Mackie 1997), REF-014 (Kahl 2015)
@@ -105,6 +105,29 @@ This section specifies the `BorderGraph` data structure and the delta-based merg
 > **Protected tombstones (R10c):** When `remove_agent(id)` is called on a worker whose `id` IS border-referenced in the coordinator's `BorderGraph`, the agent's port slots MUST still be set to `DISCONNECTED`, the slot MUST be set to `agents[id] = None`, but the ID MUST NOT be pushed to the free-list. The slot becomes a *protected tombstone* that persists until the next `reconstruct`/clean-boundary moment.
 >
 > **Threat model prevented:** Round N produces border `B = (border_id, AgentPort(47, 0), AgentPort(123, 0))`; in round N+1 a worker recycles ID 47 to a different `Symbol`; coordinator dispatches a `CommutationBatch` indexing `AgentPort(47, 0)`; the worker's local `agents[47]` now resolves to a different rule than the BorderGraph computed → G1 violation. R12a/R10b prevent the recycle in step 2. Closes SC-005. See SPEC-22 R10b, R10c.
+
+**(MUST)**
+
+**R12b. BorderGraph — Incremental Extension API for Streaming Pipeline (Amendment A7)**
+
+> **Amendment A7 (SPEC-21 §3.8 A7 / R37f):** The `BorderGraph` MUST provide a method:
+>
+> ```rust
+> pub fn extend_with_chunk_borders(
+>     &mut self,
+>     new_borders: &HashMap<u32, (PortRef, PortRef)>,
+> )
+> ```
+>
+> **Method semantics:**
+> - Merges new border entries into the existing `BorderGraph`, populating one fresh `BorderState` per `(border_id, (side_a, side_b))` pair using the same convention as R10 (initialization from a `PartitionPlan`'s border map).
+> - MUST be called by the coordinator after each `install_connection` invocation (SPEC-21 §4.6) that yields a border wire under the conjunction `delta_mode && streaming_active`, BEFORE the next chunk's `AssignPartition` is dispatched.
+> - **Idempotent on previously-seen border IDs:** if a `border_id` already exists in the graph, the method MUST leave its `BorderState` unchanged (preserving any deltas already applied via R11 `apply_deltas`).
+> - **No-op if `new_borders.is_empty()`:** safe to call unconditionally.
+>
+> **Call-site discipline (per SPEC-21 R37f).** Without this extension API, the coordinator's `BorderGraph` becomes stale after chunk 1 under combined delta+streaming, missing cross-chunk active pairs and silently violating G1. The when-to-call contract is owned by SPEC-21 R37f; the implementation contract is owned by SPEC-19 (this requirement). The actual call-site production is TASK-0588.
+>
+> **Ownership split (per SC-017 closure).** SPEC-19 owns the `extend_with_chunk_borders` implementation; SPEC-21 owns the call-site discipline.
 
 **(MUST)**
 
