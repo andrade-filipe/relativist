@@ -244,6 +244,7 @@ fn protocol_version_documented_in_source() {
 // and the constant was updated at each step). Exact value is NOT asserted — that
 // would couple to landing order.
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn previous_live_version_constant_is_nonzero_and_below_current() {
     assert!(
         PREVIOUS_LIVE_VERSION > 0,
