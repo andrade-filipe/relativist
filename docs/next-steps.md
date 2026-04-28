@@ -6,34 +6,35 @@
 
 **Maintained by:** sdd-pipeline agent (see `docs/WORKFLOWS.md`)
 
-### Active Bundle — Tier 3 (Memory Efficiency) — D-009 OPEN
+### Active Bundle — Tier 3 (Memory Efficiency) — D-010 NEXT (D-009 CLOSED)
 
-**Opened:** 2026-04-27 (D-006 Tier 2 closed; advancing to Tier 3).
-**Authoritative plan:** `C:\Users\Filipe\.claude\plans\kind-shimmying-harbor.md` (master) + `docs/plans/2026-04-24-tier-4-master-plan.md` §3.
+**Authoritative plan:** `docs/plans/2026-04-24-tier-4-master-plan.md` §3.
 
-### D-009: SPEC-22 Arena Management — Stage 3 DEV (Amendment Wave)
+### D-009: SPEC-22 Arena Management — ✅ CLOSED 2026-04-27
 
-**Current stage:** 3 — DEV (Stage 1 SPLITTING and Stage 2 TESTS are DONE)
-**Test baseline entering D-009:** 1308 default / 1351 zero-copy. v1 floor: 690. These are the new floor.
+All 6 SDD stages shipped. Test floor advanced **1308 → 1464 default / 1351 → 1507 zero-copy** (+156 / +156). Commits:
+- `01184f1` Phase A — 10 spec amendments A1..A10 (SPEC-01/02/03/04/05/18/19)
+- `47d9bf2` Phase B — free-list core (Net.free_list, create/remove_agent, merge reconciliation)
+- `d6411be` Phase C Wave 1+2 — SparseNet + conversions + I3' assertions
+- `c36a999` Phase C Wave 3 — CI lint guards (R23/R31) + integration regression suite
+- `0d7c4a8` Stage 6 Wave 1 — reviewer fixes (MF-001..002, SF-001..003)
+- `d74d527` Stage 6 Wave 2 — QA CRITICAL fixes (validate_free_list on deserialize, border_entries_shadow population, merge dedupe, to_dense bound, inverted-range error)
+- `bb1057f` Stage 6 Wave 3 — QA HIGH fixes (is_behaviorally_equal multiset/ordered, empty-partition id_range)
+- `92145a0` Stage 6 Wave 4 — QA MEDIUM/LOW (CI regex tightening, AgentId overflow, SparseNet write_port guard)
 
-**Stage history:**
-- [x] SPLITTING: 2026-04-25 (task-splitter) — TASK-0460..0500 exist in `docs/backlog/`
-- [x] TESTS: 2026-04-25 (test-generator) — TEST-SPEC-0460..0500 exist in `docs/tests/`
-- [ ] DEV: pending (developer)
-- [ ] REVIEW: pending (reviewer)
-- [ ] QA: pending (qa)
-- [ ] REFACTOR: pending (developer)
+**Audit artefacts:** `docs/reviews/REVIEW-PHASE-D009-spec22-arena-2026-04-27.md` (verdict ACCEPT_WITH_FIXES; 2 MF + 3 SF) and `docs/qa/QA-PHASE-D009-spec22-arena-2026-04-27.md` (5 CRITICAL + 3 HIGH + 6 MEDIUM/LOW).
 
-**D-009 phase order (dependency-driven):**
-1. Phase A: Spec amendments (TASK-0460..0469) — 10 tasks, ~S each, pure doc changes to SPEC-01/02/03/04/05/18/19/22
-2. Phase B: Free-list core (TASK-0471..0484) — 12 tasks, net/reduction changes (~2,070 LoC production)
-3. Phase D: SparseNet (TASK-0486..0500) — 14 tasks, new `SparseNet` type + dense integration
-4. Phase E: Integration gate — TASK-0500 v1-compat regression (final gate)
+**Deferred to follow-up:** QA-D009-001 (CompactSubnet wire format silently drops free_list) — requires SPEC-19 amendment. Tracked as `docs/backlog/TASK-0595-compactsubnet-free-list-followup.md`.
 
-**Phase A complete (2026-04-27):** TASK-0460..0469 — all 10 spec amendments (A1..A10) landed verbatim in SPEC-01/02/03/04/05/18/19. Closure log: `docs/spec-reviews/CLOSURE-D009-amendments-A1A10-2026-04-27.md`.
+### D-010: Online / Streaming Graph Partitioning — NEXT
 
-**Next action:** invoke the **developer** agent for Phase B (free-list core implementation).
-Tell it: "Implement TASK-0471 through TASK-0484 (SPEC-22 free-list core: create_agent, remove_agent, Net struct field, partition free-list population, merge reconciliation, BorderGraph protected tombstones). Test specs: docs/tests/TEST-SPEC-0471..0484. Parent spec: specs/SPEC-22-arena-management.md. Branch: v2-development. Floor: 1308 default / 1351 zero-copy."
+**Spec:** SPEC-21 §3 (streaming partition strategy trait).
+**Prereqs:** SparseNet + free-list (delivered by D-009 ✅).
+**Tasks:** TASK-0510..0554 + 0565/0567/0568/0575-0578/0588-0591 already split (Pre-DEV Wave 2 second half closed in `131ca26`); 49 TEST-SPECs already written.
+**Stage:** 3 — DEV (Stages 1 SPLITTING and 2 TESTS are DONE; nothing to do at Stages 0-2).
+**Test floor entering D-010:** 1464 default / 1507 zero-copy. v1 floor: 690.
+
+**Next action:** invoke the **developer** agent for D-010 Phase B implementation. Pre-DEV split structure already in `docs/backlog/`; consult `BACKLOG.md` for the SPEC-21 task block.
 
 ---
 
