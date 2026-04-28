@@ -342,6 +342,102 @@ fn default_solo_budget() -> u32 {
     10_000
 }
 
+// ---------------------------------------------------------------------------
+// SPEC-21 §3.8 A3 — streaming strategy selector + dispatch mode
+// ---------------------------------------------------------------------------
+
+/// Streaming partition strategy selector (SPEC-21 §3.8 A3 / R25).
+///
+/// `GridConfig.streaming_strategy` selects which `StreamingPartitionStrategy`
+/// implementation to use.  `RoundRobin` is the default and requires no
+/// extra parameters.  `Fennel` activates the Fennel balanced-partition
+/// heuristic with the given balance factor `alpha`.
+///
+/// This is a *config* type — it is serializable and clonable. The concrete
+/// `Box<dyn StreamingPartitionStrategy>` is produced by [`StreamingStrategyConfig::build`].
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub enum StreamingStrategyConfig {
+    /// Cyclic (round-robin) assignment: batch agent k → worker k % num_workers.
+    #[default]
+    RoundRobin,
+    /// Fennel balanced partition heuristic (SPEC-21 R5).
+    /// `alpha` controls the balance penalty: larger `alpha` → stronger balance preference.
+    Fennel {
+        /// Fennel balance factor; must be > 0.0. Default: 1.0.
+        alpha: f32,
+    },
+}
+
+impl PartialEq for StreamingStrategyConfig {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StreamingStrategyConfig::RoundRobin, StreamingStrategyConfig::RoundRobin) => true,
+            (
+                StreamingStrategyConfig::Fennel { alpha: a },
+                StreamingStrategyConfig::Fennel { alpha: b },
+            ) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+// Eq is sound because PartialEq is based on bit equality (not NaN-aware f32 compare).
+impl Eq for StreamingStrategyConfig {}
+
+impl StreamingStrategyConfig {
+    /// Build a boxed `StreamingPartitionStrategy` for the configured variant.
+    ///
+    /// `num_workers` is required because the strategies are initialized with
+    /// knowledge of the worker count.
+    pub fn build(&self, num_workers: u32) -> Box<dyn crate::partition::StreamingPartitionStrategy> {
+        match self {
+            StreamingStrategyConfig::RoundRobin => Box::new(
+                crate::partition::RoundRobinStreamingStrategy::new(num_workers),
+            ),
+            StreamingStrategyConfig::Fennel { alpha } => Box::new(
+                crate::partition::FennelStreamingStrategy::new(num_workers, *alpha as f64),
+            ),
+        }
+    }
+}
+
+fn default_streaming_strategy() -> StreamingStrategyConfig {
+    StreamingStrategyConfig::RoundRobin
+}
+
+fn default_chunk_size() -> u32 {
+    // SPEC-21 §3.3 R24 — placeholder default pending SC-024 benchmark calibration.
+    // Q2 / SC-024: this value will be tuned after Phase 3 LAN benchmarks.
+    10_000
+}
+
+fn default_max_pending_lifetime() -> u32 {
+    16
+}
+
+fn default_dispatch_mode() -> DispatchMode {
+    DispatchMode::Auto
+}
+
+/// Pull-dispatch mode selector (SPEC-21 §3.6 R34).
+///
+/// Controls whether the coordinator uses push dispatch (v1 / batch) or
+/// pull dispatch (SPEC-21 R30-R32). `Auto` resolves at runtime: when
+/// `chunk_size == u32::MAX` (R26 short-circuit) it behaves as `Push`;
+/// when `chunk_size < u32::MAX && estimated stream length > num_workers`
+/// it behaves as `Pull`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchMode {
+    /// Automatic selection: uses Push when chunk_size == u32::MAX, Pull otherwise.
+    #[default]
+    Auto,
+    /// Force push mode: coordinator sends all partitions eagerly (v1 / R26 compatible).
+    Push,
+    /// Force pull mode: coordinator waits for RequestWork before sending next chunk.
+    Pull,
+}
+
 /// Configuration for the grid loop (SPEC-05, R25, R29, R30a; SPEC-19 §3.6; SPEC-20 §3.4).
 ///
 /// The partition strategy is NOT stored here because trait objects
@@ -534,6 +630,54 @@ pub struct GridConfig {
     #[serde(default)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub recycle_under_delta: crate::net::core::RecyclePolicy,
+
+    // -----------------------------------------------------------------------
+    // SPEC-21 §3.8 A3 — streaming generation fields (append at tail per
+    // bincode discriminant-ordering rule; serde(default) preserves
+    // backward-compat for old config files and bincode streams).
+    // -----------------------------------------------------------------------
+    /// Target chunk size for streaming generation (SPEC-21 §3.3 R24).
+    ///
+    /// Number of agents per `AgentBatch`.  When set to `u32::MAX` (sentinel),
+    /// the pipeline takes the R26 short-circuit path: the full stream is
+    /// materialised via the default `make_net_stream` impl and delegated to
+    /// SPEC-04 `split()` directly.
+    ///
+    /// **Default: 10_000** (placeholder; calibrated post-SC-024 / Q2).
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: u32,
+
+    /// Streaming partition strategy (SPEC-21 §3.4 R25).
+    ///
+    /// Selects the `StreamingPartitionStrategy` used when the pipeline
+    /// operates in streaming mode (i.e., `chunk_size != u32::MAX`).
+    /// The factory method [`StreamingStrategyConfig::build`] produces
+    /// a boxed `dyn StreamingPartitionStrategy` on demand.
+    ///
+    /// **Default: `RoundRobin`** (zero-configuration, R11).
+    #[serde(default = "default_streaming_strategy")]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub streaming_strategy: StreamingStrategyConfig,
+
+    /// Pull-dispatch mode selector (SPEC-21 §3.6 R34).
+    ///
+    /// When `Auto`, the coordinator resolves at runtime: `Push` when
+    /// `chunk_size == u32::MAX`, `Pull` otherwise (subject to stream-length
+    /// estimate). Use `Push` or `Pull` to force a specific mode.
+    ///
+    /// **Default: `Auto`**.
+    #[serde(default = "default_dispatch_mode")]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub dispatch_mode: DispatchMode,
+
+    /// Maximum number of unresolved pending connections before the pipeline
+    /// reports an error (SPEC-21 §3.7 R37g).
+    ///
+    /// A `Pending` directive that remains unresolved after more than
+    /// `max_pending_lifetime` batches indicates a malformed stream
+    /// (the target agent was never emitted). Default: 16 batches.
+    #[serde(default = "default_max_pending_lifetime")]
+    pub max_pending_lifetime: u32,
 }
 
 impl Default for GridConfig {
@@ -557,6 +701,11 @@ impl Default for GridConfig {
             solo_budget: 10_000,
             // SPEC-22 R10b: default is Strategy A (conservative, G1-safe).
             recycle_under_delta: crate::net::core::RecyclePolicy::DisableUnderDelta,
+            // SPEC-21 §3.8 A3: streaming fields (additive defaults, R42-compatible).
+            chunk_size: 10_000,
+            streaming_strategy: StreamingStrategyConfig::RoundRobin,
+            dispatch_mode: DispatchMode::Auto,
+            max_pending_lifetime: 16,
         }
     }
 }
@@ -1266,5 +1415,147 @@ mod tests {
             assert_eq!(back.interactions_by_rule, original.interactions_by_rule);
             assert_eq!(back.has_border_activity, original.has_border_activity);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0565: GridConfig streaming fields (SPEC-21 §3.8 A3)
+    // -----------------------------------------------------------------------
+
+    // UT-0565-01: Default streaming fields match SPEC-21 §3.8 A3 normative
+    // defaults: chunk_size=10_000, RoundRobin strategy, Auto dispatch mode,
+    // max_pending_lifetime=16.
+    #[test]
+    fn ut_0565_01_default_streaming_fields() {
+        let cfg = GridConfig::default();
+        assert_eq!(
+            cfg.chunk_size, 10_000,
+            "SPEC-21 R24: default chunk_size must be 10_000"
+        );
+        assert_eq!(
+            cfg.streaming_strategy,
+            StreamingStrategyConfig::RoundRobin,
+            "SPEC-21 R25: default streaming_strategy must be RoundRobin"
+        );
+        assert_eq!(
+            cfg.dispatch_mode,
+            DispatchMode::Auto,
+            "SPEC-21 R34: default dispatch_mode must be Auto"
+        );
+        assert_eq!(
+            cfg.max_pending_lifetime, 16,
+            "SPEC-21 R37g: default max_pending_lifetime must be 16"
+        );
+    }
+
+    // UT-0565-02: Additive-compat regression — JSON missing the new fields
+    // deserializes cleanly and applies defaults (serde(default) guard).
+    #[test]
+    fn ut_0565_02_json_missing_streaming_fields_applies_defaults() {
+        // A JSON object that predates SPEC-21 (contains only the v1 fields).
+        // Note: RecyclePolicy serde is PascalCase ("DisableUnderDelta" not "disable_under_delta").
+        let v1_json = r#"{"num_workers":4,"max_rounds":null,"strict_bsp":false,"delta_mode":false,"coordinator_free_rounds":false,"hybrid_coordinator":false,"elastic_departure":false,"retain_partitions":false,"elastic_join":false,"checkpoint_partitions":false,"initial_wait_timeout":{"secs":30,"nanos":0},"join_window_min":{"secs":0,"nanos":50000000},"join_window_max":{"secs":0,"nanos":500000000},"solo_budget":10000,"recycle_under_delta":"DisableUnderDelta"}"#;
+        let cfg: GridConfig =
+            serde_json::from_str(v1_json).expect("old config file MUST deserialize cleanly");
+        assert_eq!(
+            cfg.chunk_size, 10_000,
+            "additive-compat: chunk_size must default to 10_000 when absent from JSON"
+        );
+        assert_eq!(
+            cfg.streaming_strategy,
+            StreamingStrategyConfig::RoundRobin,
+            "additive-compat: streaming_strategy must default to RoundRobin when absent from JSON"
+        );
+        assert_eq!(
+            cfg.dispatch_mode,
+            DispatchMode::Auto,
+            "additive-compat: dispatch_mode must default to Auto when absent from JSON"
+        );
+    }
+
+    // UT-0565-03: streaming_strategy.build(4) for RoundRobin returns a strategy
+    // that assigns agents cyclically across 4 workers.
+    #[test]
+    fn ut_0565_03_build_round_robin_strategy() {
+        use crate::net::Symbol;
+        use crate::partition::streaming::AgentBatch;
+        let mut strat = StreamingStrategyConfig::RoundRobin.build(4);
+        let batch = AgentBatch {
+            agents: vec![
+                (0, Symbol::Con),
+                (1, Symbol::Era),
+                (2, Symbol::Dup),
+                (3, Symbol::Con),
+            ],
+            connections: vec![],
+        };
+        let assignments = strat.allocate_batch(&batch, 4);
+        // RoundRobin: agent 0→w0, 1→w1, 2→w2, 3→w3 — assignments are (AgentId, WorkerId) tuples
+        let worker_ids: Vec<u32> = assignments.iter().map(|&(_, w)| w).collect();
+        assert_eq!(
+            worker_ids,
+            vec![0, 1, 2, 3],
+            "RoundRobin must distribute cyclically"
+        );
+    }
+
+    // UT-0565-04: streaming_strategy.build(2) for Fennel { alpha: 1.0 } returns a Fennel
+    // strategy (can accept a batch without panicking).
+    #[test]
+    fn ut_0565_04_build_fennel_strategy() {
+        use crate::net::Symbol;
+        use crate::partition::streaming::AgentBatch;
+        let mut strat = StreamingStrategyConfig::Fennel { alpha: 1.0 }.build(2);
+        let batch = AgentBatch {
+            agents: vec![(0, Symbol::Con), (1, Symbol::Era)],
+            connections: vec![],
+        };
+        let assignments = strat.allocate_batch(&batch, 2);
+        assert_eq!(
+            assignments.len(),
+            2,
+            "Fennel strategy must assign every agent in the batch"
+        );
+        for &(_, w) in &assignments {
+            assert!(w < 2, "all worker IDs must be < num_workers");
+        }
+    }
+
+    // UT-0565-05: DispatchMode variants serialize round-trip correctly.
+    #[test]
+    fn ut_0565_05_dispatch_mode_serde_roundtrip() {
+        for mode in [DispatchMode::Auto, DispatchMode::Push, DispatchMode::Pull] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let back: DispatchMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, back, "DispatchMode serde round-trip must be identity");
+        }
+    }
+
+    // UT-0565-06: StreamingStrategyConfig::Fennel bit-equality for PartialEq/Eq.
+    #[test]
+    fn ut_0565_06_streaming_strategy_config_eq_bit_identical_floats() {
+        let a = StreamingStrategyConfig::Fennel { alpha: 1.5_f32 };
+        let b = StreamingStrategyConfig::Fennel { alpha: 1.5_f32 };
+        assert_eq!(a, b, "Fennel configs with identical alpha bits must be Eq");
+    }
+
+    // UT-0565-07: chunk_size == u32::MAX sentinel: the field is storable/readable.
+    #[test]
+    fn ut_0565_07_chunk_size_max_sentinel_storable() {
+        let cfg = GridConfig {
+            chunk_size: u32::MAX,
+            ..GridConfig::default()
+        };
+        assert_eq!(
+            cfg.chunk_size,
+            u32::MAX,
+            "u32::MAX sentinel must round-trip through GridConfig"
+        );
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: GridConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.chunk_size,
+            u32::MAX,
+            "u32::MAX must survive JSON round-trip"
+        );
     }
 }

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::error::RelativistError;
-use crate::merge::GridConfig;
+use crate::merge::{DispatchMode, GridConfig, StreamingStrategyConfig};
 use crate::partition::{ContiguousIdStrategy, PartitionStrategy};
 use crate::protocol::NodeConfig;
 
@@ -30,6 +30,7 @@ pub struct Cli {
 /// 7 subcommands total: the original 4 from SPEC-07 (`coordinator`,
 /// `worker`, `local`, `generate`) plus 3 from SPEC-13 (`reduce`,
 /// `inspect`, `compute`).
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run as coordinator: load a network, partition, distribute to workers, merge results.
@@ -96,6 +97,47 @@ pub enum LogFormat {
     Text,
     /// Structured JSON output.
     Json,
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-21 §3.8 A3 — streaming strategy + dispatch mode CLI value enums
+// ---------------------------------------------------------------------------
+
+/// CLI value enum for `--streaming-strategy` (SPEC-21 R25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum StreamingStrategyArg {
+    /// Cyclic round-robin assignment.
+    #[default]
+    #[value(name = "round-robin")]
+    RoundRobin,
+    /// Fennel balanced partition heuristic (requires `--fennel-alpha`).
+    #[value(name = "fennel")]
+    Fennel,
+}
+
+/// CLI value enum for `--dispatch-mode` (SPEC-21 R34).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum DispatchModeArg {
+    /// Automatic selection (default).
+    #[default]
+    #[value(name = "auto")]
+    Auto,
+    /// Force push dispatch.
+    #[value(name = "push")]
+    Push,
+    /// Force pull dispatch.
+    #[value(name = "pull")]
+    Pull,
+}
+
+impl From<DispatchModeArg> for DispatchMode {
+    fn from(arg: DispatchModeArg) -> Self {
+        match arg {
+            DispatchModeArg::Auto => DispatchMode::Auto,
+            DispatchModeArg::Push => DispatchMode::Push,
+            DispatchModeArg::Pull => DispatchMode::Pull,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +282,34 @@ pub struct CoordinatorArgs {
     #[arg(long, default_value_t = 10_000)]
     pub solo_budget: u32,
 
+    // -----------------------------------------------------------------------
+    // SPEC-21 §3.8 A3 — streaming generation flags (TASK-0568)
+    // -----------------------------------------------------------------------
+    /// Streaming chunk size: agents per AgentBatch (SPEC-21 R24).
+    /// Use 4294967295 (u32::MAX) to disable streaming and fall back to
+    /// SPEC-04 split() directly (R26 short-circuit). Default: 10000.
+    /// NOTE: SC-024 — this default will be calibrated after Phase 3 LAN benchmarks.
+    #[arg(long, default_value_t = 10_000)]
+    pub chunk_size: u32,
+
+    /// Streaming partition strategy (SPEC-21 R25).
+    /// `round-robin` (default) or `fennel` (requires --fennel-alpha).
+    #[arg(long, value_enum, default_value_t = StreamingStrategyArg::RoundRobin)]
+    pub streaming_strategy: StreamingStrategyArg,
+
+    /// Fennel balance factor (only valid with --streaming-strategy=fennel) (SPEC-21 R5).
+    #[arg(long, requires = "streaming_strategy")]
+    pub fennel_alpha: Option<f32>,
+
+    /// Pull-dispatch mode (SPEC-21 R34): auto | push | pull.
+    #[arg(long, value_enum, default_value_t = DispatchModeArg::Auto)]
+    pub dispatch_mode: DispatchModeArg,
+
+    /// Maximum number of batches a pending forward-reference may remain
+    /// unresolved before the pipeline reports an error (SPEC-21 R37g).
+    #[arg(long, default_value_t = 16)]
+    pub max_pending_lifetime: u32,
+
     /// TLS certificate file (PEM), requires --tls-key (SPEC-10 R25).
     #[cfg(feature = "tls")]
     #[arg(long)]
@@ -360,6 +430,27 @@ pub struct LocalArgs {
     /// Maximum interactions per solo-reducing batch (SPEC-20 R34).
     #[arg(long, default_value_t = 10_000)]
     pub solo_budget: u32,
+
+    // SPEC-21 §3.8 A3 — streaming generation flags (TASK-0568)
+    /// Streaming chunk size (SPEC-21 R24). Default: 10000.
+    #[arg(long, default_value_t = 10_000)]
+    pub chunk_size: u32,
+
+    /// Streaming partition strategy: round-robin (default) or fennel (SPEC-21 R25).
+    #[arg(long, value_enum, default_value_t = StreamingStrategyArg::RoundRobin)]
+    pub streaming_strategy: StreamingStrategyArg,
+
+    /// Fennel balance factor (requires --streaming-strategy=fennel).
+    #[arg(long, requires = "streaming_strategy")]
+    pub fennel_alpha: Option<f32>,
+
+    /// Pull-dispatch mode: auto | push | pull (SPEC-21 R34).
+    #[arg(long, value_enum, default_value_t = DispatchModeArg::Auto)]
+    pub dispatch_mode: DispatchModeArg,
+
+    /// Maximum batches a pending forward-reference may remain unresolved (SPEC-21 R37g).
+    #[arg(long, default_value_t = 16)]
+    pub max_pending_lifetime: u32,
 
     /// Path to write the reduced network (.bin).
     #[arg(short = 'o', long)]
@@ -579,6 +670,26 @@ pub struct CompletionsArgs {
 }
 
 // ---------------------------------------------------------------------------
+// SPEC-21 §3.8 A3 — CLI streaming-strategy helper
+// ---------------------------------------------------------------------------
+
+/// Convert CLI streaming strategy arg + optional alpha to `StreamingStrategyConfig`.
+///
+/// When `StreamingStrategyArg::Fennel` is given but `fennel_alpha` is `None`,
+/// the default Fennel alpha of `1.0` is used (documented in `--help`).
+fn args_to_streaming_strategy(
+    arg: StreamingStrategyArg,
+    fennel_alpha: Option<f32>,
+) -> StreamingStrategyConfig {
+    match arg {
+        StreamingStrategyArg::RoundRobin => StreamingStrategyConfig::RoundRobin,
+        StreamingStrategyArg::Fennel => StreamingStrategyConfig::Fennel {
+            alpha: fennel_alpha.unwrap_or(1.0),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI-to-config mapping (TASK-0102, SPEC-07 R10-R12)
 // ---------------------------------------------------------------------------
 
@@ -607,6 +718,11 @@ pub fn build_grid_config(args: &CoordinatorArgs) -> GridConfig {
         solo_budget: args.solo_budget,
         // SPEC-22 R10b: default to Strategy A (conservative).
         recycle_under_delta: crate::net::core::RecyclePolicy::DisableUnderDelta,
+        // SPEC-21 §3.8 A3: streaming fields wired from CLI (TASK-0568).
+        chunk_size: args.chunk_size,
+        streaming_strategy: args_to_streaming_strategy(args.streaming_strategy, args.fennel_alpha),
+        dispatch_mode: DispatchMode::from(args.dispatch_mode),
+        max_pending_lifetime: args.max_pending_lifetime,
     }
     .normalize()
 }
@@ -625,6 +741,10 @@ pub fn build_grid_config_from_local(args: &LocalArgs) -> GridConfig {
         elastic_join: args.elastic_join,
         initial_wait_timeout: std::time::Duration::from_secs(args.initial_wait_timeout),
         solo_budget: args.solo_budget,
+        chunk_size: args.chunk_size,
+        streaming_strategy: args_to_streaming_strategy(args.streaming_strategy, args.fennel_alpha),
+        dispatch_mode: DispatchMode::from(args.dispatch_mode),
+        max_pending_lifetime: args.max_pending_lifetime,
         ..GridConfig::default()
     }
     .normalize()
