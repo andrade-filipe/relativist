@@ -358,6 +358,23 @@ pub fn build_subnet(
         }
     }
 
+    // SPEC-22 R10b (QA-D009-003): populate border_entries_shadow with the IDs of
+    // border-referenced agents. Under delta mode, is_border_protected() consults
+    // this set to decide whether a removed ID is a protected tombstone (R10c) or
+    // freely recyclable (R5). Without this population, R10b/R10c is dead code in
+    // distributed runs.
+    let border_entries_shadow: Option<std::collections::HashSet<AgentId>> =
+        if border_entries.is_empty() {
+            None
+        } else {
+            Some(
+                border_entries
+                    .iter()
+                    .map(|&(agent_id, _, _)| agent_id)
+                    .collect(),
+            )
+        };
+
     Net {
         agents,
         ports,
@@ -367,7 +384,7 @@ pub fn build_subnet(
         freeport_redirects: std::collections::HashMap::new(),
         free_list,
         id_range: Some(id_range),
-        border_entries_shadow: None,
+        border_entries_shadow,
         recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
         #[cfg(debug_assertions)]
@@ -525,13 +542,26 @@ fn build_subnet_sparse(
     // self.next_id into Net::next_id directly (SF-001 fix).
     sparse.next_id = id_range.start;
 
+    // SPEC-22 R10b (QA-D009-003): build the border_entries_shadow before converting.
+    // to_dense hard-codes border_entries_shadow = None; we patch it after conversion.
+    let border_shadow: Option<std::collections::HashSet<AgentId>> = if border_entries.is_empty() {
+        None
+    } else {
+        Some(
+            border_entries
+                .iter()
+                .map(|&(agent_id, _, _)| agent_id)
+                .collect(),
+        )
+    };
+
     // Convert to dense with partition-scoped free-list (R10a / SC-006).
     // QA-D009-005: to_dense is now fallible; propagate allocation errors.
     // The id_range supplied here is always bounded (from compute_id_ranges),
     // so DenseAllocationExceedsThreshold should only fire for adversarially
     // large ranges. The caller (build_subnet_with_config) already guards against
     // the M5 density pathology; this catch handles the residual DoS surface.
-    match sparse.to_dense(Some(id_range)) {
+    let mut result_net = match sparse.to_dense(Some(id_range)) {
         Ok(net) => net,
         Err(crate::error::NetError::DenseAllocationExceedsThreshold {
             arena_len,
@@ -554,7 +584,13 @@ fn build_subnet_sparse(
             tracing::warn!(error = %e, "build_subnet_sparse: to_dense error; returning empty Net");
             crate::net::Net::new()
         }
-    }
+    };
+
+    // Patch border_entries_shadow: to_dense always sets it to None (it's a
+    // partition-context field not present in the sparse representation).
+    result_net.border_entries_shadow = border_shadow;
+
+    result_net
 }
 
 #[cfg(test)]
@@ -1602,6 +1638,65 @@ mod tests {
             result.freeport_redirects.get(&42),
             Some(&PortRef::AgentPort(0, 0)),
             "sparse path must preserve freeport_redirects from source net"
+        );
+    }
+
+    /// QA-D009-003: build_subnet must populate border_entries_shadow from the
+    /// actual border entries. A border-referenced slot must NOT be recycled by
+    /// remove_agent under delta mode (R10b/R10c protection).
+    #[test]
+    fn qa_d009_003_border_entries_shadow_populated_by_build_subnet() {
+        // Build a net with two agents, agent 0 is border-referenced.
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Con); // id = 0, will be border-referenced
+        let b = net.create_agent(Symbol::Era); // id = 1, internal
+
+        let sigma: HashMap<AgentId, WorkerId> = [(a, 0u32), (b, 0u32)].into_iter().collect();
+        // border_entries: agent 0, port 0, border_id 999 → agent 0 is border-referenced
+        let border_entries: &[(AgentId, PortId, u32)] = &[(a, 0, 999)];
+
+        let subnet = build_subnet(&net, &[a, b], &sigma, border_entries, 0, 0..100);
+
+        // QA-D009-003: border_entries_shadow MUST be Some and contain agent a's id.
+        assert!(
+            subnet.border_entries_shadow.is_some(),
+            "QA-D009-003: border_entries_shadow must be Some when border_entries is non-empty"
+        );
+        let shadow = subnet.border_entries_shadow.as_ref().unwrap();
+        assert!(
+            shadow.contains(&a),
+            "QA-D009-003: border-referenced agent {} must be in border_entries_shadow",
+            a
+        );
+    }
+
+    /// QA-D009-003 protection path: removing a border-referenced slot under delta
+    /// mode must NOT push it to the free_list (R10b/R10c).
+    #[test]
+    fn qa_d009_003_border_protected_slot_not_recycled() {
+        // Build subnet with border_entries_shadow populated (requires QA-D009-003 fix).
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era); // id = 0, border-referenced
+        let b = net.create_agent(Symbol::Era); // id = 1, internal
+                                               // Connect b to a FreePort so it has a valid connection.
+        net.connect(PortRef::AgentPort(b, 0), PortRef::FreePort(1));
+
+        let sigma: HashMap<AgentId, WorkerId> = [(a, 0u32), (b, 0u32)].into_iter().collect();
+        let border_entries: &[(AgentId, PortId, u32)] = &[(a, 0, 888)];
+
+        let mut subnet = build_subnet(&net, &[a, b], &sigma, border_entries, 0, 0..100);
+
+        // Activate delta mode so the protection fires.
+        subnet.is_in_delta_round = true;
+
+        // Remove the border-referenced agent a.
+        subnet.remove_agent(a);
+
+        // Under delta mode + border protection: agent a's id must NOT be in free_list.
+        assert!(
+            !subnet.free_list.contains(&a),
+            "QA-D009-003: border-referenced id {} must NOT appear in free_list after remove_agent under delta mode",
+            a
         );
     }
 }

@@ -187,20 +187,23 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
 
     // --- SPEC-22 R12 / §3.8 A8: free-list reconciliation ---
     //
-    // Walk every input partition's free_list. For each ID, check whether the
-    // merged arena slot is still None. If None, push to merged free_list.
-    // If Some (filled by another partition or by merge boundary resolution),
-    // discard. Complexity: O(sum of |partition.free_list|).
+    // Walk every input partition's free_list. For each ID:
+    //   1. Check whether the merged arena slot is still None.
+    //   2. Check whether the ID was already pushed by a prior partition (QA-D009-004 dedup).
+    // Only push if both conditions hold. Complexity: O(sum of |partition.free_list|).
     //
-    // D4 disjointness guarantees no duplicates: each partition owns a disjoint
-    // ID range, so the same ID cannot appear in two different partitions'
-    // free_lists.
+    // The D4 disjointness ASSUMPTION was previously a comment claiming no duplicates
+    // were possible. QA-D009-004 showed that a bugged coordinator or release-build
+    // state corruption can still produce cross-partition duplicates. The HashSet guard
+    // makes the invariant explicit and always-enforced.
+    let mut seen_free: std::collections::HashSet<crate::net::AgentId> =
+        std::collections::HashSet::new();
     for partition in &partitions {
         for &id in &partition.subnet.free_list {
-            if result.agents.get(id as usize).is_some_and(|s| s.is_none()) {
+            if result.agents.get(id as usize).is_some_and(|s| s.is_none()) && seen_free.insert(id) {
                 result.free_list.push(id);
             }
-            // else: slot is occupied — discard (A8 discard branch)
+            // else: slot is occupied OR already pushed — discard (A8 discard branch)
         }
     }
 
@@ -775,6 +778,76 @@ mod tests {
         assert_eq!(
             merged.protected_tombstones, None,
             "merged net must have protected_tombstones == None after drain"
+        );
+    }
+
+    /// QA-D009-004: merge must deduplicate free-list entries across partitions.
+    ///
+    /// When two partitions both have the same ID in their free_list (a coordinator
+    /// bug or release-build state corruption), the merged result MUST NOT contain
+    /// duplicate entries. Without the HashSet dedup, a duplicate causes the next
+    /// `create_agent` to issue the same ID twice (D4/I3' violation).
+    ///
+    /// To satisfy D3 (disjoint ID ranges), we give p0 range [0..60) and p1 range
+    /// [60..120), but both have a shared free-list entry at id=50 (which is in p0's
+    /// range and a None slot in p1's arena as well — simulating a buggy coordinator).
+    #[test]
+    fn qa_d009_004_merge_deduplicates_free_list_across_partitions() {
+        // p0: range [0..60), has id 50 as a free slot.
+        let mut p0_net = Net::with_capacity(60);
+        p0_net.agents.resize(60, None);
+        p0_net.ports.resize(60 * 3, crate::net::DISCONNECTED);
+        p0_net.next_id = 60;
+        p0_net.free_list.push(50); // slot 50 is None → valid free-list entry for p0
+
+        // p1: range [60..120), but ALSO has id 50 in its free_list (the bug).
+        // The merged arena will have slot 50 = None from p0, so the D3 slot check
+        // passes and the dedup must prevent a second push.
+        let mut p1_net = Net::with_capacity(60);
+        p1_net.agents.resize(120, None); // arena covers up to id 119
+        p1_net.ports.resize(120 * 3, crate::net::DISCONNECTED);
+        p1_net.next_id = 120;
+        p1_net.free_list.push(50); // same id — the duplication under test
+
+        let p0 = Partition {
+            subnet: p0_net,
+            worker_id: 0,
+            free_port_index: HashMap::new(),
+            id_range: IdRange { start: 0, end: 60 },
+            border_id_start: 0,
+            border_id_end: 0,
+        };
+        let p1 = Partition {
+            subnet: p1_net,
+            worker_id: 1,
+            free_port_index: HashMap::new(),
+            id_range: IdRange {
+                start: 60,
+                end: 120,
+            }, // disjoint from p0
+            border_id_start: 0,
+            border_id_end: 0,
+        };
+
+        let plan = crate::partition::PartitionPlan {
+            partitions: vec![p0, p1],
+            borders: HashMap::new(),
+            next_border_id: 0,
+        };
+
+        let (merged, _) = merge(plan);
+
+        let count_50 = merged.free_list.iter().filter(|&&x| x == 50).count();
+        assert_eq!(
+            count_50, 1,
+            "QA-D009-004: id 50 must appear exactly once in merged free_list, got {} times",
+            count_50
+        );
+
+        // validate_free_list must also pass (no duplicates via HashSet).
+        assert!(
+            merged.validate_free_list().is_ok(),
+            "QA-D009-004: merged free_list must pass validate_free_list (no duplicates)"
         );
     }
 }

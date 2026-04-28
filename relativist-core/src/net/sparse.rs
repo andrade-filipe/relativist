@@ -796,4 +796,61 @@ mod tests {
         sn.ports.insert((a, 0), PortRef::AgentPort(era, 1)); // reverse
         sn.assert_invariants(); // should panic — ERA has no port 1
     }
+
+    /// QA-D009-005: to_dense must return Err when attacker-controlled max_id
+    /// would require a >MAX_DENSE_ARENA_SLOTS allocation (DoS guard).
+    #[test]
+    fn qa_d009_005_to_dense_rejects_attacker_max_id() {
+        use crate::error::NetError;
+
+        let mut sn = SparseNet::new();
+        // Single agent at a very high ID — this would require a ~17 GiB arena.
+        let high_id: u32 = SparseNet::MAX_DENSE_ARENA_SLOTS as u32 + 1;
+        sn.agents.insert(
+            high_id,
+            crate::net::Agent {
+                symbol: Symbol::Era,
+                id: high_id,
+            },
+        );
+        sn.next_id = high_id + 1;
+
+        let result = sn.to_dense(None);
+        assert!(
+            result.is_err(),
+            "QA-D009-005: to_dense with attacker-controlled high max_id must return Err"
+        );
+        match result.unwrap_err() {
+            NetError::DenseAllocationExceedsThreshold { arena_len, max, .. } => {
+                assert!(
+                    arena_len > max,
+                    "arena_len ({arena_len}) should exceed max ({max})"
+                );
+            }
+            other => panic!("expected DenseAllocationExceedsThreshold, got {other:?}"),
+        }
+    }
+
+    /// QA-D009-006: to_dense must return Err on inverted id_range (start > end).
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // intentionally inverted range to test the guard
+    fn qa_d009_006_to_dense_rejects_inverted_range() {
+        use crate::error::NetError;
+
+        let mut sn = SparseNet::new();
+        sn.create_agent(Symbol::Era);
+
+        let result = sn.to_dense(Some(50..10)); // start > end — intentionally inverted
+        assert!(
+            result.is_err(),
+            "QA-D009-006: to_dense with inverted id_range must return Err"
+        );
+        match result.unwrap_err() {
+            NetError::InvalidIdRange { start, end } => {
+                assert_eq!(start, 50);
+                assert_eq!(end, 10);
+            }
+            other => panic!("expected InvalidIdRange, got {other:?}"),
+        }
+    }
 }

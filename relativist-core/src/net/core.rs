@@ -522,15 +522,28 @@ impl Net {
             .is_some_and(|s| s.contains(&id))
     }
 
-    /// SPEC-22 R9: validates the free-list post-condition.
+    /// SPEC-22 R6/R9: validates the free-list invariants.
     ///
-    /// Every ID in `free_list` MUST correspond to a `None` slot in the arena.
+    /// Checks:
+    /// 1. Every ID in `free_list` MUST correspond to a `None` slot (R9: no live aliases).
+    /// 2. No duplicate IDs in `free_list` (R6: uniqueness; QA-D009-004 duplicate guard).
+    ///
     /// Called after deserialization (R9) and after `merge` (TASK-0483) in debug builds.
+    /// Always-on post-condition for `from_bytes` (QA-D009-002).
     ///
-    /// Returns `Ok(())` if the invariant holds; `Err(NetError::FreeListInvalid)`
-    /// if any entry is invalid.
+    /// Returns `Ok(())` if all invariants hold; `Err(NetError::FreeListInvalid)`
+    /// naming the first offending entry.
     pub fn validate_free_list(&self) -> Result<(), crate::error::NetError> {
+        let mut seen = std::collections::HashSet::new();
         for &id in &self.free_list {
+            // R6: no duplicates.
+            if !seen.insert(id) {
+                return Err(crate::error::NetError::FreeListInvalid {
+                    id,
+                    reason: "duplicate entry",
+                });
+            }
+            // R9: every entry must be a None slot.
             if self
                 .agents
                 .get(id as usize)
@@ -666,9 +679,18 @@ impl Net {
     }
 
     /// Deserializes a net from a bincode v2 byte slice (SPEC-18 §3.1).
+    ///
+    /// SPEC-22 R9 (QA-D009-002): after deserialization, the free-list is validated.
+    /// Every ID in `free_list` MUST correspond to a `None` arena slot, and the list
+    /// MUST have no duplicates. If either condition is violated, returns
+    /// `Err(NetError::FreeListInvalid)` — a corrupted or maliciously crafted peer
+    /// state cannot silently alias live agents via the next `create_agent` call.
     pub fn from_bytes(bytes: &[u8]) -> Result<Net, crate::error::NetError> {
-        crate::protocol::bincode_v2::decode_value(bytes)
-            .map_err(|e| crate::error::NetError::Deserialize(e.to_string()))
+        let net: Net = crate::protocol::bincode_v2::decode_value(bytes)
+            .map_err(|e| crate::error::NetError::Deserialize(e.to_string()))?;
+        // SPEC-22 R9 post-condition (always-on, not debug-only).
+        net.validate_free_list()?;
+        Ok(net)
     }
 
     /// Structural concatenation of two nets under a disjoint-`AgentId`
@@ -1720,6 +1742,36 @@ mod tests {
     fn test_net_deserialize_corrupt() {
         let result = Net::from_bytes(&[0xFF, 0xFF, 0xFF]);
         assert!(result.is_err());
+    }
+
+    // QA-D009-002: from_bytes must call validate_free_list; a serialized Net with
+    // a free_list entry pointing to a live slot must return Err, not Ok.
+    // This is an attacker-style test: manually craft a Net with corrupted free_list
+    // and verify from_bytes rejects it.
+    #[test]
+    fn qa_d009_002_from_bytes_rejects_corrupt_free_list() {
+        let mut net = Net::new();
+        let id = net.create_agent(Symbol::Con); // id = 0, slot is Some
+                                                // Manually corrupt: push a LIVE slot id into the free_list.
+        net.free_list.push(id);
+
+        // Serialize the corrupted net.
+        let bytes = net.to_bytes().unwrap();
+
+        // from_bytes MUST reject this — free_list contains a live agent id.
+        let result = Net::from_bytes(&bytes);
+        assert!(
+            result.is_err(),
+            "QA-D009-002: from_bytes must return Err for net with corrupted free_list \
+             (entry {} is a live slot)",
+            id
+        );
+        match result.unwrap_err() {
+            crate::error::NetError::FreeListInvalid { id: bad_id, .. } => {
+                assert_eq!(bad_id, id, "error must name the offending id");
+            }
+            other => panic!("expected FreeListInvalid, got {other:?}"),
+        }
     }
 
     // T4: Round-trip preserves root
