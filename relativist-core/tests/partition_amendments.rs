@@ -80,6 +80,10 @@ fn make_p0() -> Partition {
         protected_tombstones: None,
         #[cfg(debug_assertions)]
         free_list_pops: 0,
+        #[cfg(debug_assertions)]
+        free_list_pops_border: 0,
+        #[cfg(debug_assertions)]
+        free_list_pops_non_border: 0,
     };
 
     Partition {
@@ -698,6 +702,10 @@ fn ec_j_redex_queue_symmetric_pair_is_remapped() {
         protected_tombstones: None,
         #[cfg(debug_assertions)]
         free_list_pops: 0,
+        #[cfg(debug_assertions)]
+        free_list_pops_border: 0,
+        #[cfg(debug_assertions)]
+        free_list_pops_non_border: 0,
     };
 
     let p = Partition {
@@ -853,6 +861,10 @@ fn ec_l_remap_next_id_postcondition_at_large_range_start() {
         protected_tombstones: None,
         #[cfg(debug_assertions)]
         free_list_pops: 0,
+        #[cfg(debug_assertions)]
+        free_list_pops_border: 0,
+        #[cfg(debug_assertions)]
+        free_list_pops_non_border: 0,
     };
 
     let p = Partition {

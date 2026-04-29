@@ -119,6 +119,10 @@ impl CompactSubnet {
             protected_tombstones: None,
             #[cfg(debug_assertions)]
             free_list_pops: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_border: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_non_border: 0,
         }
     }
 }

@@ -126,6 +126,20 @@ pub struct Net {
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub free_list_pops: u64,
+
+    /// SPEC-21 R37b / TASK-0590 (debug-only): pops where the popped ID IS in
+    /// `border_entries_shadow` (Strategy B protected path, should always be 0).
+    #[cfg(debug_assertions)]
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub free_list_pops_border: u64,
+
+    /// SPEC-21 R37b / TASK-0590 (debug-only): pops where the popped ID is NOT in
+    /// `border_entries_shadow` (Strategy B non-border precision-recycling path).
+    #[cfg(debug_assertions)]
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub free_list_pops_non_border: u64,
 }
 
 /// SPEC-22 R10b: recycling strategy for delta-mode rounds.
@@ -186,6 +200,10 @@ impl Net {
             protected_tombstones: None,
             #[cfg(debug_assertions)]
             free_list_pops: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_border: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_non_border: 0,
         }
     }
 
@@ -213,6 +231,10 @@ impl Net {
             protected_tombstones: None,
             #[cfg(debug_assertions)]
             free_list_pops: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_border: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_non_border: 0,
         }
     }
 
@@ -239,9 +261,14 @@ impl Net {
             // SPEC-22 R5 (LIFO): try to pop the most recently freed ID.
             // Strategy B: if popped ID is border-protected, re-push and fall through.
             if let Some(id) = self.free_list.pop() {
-                // SPEC-22 R10b Strategy B: if the ID is border-protected, re-push
-                // and fall through to fresh allocation for this call.
-                if self.recycle_policy == RecyclePolicy::BorderClean && self.is_border_protected(id)
+                // SPEC-22 R10b Strategy B (TASK-0590): per-id protection gate.
+                // Only engages when `is_in_delta_round` is true (proxy for
+                // `delta_mode || streaming_active` per R37b broadening).
+                // In push mode (`is_in_delta_round = false`), the gate is inactive
+                // and border IDs MAY be recycled as normal (SPEC-22 R3).
+                if self.is_in_delta_round
+                    && self.recycle_policy == RecyclePolicy::BorderClean
+                    && self.is_border_protected(id)
                 {
                     self.free_list.push(id);
                     // Fall through to fresh allocation below.
@@ -321,6 +348,12 @@ impl Net {
                         );
                         // TASK-0589: count successful pops for test observability.
                         self.free_list_pops += 1;
+                        // TASK-0590: classify pop as border vs non-border for Strategy B tests.
+                        if self.is_border_protected(id) {
+                            self.free_list_pops_border += 1;
+                        } else {
+                            self.free_list_pops_non_border += 1;
+                        }
                     }
 
                     return id;
@@ -847,6 +880,10 @@ impl Net {
                 protected_tombstones: _pt_a,
             #[cfg(debug_assertions)]
                 free_list_pops: _flp_a,
+            #[cfg(debug_assertions)]
+                free_list_pops_border: _flpb_a,
+            #[cfg(debug_assertions)]
+                free_list_pops_non_border: _flpnb_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -864,6 +901,10 @@ impl Net {
                 protected_tombstones: _pt_b,
             #[cfg(debug_assertions)]
                 free_list_pops: _flp_b,
+            #[cfg(debug_assertions)]
+                free_list_pops_border: _flpb_b,
+            #[cfg(debug_assertions)]
+                free_list_pops_non_border: _flpnb_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -960,6 +1001,10 @@ impl Net {
             protected_tombstones: None,
             #[cfg(debug_assertions)]
             free_list_pops: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_border: 0,
+            #[cfg(debug_assertions)]
+            free_list_pops_non_border: 0,
         }
     }
 
