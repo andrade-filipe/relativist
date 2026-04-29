@@ -74,5 +74,12 @@ jobs:
       - name: Test
         run: cargo test
 
+      # SPEC-21 R37b TASK-0591: streaming-no-recycle feature gate matrix column.
+      # When enabled, free-list recycling is unconditionally disabled during
+      # streaming rounds (compile-time alternative closure of SC-007).
+      # Ships disabled by default; this job validates additive-compat.
+      - name: Test (streaming-no-recycle feature)
+        run: cargo test --features streaming-no-recycle
+
       - name: Build release
         run: cargo build --release

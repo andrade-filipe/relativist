@@ -105,6 +105,12 @@ full = ["tls", "metrics", "otel"]
 # SPEC-18 R20: `zero-copy` MUST NOT be a default feature; `full` MUST NOT include it.
 # Opt-in via `cargo build --features zero-copy`. See SPEC-18 §3.5 (item 2.24).
 zero-copy = ["dep:rkyv"]
+# SPEC-21 R37b alternative closure (TASK-0591): compile-time disable of free-list recycling
+# during streaming. When enabled, `create_agent` always falls through to fresh allocation
+# whenever `is_in_delta_round` is true (streaming/delta active), regardless of runtime
+# `RecyclePolicy`. Ships disabled by default; trades memory efficiency for safety simplicity.
+# Suitable only for small/short-lived runs. See SPEC-21 §3.7 R37b, TASK-0591.
+streaming-no-recycle = []
 
 [[bench]]
 name = "benchmarks"

@@ -30,6 +30,10 @@ use std::collections::HashSet;
 ///   → pop order: 73 (first), 92, 50, 47 (last).
 /// Border IDs (`border_entries_shadow`): {47, 92}.
 /// Non-border IDs in free-list: {73, 50}.
+///
+/// Gated on `not(streaming-no-recycle)` — only used by tests that verify
+/// non-border pops occur, which are suppressed by the cargo feature.
+#[cfg(not(feature = "streaming-no-recycle"))]
 fn make_mixed_border_nonborder_fixture() -> Net {
     let mut net = Net::new();
     // Allocate agents at IDs 0..=100 (next_id = 101) so that 47, 50, 73, 92
@@ -114,8 +118,11 @@ fn ut_0590_03_strategy_b_no_pop_for_border_id() {
 /// increments `free_list_pops_non_border`.
 ///
 /// Free-list: [50] (non-border); border_entries_shadow: {47, 92}.
+///
+/// Gated on `not(streaming-no-recycle)`: when the cargo feature is enabled,
+/// the compile-time gate unconditionally skips the free-list (TASK-0591).
 #[test]
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
 fn ut_0590_04_strategy_b_pop_for_non_border_id() {
     let mut net = Net::new();
     // Allocate IDs 0..93 so IDs 47, 50, 92 are in the arena.
@@ -356,8 +363,11 @@ fn ut_0590_09_border_entries_cleared_on_done() {
 ///
 /// Sets up a net with both border and non-border IDs in the free-list,
 /// enables Strategy B, and verifies that only non-border IDs are popped.
+///
+/// Gated on `not(streaming-no-recycle)`: when the cargo feature is enabled,
+/// the compile-time gate unconditionally skips ALL pops (TASK-0591).
 #[test]
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
 fn it_0590_01_strategy_b_zero_border_pops_nonzero_non_border_pops() {
     let mut net = make_mixed_border_nonborder_fixture();
 
@@ -484,8 +494,11 @@ fn it_0590_03_strategy_b_baseline_regression() {
 
 /// EC-1: With an empty `border_entries_shadow`, Strategy B pops freely
 /// (no IDs match the empty set); behaves like SPEC-22 R3.
+///
+/// Gated on `not(streaming-no-recycle)`: when the cargo feature is enabled,
+/// the compile-time gate unconditionally skips the free-list (TASK-0591).
 #[test]
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
 fn ec_0590_1_empty_border_entries_pops_freely() {
     let mut net = Net::new();
     let id0 = net.create_agent(Symbol::Con);

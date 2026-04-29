@@ -252,6 +252,36 @@ impl Net {
     /// Complexity: O(1) amortized (may trigger Vec reallocation on the fresh path).
     /// Postcondition: `agents[id] == Some(Agent { symbol, id })`.
     pub fn create_agent(&mut self, symbol: Symbol) -> AgentId {
+        // SPEC-21 R37b TASK-0591: build-time `streaming-no-recycle` feature gate.
+        // When enabled AND the round is streaming/delta-active, unconditionally
+        // fall through to fresh allocation — never pop from the free-list.
+        // This is the compile-time alternative closure of SC-007 (one-liner safety net).
+        // The runtime gates below remain PRESENT AND CORRECT for non-feature builds
+        // per TASK-0591 acceptance line 24.
+        #[cfg(feature = "streaming-no-recycle")]
+        if self.is_in_delta_round {
+            // Unconditionally bypass free-list: allocate a fresh ID.
+            assert!(
+                self.next_id < u32::MAX,
+                "AgentId space exhausted: next_id has reached u32::MAX ({})",
+                u32::MAX
+            );
+            let fresh_id = self.next_id;
+            self.next_id += 1;
+            if self.agents.len() <= fresh_id as usize {
+                self.agents.resize((fresh_id as usize) + 1, None);
+            }
+            self.agents[fresh_id as usize] = Some(Agent {
+                symbol,
+                id: fresh_id,
+            });
+            let required_len = (fresh_id as usize + 1) * PORTS_PER_SLOT;
+            if self.ports.len() < required_len {
+                self.ports.resize(required_len, DISCONNECTED);
+            }
+            return fresh_id;
+        }
+
         // SPEC-22 R10b Strategy A: skip the free-list entirely during a
         // delta-mode round when the policy is DisableUnderDelta.
         let skip_recycle =
@@ -2637,7 +2667,13 @@ mod tests {
     }
 
     /// UT-0482-08: Strategy B pops non-border id during delta round.
+    ///
+    /// Gated on `not(streaming-no-recycle)`: when the cargo feature is enabled,
+    /// the compile-time gate unconditionally skips the free-list, making the
+    /// Strategy B pop path unreachable (TASK-0591 line 24). The feature-ON
+    /// variant is exercised by UT-0591-09 in tests/spec22_streaming_no_recycle.rs.
     #[test]
+    #[cfg(not(feature = "streaming-no-recycle"))]
     fn strategy_b_pops_non_border_id() {
         let mut net = Net::new();
         let id0 = net.create_agent(Symbol::Con); // id=0
