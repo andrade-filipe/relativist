@@ -76,6 +76,7 @@ fn make_p0() -> Partition {
         border_entries_shadow: None,
         recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
+        streaming_active: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
         #[cfg(debug_assertions)]
@@ -698,6 +699,7 @@ fn ec_j_redex_queue_symmetric_pair_is_remapped() {
         border_entries_shadow: None,
         recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
+        streaming_active: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
         #[cfg(debug_assertions)]
@@ -857,6 +859,7 @@ fn ec_l_remap_next_id_postcondition_at_large_range_start() {
         border_entries_shadow: None,
         recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
+        streaming_active: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
         #[cfg(debug_assertions)]

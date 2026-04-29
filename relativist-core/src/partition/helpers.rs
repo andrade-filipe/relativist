@@ -387,6 +387,7 @@ pub fn build_subnet(
         border_entries_shadow,
         recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
+        streaming_active: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
         #[cfg(debug_assertions)]

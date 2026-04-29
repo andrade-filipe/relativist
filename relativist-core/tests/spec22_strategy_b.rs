@@ -269,9 +269,9 @@ fn ut_0590_07_strategy_b_pop_when_streaming_inactive_and_no_delta() {
 
     let allocated = net.create_agent(Symbol::Con);
 
-    // When is_in_delta_round=false, the RecyclePolicy gate doesn't fire.
-    // Strategy B only protects when is_in_delta_round=true (R37b disjunction proxy).
-    // With the flag off, the standard SPEC-22 R3 pop path is taken.
+    // When is_in_delta_round=false AND streaming_active=false, the RecyclePolicy gate
+    // doesn't fire. Strategy B only protects when (is_in_delta_round || streaming_active)
+    // per R37b disjunction (QA-D010-001). With both flags off, R3 pop path is taken.
     assert_eq!(
         allocated, 47,
         "UT-0590-07: gate inactive — ID 47 must be popped normally"
@@ -279,6 +279,13 @@ fn ut_0590_07_strategy_b_pop_when_streaming_inactive_and_no_delta() {
     assert_eq!(
         net.free_list_pops, 1,
         "UT-0590-07: one pop should have occurred"
+    );
+    // SF-001: free_list_pops_border must be 1 — ID 47 IS in shadow, but protection
+    // was inactive (both round-protection flags false). This is the push-mode scenario:
+    // the counter fires on unprotected pops of shadow-present IDs.
+    assert_eq!(
+        net.free_list_pops_border, 1,
+        "UT-0590-07: push-mode shadow-present pop must increment free_list_pops_border (SF-001)"
     );
 }
 
@@ -557,5 +564,100 @@ fn ec_0590_5_strategy_a_blocks_before_strategy_b_check() {
     assert_eq!(
         net.free_list_pops_border, 0,
         "EC-5: zero border pops under Strategy A"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QA-D010-001: R37b disjunction — streaming_active alone arms the gate
+// ---------------------------------------------------------------------------
+
+/// QA-D010-001-A: When only `streaming_active = true` (delta round has NOT started),
+/// Strategy A MUST suppress free-list pops.
+///
+/// This is the "streaming_active alone arms the gate" leg of R37b.
+#[test]
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
+fn qa_d010_001_a_streaming_active_alone_arms_strategy_a_gate() {
+    let mut net = Net::new();
+    let id0 = net.create_agent(Symbol::Con);
+    net.remove_agent(id0); // free_list = [id0]
+
+    // streaming_active = true, is_in_delta_round = false (streaming-only mode).
+    net.streaming_active = true;
+    net.is_in_delta_round = false;
+    net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+    let next_before = net.next_id;
+
+    let new_id = net.create_agent(Symbol::Era);
+
+    assert_eq!(
+        new_id, next_before,
+        "QA-D010-001-A: streaming_active alone must suppress free-list pop (Strategy A R37b disjunction)"
+    );
+    assert_eq!(
+        net.free_list_pops, 0,
+        "QA-D010-001-A: free_list_pops must be 0 when gate is armed by streaming_active"
+    );
+    assert!(
+        net.free_list.contains(&id0),
+        "QA-D010-001-A: freed ID must remain in free_list (not popped)"
+    );
+}
+
+/// QA-D010-001-B: When `is_in_delta_round = true` alone arms the gate and then
+/// `exit_streaming_mode` (which now only clears `streaming_active`) is called,
+/// the delta-mode protections MUST remain active.
+///
+/// This is the regression guard for the destructive-clear bug: the old code set
+/// `is_in_delta_round = false` in `exit_streaming_mode`, which silently disarmed
+/// the delta-round protections. The new code uses a separate `streaming_active` flag.
+#[test]
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
+fn qa_d010_001_b_exit_streaming_mode_preserves_delta_round_protections() {
+    use relativist_core::worker::{enter_streaming_mode, exit_streaming_mode};
+
+    let mut net = Net::new();
+    let id0 = net.create_agent(Symbol::Con);
+    net.remove_agent(id0); // free_list = [id0]
+
+    // Simulate a delta round (outer state, set by delta-mode logic).
+    net.is_in_delta_round = true;
+    net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+
+    // Worker enters streaming mode (chunked dispatch).
+    enter_streaming_mode(&mut net);
+    assert!(
+        net.streaming_active,
+        "QA-D010-001-B: enter_streaming_mode must set streaming_active"
+    );
+    // is_in_delta_round must NOT be changed by enter_streaming_mode.
+    assert!(
+        net.is_in_delta_round,
+        "QA-D010-001-B: enter_streaming_mode must NOT change is_in_delta_round"
+    );
+
+    // Worker exits streaming (chunk stream exhausted) while delta round is still active.
+    exit_streaming_mode(&mut net);
+    assert!(
+        !net.streaming_active,
+        "QA-D010-001-B: exit_streaming_mode must clear streaming_active"
+    );
+    // CRITICAL: is_in_delta_round must remain true after exit_streaming_mode.
+    // The delta round is still active; only streaming mode has ended.
+    assert!(
+        net.is_in_delta_round,
+        "QA-D010-001-B: exit_streaming_mode must NOT clear is_in_delta_round (delta still active)"
+    );
+
+    // Delta-mode protections must still be active (free-list pop must be suppressed).
+    let next_before = net.next_id;
+    let new_id = net.create_agent(Symbol::Era);
+    assert_eq!(
+        new_id, next_before,
+        "QA-D010-001-B: delta-round protections must remain active after exit_streaming_mode"
+    );
+    assert_eq!(
+        net.free_list_pops, 0,
+        "QA-D010-001-B: zero pops — gate must still be armed by is_in_delta_round"
     );
 }

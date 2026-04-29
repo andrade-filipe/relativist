@@ -915,28 +915,30 @@ impl WorkerPullContext {
 /// Streaming-active flag lifecycle (SPEC-22 R10b broadening / TASK-0589).
 ///
 /// Called at the moment the worker enters chunked-dispatch mode (receives
-/// its first pull-mode `AssignPartition`). Sets `net.is_in_delta_round = true`
-/// as a conservative approximation of the streaming-active gate — this ensures
-/// `RecyclePolicy::DisableUnderDelta` suppresses free-list pops during streaming.
+/// its first pull-mode `AssignPartition`). Sets `net.streaming_active = true`
+/// so that `RecyclePolicy::DisableUnderDelta` suppresses free-list pops during
+/// streaming (R37b disjunction: `is_in_delta_round || streaming_active`).
 ///
-/// The `net.is_in_delta_round` flag is already the gate used by Strategy A;
-/// by setting it here we reuse the existing gate without a new field on `Net`.
-/// TASK-0589 will extend the gate to also read a `streaming_active` flag from
-/// worker state; this helper is the call-site that sets it.
+/// Decision (TASK-0589 W7 / QA-D010-001): a dedicated `streaming_active` field
+/// is used instead of reusing `is_in_delta_round`. This avoids the destructive
+/// interleaving bug where `exit_streaming_mode` would silently disarm delta-mode
+/// protections when both streaming and delta were active simultaneously.
 pub fn enter_streaming_mode(net: &mut crate::net::Net) {
-    // Reuse is_in_delta_round as the conservative gate for streaming-active
-    // (SPEC-22 R10b broadening per A6 — "delta_mode || streaming_active").
-    // TASK-0589 will add a dedicated `streaming_active` field if needed;
-    // for now, the existing is_in_delta_round gate is sufficient because
-    // RecyclePolicy::DisableUnderDelta checks `is_in_delta_round` already.
-    net.is_in_delta_round = true;
+    // SPEC-21 R37b (QA-D010-001): set streaming_active to arm the free-list gate.
+    // Does NOT touch is_in_delta_round — that flag is owned by the delta-mode
+    // dispatch loop and MUST remain independent of streaming state.
+    net.streaming_active = true;
 }
 
 /// Clear streaming-active mode (called at FinalReduction → SendFinalResult).
 ///
 /// Post-streaming reductions MAY recycle normally (TASK-0578 NOTE line 93).
+/// Does NOT clear `is_in_delta_round` — the delta round may still be active
+/// after streaming ends (QA-D010-001).
 pub fn exit_streaming_mode(net: &mut crate::net::Net) {
-    net.is_in_delta_round = false;
+    // SPEC-21 R37b (QA-D010-001): clear only streaming_active.
+    // is_in_delta_round is owned by the delta-mode dispatch loop, not here.
+    net.streaming_active = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -3135,23 +3137,41 @@ mod tests {
         );
     }
 
-    // UT-0578-16: enter/exit_streaming_mode wires is_in_delta_round correctly.
+    // UT-0578-16: enter/exit_streaming_mode manages streaming_active independently
+    // of is_in_delta_round (QA-D010-001 fix).
+    //
+    // After QA-D010-001: these helpers set/clear `net.streaming_active` only.
+    // `is_in_delta_round` is owned by delta-mode dispatch and is NOT touched.
     #[test]
-    fn ut_0578_16_enter_exit_streaming_mode_wires_delta_round_flag() {
+    fn ut_0578_16_enter_exit_streaming_mode_wires_streaming_active_flag() {
         let mut net = Net::new();
+        assert!(
+            !net.streaming_active,
+            "streaming_active starts false on fresh Net"
+        );
         assert!(
             !net.is_in_delta_round,
             "is_in_delta_round starts false on fresh Net"
         );
         enter_streaming_mode(&mut net);
         assert!(
-            net.is_in_delta_round,
-            "enter_streaming_mode must set is_in_delta_round=true"
+            net.streaming_active,
+            "enter_streaming_mode must set streaming_active=true (QA-D010-001)"
+        );
+        // is_in_delta_round must NOT be affected by enter_streaming_mode.
+        assert!(
+            !net.is_in_delta_round,
+            "enter_streaming_mode must NOT touch is_in_delta_round (QA-D010-001)"
         );
         exit_streaming_mode(&mut net);
         assert!(
+            !net.streaming_active,
+            "exit_streaming_mode must clear streaming_active (QA-D010-001)"
+        );
+        // is_in_delta_round must still be false (was never set by streaming helpers).
+        assert!(
             !net.is_in_delta_round,
-            "exit_streaming_mode must clear is_in_delta_round"
+            "exit_streaming_mode must NOT touch is_in_delta_round (QA-D010-001)"
         );
     }
 }

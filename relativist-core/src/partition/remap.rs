@@ -257,6 +257,7 @@ pub fn remap_partition_ids(
         border_entries_shadow: None,
         recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
+        streaming_active: false,
         #[cfg(debug_assertions)]
         protected_tombstones: None,
         #[cfg(debug_assertions)]
@@ -321,6 +322,7 @@ mod tests {
             border_entries_shadow: None,
             recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
+            streaming_active: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
             #[cfg(debug_assertions)]

@@ -109,6 +109,17 @@ pub struct Net {
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub is_in_delta_round: bool,
 
+    /// SPEC-21 R37b (QA-D010-001): true iff the worker is currently in
+    /// chunked (streaming) dispatch mode.
+    ///
+    /// Set by `enter_streaming_mode`, cleared by `exit_streaming_mode`.
+    /// Independent of `is_in_delta_round` — either flag alone arms the
+    /// Strategy A/B gate per the R37b disjunction: `(is_in_delta_round || streaming_active)`.
+    /// Not serialized (runtime state, set by the worker dispatch loop).
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub streaming_active: bool,
+
     /// SPEC-22 R10c (debug-only): protected tombstones — IDs that were
     /// border-referenced when removed under delta mode. Excluded from the
     /// free-list until the next `reconstruct` clean-boundary moment.
@@ -196,6 +207,7 @@ impl Net {
             border_entries_shadow: None,
             recycle_policy: RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
+            streaming_active: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
             #[cfg(debug_assertions)]
@@ -227,6 +239,7 @@ impl Net {
             border_entries_shadow: None,
             recycle_policy: RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
+            streaming_active: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
             #[cfg(debug_assertions)]
@@ -253,13 +266,14 @@ impl Net {
     /// Postcondition: `agents[id] == Some(Agent { symbol, id })`.
     pub fn create_agent(&mut self, symbol: Symbol) -> AgentId {
         // SPEC-21 R37b TASK-0591: build-time `streaming-no-recycle` feature gate.
-        // When enabled AND the round is streaming/delta-active, unconditionally
+        // When enabled AND the round is delta-active OR streaming-active, unconditionally
         // fall through to fresh allocation — never pop from the free-list.
         // This is the compile-time alternative closure of SC-007 (one-liner safety net).
         // The runtime gates below remain PRESENT AND CORRECT for non-feature builds
         // per TASK-0591 acceptance line 24.
+        // R37b disjunction (QA-D010-001): gate on `(is_in_delta_round || streaming_active)`.
         #[cfg(feature = "streaming-no-recycle")]
-        if self.is_in_delta_round {
+        if self.is_in_delta_round || self.streaming_active {
             // Unconditionally bypass free-list: allocate a fresh ID.
             assert!(
                 self.next_id < u32::MAX,
@@ -283,20 +297,21 @@ impl Net {
         }
 
         // SPEC-22 R10b Strategy A: skip the free-list entirely during a
-        // delta-mode round when the policy is DisableUnderDelta.
+        // delta-mode round OR streaming-active round when the policy is DisableUnderDelta.
+        // R37b disjunction (QA-D010-001): gate on `(is_in_delta_round || streaming_active)`.
+        let round_protected = self.is_in_delta_round || self.streaming_active;
         let skip_recycle =
-            self.is_in_delta_round && self.recycle_policy == RecyclePolicy::DisableUnderDelta;
+            round_protected && self.recycle_policy == RecyclePolicy::DisableUnderDelta;
 
         if !skip_recycle {
             // SPEC-22 R5 (LIFO): try to pop the most recently freed ID.
             // Strategy B: if popped ID is border-protected, re-push and fall through.
             if let Some(id) = self.free_list.pop() {
                 // SPEC-22 R10b Strategy B (TASK-0590): per-id protection gate.
-                // Only engages when `is_in_delta_round` is true (proxy for
-                // `delta_mode || streaming_active` per R37b broadening).
-                // In push mode (`is_in_delta_round = false`), the gate is inactive
+                // Engages when `is_in_delta_round || streaming_active` (R37b disjunction,
+                // QA-D010-001 fix). In push mode (both flags false), the gate is inactive
                 // and border IDs MAY be recycled as normal (SPEC-22 R3).
-                if self.is_in_delta_round
+                if round_protected
                     && self.recycle_policy == RecyclePolicy::BorderClean
                     && self.is_border_protected(id)
                 {
@@ -906,6 +921,7 @@ impl Net {
             border_entries_shadow: _bes_a,
             recycle_policy: recycle_policy_a,
             is_in_delta_round: _delta_a,
+            streaming_active: _sa_a,
             #[cfg(debug_assertions)]
                 protected_tombstones: _pt_a,
             #[cfg(debug_assertions)]
@@ -927,6 +943,7 @@ impl Net {
             border_entries_shadow: _bes_b,
             recycle_policy: _rp_b,
             is_in_delta_round: _delta_b,
+            streaming_active: _sa_b,
             #[cfg(debug_assertions)]
                 protected_tombstones: _pt_b,
             #[cfg(debug_assertions)]
@@ -1027,6 +1044,7 @@ impl Net {
             border_entries_shadow: None,
             recycle_policy: recycle_policy_a,
             is_in_delta_round: false,
+            streaming_active: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
             #[cfg(debug_assertions)]

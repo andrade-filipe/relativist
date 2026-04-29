@@ -401,6 +401,7 @@ impl SparseNet {
             border_entries_shadow: None,
             recycle_policy: RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
+            streaming_active: false,
             #[cfg(debug_assertions)]
             protected_tombstones: None,
             #[cfg(debug_assertions)]
