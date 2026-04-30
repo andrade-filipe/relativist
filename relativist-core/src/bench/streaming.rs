@@ -87,9 +87,21 @@ pub fn default_chunked_iter(net: Net) -> Box<dyn Iterator<Item = AgentBatch>> {
                         });
                     }
                 }
-                PortRef::FreePort(_) => {
-                    // FreePort (Lafont interface or border) — not emitted here;
-                    // the accumulator path reconstructs these from the port array.
+                PortRef::FreePort(fp_id) => {
+                    // QA-D010-003: emit FreePortInterface so Lafont interface
+                    // wires are preserved through the streaming pipeline.
+                    // (Pre-fix this branch was a silent drop, breaking T6
+                    // isomorphism for any net with an interface.)
+                    //
+                    // DISCONNECTED sentinel (`FreePort(u32::MAX)`) is skipped
+                    // because it represents an erased / disconnected port,
+                    // not a real Lafont interface wire (see net::DISCONNECTED).
+                    if fp_id != u32::MAX {
+                        connections.push(ConnectionDirective::FreePortInterface {
+                            agent_port: (id as AgentId, port),
+                            free_port_id: fp_id,
+                        });
+                    }
                 }
             }
         }
@@ -844,5 +856,63 @@ mod tests {
                 "checker must not alter agents"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D010-003: default_chunked_iter must propagate FreePort interface wires
+    // (T6 isomorphism preservation).
+    // ---------------------------------------------------------------------------
+
+    /// QA-D010-003-A: a Net with a CON agent connected to 3 FreePorts (Lafont
+    /// root + 2 aux interface wires) MUST yield 3 FreePortInterface directives
+    /// through `default_chunked_iter`. Pre-fix this branch silently dropped
+    /// every FreePort, returning 0 directives.
+    #[test]
+    fn qa_d010_003_a_default_chunked_iter_emits_freeport_interfaces() {
+        use crate::net::Net;
+        let mut net = Net::new();
+        let con = net.create_agent(Symbol::Con);
+        net.connect(PortRef::AgentPort(con, 0), PortRef::FreePort(10));
+        net.connect(PortRef::AgentPort(con, 1), PortRef::FreePort(11));
+        net.connect(PortRef::AgentPort(con, 2), PortRef::FreePort(12));
+
+        let batch = default_chunked_iter(net)
+            .next()
+            .expect("default_chunked_iter must yield one batch");
+
+        let fp_count = batch
+            .connections
+            .iter()
+            .filter(|d| matches!(d, ConnectionDirective::FreePortInterface { .. }))
+            .count();
+        assert_eq!(
+            fp_count, 3,
+            "QA-D010-003-A: default_chunked_iter must emit 3 FreePortInterface directives, got {fp_count}"
+        );
+    }
+
+    /// QA-D010-003-B (EC): a Net with NO FreePort interface (only agent-to-agent
+    /// connections) yields zero FreePortInterface directives — no spurious emission.
+    #[test]
+    fn qa_d010_003_b_no_freeports_yields_no_freeport_directives() {
+        use crate::net::Net;
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let batch = default_chunked_iter(net)
+            .next()
+            .expect("default_chunked_iter must yield one batch");
+
+        let fp_count = batch
+            .connections
+            .iter()
+            .filter(|d| matches!(d, ConnectionDirective::FreePortInterface { .. }))
+            .count();
+        assert_eq!(
+            fp_count, 0,
+            "QA-D010-003-B: empty-FreePort net must yield zero FreePortInterface directives"
+        );
     }
 }
