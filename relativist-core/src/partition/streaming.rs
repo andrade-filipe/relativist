@@ -943,6 +943,11 @@ struct PendingConnection {
     source: (AgentId, PortId),
     target_agent_id: AgentId,
     target_port: PortId,
+    /// QA-D010-009: chunk index at which this entry was buffered. When a
+    /// pending entry has aged beyond `GridConfig.max_pending_lifetime`
+    /// chunks the orchestrator returns `PartitionError::PendingConnectionExpired`
+    /// and stops processing the stream (R37g malformed-stream class).
+    birth_chunk: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,6 +1057,28 @@ pub fn generate_and_partition_chunked_with_chunk_size(
     num_workers: u32,
     strategy: &mut dyn StreamingPartitionStrategy,
     chunk_size: u32,
+) -> Result<ChunkedPartitionResult, PartitionError> {
+    generate_and_partition_chunked_with_chunk_size_and_lifetime(
+        stream,
+        num_workers,
+        strategy,
+        chunk_size,
+        u32::MAX,
+    )
+}
+
+/// QA-D010-009: variant of [`generate_and_partition_chunked_with_chunk_size`]
+/// that enforces `max_pending_lifetime`. A `Pending` directive whose target
+/// agent is not introduced within `max_pending_lifetime` chunks of its
+/// recording chunk is reported as
+/// `PartitionError::PendingConnectionExpired`. Use `u32::MAX` to disable
+/// the bound (the legacy behaviour of the chunk_size variant).
+pub fn generate_and_partition_chunked_with_chunk_size_and_lifetime(
+    stream: Box<dyn Iterator<Item = AgentBatch>>,
+    num_workers: u32,
+    strategy: &mut dyn StreamingPartitionStrategy,
+    chunk_size: u32,
+    max_pending_lifetime: u32,
 ) -> Result<ChunkedPartitionResult, PartitionError> {
     // QA-D010-005: orchestrator-level validation. Strategies internally
     // also guard their own `allocate_batch`, but surfacing the error here
@@ -1165,9 +1192,29 @@ pub fn generate_and_partition_chunked_with_chunk_size(
         let symbol_lookup: HashMap<AgentId, Symbol> =
             batch.agents.iter().map(|(id, sym)| (*id, *sym)).collect();
 
+        // QA-D010-008: validate every (agent_id, worker_id) the strategy
+        // returned. Production strategies (RoundRobin, Fennel) are
+        // well-behaved; downstream crates implementing the trait may
+        // misbehave. The orchestrator surfaces malformed output as a
+        // PartitionError rather than panicking on `accumulators[OOB]` or
+        // `symbol_lookup[missing_id]` — both of which previously crashed
+        // the tokio runtime.
         for (agent_id, worker_id) in &assignments {
+            if (*worker_id as usize) >= accumulators.len() {
+                return Err(PartitionError::StrategyReturnedInvalidWorker {
+                    worker_id: *worker_id,
+                    num_workers,
+                });
+            }
+            let symbol = match symbol_lookup.get(agent_id) {
+                Some(s) => *s,
+                None => {
+                    return Err(PartitionError::StrategyReturnedUnknownAgent {
+                        agent_id: *agent_id,
+                    })
+                }
+            };
             agent_owner.insert(*agent_id, *worker_id);
-            let symbol = symbol_lookup[agent_id];
             accumulators[*worker_id as usize].add_agent(*agent_id, symbol);
         }
 
@@ -1236,7 +1283,33 @@ pub fn generate_and_partition_chunked_with_chunk_size(
                         source: *source,
                         target_agent_id: *target_agent_id,
                         target_port: *target_port,
+                        birth_chunk: chunks_seen,
                     });
+            }
+        }
+
+        // QA-D010-009: enforce the max_pending_lifetime budget. After every
+        // batch, scan the pending store for entries whose age (in chunks)
+        // has exceeded the configured budget; if any has, return
+        // `PartitionError::PendingConnectionExpired` rather than letting
+        // the HashMap grow without bound. The scan is bounded by
+        // `pending.len()` and runs once per batch — O(N) amortised, where
+        // N is the live pending count (small in well-formed streams).
+        // `max_pending_lifetime == u32::MAX` is the legacy "disabled"
+        // sentinel: the early exit avoids the scan entirely.
+        if max_pending_lifetime != u32::MAX {
+            let budget = max_pending_lifetime as u64;
+            for pcs in pending.values() {
+                for pc in pcs {
+                    let age = chunks_seen.saturating_sub(pc.birth_chunk);
+                    if age > budget {
+                        return Err(PartitionError::PendingConnectionExpired {
+                            agent_id: pc.target_agent_id,
+                            age,
+                            budget,
+                        });
+                    }
+                }
             }
         }
 
@@ -3068,5 +3141,198 @@ mod tests {
                 r.err()
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D010-008: orchestrator returns Err on bad strategy output (no panic)
+    // ---------------------------------------------------------------------------
+
+    /// QA-D010-008: a misbehaving `StreamingPartitionStrategy` that returns a
+    /// `worker_id >= num_workers` MUST be reported as
+    /// `PartitionError::StrategyReturnedInvalidWorker`, not a panic. Pre-fix,
+    /// the orchestrator did `accumulators[*worker_id as usize].add_agent(...)`
+    /// — an OOB index that aborts the tokio runtime.
+    #[test]
+    fn qa_d010_008_strategy_returns_invalid_worker_id_returns_err() {
+        use crate::net::Symbol;
+
+        struct Misbehaving;
+        impl StreamingPartitionStrategy for Misbehaving {
+            fn allocate_batch(
+                &mut self,
+                batch: &AgentBatch,
+                num_workers: u32,
+            ) -> Vec<(AgentId, WorkerId)> {
+                // Out-of-bounds worker_id: num_workers + 100.
+                batch
+                    .agents
+                    .iter()
+                    .map(|(id, _)| (*id, num_workers + 100))
+                    .collect()
+            }
+            fn finalize(&self) -> StreamingPartitionStats {
+                StreamingPartitionStats {
+                    total_agents: 0,
+                    per_worker_counts: vec![],
+                    border_wire_count: 0,
+                    chunks_processed: 0,
+                }
+            }
+        }
+
+        let batch = AgentBatch {
+            agents: vec![(0u32, Symbol::Era)],
+            connections: vec![],
+        };
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(std::iter::once(batch));
+        let mut strategy = Misbehaving;
+        let result = generate_and_partition_chunked(stream, 4, &mut strategy);
+        assert!(
+            matches!(
+                result,
+                Err(PartitionError::StrategyReturnedInvalidWorker { .. })
+            ),
+            "QA-D010-008: misbehaving strategy must return StrategyReturnedInvalidWorker; \
+             got {:?}",
+            result
+        );
+    }
+
+    /// QA-D010-008: a misbehaving strategy that returns an `agent_id` not in the
+    /// batch MUST be reported as `StrategyReturnedUnknownAgent`, not a panic
+    /// (pre-fix: `symbol_lookup[&agent_id]` panics on missing key).
+    #[test]
+    fn qa_d010_008_strategy_returns_unknown_agent_returns_err() {
+        struct Misbehaving;
+        impl StreamingPartitionStrategy for Misbehaving {
+            fn allocate_batch(
+                &mut self,
+                _batch: &AgentBatch,
+                _num_workers: u32,
+            ) -> Vec<(AgentId, WorkerId)> {
+                // Return an agent_id that is NOT in the supplied batch.
+                vec![(99_999u32, 0u32)]
+            }
+            fn finalize(&self) -> StreamingPartitionStats {
+                StreamingPartitionStats {
+                    total_agents: 0,
+                    per_worker_counts: vec![],
+                    border_wire_count: 0,
+                    chunks_processed: 0,
+                }
+            }
+        }
+
+        let batch = AgentBatch {
+            agents: vec![(0u32, crate::net::Symbol::Era)],
+            connections: vec![],
+        };
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(std::iter::once(batch));
+        let mut strategy = Misbehaving;
+        let result = generate_and_partition_chunked(stream, 2, &mut strategy);
+        assert!(
+            matches!(
+                result,
+                Err(PartitionError::StrategyReturnedUnknownAgent { agent_id: 99_999 })
+            ),
+            "QA-D010-008: misbehaving strategy must return StrategyReturnedUnknownAgent; \
+             got {:?}",
+            result
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D010-009: max_pending_lifetime enforcement
+    // ---------------------------------------------------------------------------
+
+    /// QA-D010-009: an unresolved `Pending` directive whose target agent is
+    /// never introduced within `max_pending_lifetime` chunks MUST surface as
+    /// `PartitionError::PendingConnectionExpired`, NOT growing the pending
+    /// HashMap unboundedly until the stream exhausts (or, for an infinite
+    /// stream, forever).
+    #[test]
+    fn qa_d010_009_pending_connection_expires_on_lifetime_breach() {
+        use crate::net::Symbol;
+
+        // Stream of 6 batches; each batch creates one new agent and a Pending
+        // directive targeting agent_id=999_999 (which will never be emitted).
+        // With max_pending_lifetime=3, the orchestrator must Err on or before
+        // chunk 5 (chunk 1 birthed the pending; age=4 > 3 fires at chunk 5).
+        let batches: Vec<AgentBatch> = (0..6u32)
+            .map(|i| AgentBatch {
+                agents: vec![(i, Symbol::Era)],
+                connections: vec![ConnectionDirective::Pending {
+                    source: (i, 0u8),
+                    target_agent_id: 999_999u32,
+                    target_port: 0u8,
+                }],
+            })
+            .collect();
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(batches.into_iter());
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+        let result = generate_and_partition_chunked_with_chunk_size_and_lifetime(
+            stream,
+            2,
+            &mut strategy,
+            10, // chunk_size, irrelevant for this test
+            3,  // max_pending_lifetime — must trigger expiration
+        );
+        match result {
+            Err(PartitionError::PendingConnectionExpired {
+                agent_id,
+                age,
+                budget,
+            }) => {
+                assert_eq!(agent_id, 999_999, "expired entry's target_agent_id");
+                assert_eq!(budget, 3, "budget echoes max_pending_lifetime");
+                assert!(
+                    age > budget,
+                    "QA-D010-009: age ({age}) must exceed budget ({budget}) at the \
+                     point of expiration"
+                );
+            }
+            other => panic!(
+                "QA-D010-009: must return PendingConnectionExpired; got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// QA-D010-009 negative-control: with `max_pending_lifetime == u32::MAX`
+    /// (legacy "disabled" sentinel), an unresolved Pending must continue to
+    /// surface as `UnresolvedForwardReferences` (post-stream check), NOT
+    /// `PendingConnectionExpired` mid-stream.
+    #[test]
+    fn qa_d010_009_max_pending_lifetime_disabled_legacy_behavior() {
+        use crate::net::Symbol;
+
+        let batches: Vec<AgentBatch> = (0..6u32)
+            .map(|i| AgentBatch {
+                agents: vec![(i, Symbol::Era)],
+                connections: vec![ConnectionDirective::Pending {
+                    source: (i, 0u8),
+                    target_agent_id: 999_999u32,
+                    target_port: 0u8,
+                }],
+            })
+            .collect();
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(batches.into_iter());
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+        let result = generate_and_partition_chunked_with_chunk_size_and_lifetime(
+            stream,
+            2,
+            &mut strategy,
+            10,
+            u32::MAX, // disabled
+        );
+        assert!(
+            matches!(
+                result,
+                Err(PartitionError::UnresolvedForwardReferences { agent_id: 999_999 })
+            ),
+            "QA-D010-009 negative-control: with max_pending_lifetime=u32::MAX, must \
+             fall through to UnresolvedForwardReferences; got {:?}",
+            result
+        );
     }
 }

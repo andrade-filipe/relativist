@@ -302,9 +302,46 @@ pub fn generate_and_partition_chunked_with_delta(
     delta_mode: bool,
     streaming_active: bool,
 ) -> Result<crate::partition::streaming::ChunkedPartitionResult, crate::error::PartitionError> {
-    use crate::partition::generate_and_partition_chunked;
+    generate_and_partition_chunked_with_delta_and_config(
+        stream,
+        num_workers,
+        strategy,
+        border_graph,
+        delta_mode,
+        streaming_active,
+        u32::MAX,
+        u32::MAX,
+    )
+}
 
-    let result = generate_and_partition_chunked(stream, num_workers, strategy)?;
+/// QA-D010-009: configuration-aware variant of
+/// [`generate_and_partition_chunked_with_delta`] that propagates
+/// `chunk_size` and `max_pending_lifetime` from `GridConfig` into the
+/// streaming pipeline. Coordinator/run-grid call-sites should use this
+/// to enforce the R37g malformed-stream budget.
+///
+/// `chunk_size == u32::MAX` selects the R26 short-circuit path.
+/// `max_pending_lifetime == u32::MAX` disables the lifetime check (legacy).
+#[allow(clippy::too_many_arguments)]
+pub fn generate_and_partition_chunked_with_delta_and_config(
+    stream: Box<dyn Iterator<Item = crate::partition::streaming::AgentBatch>>,
+    num_workers: u32,
+    strategy: &mut dyn crate::partition::streaming::StreamingPartitionStrategy,
+    border_graph: Option<&mut crate::merge::BorderGraph>,
+    delta_mode: bool,
+    streaming_active: bool,
+    chunk_size: u32,
+    max_pending_lifetime: u32,
+) -> Result<crate::partition::streaming::ChunkedPartitionResult, crate::error::PartitionError> {
+    use crate::partition::streaming::generate_and_partition_chunked_with_chunk_size_and_lifetime;
+
+    let result = generate_and_partition_chunked_with_chunk_size_and_lifetime(
+        stream,
+        num_workers,
+        strategy,
+        chunk_size,
+        max_pending_lifetime,
+    )?;
 
     // SPEC-21 R37f: extend the BorderGraph with this chunk's new borders when
     // `delta_mode && streaming_active`. Both flags must be set per the MUST condition.
