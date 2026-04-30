@@ -910,6 +910,38 @@ impl WorkerPullContext {
         }
         Ok(())
     }
+
+    /// MF-002: production call-site for the FSM that also arms / disarms the
+    /// `Net.streaming_active` flag so SPEC-22 R10b/R10c free-list gates activate
+    /// during chunked dispatch.
+    ///
+    /// Wraps [`try_transition`](Self::try_transition): on
+    /// `AssignPartitionReceived` (entry into streaming) it calls
+    /// [`enter_streaming_mode`]; on `FinalReductionComplete` (exit) it calls
+    /// [`exit_streaming_mode`]. All other transitions leave `net` untouched.
+    ///
+    /// SPEC-21 R37b / SPEC-22 R10b: protocol handlers MUST use this method
+    /// rather than `try_transition` whenever a `Net` is in scope, otherwise
+    /// the streaming-active gate is never armed and free-list pops proceed
+    /// unprotected.
+    pub fn try_transition_with_net(
+        &mut self,
+        event: WorkerPullEvent,
+        net: &mut crate::net::Net,
+    ) -> Result<(), WorkerPullError> {
+        // Snapshot the streaming_active flag to detect transitions.
+        let was_streaming = self.streaming_active;
+        self.try_transition(event)?;
+        let is_streaming = self.streaming_active;
+
+        // Arm / disarm Net.streaming_active to mirror context-level changes.
+        match (was_streaming, is_streaming) {
+            (false, true) => enter_streaming_mode(net),
+            (true, false) => exit_streaming_mode(net),
+            _ => {} // no edge crossed
+        }
+        Ok(())
+    }
 }
 
 /// Streaming-active flag lifecycle (SPEC-22 R10b broadening / TASK-0589).
@@ -3172,6 +3204,87 @@ mod tests {
         assert!(
             !net.is_in_delta_round,
             "exit_streaming_mode must NOT touch is_in_delta_round (QA-D010-001)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // MF-002: try_transition_with_net wires enter/exit_streaming_mode helpers
+    // from FSM transitions to Net.streaming_active (REVIEW-PHASE-D010 §MF-002).
+    // ---------------------------------------------------------------------------
+
+    /// MF-002-A: AssignPartitionReceived via `try_transition_with_net` arms
+    /// `Net.streaming_active`. Direct `try_transition` would not.
+    #[test]
+    fn mf002_a_assign_partition_arms_net_streaming_active() {
+        let mut ctx = WorkerPullContext::new(0);
+        let mut net = Net::new();
+        assert!(!net.streaming_active, "MF-002-A: initial state");
+
+        ctx.try_transition_with_net(
+            WorkerPullEvent::AssignPartitionReceived { worker_id: 0 },
+            &mut net,
+        )
+        .expect("transition must succeed");
+
+        assert!(
+            net.streaming_active,
+            "MF-002-A: AssignPartition via try_transition_with_net must arm net.streaming_active"
+        );
+        assert!(ctx.streaming_active, "MF-002-A: ctx flag also armed");
+    }
+
+    /// MF-002-B: FinalReductionComplete via `try_transition_with_net` clears
+    /// `Net.streaming_active` AND leaves `Net.is_in_delta_round` untouched
+    /// (composes with QA-D010-001 fix).
+    #[test]
+    fn mf002_b_final_reduction_clears_streaming_active_only() {
+        let mut ctx = WorkerPullContext::new(0);
+        let mut net = Net::new();
+        // Outer delta round is independently active — must survive streaming exit.
+        net.is_in_delta_round = true;
+
+        // Enter streaming.
+        ctx.try_transition_with_net(
+            WorkerPullEvent::AssignPartitionReceived { worker_id: 0 },
+            &mut net,
+        )
+        .unwrap();
+        assert!(net.streaming_active, "armed");
+
+        // NoMoreWork -> FinalReduction (intermediate state, no streaming flag change).
+        ctx.try_transition_with_net(WorkerPullEvent::NoMoreWorkReceived, &mut net)
+            .unwrap();
+        assert!(net.streaming_active, "MF-002-B: NoMoreWork must not disarm");
+
+        // FinalReductionComplete -> clears streaming_active.
+        ctx.try_transition_with_net(WorkerPullEvent::FinalReductionComplete, &mut net)
+            .unwrap();
+        assert!(
+            !net.streaming_active,
+            "MF-002-B: FinalReductionComplete must clear net.streaming_active"
+        );
+        assert!(
+            net.is_in_delta_round,
+            "MF-002-B: outer delta round must NOT be cleared by streaming exit"
+        );
+    }
+
+    /// MF-002-C: transitions that don't cross the streaming-active edge are
+    /// idempotent on `Net.streaming_active`.
+    #[test]
+    fn mf002_c_non_edge_transitions_idempotent() {
+        let mut ctx = WorkerPullContext::new(0);
+        let mut net = Net::new();
+
+        // ChunkReductionComplete: no edge crossing -> net.streaming_active stays false.
+        ctx.try_transition_with_net(
+            WorkerPullEvent::ChunkReductionComplete { worker_id: 0 },
+            &mut net,
+        )
+        .expect("ChunkReductionComplete is valid in AwaitingChunkAfterResult");
+        assert!(
+            !net.streaming_active,
+            "MF-002-C: ChunkReductionComplete must not arm streaming_active"
         );
     }
 }
