@@ -27,5 +27,7 @@ pub use core::merge;
 // re-introduces a public caller.
 pub use grid::run_grid;
 pub(crate) use grid::run_grid_entry;
-pub use helpers::{drain_stale_redexes, rebuild_free_port_index};
+pub use helpers::{
+    drain_stale_redexes, generate_and_partition_chunked_with_delta, rebuild_free_port_index,
+};
 pub use types::{DispatchMode, GridConfig, GridMetrics, StreamingStrategyConfig, WorkerRoundStats};

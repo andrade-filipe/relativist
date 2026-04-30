@@ -262,6 +262,61 @@ pub(crate) fn compute_outgoing_deltas(
     out
 }
 
+// ---------------------------------------------------------------------------
+// MF-001: generate_and_partition_chunked_with_delta (SPEC-21 R37f call-site)
+// ---------------------------------------------------------------------------
+
+/// Production call-site for SPEC-21 R37f: run the streaming partition pipeline
+/// and extend the coordinator's `BorderGraph` with the accumulated borders when
+/// `delta_mode && streaming_active`.
+///
+/// This wrapper lives in `merge/` (above `partition/`) so it can import both
+/// `BorderGraph` (from `merge::border_graph`) and
+/// `generate_and_partition_chunked` (from `partition::streaming`). The `partition`
+/// crate cannot import `merge` types (inviolable dependency direction per SPEC-13).
+///
+/// # Call-site discipline (R37f MUST)
+///
+/// When `delta_mode && streaming_active`, the coordinator MUST call this wrapper
+/// (not the bare `generate_and_partition_chunked`) so the `BorderGraph` stays fresh
+/// before the next `AssignPartition` dispatch. Under any other combination the
+/// `border_graph` argument is `None` and the function behaves identically to
+/// `generate_and_partition_chunked`.
+///
+/// # Arguments
+///
+/// - `stream`: the agent batch iterator (consumed by the partition pipeline).
+/// - `num_workers`: number of workers in the current round.
+/// - `strategy`: streaming partition strategy.
+/// - `border_graph`: if `Some(&mut bg)` AND `delta_mode && streaming_active`, the
+///   final `ChunkedPartitionResult.borders` map is applied to `bg` via
+///   `extend_with_chunk_borders` before returning. Pass `None` for non-delta or
+///   non-streaming runs.
+/// - `delta_mode`: flag indicating a delta-mode round is active (SPEC-19).
+/// - `streaming_active`: flag indicating chunked dispatch is active (SPEC-21 R37b).
+pub fn generate_and_partition_chunked_with_delta(
+    stream: Box<dyn Iterator<Item = crate::partition::streaming::AgentBatch>>,
+    num_workers: u32,
+    strategy: &mut dyn crate::partition::streaming::StreamingPartitionStrategy,
+    border_graph: Option<&mut crate::merge::BorderGraph>,
+    delta_mode: bool,
+    streaming_active: bool,
+) -> Result<crate::partition::streaming::ChunkedPartitionResult, crate::error::PartitionError> {
+    use crate::partition::generate_and_partition_chunked;
+
+    let result = generate_and_partition_chunked(stream, num_workers, strategy)?;
+
+    // SPEC-21 R37f: extend the BorderGraph with this chunk's new borders when
+    // `delta_mode && streaming_active`. Both flags must be set per the MUST condition.
+    if delta_mode && streaming_active {
+        if let Some(bg) = border_graph {
+            bg.extend_with_chunk_borders(&result.borders);
+        }
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,5 +933,133 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].border_id, 3);
         assert!(matches!(out[0].new_target, PortRef::AgentPort(_, _)));
+    }
+
+    // ---------------------------------------------------------------------------
+    // MF-001: generate_and_partition_chunked_with_delta tests (SPEC-21 R37f)
+    // ---------------------------------------------------------------------------
+
+    /// Build an empty BorderGraph for MF-001 tests. Mirrors the
+    /// `make_empty_border_graph` private helper in `border_graph.rs::tests`.
+    fn make_empty_border_graph_mf001(num_workers: usize) -> crate::merge::BorderGraph {
+        use std::collections::{HashMap, HashSet};
+        crate::merge::BorderGraph {
+            borders: HashMap::new(),
+            worker_borders: vec![Vec::new(); num_workers],
+            active_redexes: HashSet::new(),
+            pending_new_borders: Vec::new(),
+            resolved_mints: HashMap::new(),
+        }
+    }
+
+    /// MF-001-A: Under delta_mode=true AND streaming_active=true, the function
+    /// calls extend_with_chunk_borders and populates the BorderGraph.
+    #[test]
+    fn mf001_a_delta_and_streaming_active_extends_border_graph() {
+        use crate::net::Symbol;
+        use crate::partition::streaming::{
+            AgentBatch, ConnectionDirective, RoundRobinStreamingStrategy,
+        };
+
+        // Build a 2-worker stream: 2 agents connected across workers
+        // (agent 0 -> worker 0, agent 1 -> worker 1, wire between them).
+        let stream = Box::new(std::iter::once(AgentBatch {
+            agents: vec![(0u32, Symbol::Era), (1u32, Symbol::Era)],
+            connections: vec![ConnectionDirective::Resolved {
+                source: (0u32, 0u8),
+                target: (1u32, 0u8),
+            }],
+        }));
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+        let mut border_graph = make_empty_border_graph_mf001(2);
+
+        let result = super::generate_and_partition_chunked_with_delta(
+            stream,
+            2,
+            &mut strategy,
+            Some(&mut border_graph),
+            true, // delta_mode = true
+            true, // streaming_active = true
+        )
+        .expect("partition must succeed");
+
+        // The cross-worker wire must have produced a border entry.
+        assert!(
+            !result.borders.is_empty(),
+            "MF-001-A: result.borders must be non-empty"
+        );
+
+        // BorderGraph must have been extended with the same entries.
+        assert_eq!(
+            border_graph.borders.len(),
+            result.borders.len(),
+            "MF-001-A: BorderGraph must contain same number of borders as result"
+        );
+    }
+
+    /// MF-001-B: Under delta_mode=false (no delta), extend_with_chunk_borders is NOT called.
+    /// The BorderGraph stays empty even if streaming_active=true.
+    #[test]
+    fn mf001_b_no_delta_border_graph_not_extended() {
+        use crate::net::Symbol;
+        use crate::partition::streaming::{
+            AgentBatch, ConnectionDirective, RoundRobinStreamingStrategy,
+        };
+
+        let stream = Box::new(std::iter::once(AgentBatch {
+            agents: vec![(0u32, Symbol::Era), (1u32, Symbol::Era)],
+            connections: vec![ConnectionDirective::Resolved {
+                source: (0u32, 0u8),
+                target: (1u32, 0u8),
+            }],
+        }));
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+        let mut border_graph = make_empty_border_graph_mf001(2);
+
+        let _result = super::generate_and_partition_chunked_with_delta(
+            stream,
+            2,
+            &mut strategy,
+            Some(&mut border_graph),
+            false, // delta_mode = false
+            true,  // streaming_active = true
+        )
+        .expect("partition must succeed");
+
+        // BorderGraph must NOT have been extended.
+        assert!(
+            border_graph.borders.is_empty(),
+            "MF-001-B: BorderGraph must remain empty when delta_mode=false"
+        );
+    }
+
+    /// MF-001-C: With border_graph=None, the function succeeds without panic
+    /// regardless of delta_mode/streaming_active flags.
+    #[test]
+    fn mf001_c_none_border_graph_is_safe() {
+        use crate::net::Symbol;
+        use crate::partition::streaming::{AgentBatch, RoundRobinStreamingStrategy};
+
+        let stream = Box::new(std::iter::once(AgentBatch {
+            agents: vec![(0u32, Symbol::Era)],
+            connections: vec![],
+        }));
+        let mut strategy = RoundRobinStreamingStrategy::new(1);
+
+        let result = super::generate_and_partition_chunked_with_delta(
+            stream,
+            1,
+            &mut strategy,
+            None,
+            true,
+            true,
+        )
+        .expect("partition must succeed");
+
+        assert_eq!(
+            result.partitions.len(),
+            1,
+            "MF-001-C: one partition for one worker"
+        );
     }
 }
