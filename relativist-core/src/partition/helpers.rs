@@ -447,24 +447,32 @@ pub fn build_subnet_with_config(
     if threshold_exceeded {
         // SPEC-22 R22: sparse path — builds via SparseNet then converts to dense.
         // Memory is proportional to live_count rather than id_range_size (M5 fix).
-        Ok(build_subnet_sparse(
+        let mut subnet = build_subnet_sparse(
             net,
             worker_agents,
             sigma,
             border_entries,
             worker_id,
             id_range,
-        ))
+        );
+        // SF-004: propagate the operator-configured recycle policy into the
+        // worker's Net. Without this, `GridConfig.recycle_under_delta` is a
+        // dead configuration knob — workers always use the default.
+        subnet.recycle_policy = config.recycle_policy;
+        Ok(subnet)
     } else {
         // Dense path (TASK-0481 logic) — threshold not exceeded.
-        Ok(build_subnet(
+        let mut subnet = build_subnet(
             net,
             worker_agents,
             sigma,
             border_entries,
             worker_id,
             id_range,
-        ))
+        );
+        // SF-004: same propagation on the dense path.
+        subnet.recycle_policy = config.recycle_policy;
+        Ok(subnet)
     }
 }
 
@@ -1351,6 +1359,7 @@ mod tests {
 
         let cfg = PartitionConfig {
             sparse_build: false,
+            ..PartitionConfig::default()
         };
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..40);
         assert!(
@@ -1381,6 +1390,7 @@ mod tests {
 
         let cfg = PartitionConfig {
             sparse_build: false,
+            ..PartitionConfig::default()
         };
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..50);
         assert!(
@@ -1409,7 +1419,10 @@ mod tests {
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
         // id_range = 0..50 (50 > 4*10; threshold exceeded) but sparse_build=true -> Ok
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..50);
         assert!(
@@ -1439,6 +1452,7 @@ mod tests {
 
         let cfg = PartitionConfig {
             sparse_build: false,
+            ..PartitionConfig::default()
         };
         let result = build_subnet_with_config(&cfg, 7, &net, &agents, &sigma, &[], 0, 0..500);
         match result {
@@ -1501,7 +1515,10 @@ mod tests {
         }
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60);
         assert!(
             result.is_ok(),
@@ -1525,7 +1542,10 @@ mod tests {
         }
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
         // id_range = 0..30 → 30 NOT > 40 (dense path).
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..30);
         assert!(result.is_ok(), "dense path below threshold should succeed");
@@ -1545,7 +1565,10 @@ mod tests {
         }
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60)
             .expect("should succeed");
         assert_eq!(
@@ -1569,7 +1592,10 @@ mod tests {
         }
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60)
             .expect("should succeed");
         for &id in &result.free_list {
@@ -1601,7 +1627,10 @@ mod tests {
         }
 
         let sigma: HashMap<AgentId, WorkerId> = agents_vec.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
 
         // id_range starts at 50: this simulates a partition that owns ID range [50..150).
         // The original net agents (0..4) are below this range — that's fine; they were
@@ -1644,7 +1673,10 @@ mod tests {
 
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60)
             .expect("should succeed");
         assert_eq!(
@@ -1720,7 +1752,10 @@ mod tests {
         use crate::partition::PartitionConfig;
         let net = Net::new();
         let sigma: HashMap<AgentId, WorkerId> = HashMap::new();
-        let cfg = PartitionConfig { sparse_build: true };
+        let cfg = PartitionConfig {
+            sparse_build: true,
+            ..PartitionConfig::default()
+        };
 
         let result = build_subnet_with_config(&cfg, 0, &net, &[], &sigma, &[], 0, 50..200)
             .expect("build_subnet_with_config should succeed for empty partition");

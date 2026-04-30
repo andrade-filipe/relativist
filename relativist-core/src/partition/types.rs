@@ -308,6 +308,14 @@ pub struct PartitionConfig {
     /// that exceeds the threshold with `sparse_build: false` is rejected with
     /// `PartitionError::DenseAllocationExceedsThreshold`.
     pub sparse_build: bool,
+
+    /// SF-004 / SPEC-22 R10b: the recycle policy each subnet built by
+    /// `build_subnet_with_config` should be initialised with. Propagates
+    /// `GridConfig.recycle_under_delta` from the orchestrator into per-worker
+    /// `Net.recycle_policy`. Without this propagation the field on
+    /// `GridConfig` is dead — every worker silently runs with the default
+    /// `RecyclePolicy::DisableUnderDelta` regardless of the operator's choice.
+    pub recycle_policy: crate::net::core::RecyclePolicy,
 }
 
 impl Default for PartitionConfig {
@@ -315,6 +323,8 @@ impl Default for PartitionConfig {
         Self {
             // SPEC-22 R30: sparse path is the safe default.
             sparse_build: true,
+            // SPEC-22 R10b: matches Net::default() / build_subnet default.
+            recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
         }
     }
 }

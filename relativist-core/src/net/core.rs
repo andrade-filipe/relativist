@@ -139,7 +139,24 @@ pub struct Net {
     pub free_list_pops: u64,
 
     /// SPEC-21 R37b / TASK-0590 (debug-only): pops where the popped ID IS in
-    /// `border_entries_shadow` (Strategy B protected path, should always be 0).
+    /// `border_entries_shadow`.
+    ///
+    /// Note (SF-001 clarification): a pop that increments this counter has
+    /// ALREADY succeeded — Strategy B's re-push gate did not protect it.
+    /// This means the pop occurred under one of:
+    /// - `is_in_delta_round == false && streaming_active == false`
+    ///   (R37b disjunction inactive — push-mode pop of a shadow-present ID;
+    ///   this is EXPECTED, not a violation), OR
+    /// - `recycle_policy != BorderClean` (Strategy B not selected, so the
+    ///   shadow check is bypassed), OR
+    /// - the protection has been disarmed (e.g. exit_streaming_mode after
+    ///   the round; pre-QA-D010-001 fix this also disarmed an outer delta
+    ///   round — that bug is now fixed).
+    ///
+    /// A non-zero value is therefore NOT in itself a G1 violation indicator.
+    /// To diagnose a true G1 violation under Strategy B, cross-reference
+    /// this counter with `is_in_delta_round || streaming_active` at the
+    /// time of the pop.
     #[cfg(debug_assertions)]
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]

@@ -27,7 +27,7 @@ pub mod types;
 pub use compact::CompactSubnet;
 pub use helpers::{classify_wires, compute_id_ranges, max_freeport_id, WireClassification};
 pub use remap::remap_partition_ids;
-pub use split::split;
+pub use split::{split, split_with_config};
 pub use strategy::{ContiguousIdStrategy, PartitionStrategy};
 pub use streaming::{
     generate_and_partition_chunked, AgentBatch, ChunkedPartitionResult, ConnectionDirective,

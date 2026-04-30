@@ -5,7 +5,7 @@ use std::time::Instant;
 use crate::net::Net;
 #[cfg(debug_assertions)]
 use crate::net::PortRef;
-use crate::partition::{split, PartitionStrategy};
+use crate::partition::PartitionStrategy;
 use crate::reduction::{reduce_all, reduce_border_once, ReductionStats};
 
 use super::core::merge;
@@ -83,7 +83,20 @@ pub fn run_grid(
 
         // === [2] PHASE 1: SPLIT ===
         let t_partition = Instant::now();
-        let mut plan = split(current_net, config.num_workers, strategy);
+        // SF-004: propagate `GridConfig.recycle_under_delta` into the
+        // per-worker subnets via PartitionConfig.recycle_policy. Pre-fix,
+        // this field on GridConfig was never read; every worker silently
+        // used the default `DisableUnderDelta` regardless of operator choice.
+        let partition_cfg = crate::partition::PartitionConfig {
+            recycle_policy: config.recycle_under_delta,
+            ..crate::partition::PartitionConfig::default()
+        };
+        let mut plan = crate::partition::split_with_config(
+            current_net,
+            config.num_workers,
+            strategy,
+            &partition_cfg,
+        );
         metrics.partition_time_per_round.push(t_partition.elapsed());
 
         // === [3] PHASE 2: LOCAL REDUCTION (per worker, sequentially) ===
@@ -438,7 +451,17 @@ pub(crate) fn run_grid_delta(
     }
 
     // [2] Multi-worker delta loop — TASK-0385 implements the body.
-    let plan = crate::partition::split(current_net, config.num_workers, strategy);
+    // SF-004: same recycle_policy propagation as the synchronous run_grid path.
+    let partition_cfg = crate::partition::PartitionConfig {
+        recycle_policy: config.recycle_under_delta,
+        ..crate::partition::PartitionConfig::default()
+    };
+    let plan = crate::partition::split_with_config(
+        current_net,
+        config.num_workers,
+        strategy,
+        &partition_cfg,
+    );
     match run_grid_delta_inner(plan, config, dispatch, &mut metrics) {
         Ok(final_net) => {
             metrics.total_time = start_time.elapsed();

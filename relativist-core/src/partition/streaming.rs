@@ -335,6 +335,7 @@ pub trait StreamingPartitionStrategy {
 ///
 /// `finalize()` returns `chunks_processed: 0`. The pipeline (TASK-0554) stitches
 /// the actual count via its own `chunks_seen` counter (SPEC-21 §4.6 Step 7).
+#[derive(Debug, Clone)]
 pub struct RoundRobinStreamingStrategy {
     /// Monotonically increasing counter used for the round-robin formula:
     /// `worker = counter % num_workers`.
@@ -468,6 +469,7 @@ impl StreamingPartitionStrategy for RoundRobinStreamingStrategy {
 ///
 /// `finalize()` returns `chunks_processed: 0`. The pipeline stitches the real
 /// count (SPEC-21 §4.6 Step 7 / SC-021).
+#[derive(Debug, Clone)]
 pub struct FennelStreamingStrategy {
     /// Maps each assigned `AgentId` to its worker (R6 cache; ~8 bytes per entry).
     pub(crate) assignment_cache: HashMap<AgentId, WorkerId>,

@@ -20,10 +20,29 @@ use super::types::{IdRange, Partition, PartitionConfig, PartitionPlan, WorkerId}
 ///
 /// Panics if `num_workers == 0`.
 pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> PartitionPlan {
+    split_with_config(net, num_workers, strategy, &PartitionConfig::default())
+}
+
+/// SF-004 / SPEC-22 R10b: configurable variant of [`split`] that propagates a
+/// `PartitionConfig` (notably `recycle_policy`) into every per-worker
+/// `Net.recycle_policy` via `build_subnet_with_config`. Coordinator/run-grid
+/// call-sites that have a `GridConfig` should construct a `PartitionConfig`
+/// with `recycle_policy = config.recycle_under_delta` and call this variant
+/// so the operator-configured policy actually reaches the workers.
+pub fn split_with_config(
+    net: Net,
+    num_workers: u32,
+    strategy: &dyn PartitionStrategy,
+    partition_config: &PartitionConfig,
+) -> PartitionPlan {
     assert!(num_workers >= 1, "num_workers must be >= 1");
 
     if num_workers <= 1 {
-        return trivial_plan(net);
+        let mut plan = trivial_plan(net);
+        for partition in &mut plan.partitions {
+            partition.subnet.recycle_policy = partition_config.recycle_policy;
+        }
+        return plan;
     }
 
     // Step 2: Compute allocation function sigma
@@ -46,7 +65,8 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
     // threshold guard and routes to SparseNet when id_range_size > 4 × live_count.
     // Default config has sparse_build: true — the sparse path is always taken
     // when the threshold is exceeded, never returning DenseAllocationExceedsThreshold.
-    let partition_config = PartitionConfig::default();
+    // SF-004: `partition_config` is now passed from the caller so
+    // `recycle_policy` reaches the per-worker subnets.
 
     for i in 0..num_workers as usize {
         // SPEC-22 R10a / R22: pass the partition's id_range so build_subnet_with_config
@@ -54,7 +74,7 @@ pub fn split(net: Net, num_workers: u32, strategy: &dyn PartitionStrategy) -> Pa
         // otherwise, and populate the free_list with in-range None slots.
         let id_range_for_subnet = id_ranges[i].start..id_ranges[i].end;
         let mut subnet = build_subnet_with_config(
-            &partition_config,
+            partition_config,
             i,
             &net,
             &worker_agents[i],
@@ -244,6 +264,7 @@ mod tests {
         // sparse_build=false → Err when threshold exceeded
         let strict_cfg = PartitionConfig {
             sparse_build: false,
+            ..PartitionConfig::default()
         };
         assert!(
             build_subnet_with_config(&strict_cfg, 0, &net, &agents, &sigma, &[], 0, 0..1000)
@@ -274,6 +295,43 @@ mod tests {
         let plan = split(net, 1, &ContiguousIdStrategy);
         assert_eq!(plan.partitions.len(), 1);
         assert!(plan.borders.is_empty());
+    }
+
+    /// SF-004: `split_with_config` propagates `PartitionConfig.recycle_policy`
+    /// into every per-worker `Net.recycle_policy`. Pre-fix, the
+    /// `GridConfig.recycle_under_delta` field was declared but never read;
+    /// every worker silently ran with the default `DisableUnderDelta`.
+    #[test]
+    fn sf_004_split_with_config_propagates_recycle_policy() {
+        use crate::net::core::RecyclePolicy;
+        use crate::partition::PartitionConfig;
+
+        // Multi-worker case (2 partitions) — exercises the main loop path.
+        let mut net = Net::new();
+        let a = net.create_agent(Symbol::Era);
+        let b = net.create_agent(Symbol::Era);
+        net.connect(PortRef::AgentPort(a, 0), PortRef::AgentPort(b, 0));
+
+        let cfg = PartitionConfig {
+            recycle_policy: RecyclePolicy::BorderClean,
+            ..PartitionConfig::default()
+        };
+        let plan = split_with_config(net.clone(), 2, &ContiguousIdStrategy, &cfg);
+        for (i, p) in plan.partitions.iter().enumerate() {
+            assert_eq!(
+                p.subnet.recycle_policy,
+                RecyclePolicy::BorderClean,
+                "SF-004: partition[{i}] recycle_policy must reflect PartitionConfig"
+            );
+        }
+
+        // Single-worker (trivial) case must also propagate.
+        let plan_solo = split_with_config(net, 1, &ContiguousIdStrategy, &cfg);
+        assert_eq!(
+            plan_solo.partitions[0].subnet.recycle_policy,
+            RecyclePolicy::BorderClean,
+            "SF-004: trivial single-worker plan must also propagate recycle_policy"
+        );
     }
 
     // T2: Trivial split preserves all agents
