@@ -389,14 +389,33 @@ impl StreamingStrategyConfig {
     ///
     /// `num_workers` is required because the strategies are initialized with
     /// knowledge of the worker count.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_workers == 0` or (for `Fennel`) `alpha` is not finite.
+    /// Use [`try_build`] to surface these as `PartitionError`.
+    ///
+    /// [`try_build`]: Self::try_build
     pub fn build(&self, num_workers: u32) -> Box<dyn crate::partition::StreamingPartitionStrategy> {
+        self.try_build(num_workers)
+            .expect("StreamingStrategyConfig::build: invalid num_workers or alpha")
+    }
+
+    /// QA-D010-005 + QA-D010-007: fallible variant returning a
+    /// `PartitionError` rather than panicking on `num_workers == 0` or
+    /// non-finite `alpha`.
+    pub fn try_build(
+        &self,
+        num_workers: u32,
+    ) -> Result<Box<dyn crate::partition::StreamingPartitionStrategy>, crate::error::PartitionError>
+    {
         match self {
-            StreamingStrategyConfig::RoundRobin => Box::new(
-                crate::partition::RoundRobinStreamingStrategy::new(num_workers),
-            ),
-            StreamingStrategyConfig::Fennel { alpha } => Box::new(
-                crate::partition::FennelStreamingStrategy::new(num_workers, *alpha as f64),
-            ),
+            StreamingStrategyConfig::RoundRobin => Ok(Box::new(
+                crate::partition::RoundRobinStreamingStrategy::try_new(num_workers)?,
+            )),
+            StreamingStrategyConfig::Fennel { alpha } => Ok(Box::new(
+                crate::partition::FennelStreamingStrategy::try_new(num_workers, *alpha as f64)?,
+            )),
         }
     }
 }

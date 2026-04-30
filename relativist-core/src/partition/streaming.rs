@@ -349,17 +349,28 @@ impl RoundRobinStreamingStrategy {
     /// Initializes `counter = 0` and `per_worker_counts` to a vec of
     /// `num_workers` zeros.
     ///
-    /// # Behavior when `num_workers == 0`
+    /// # Panics
     ///
-    /// When `num_workers == 0`, calling `allocate_batch` would panic due to
-    /// integer division by zero. Callers MUST ensure `num_workers >= 1`.
-    /// This matches the contract of `split()` (SPEC-04) and the coordinator
-    /// invariant that num_workers >= 1 (SPEC-13 R5).
+    /// Panics if `num_workers == 0` (the strategy cannot route work to zero
+    /// workers; `allocate_batch` would divide by zero). Use [`try_new`] to
+    /// surface the error as `PartitionError::InvalidNumWorkers` instead.
+    ///
+    /// [`try_new`]: Self::try_new
     pub fn new(num_workers: u32) -> Self {
-        Self {
+        Self::try_new(num_workers)
+            .expect("RoundRobinStreamingStrategy::new: num_workers must be >= 1")
+    }
+
+    /// QA-D010-005: fallible constructor returning
+    /// `PartitionError::InvalidNumWorkers` when `num_workers == 0`.
+    pub fn try_new(num_workers: u32) -> Result<Self, PartitionError> {
+        if num_workers == 0 {
+            return Err(PartitionError::InvalidNumWorkers);
+        }
+        Ok(Self {
             counter: 0,
             per_worker_counts: vec![0u64; num_workers as usize],
-        }
+        })
     }
 }
 
@@ -372,7 +383,19 @@ impl StreamingPartitionStrategy for RoundRobinStreamingStrategy {
     /// - Every agent in the batch is assigned exactly once.
     /// - Every `WorkerId` is in `[0, num_workers)`.
     /// - Same input sequence → identical output (counter is the only state).
+    ///
+    /// # QA-D010-005 / QA-D010-006: input validation
+    ///
+    /// Returns an empty `Vec` if `num_workers == 0` or if `num_workers`
+    /// exceeds the construction-time `per_worker_counts.len()` (which would
+    /// otherwise OOB-index `per_worker_counts[worker]`). The orchestrator
+    /// validates `num_workers` up-front via
+    /// `generate_and_partition_chunked_with_chunk_size`; this guard is the
+    /// last line of defense for downstream crates calling the trait directly.
     fn allocate_batch(&mut self, batch: &AgentBatch, num_workers: u32) -> Vec<(AgentId, WorkerId)> {
+        if num_workers == 0 || (num_workers as usize) > self.per_worker_counts.len() {
+            return Vec::new();
+        }
         batch
             .agents
             .iter()
@@ -459,14 +482,38 @@ impl FennelStreamingStrategy {
     ///
     /// # Panics
     ///
-    /// Does not panic; `alpha = f64::NAN` is handled by falling back to
-    /// capacity-only scoring (tiebreak by lowest WorkerId).
+    /// Panics if `num_workers == 0` or `alpha` is not finite (NaN or
+    /// infinity). Use [`try_new`] to surface these as
+    /// `PartitionError::InvalidNumWorkers` /
+    /// `PartitionError::InvalidStrategyParameter` instead.
+    ///
+    /// [`try_new`]: Self::try_new
     pub fn new(num_workers: u32, alpha: f64) -> Self {
-        Self {
+        Self::try_new(num_workers, alpha).expect(
+            "FennelStreamingStrategy::new: num_workers must be >= 1 and alpha must be finite",
+        )
+    }
+
+    /// QA-D010-005 + QA-D010-007: fallible constructor that rejects
+    /// `num_workers == 0` and non-finite `alpha`. NaN scores would silently
+    /// violate R8 determinism (the `>` / `==` comparisons collapse on NaN);
+    /// finite alpha with `total_cmp` ordering inside `allocate_batch` keeps
+    /// the strategy deterministic.
+    pub fn try_new(num_workers: u32, alpha: f64) -> Result<Self, PartitionError> {
+        if num_workers == 0 {
+            return Err(PartitionError::InvalidNumWorkers);
+        }
+        if !alpha.is_finite() {
+            return Err(PartitionError::InvalidStrategyParameter {
+                name: "alpha",
+                value: alpha.to_string(),
+            });
+        }
+        Ok(Self {
             assignment_cache: HashMap::new(),
             per_worker_counts: vec![0u64; num_workers as usize],
             alpha,
-        }
+        })
     }
 
     /// Creates a `FennelStreamingStrategy` with the Q3 default `alpha = 1.0`.
@@ -481,7 +528,23 @@ impl StreamingPartitionStrategy for FennelStreamingStrategy {
     /// Score formula: `score(w) = neighbors_w(A) - alpha * degree(w)`
     ///
     /// Tiebreak: lowest `WorkerId` wins (deterministic; R8).
+    ///
+    /// # QA-D010-005..007: input validation
+    ///
+    /// - `num_workers == 0` or `num_workers > per_worker_counts.len()` →
+    ///   returns an empty `Vec` (the orchestrator validates upstream;
+    ///   downstream-crate callers see a well-defined no-op).
+    /// - Score comparison uses [`f64::total_cmp`] (not `>`/`==`) so the
+    ///   ordering is total even if a degenerate input produces a NaN
+    ///   score. `try_new` rejects `alpha.is_nan() || alpha.is_infinite()`,
+    ///   so the only path to a NaN score in production is an arithmetic
+    ///   underflow that should never arise from finite inputs; the
+    ///   total_cmp path keeps R8 determinism intact in the unlikely event.
     fn allocate_batch(&mut self, batch: &AgentBatch, num_workers: u32) -> Vec<(AgentId, WorkerId)> {
+        if num_workers == 0 || (num_workers as usize) > self.per_worker_counts.len() {
+            return Vec::new();
+        }
+
         // Build a reverse index: AgentId -> batch-local position for fast neighbor lookup.
         // We only need to know which agents in THIS batch are connected to which worker.
         let batch_agent_set: std::collections::HashSet<AgentId> =
@@ -525,22 +588,33 @@ impl StreamingPartitionStrategy for FennelStreamingStrategy {
 
             // Compute FENNEL score for each worker and pick argmax.
             // Score = neighbors_w - alpha * degree_w
-            // Tiebreak: lowest WorkerId.
+            // Tiebreak: lowest WorkerId. (QA-D010-007: total_cmp keeps the
+            // ordering deterministic even when arithmetic produces NaN.)
             let mut best_worker: WorkerId = 0;
             let mut best_score = f64::NEG_INFINITY;
+            let mut have_seen = false;
 
             for w in 0..num_workers {
                 let degree = self.per_worker_counts[w as usize] as f64;
                 let neighbors = neighbor_counts[w as usize] as f64;
                 let score = neighbors - self.alpha * degree;
-                // Use total_cmp for NaN-safe comparison; NaN scores are treated as
-                // worse than any finite score.
-                if score > best_score
-                    || (score == best_score && w < best_worker)
-                    || best_score.is_nan()
-                {
+                if !have_seen {
                     best_score = score;
                     best_worker = w;
+                    have_seen = true;
+                    continue;
+                }
+                match score.total_cmp(&best_score) {
+                    std::cmp::Ordering::Greater => {
+                        best_score = score;
+                        best_worker = w;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if w < best_worker {
+                            best_worker = w;
+                        }
+                    }
+                    std::cmp::Ordering::Less => {}
                 }
             }
 
@@ -979,6 +1053,13 @@ pub fn generate_and_partition_chunked_with_chunk_size(
     strategy: &mut dyn StreamingPartitionStrategy,
     chunk_size: u32,
 ) -> Result<ChunkedPartitionResult, PartitionError> {
+    // QA-D010-005: orchestrator-level validation. Strategies internally
+    // also guard their own `allocate_batch`, but surfacing the error here
+    // gives callers a single, well-defined entry-point error and avoids a
+    // silent "no-op succeeds" outcome.
+    if num_workers == 0 {
+        return Err(PartitionError::InvalidNumWorkers);
+    }
     // R26 short-circuit: chunk_size == u32::MAX → materialise-then-split.
     //
     // Per SPEC-21 §3.4 R26 (closes SC-014), the pipeline MUST collect the full
@@ -2887,6 +2968,105 @@ mod tests {
                 "QA-D010-004 negative-control: worker 0 must retain FreePort(0) \
                  → AgentPort(0,1); got {other:?}"
             ),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D010-005..007: strategy input validation
+    // ---------------------------------------------------------------------------
+
+    /// QA-D010-005: `RoundRobinStreamingStrategy::try_new(0)` and
+    /// `FennelStreamingStrategy::try_new(0, _)` MUST return
+    /// `PartitionError::InvalidNumWorkers`. The infallible `new` panics
+    /// (documented contract); only `try_new` is fallible.
+    #[test]
+    fn qa_d010_005_strategy_try_new_rejects_zero_workers() {
+        let r = RoundRobinStreamingStrategy::try_new(0);
+        assert!(
+            matches!(r, Err(PartitionError::InvalidNumWorkers)),
+            "QA-D010-005: RoundRobin try_new(0) must Err(InvalidNumWorkers); got {:?}",
+            r.err()
+        );
+
+        let f = FennelStreamingStrategy::try_new(0, 1.0);
+        assert!(
+            matches!(f, Err(PartitionError::InvalidNumWorkers)),
+            "QA-D010-005: Fennel try_new(0, 1.0) must Err(InvalidNumWorkers); got {:?}",
+            f.err()
+        );
+
+        // Orchestrator-level: generate_and_partition_chunked rejects num_workers=0.
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(std::iter::empty());
+        // We need *some* strategy; use a 1-worker one (we won't reach allocate_batch).
+        let mut strategy = RoundRobinStreamingStrategy::new(1);
+        let result = generate_and_partition_chunked(stream, 0, &mut strategy);
+        assert!(
+            matches!(result, Err(PartitionError::InvalidNumWorkers)),
+            "QA-D010-005: orchestrator with num_workers=0 must Err(InvalidNumWorkers); \
+             got {:?}",
+            result.err()
+        );
+    }
+
+    /// QA-D010-006: `allocate_batch(num_workers > construction-time capacity)`
+    /// must NOT panic with index OOB on `per_worker_counts`. The strategy
+    /// returns an empty `Vec` instead.
+    #[test]
+    fn qa_d010_006_allocate_batch_excess_num_workers_no_panic() {
+        use crate::net::Symbol;
+
+        // Construct with capacity 4; call allocate_batch with num_workers=8
+        // (which would index per_worker_counts[8] under the buggy pre-fix code).
+        let mut s = RoundRobinStreamingStrategy::new(4);
+        let batch = AgentBatch {
+            agents: vec![(0u32, Symbol::Era), (1u32, Symbol::Era)],
+            connections: vec![],
+        };
+        let result = s.allocate_batch(&batch, 8);
+        assert!(
+            result.is_empty(),
+            "QA-D010-006: allocate_batch with num_workers > capacity must return \
+             empty Vec; got {} assignments",
+            result.len()
+        );
+
+        // FENNEL same contract.
+        let mut f = FennelStreamingStrategy::new(2, 1.0);
+        let result = f.allocate_batch(&batch, 5);
+        assert!(
+            result.is_empty(),
+            "QA-D010-006: Fennel allocate_batch with num_workers > capacity must \
+             return empty Vec"
+        );
+    }
+
+    /// QA-D010-007: `FennelStreamingStrategy::try_new(_, NaN)` and
+    /// `try_new(_, +Inf)` / `try_new(_, -Inf)` MUST return
+    /// `PartitionError::InvalidStrategyParameter` (rejecting non-finite alpha
+    /// at construction prevents NaN scores during allocation, which would
+    /// silently violate R8 determinism).
+    #[test]
+    fn qa_d010_007_fennel_try_new_rejects_non_finite_alpha() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let r = FennelStreamingStrategy::try_new(2, bad);
+            assert!(
+                matches!(
+                    r,
+                    Err(PartitionError::InvalidStrategyParameter { name: "alpha", .. })
+                ),
+                "QA-D010-007: try_new(2, {bad}) must Err(InvalidStrategyParameter); got {:?}",
+                r.err()
+            );
+        }
+
+        // Negative-control: finite alpha (incl. 0.0) MUST succeed.
+        for good in [0.0, 1.0, -2.5, f64::MIN_POSITIVE] {
+            let r = FennelStreamingStrategy::try_new(2, good);
+            assert!(
+                r.is_ok(),
+                "QA-D010-007 negative-control: try_new(2, {good}) must succeed; got {:?}",
+                r.err()
+            );
         }
     }
 }

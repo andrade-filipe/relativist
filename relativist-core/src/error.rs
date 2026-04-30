@@ -165,6 +165,85 @@ pub enum PartitionError {
     /// This error is only reachable from the R26 path (`chunk_size == u32::MAX`).
     #[error("arena conversion failed during R26 materialise-then-split path: {0}")]
     ArenaConversionFailed(String),
+
+    /// QA-D010-005: a streaming strategy constructor or the orchestrator
+    /// received `num_workers == 0`. Strategies cannot allocate work to
+    /// zero workers; the coordinator MUST short-circuit (e.g. transition
+    /// to `SoloReducing` or `Done`) before invoking any strategy under
+    /// this condition.
+    #[error("streaming strategy/orchestrator requires num_workers >= 1, got 0")]
+    InvalidNumWorkers,
+
+    /// QA-D010-007: a streaming strategy received a non-finite floating
+    /// parameter (e.g. `FennelStreamingStrategy::new(_, alpha)` with
+    /// `alpha.is_nan() || alpha.is_infinite()`). NaN scores would
+    /// silently violate R8 determinism (the comparison branches collapse
+    /// in non-deterministic ways).
+    #[error("streaming strategy parameter '{name}' must be finite, got {value}")]
+    InvalidStrategyParameter {
+        /// Human-readable parameter name (e.g. "alpha").
+        name: &'static str,
+        /// String form of the rejected value (NaN, +Inf, -Inf).
+        value: String,
+    },
+
+    /// QA-D010-006: an `allocate_batch` call received a `num_workers`
+    /// argument that exceeds the strategy's construction-time
+    /// `per_worker_counts.len()`. SPEC-20 elastic-grid resize is not
+    /// supported by the strategy as-is; the coordinator must rebuild the
+    /// strategy on join/leave events.
+    #[error(
+        "allocate_batch num_workers={requested} exceeds construction-time \
+         capacity={capacity}; rebuild the strategy on elastic resize"
+    )]
+    AllocateBatchExceedsCapacity {
+        /// `num_workers` argument the caller supplied.
+        requested: u32,
+        /// `per_worker_counts.len()` at strategy construction.
+        capacity: usize,
+    },
+
+    /// QA-D010-008: a `StreamingPartitionStrategy::allocate_batch`
+    /// implementation returned a `WorkerId` that is greater than or
+    /// equal to `num_workers`. Production strategies (RoundRobin,
+    /// Fennel) are well-behaved; downstream crates implementing the
+    /// trait may misbehave. The orchestrator surfaces this rather than
+    /// panicking on `accumulators[worker_id]` index OOB.
+    #[error("strategy returned invalid worker_id={worker_id} for num_workers={num_workers}")]
+    StrategyReturnedInvalidWorker {
+        /// Out-of-range worker id returned by the strategy.
+        worker_id: u32,
+        /// `num_workers` the strategy was told to use.
+        num_workers: u32,
+    },
+
+    /// QA-D010-008: a `StreamingPartitionStrategy::allocate_batch`
+    /// implementation returned an `agent_id` that is not present in the
+    /// supplied batch. The orchestrator surfaces this rather than
+    /// panicking on a missing `symbol_lookup` lookup.
+    #[error("strategy returned unknown agent_id={agent_id} not present in batch")]
+    StrategyReturnedUnknownAgent {
+        /// Agent id returned by the strategy that was not in `batch.agents`.
+        agent_id: AgentId,
+    },
+
+    /// QA-D010-009: a `Pending` directive remained unresolved beyond
+    /// `GridConfig.max_pending_lifetime` chunks. SPEC-21 R37g
+    /// classifies this as a malformed-stream condition; the
+    /// orchestrator returns this error rather than letting the
+    /// pending HashMap grow without bound.
+    #[error(
+        "pending connection targeting agent {agent_id} has been waiting \
+         {age} chunks (lifetime budget: {budget})"
+    )]
+    PendingConnectionExpired {
+        /// AgentId waiting on the unresolved Pending directive.
+        agent_id: AgentId,
+        /// How many chunks the pending entry has been alive (`chunks_seen - birth_chunk`).
+        age: u64,
+        /// Configured `max_pending_lifetime` (the budget the entry exceeded).
+        budget: u64,
+    },
 }
 
 /// Errors from the merge subsystem.
