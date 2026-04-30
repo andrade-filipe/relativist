@@ -801,6 +801,7 @@ pub(crate) fn install_connection(
     accumulators: &mut [PartitionAccumulator],
     border_map: &mut HashMap<u32, (PortRef, PortRef)>,
     border_id_counter: &mut u32,
+    reserved_freeport_ids: &std::collections::HashSet<u32>,
 ) {
     let src_worker = *agent_owner
         .get(&source.0)
@@ -817,6 +818,17 @@ pub(crate) fn install_connection(
         );
     } else {
         // Border wire: allocate a border ID and emit FreePort pairs.
+        // QA-D010-004: skip any ID that has already been registered as a
+        // Lafont `FreePortInterface` ID by a generator. Without this skip,
+        // a stream that emits `FreePortInterface(0)` followed by a
+        // cross-worker `Resolved` wire would alias border 0 with FreePort(0),
+        // silently splicing two unrelated wires (D5/D6 port-bijection
+        // violation).
+        while reserved_freeport_ids.contains(border_id_counter) {
+            *border_id_counter = border_id_counter
+                .checked_add(1)
+                .expect("border_id_counter overflow while skipping reserved FreePort IDs");
+        }
         let bid = *border_id_counter;
         *border_id_counter = border_id_counter
             .checked_add(1)
@@ -883,11 +895,26 @@ struct PendingConnection {
 /// The loop processes one `AgentBatch` per iteration. The stream is never
 /// collected (no `stream.collect()` or equivalent).
 ///
-/// # Border-id initialization
+/// # Border-id initialization (QA-D010-004 fix)
 ///
-/// If the first batch contains any `FreePort` IDs in its connections (Lafont
-/// interface ports), `border_id_counter` is initialized to the maximum such
-/// ID + 1 to avoid collision. Otherwise it starts at 0.
+/// `border_id_counter` starts at 0. Every `FreePortInterface.free_port_id`
+/// observed in the stream is recorded in a `reserved_freeport_ids` set;
+/// `install_connection` skips any counter value present in that set when
+/// allocating a border ID. Without this skip, a stream that emits
+/// `FreePortInterface(k)` followed by a cross-worker wire that would
+/// allocate `border = k` aliases the Lafont interface and the border on
+/// the same `FreePort(k)` slot of an accumulator (D5/D6 port-bijection
+/// violation).
+///
+/// The skip is bounded: the union of `[0, border_id_counter)` and the
+/// reserved set is at most `2 * total_wires`; the inner `while` over the
+/// set is amortized O(1) per allocation in the typical case where
+/// reserved IDs are sparse relative to allocated borders.
+///
+/// `border_id_start` is recorded as the smallest border ID actually
+/// allocated (or `border_id_counter` if no borders were ever allocated),
+/// so the partition's `[border_id_start, border_id_end)` range stays
+/// aligned with the consumer-side rebuild check in SPEC-05.
 impl From<PartitionPlan> for ChunkedPartitionResult {
     /// Convert a `PartitionPlan` (from SPEC-04 `split()`) into a `ChunkedPartitionResult`.
     ///
@@ -1005,7 +1032,27 @@ pub fn generate_and_partition_chunked_with_chunk_size(
     // Pipeline-local state.
     let mut accumulators: Vec<PartitionAccumulator> =
         (0..num_workers).map(PartitionAccumulator::new).collect();
+    // QA-D010-004: `border_id_counter` MUST stay above every `FreePortInterface
+    // .free_port_id` we have observed so far, so the freshly-allocated border IDs
+    // emitted by `install_connection` cannot collide with Lafont interface IDs
+    // already installed on the same accumulator. Pre-fix this counter started at
+    // 0 unconditionally, silently aliasing border 0 with `FreePort(0)`.
+    //
+    // Streaming constraint: we cannot pre-scan the entire stream (R22: one
+    // batch in flight). Instead we observe each batch's interface IDs as they
+    // arrive and lift the counter accordingly before any border allocation.
     let mut border_id_counter: u32 = 0;
+    // QA-D010-004: tracks the smallest counter value at which a border was
+    // ever allocated, used to populate `Partition::border_id_start` at
+    // finalize. None until the first border allocation; otherwise the
+    // pre-allocation counter snapshot.
+    let mut border_id_start: Option<u32> = None;
+    // QA-D010-004: every `FreePortInterface.free_port_id` observed in the
+    // stream is recorded here. `install_connection` consults this set when
+    // allocating a border ID and skips any value already reserved by a
+    // Lafont interface, preventing the FreePort(k) <-> border(k) aliasing.
+    let mut reserved_freeport_ids: std::collections::HashSet<u32> =
+        std::collections::HashSet::new();
     let mut border_map: HashMap<u32, (PortRef, PortRef)> = HashMap::new();
     // pending: target_agent_id → Vec<PendingConnection>
     let mut pending: HashMap<AgentId, Vec<PendingConnection>> = HashMap::new();
@@ -1015,6 +1062,20 @@ pub fn generate_and_partition_chunked_with_chunk_size(
     // Main streaming loop (R22: one batch in flight).
     for batch in stream {
         chunks_seen += 1;
+
+        // QA-D010-004: pre-register every `FreePortInterface` ID before
+        // border allocation runs in this batch, so `install_connection`
+        // can skip them. We also register them when actually installing
+        // (Step 2.5) — pre-registration here is required because Step 2
+        // (Resolved → border allocation) runs BEFORE Step 2.5 in the
+        // current ordering.
+        for directive in &batch.connections {
+            if let ConnectionDirective::FreePortInterface { free_port_id, .. } = directive {
+                if *free_port_id != u32::MAX {
+                    reserved_freeport_ids.insert(*free_port_id);
+                }
+            }
+        }
 
         // Step 1: assign agents to workers.
         let assignments = strategy.allocate_batch(&batch, num_workers);
@@ -1032,6 +1093,7 @@ pub fn generate_and_partition_chunked_with_chunk_size(
         // Step 2: install Resolved connections.
         for directive in &batch.connections {
             if let ConnectionDirective::Resolved { source, target } = directive {
+                let pre_counter = border_id_counter;
                 install_connection(
                     *source,
                     *target,
@@ -1039,7 +1101,21 @@ pub fn generate_and_partition_chunked_with_chunk_size(
                     &mut accumulators,
                     &mut border_map,
                     &mut border_id_counter,
+                    &reserved_freeport_ids,
                 );
+                // QA-D010-004: if this was the first border allocation, record
+                // the (post-skip) starting counter as `border_id_start`. The
+                // border ID actually used is `pre_counter` after the skip
+                // pass in `install_connection`, which equals
+                // `border_id_counter - 1` immediately after a successful
+                // allocation. Using `pre_counter` here is conservative: it
+                // is always <= the smallest border ID actually allocated,
+                // and the merge-side range check `[start, end)` is inclusive
+                // on the low end.
+                if border_id_start.is_none() && border_id_counter != pre_counter {
+                    // The first border ID allocated equals border_id_counter - 1.
+                    border_id_start = Some(border_id_counter - 1);
+                }
             }
         }
 
@@ -1088,6 +1164,7 @@ pub fn generate_and_partition_chunked_with_chunk_size(
         for agent_id in &newly_introduced {
             if let Some(pcs) = pending.remove(agent_id) {
                 for pc in pcs {
+                    let pre_counter = border_id_counter;
                     install_connection(
                         pc.source,
                         (pc.target_agent_id, pc.target_port),
@@ -1095,7 +1172,12 @@ pub fn generate_and_partition_chunked_with_chunk_size(
                         &mut accumulators,
                         &mut border_map,
                         &mut border_id_counter,
+                        &reserved_freeport_ids,
                     );
+                    // QA-D010-004: same first-allocation tracking as Step 2.
+                    if border_id_start.is_none() && border_id_counter != pre_counter {
+                        border_id_start = Some(border_id_counter - 1);
+                    }
                 }
             }
         }
@@ -1125,9 +1207,18 @@ pub fn generate_and_partition_chunked_with_chunk_size(
     let mut partitions: Vec<Partition> = Vec::with_capacity(num_workers as usize);
 
     // We need per-worker border_id ranges. The border_map already has all
-    // border IDs; we record border_id_start = 0, border_id_end = border_id_counter
-    // for all workers (the full range was allocated globally, not per-worker).
-    // Individual wires are discriminated via free_port_index at merge time.
+    // border IDs; QA-D010-004 records the per-batch lift cursor at the time
+    // of the first border allocation as `border_start`. Borders then occupy
+    // `[border_start, border_id_counter)`; Lafont FreePort interface IDs
+    // occupy `[0, border_start)`. Both ranges are recorded on every worker
+    // (the full range was allocated globally, not per-worker). Individual
+    // wires are discriminated via free_port_index / range check at merge time.
+    //
+    // If no borders were ever allocated (single-worker streaming, or no
+    // cross-worker wires), `border_start` defaults to `border_id_counter`
+    // (degenerate empty range — every FreePort id is below `border_start`,
+    // i.e. every FreePort encountered is correctly classified as Lafont).
+    let border_start = border_id_start.unwrap_or(border_id_counter);
     let border_end = border_id_counter;
 
     for (worker_idx, accumulator) in accumulators.into_iter().enumerate() {
@@ -1145,7 +1236,7 @@ pub fn generate_and_partition_chunked_with_chunk_size(
         };
 
         // Empty workers always pass the threshold check (0 > 4*0 is false).
-        let partition = accumulator.finalize(id_range, 0, border_end)?;
+        let partition = accumulator.finalize(id_range, border_start, border_end)?;
         partitions.push(partition);
     }
 
@@ -2448,6 +2539,7 @@ mod tests {
         let agent_owner = make_agent_owner_4_workers();
         let mut border_map = HashMap::new();
         let mut border_id_counter = 0u32;
+        let reserved: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         install_connection(
             (0u32, 0u8),
@@ -2456,6 +2548,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
 
         assert!(
@@ -2475,6 +2568,7 @@ mod tests {
         let agent_owner = make_agent_owner_4_workers();
         let mut border_map = HashMap::new();
         let mut border_id_counter = 0u32;
+        let reserved: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         install_connection(
             (0u32, 0u8),
@@ -2483,6 +2577,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
 
         assert_eq!(
@@ -2499,6 +2594,7 @@ mod tests {
         let agent_owner = make_agent_owner_4_workers();
         let mut border_map = HashMap::new();
         let mut border_id_counter = 0u32;
+        let reserved: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         install_connection(
             (0u32, 0u8),
@@ -2507,6 +2603,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
 
         // Both accumulators must have FreePort(0) in free_port_index.
@@ -2527,6 +2624,7 @@ mod tests {
         let agent_owner = make_agent_owner_4_workers();
         let mut border_map = HashMap::new();
         let mut border_id_counter = 0u32;
+        let reserved: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         // 4 cross-partition wires: 0↔2, 0↔4, 0↔6, 1↔3
         for (a, b) in [(0u32, 2u32), (0, 4), (0, 6), (1, 3)] {
@@ -2537,6 +2635,7 @@ mod tests {
                 &mut accumulators,
                 &mut border_map,
                 &mut border_id_counter,
+                &reserved,
             );
         }
 
@@ -2557,6 +2656,7 @@ mod tests {
         let agent_owner = make_agent_owner_4_workers();
         let mut border_map = HashMap::new();
         let mut border_id_counter = 0u32;
+        let reserved: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         // 2 internal (0↔1, 2↔3) + 2 border (0↔2, 1↔3)
         install_connection(
@@ -2566,6 +2666,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
         install_connection(
             (2, 1),
@@ -2574,6 +2675,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
         install_connection(
             (0, 0),
@@ -2582,6 +2684,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
         install_connection(
             (1, 1),
@@ -2590,6 +2693,7 @@ mod tests {
             &mut accumulators,
             &mut border_map,
             &mut border_id_counter,
+            &reserved,
         );
 
         assert_eq!(border_id_counter, 2, "only 2 border wires");
@@ -2702,5 +2806,87 @@ mod tests {
             .map(|p| p.subnet.count_live_agents())
             .sum();
         assert_eq!(total, 0);
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D010-004: border_id_counter MUST avoid collision with FreePortInterface ids
+    // ---------------------------------------------------------------------------
+
+    /// QA-D010-004: a stream that emits `FreePortInterface { free_port_id: 0 }`
+    /// in batch 0 followed by a cross-worker `Resolved` wire in batch 1 must NOT
+    /// produce a border with ID 0 (which would alias the FreePort interface).
+    ///
+    /// Negative-control: pre-fix, `border_id_counter` started at 0 unconditionally,
+    /// so the resolved cross-worker wire would have allocated bid=0 — silently
+    /// aliasing the Lafont interface FreePort(0) installed in batch 0. Both ports
+    /// would then point to the same `FreePort(0)` slot on each worker, splicing
+    /// two unrelated wires (D5/D6 port-bijection violation).
+    #[test]
+    fn qa_d010_004_border_id_counter_avoids_freeport_collision() {
+        use crate::net::Symbol;
+
+        // Two batches: first establishes an interface FreePort(0), second
+        // creates a cross-worker border that would (pre-fix) be allocated as 0.
+        let batch0 = AgentBatch {
+            agents: vec![(0u32, Symbol::Con)],
+            connections: vec![ConnectionDirective::FreePortInterface {
+                agent_port: (0u32, 1u8),
+                free_port_id: 0u32,
+            }],
+        };
+        let batch1 = AgentBatch {
+            agents: vec![(1u32, Symbol::Era), (2u32, Symbol::Era)],
+            connections: vec![ConnectionDirective::Resolved {
+                source: (1u32, 0u8),
+                target: (2u32, 0u8),
+            }],
+        };
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new([batch0, batch1].into_iter());
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+
+        let result = generate_and_partition_chunked(stream, 2, &mut strategy)
+            .expect("partition must succeed");
+
+        // Primary assertion: the cross-worker wire MUST have produced a border,
+        // but with bid >= 1 (NOT 0, which is reserved by the FreePortInterface).
+        // Pre-fix: this assertion fires with bid == 0.
+        for &bid in result.borders.keys() {
+            assert!(
+                bid > 0,
+                "QA-D010-004: border id {bid} must NOT alias FreePortInterface(0); \
+                 expected counter to lift above max FreePort id"
+            );
+        }
+
+        // Negative-control: at least one border MUST exist for the cross-worker
+        // resolved wire (otherwise this test is vacuous — we'd be asserting "no
+        // borders ever conflict" trivially).
+        assert!(
+            !result.borders.is_empty(),
+            "QA-D010-004 vacuity guard: expected the Resolved cross-worker wire \
+             in batch 1 to produce at least one border entry"
+        );
+
+        // Negative-control: FreePort id 0 must survive on the partition that
+        // owned agent 0 (round-robin: agent 0 → worker 0). The free_port_index
+        // for FreePort(0) on worker 0 must point at the AgentPort(0,1) the
+        // FreePortInterface installed — NOT at any border-allocated wire.
+        let part0 = &result.partitions[0];
+        match part0.free_port_index.get(&0u32).copied() {
+            Some(PortRef::AgentPort(a, p)) => {
+                assert_eq!(
+                    (a, p),
+                    (0u32, 1u8),
+                    "QA-D010-004 negative-control: worker 0's FreePort(0) entry \
+                     must still map to the agent 0 port 1 the FreePortInterface \
+                     installed; finding {a},{p} indicates a border allocation \
+                     overwrote it."
+                );
+            }
+            other => panic!(
+                "QA-D010-004 negative-control: worker 0 must retain FreePort(0) \
+                 → AgentPort(0,1); got {other:?}"
+            ),
+        }
     }
 }
