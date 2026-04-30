@@ -890,6 +890,21 @@ pub enum PullCoordinatorError {
     /// In debug builds, the FSM panics instead of returning this error.
     #[error("unexpected event {event:?} in state {state:?}")]
     UnexpectedEvent { event: String, state: String },
+
+    /// QA-D010-002: The body `worker_id` of a `RequestWork` message does not
+    /// match the authenticated `WorkerId` of the connection it arrived on.
+    ///
+    /// This indicates an impersonation attempt or a buggy worker that misroutes
+    /// its own identity. Coordinators MUST reject these messages without
+    /// dispatching the next chunk; the offending connection should be closed.
+    #[error(
+        "RequestWork worker_id mismatch: body says {body_worker_id}, \
+         authenticated connection is {connection_worker_id} (QA-D010-002)"
+    )]
+    WorkerIdMismatch {
+        body_worker_id: u32,
+        connection_worker_id: u32,
+    },
 }
 
 /// Lightweight context for the pull-dispatch FSM (TASK-0577).
@@ -970,6 +985,32 @@ impl CoordinatorPullContext {
         event: PullCoordinatorEvent,
     ) -> Result<(), PullCoordinatorError> {
         self.try_transition_inner(event)
+    }
+
+    /// QA-D010-002: validated transition for `RequestWorkReceived` events.
+    ///
+    /// Compares the body `worker_id` (carried in the wire `Message::RequestWork`
+    /// payload) against the `connection_worker_id` (the authenticated identity
+    /// of the connection the message arrived on). On mismatch, returns
+    /// `Err(WorkerIdMismatch)` WITHOUT applying the transition.
+    ///
+    /// Coordinator handlers MUST use this method (rather than `try_transition`)
+    /// for `RequestWorkReceived` events so impersonation / chunk-theft attempts
+    /// are rejected at the FSM boundary.
+    pub fn try_transition_request_work(
+        &mut self,
+        body_worker_id: u32,
+        connection_worker_id: u32,
+    ) -> Result<(), PullCoordinatorError> {
+        if body_worker_id != connection_worker_id {
+            return Err(PullCoordinatorError::WorkerIdMismatch {
+                body_worker_id,
+                connection_worker_id,
+            });
+        }
+        self.try_transition_inner(PullCoordinatorEvent::RequestWorkReceived {
+            worker_id: body_worker_id,
+        })
     }
 
     fn try_transition_inner(
@@ -2346,5 +2387,53 @@ mod tests {
         // Spot-check a second variant to confirm it is not a single-variant fluke.
         let json2 = serde_json::to_string(&CoordinatorState::WaitingForResults).unwrap();
         assert_eq!(json2, "\"WaitingForResults\"");
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D010-002: try_transition_request_work validates body identity against
+    // connection identity (impersonation / chunk-theft prevention).
+    // ---------------------------------------------------------------------------
+
+    /// QA-D010-002-A: matching body / connection worker_id is accepted.
+    #[test]
+    fn qa_d010_002_a_matching_identity_accepted() {
+        let mut ctx = CoordinatorPullContext::new(2);
+        // Pre-position the FSM in AwaitingResults (post-FirstChunkDispatched).
+        ctx.transition(PullCoordinatorEvent::FirstChunkDispatched);
+
+        // Body says worker 1, connection authenticated as worker 1 -> accept.
+        ctx.try_transition_request_work(1, 1)
+            .expect("matching identity must be accepted");
+        assert_eq!(
+            ctx.state,
+            PullCoordinatorState::GeneratingNext,
+            "QA-D010-002-A: FSM must advance on matching identity"
+        );
+    }
+
+    /// QA-D010-002-B: mismatched body / connection worker_id is rejected
+    /// with the specific WorkerIdMismatch variant; FSM does NOT advance.
+    #[test]
+    fn qa_d010_002_b_mismatched_identity_rejected() {
+        let mut ctx = CoordinatorPullContext::new(2);
+        ctx.transition(PullCoordinatorEvent::FirstChunkDispatched);
+        let pre_state = ctx.state;
+
+        // Worker 0's connection forging a RequestWork for worker 1.
+        let err = ctx
+            .try_transition_request_work(1, 0)
+            .expect_err("mismatched identity must be rejected");
+        assert_eq!(
+            err,
+            PullCoordinatorError::WorkerIdMismatch {
+                body_worker_id: 1,
+                connection_worker_id: 0,
+            },
+            "QA-D010-002-B: must return WorkerIdMismatch with both ids"
+        );
+        assert_eq!(
+            ctx.state, pre_state,
+            "QA-D010-002-B: FSM state must NOT advance on mismatch"
+        );
     }
 }
