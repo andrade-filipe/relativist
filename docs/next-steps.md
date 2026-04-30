@@ -6,9 +6,48 @@
 
 **Maintained by:** sdd-pipeline agent (see `docs/WORKFLOWS.md`)
 
-### Active Bundle — Tier 3 (Memory Efficiency) — D-010 NEXT (D-009 CLOSED)
+### Active Bundle — Tier 3 (Memory Efficiency) — D-011 NEXT (D-009 + D-010 CLOSED)
 
 **Authoritative plan:** `docs/plans/2026-04-24-tier-4-master-plan.md` §3.
+
+### D-011: SPEC-21 / SPEC-22 hardening follow-ups — NEXT
+
+**Scope:** clear the deferred audit items left behind by D-009 + D-010 closures so SPEC-21/22 are production-grade before D-012/D-013 open. Inventory:
+
+| Source | ID | Severity | Title |
+|--------|----|----------|-------|
+| QA-D009 | QA-D009-001 | CRITICAL | CompactSubnet wire format silently drops free_list (requires SPEC-19 amendment via ESPECIALISTA EM SPECS) — pre-tracked as `docs/backlog/TASK-0595-compactsubnet-free-list-followup.md` |
+| QA-D010 | QA-D010-009 (residual) | HIGH | Final `GridConfig.max_pending_lifetime` integration through `generate_and_partition_chunked_with_delta` callers (Stage 6 wired the new `_with_lifetime` wrapper end-to-end but legacy callers still pass `u32::MAX`) |
+| QA-D010 | QA-D010-010 | MEDIUM | `worker_a/b` placeholder semantics |
+| QA-D010 | QA-D010-011 | MEDIUM | `streaming-no-recycle` bypasses debug_asserts on free-list integrity |
+| QA-D010 | QA-D010-012 | MEDIUM | Vacuous IT-0591 coverage — strengthen invariants |
+| QA-D010 | QA-D010-013 | MEDIUM | Parallel state representations `Pull*`/`PullCoordinatorState` — collapse |
+| QA-D010 | QA-D010-014 | MEDIUM | `debug_assertions` ABI drift between debug/release builds (counter fields gated) |
+| QA-D010 | QA-D010-016 | LOW | LIFO non-protected stalemate edge case |
+
+**Prereqs:** none — all directly actionable. SPEC-19 amendment work for QA-D009-001 is the only item that must route through ESPECIALISTA EM SPECS first.
+
+**Next action:** invoke **task-splitter** to break the inventory above into atomic tasks (`TASK-0596+`), then run the standard Stages 2→6.
+
+**Test floor entering D-011:** **1683 default / 1726 zero-copy / 1680 streaming-no-recycle**. v1 floor: 690.
+
+### D-010: SPEC-21 Streaming Generation — ✅ CLOSED 2026-04-30
+
+All 6 SDD stages shipped. Test floor advanced **1464 → 1683 default / 1507 → 1726 zero-copy** (+219 / +219); new build profile `streaming-no-recycle` introduced at 1680. Phase F (production) commits `2f751a4..61e86a1` (9 waves) on top of Phase A spec amendments. Audit + Stage 6 REFACTOR commits (this bundle's closure):
+
+- `f61dffb` QA-D010-001 — `streaming_active` flag separation + R37b disjunction gate
+- `95a34f5` MF-001 — `merge::generate_and_partition_chunked_with_delta` wrapper wires `extend_with_chunk_borders` from production
+- `6c383f1` MF-002 — `enter/exit_streaming_mode` helpers wired from worker FSM
+- `7fca43e` QA-D010-002 — `RequestWork.worker_id` validated against authenticated connection identity
+- `ec81eb3` QA-D010-003 — `default_chunked_iter` propagates FreePorts (T6 isomorphism preserved)
+- `d4865c0` QA-D010-004 — `border_id_counter` skips reserved FreePort interface ids (cross-batch HashSet)
+- `58d75cb` QA-D010-005..007 — strategy input validation: `try_new` constructors, `allocate_batch` bounds, FENNEL `f64::total_cmp` + non-finite alpha rejection
+- `5a54111` QA-D010-008 + QA-D010-009 (partial) — orchestrator returns `Err` instead of panic; `generate_and_partition_chunked_with_chunk_size_and_lifetime` wired end-to-end
+- `38f8bd8` SF-001..SF-004 polish — propagate `recycle_under_delta` to `net.recycle_policy`; `Debug/Clone` derives on streaming strategies; stale comment cleanup; UT-0590-07 assertion on `free_list_pops_border` semantics
+
+**Audit artefacts:** `docs/reviews/REVIEW-PHASE-D010-spec21-streaming-2026-04-28.md` (verdict ACCEPT_WITH_FIXES; 2 MF + 4 SF) and `docs/qa/QA-PHASE-D010-spec21-streaming-2026-04-28.md` (4 CRITICAL + 5 HIGH + 7 MEDIUM/LOW).
+
+**Deferred to D-011:** QA-D010-009 (residual GridConfig threading through legacy callers) + QA-D010-010..016 (MEDIUM/LOW). See D-011 inventory above.
 
 ### D-009: SPEC-22 Arena Management — ✅ CLOSED 2026-04-27
 
@@ -26,19 +65,6 @@ All 6 SDD stages shipped. Test floor advanced **1308 → 1464 default / 1351 →
 
 **Deferred to follow-up:** QA-D009-001 (CompactSubnet wire format silently drops free_list) — requires SPEC-19 amendment. Tracked as `docs/backlog/TASK-0595-compactsubnet-free-list-followup.md`.
 
-### D-010: Online / Streaming Graph Partitioning — Phase A CLOSED 2026-04-27
-
-**Spec:** SPEC-21 §3 (streaming partition strategy trait).
-**Prereqs:** SparseNet + free-list (delivered by D-009 ✅).
-**Tasks:** TASK-0510..0554 + 0565/0567/0568/0575-0578/0588-0591 already split (Pre-DEV Wave 2 second half closed in `131ca26`); 49 TEST-SPECs already written.
-
-**Phase A — Spec amendments A1..A8 (TASK-0510..0517):** ✅ LANDED 2026-04-27. SPEC-21 §3.8 amendments propagated verbatim into 7 predecessor specs (SPEC-04 takes both A1+A8). Closure log: `docs/spec-reviews/CLOSURE-D010-amendments-A1A8-2026-04-27.md`. PROTOCOL_VERSION uses defensive `PREVIOUS_LIVE_VERSION + 1` language per task constraint. Spec-only diff: 7 files, 180 insertions, 13 deletions; no code/tests touched.
-
-**Stage:** 3 — DEV (Stages 1 SPLITTING, 2 TESTS, and Phase A amendment landing are DONE).
-**Test floor entering D-010 Phase B:** 1464 default / 1507 zero-copy. v1 floor: 690.
-
-**Next action:** invoke the **developer** agent for D-010 Phase B implementation. Pre-DEV split structure already in `docs/backlog/`; consult `BACKLOG.md` for the SPEC-21 task block. The PROTOCOL_VERSION bump itself is TASK-0576 (production), depending on TASK-0476 (SPEC-22 wire-version-bump precedent already landed in D-009 Phase B).
-
 ---
 
 ### Strategic decision (2026-04-25, user directive)
@@ -49,7 +75,7 @@ All 6 SDD stages shipped. Test floor advanced **1308 → 1464 default / 1351 →
 |------|--------|
 | Tier 1 | ✅ DONE — frozen at `a431320` (D-005 Option A 12/12 G1 parity green) |
 | **Tier 2** (Elastic Grid) | ✅ **D-006 CLOSED — Phase D Option A landed 2026-04-27 (commits df93908, 8dd6d1b, 7988573, fc680f5). Tag: v2.0-elastic-grid-detection-only** |
-| **Tier 3** (Memory Efficiency) | ACTIVE — D-009 open 2026-04-27. Stage 3 DEV (amendments wave). |
+| **Tier 3** (Memory Efficiency) | ACTIVE — D-009 ✅ CLOSED 2026-04-27, D-010 ✅ CLOSED 2026-04-30. D-011 hardening NEXT (consolidates QA-D009-001 + QA-D010-009..016 deferrals). |
 | Tier 4 (UX/Deploy) | 🛑 DECISION DEFERRED |
 | Tier 5 | 🛑 DECISION DEFERRED |
 
@@ -138,5 +164,5 @@ After Phase D closes: D-007/D-008 in the original plan are largely subsumed into
 | **M2** Elastic Grid Basics | SPEC-20 | 2.1 → 2.2 → 2.3 | **2.1+2.2 DONE; 2.3 detection-only (Option A)** | Workers join between rounds; departure detected + retained, full reclaim deferred to v2.1 |
 | **M3** Delta Foundation | SPEC-19 partial | 2.34 → 2.35 → 2.25 | DONE | Coordinator-free rounds observable on `cascade_cross` |
 | **M4** Full Delta Protocol | SPEC-19 complete | 2.26 | DONE | `ep_con 5M w=2` speedup > 1.0 (BREAK-EVEN) — verified 2026-04-24 commit `a431320` |
-| **M5** Memory Efficiency | SPEC-21, SPEC-22 | 2.33 → 2.28 → 2.27 → 2.30 | NEXT — bundles D-009..D-013 ready to dispatch | `ep_con 100M` runs on 2GB coordinator |
+| **M5** Memory Efficiency | SPEC-21, SPEC-22 | 2.33 → 2.28 → 2.27 → 2.30 | IN PROGRESS — D-009 + D-010 CLOSED; D-011 hardening NEXT (D-012/D-013 still PLANNED) | `ep_con 100M` runs on 2GB coordinator |
 | **M10** Encoder/Decoder API | SPEC-27 | 2.41 | DONE | LambdaEncoder end-to-end, registry with 5 codecs |
