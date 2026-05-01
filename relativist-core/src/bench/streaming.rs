@@ -361,6 +361,16 @@ fn build_dual_tree_batches(depth: u32, chunk_size: usize) -> Vec<AgentBatch> {
         // Right tree leaf FreePorts: freeport_base + (nodes_per_tree + 1) + (child_lo_idx - nodes_per_tree)
         // This gives 2*(nodes_per_tree+1) unique IDs, all above the agent ID space,
         // safely separated from border IDs (which start at 0 and grow slowly upward).
+        //
+        // The defensive offset is REQUIRED for the partition::streaming path: the
+        // QA-D010-004 `reserved_freeport_ids` set only pre-registers a batch's
+        // FreePortInterface IDs at batch-start, so a border allocated in batch K
+        // can collide with a FreePortInterface declared in batch K+M. Keeping
+        // FP IDs above the agent space (and therefore above realistic border
+        // counters for these benchmarks) avoids the collision empirically.
+        // R37c construction-isomorphism is preserved by `nets_graph_isomorphic`
+        // (which permits a FreePort bijection) on the bench harness side —
+        // see `bench/isomorphism.rs`.
         let freeport_base = 2 * nodes_per_tree;
         let freeport_right_offset = nodes_per_tree + 1;
 
