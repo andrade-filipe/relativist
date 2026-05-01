@@ -329,6 +329,17 @@ pub enum NetRepresentation {
     Sparse,
 }
 
+impl std::fmt::Display for NetRepresentation {
+    /// Lowercase rendering for CSV output (SPEC-09 §3.4.5 column convention).
+    /// Matches the `clap::ValueEnum` kebab-case parsing on the CLI side.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dense => write!(f, "dense"),
+            Self::Sparse => write!(f, "sparse"),
+        }
+    }
+}
+
 /// Default value for `BenchmarkSuiteConfig::max_pending_lifetime`.
 /// SPEC-21 R37g pending-store memory bound. Mirrors
 /// `merge::types::default_max_pending_lifetime`.
@@ -369,6 +380,18 @@ pub struct BenchmarkSuiteConfig {
     /// Tier 3 (SPEC-22 R12). Net representation during construction.
     /// Default: `Dense` (v1 status quo).
     pub representation: NetRepresentation,
+    /// SPEC-09 §3.4.5 (D-011 Phase D-3, TASK-0607). Optional path for the
+    /// `sparse_construction_memory.csv` sub-writer. When set AND
+    /// `representation == Sparse`, the bench harness ALSO performs a paired
+    /// `Dense` construction for the same `(benchmark, size)` so the
+    /// emitted rows include a populated `ratio_to_dense` column. When set
+    /// but `representation == Dense`, only a single dense row is emitted
+    /// (with `ratio_to_dense = 1.0`). When `None`, no sub-CSV is produced.
+    ///
+    /// The existing detail / rounds / summary CSV outputs are unchanged
+    /// regardless of this field's value (additive change — existing
+    /// `v1_local_baseline` rodadas remain bit-stable).
+    pub sparse_construction_memory_csv_path: Option<String>,
 }
 
 /// Aggregated statistics across repetitions (SPEC-09 R31-R34).
@@ -437,6 +460,7 @@ mod tests {
             max_pending_lifetime: DEFAULT_BENCH_MAX_PENDING_LIFETIME,
             recycle_policy: RecyclePolicy::default(),
             representation: NetRepresentation::default(),
+            sparse_construction_memory_csv_path: None,
         }
     }
 

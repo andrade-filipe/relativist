@@ -286,7 +286,9 @@ pub fn run_worker_command(args: WorkerArgs) -> Result<(), RelativistError> {
 
 /// Execute bench mode: run the benchmark suite (SPEC-09 R1, R6).
 pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
-    use crate::bench::csv::{write_csv_detail, write_csv_rounds, write_csv_summary};
+    use crate::bench::csv::{
+        write_csv_detail, write_csv_rounds, write_csv_sparse_construction, write_csv_summary,
+    };
     use crate::bench::suite::run_benchmark_suite;
     use crate::bench::{BenchmarkId, BenchmarkSuiteConfig, Mode};
 
@@ -390,6 +392,11 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         max_pending_lifetime: args.max_pending_lifetime,
         recycle_policy: args.recycle_policy,
         representation: args.representation,
+        // TASK-0607: optional sub-CSV for sparse-construction-memory rows.
+        sparse_construction_memory_csv_path: args
+            .csv_sparse
+            .as_ref()
+            .map(|p| p.display().to_string()),
     };
 
     println!("=== Relativist Benchmark Suite ===");
@@ -472,6 +479,21 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         write_csv_summary(&mut f, &suite_result.summaries)
             .map_err(|e| RelativistError::Config(format!("CSV summary write error: {}", e)))?;
         println!("Summary CSV written to: {}", path.display());
+    }
+
+    // TASK-0607: sparse-construction-memory sub-CSV (SPEC-09 §3.4.5).
+    if let Some(ref path) = args.csv_sparse {
+        let mut f = std::fs::File::create(path).map_err(|e| {
+            RelativistError::Config(format!("cannot create {}: {}", path.display(), e))
+        })?;
+        write_csv_sparse_construction(&mut f, &suite_result.sparse_construction_rows).map_err(
+            |e| RelativistError::Config(format!("CSV sparse-construction write error: {}", e)),
+        )?;
+        println!(
+            "Sparse construction CSV written to: {} ({} row(s))",
+            path.display(),
+            suite_result.sparse_construction_rows.len()
+        );
     }
 
     if !suite_result.all_correct {

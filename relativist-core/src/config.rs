@@ -605,6 +605,20 @@ pub struct BenchArgs {
     #[arg(long)]
     pub csv_summary: Option<PathBuf>,
 
+    /// SPEC-09 §3.4.5 (D-011 Phase D-3, TASK-0607). Path for the
+    /// `sparse_construction_memory.csv` sub-CSV writer.
+    ///
+    /// When set AND `--representation sparse`, the bench harness ALSO performs
+    /// a paired dense construction for the same `(benchmark, size)` so the
+    /// emitted rows include a populated `ratio_to_dense` column. When set
+    /// but `--representation dense`, only a single dense row is emitted (with
+    /// `ratio_to_dense = 1.0`). When omitted, no sub-CSV is produced.
+    ///
+    /// The existing `--csv-detail` / `--csv-rounds` / `--csv-summary` outputs
+    /// are unchanged regardless of whether this flag is set (additive change).
+    #[arg(long)]
+    pub csv_sparse: Option<PathBuf>,
+
     /// Grid loop round limit.
     #[arg(long)]
     pub max_rounds: Option<u32>,

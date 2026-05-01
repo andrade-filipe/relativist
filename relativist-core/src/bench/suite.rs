@@ -299,6 +299,22 @@ struct PendingEntry {
     target_port: u8,
 }
 
+/// Convert the raw VmHWM probe value to the row representation used by
+/// `SparseConstructionRow.peak_memory_during_construction`.
+///
+/// The probe returns `0` on non-Linux targets where `/proc/self/status` is
+/// unavailable. Per TEST-SPEC-0607, the CSV column should be **blank** in
+/// that case (not literal `0`, which would be indistinguishable from
+/// "sparse used zero memory" — a false success signal). Linux Hub captures
+/// (`>0`) round-trip as `Some(_)`.
+fn peak_for_sparse_row(raw: u64) -> Option<u64> {
+    if raw == 0 {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
 /// Convert the engine's [u64; 6] per-rule array to InteractionsByRule.
 /// Index order: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA].
 fn ibr_from_array(arr: [u64; 6]) -> InteractionsByRule {
@@ -566,6 +582,19 @@ pub struct SuiteResult {
     pub summaries: Vec<AggregatedStats>,
     /// Whether all datapoints passed correctness verification.
     pub all_correct: bool,
+    /// Sparse-construction-memory rows (D-011 Phase D-3, TASK-0607).
+    ///
+    /// Populated only when `BenchmarkSuiteConfig.sparse_construction_memory_csv_path`
+    /// is `Some(_)`. One row per `(benchmark, size, representation)` triple:
+    /// - When `representation == Sparse`, the harness ALSO does a paired
+    ///   dense build for the same `(benchmark, size)` so the dense/sparse
+    ///   ratio is computable.
+    /// - `ratio_to_dense` is filled at end-of-suite via
+    ///   `compute_ratios_for_sparse_rows`.
+    ///
+    /// Empty when the field is `None` — preserving zero-overhead status quo
+    /// for existing rodadas (`v1_local_baseline` etc.).
+    pub sparse_construction_rows: Vec<crate::bench::csv::SparseConstructionRow>,
 }
 
 /// Run the full benchmark suite (SPEC-09 Section 4.3).
@@ -578,8 +607,16 @@ pub struct SuiteResult {
 ///
 /// Returns `Err` on correctness failure (R38: halt on first failure).
 pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult, String> {
+    use crate::bench::csv::{compute_ratios_for_sparse_rows, SparseConstructionRow};
+
     let mut all_results: Vec<BenchmarkResult> = Vec::new();
     let mut all_summaries: Vec<AggregatedStats> = Vec::new();
+
+    // TASK-0607: sparse-construction-memory rows. Populated only when
+    // `sparse_construction_memory_csv_path` is set; otherwise this stays
+    // empty and the existing CSV outputs are bit-identical to v1.
+    let mut sparse_construction_rows: Vec<SparseConstructionRow> = Vec::new();
+    let emit_sparse_rows = config.sparse_construction_memory_csv_path.is_some();
 
     for &bench_id in &config.benchmarks {
         let bench = get_benchmark(bench_id);
@@ -617,6 +654,53 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             // (the field is a property of the constructed input net, not of an
             // individual reduction trace).
             let peak_memory_during_construction = get_peak_memory_during_construction();
+
+            // TASK-0607: sparse-construction-memory sub-CSV row collection.
+            //
+            // When the operator passed `--csv-sparse <path>`, emit one row
+            // per (benchmark, size, representation) tuple. The row's
+            // `peak_memory_during_construction` is `None` on non-Linux
+            // platforms (where the VmHWM probe returns 0); on Linux it is
+            // `Some(peak)`. Ratios are computed at end-of-suite via
+            // `compute_ratios_for_sparse_rows` once all rows are present.
+            if emit_sparse_rows {
+                let peak_for_row = peak_for_sparse_row(peak_memory_during_construction);
+                sparse_construction_rows.push(SparseConstructionRow {
+                    benchmark: bench_id,
+                    size,
+                    representation: config.representation,
+                    peak_memory_during_construction: peak_for_row,
+                    ratio_to_dense: None, // filled after the loop
+                });
+
+                // When the main run is Sparse, AUTO-PAIR a Dense build for
+                // the same (benchmark, size) so the ratio_to_dense column
+                // is populated. The paired dense build runs AFTER the
+                // sparse main run, so VmHWM is already at sparse-peak; the
+                // larger dense allocation correctly raises VmHWM to its own
+                // (higher) peak, which is what the second probe reads.
+                if config.representation == NetRepresentation::Sparse {
+                    let mut dense_cfg = config.clone();
+                    dense_cfg.representation = NetRepresentation::Dense;
+                    // Build dense (no reduction — we only need the construction peak).
+                    let _dense_net = build_input_net_from_suite(
+                        &dense_cfg,
+                        bench.as_ref(),
+                        size,
+                        workers_for_streaming,
+                    )?;
+                    let dense_peak = get_peak_memory_during_construction();
+                    sparse_construction_rows.push(SparseConstructionRow {
+                        benchmark: bench_id,
+                        size,
+                        representation: NetRepresentation::Dense,
+                        peak_memory_during_construction: peak_for_sparse_row(dense_peak),
+                        ratio_to_dense: None, // filled after the loop
+                    });
+                    // _dense_net is dropped here; the kernel may or may not
+                    // release pages — irrelevant for the captured probe.
+                }
+            }
 
             let mut seq_results: Vec<BenchmarkResult> = Vec::new();
             let mut seq_reference_net: Option<Net> = None;
@@ -725,10 +809,16 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
 
     let all_correct = all_results.iter().all(|r| r.correct);
 
+    // TASK-0607: compute ratio_to_dense at end-of-suite.
+    if emit_sparse_rows {
+        compute_ratios_for_sparse_rows(&mut sparse_construction_rows);
+    }
+
     Ok(SuiteResult {
         results: all_results,
         summaries: all_summaries,
         all_correct,
+        sparse_construction_rows,
     })
 }
 
@@ -851,6 +941,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
             representation: crate::bench::NetRepresentation::Dense,
+            sparse_construction_memory_csv_path: None,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -877,6 +968,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
             representation: crate::bench::NetRepresentation::Dense,
+            sparse_construction_memory_csv_path: None,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -919,6 +1011,7 @@ mod tests {
                 max_pending_lifetime: 16,
                 recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
                 representation: crate::bench::NetRepresentation::Dense,
+                sparse_construction_memory_csv_path: None,
             };
             let result = run_benchmark_suite(&config).unwrap_or_else(|e| {
                 panic!("Suite failed for {bench_id}: {e}");
@@ -946,6 +1039,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
             representation: crate::bench::NetRepresentation::Dense,
+            sparse_construction_memory_csv_path: None,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -974,6 +1068,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
             representation: crate::bench::NetRepresentation::Dense,
+            sparse_construction_memory_csv_path: None,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -1043,6 +1138,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: RecyclePolicy::DisableUnderDelta,
             representation: NetRepresentation::Dense,
+            sparse_construction_memory_csv_path: None,
         }
     }
 

@@ -35,6 +35,7 @@ fn ep_config_eager(size: u32, workers: u32) -> BenchmarkSuiteConfig {
         max_pending_lifetime: 16,
         recycle_policy: RecyclePolicy::DisableUnderDelta,
         representation: NetRepresentation::Dense,
+        sparse_construction_memory_csv_path: None,
     }
 }
 

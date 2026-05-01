@@ -38,6 +38,7 @@ fn struct_clone_and_debug_round_trip_preserves_tier3_fields() {
         max_pending_lifetime: 42,
         recycle_policy: RecyclePolicy::BorderClean,
         representation: NetRepresentation::Sparse,
+        sparse_construction_memory_csv_path: None,
     };
 
     let cloned = config.clone();

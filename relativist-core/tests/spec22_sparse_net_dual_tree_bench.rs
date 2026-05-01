@@ -60,6 +60,7 @@ fn make_suite_config(
         max_pending_lifetime: DEFAULT_BENCH_MAX_PENDING_LIFETIME,
         recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
         representation,
+        sparse_construction_memory_csv_path: None,
     }
 }
 

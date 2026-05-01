@@ -1,6 +1,6 @@
 //! CSV output for benchmark results (SPEC-09 R39-R42).
 
-use super::{AggregatedStats, BenchmarkResult};
+use super::{AggregatedStats, BenchmarkId, BenchmarkResult, NetRepresentation};
 use std::io::{self, Write};
 
 /// Write detail CSV: one row per datapoint (SPEC-09 R39a).
@@ -138,6 +138,127 @@ pub fn write_csv_summary<W: Write>(writer: &mut W, stats: &[AggregatedStats]) ->
         )?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// TASK-0607 — sparse_construction_memory.csv sub-writer (SPEC-09 §3.4.5)
+// ---------------------------------------------------------------------------
+
+/// One row of the `sparse_construction_memory.csv` sub-CSV
+/// (SPEC-09 §3.4.5, D-011 Phase D-3).
+///
+/// The five columns map 1:1 to `peak_memory_during_construction` (SPEC-09
+/// R18a, line 482, commit `82b2d27`) per (benchmark, size, representation)
+/// tuple, plus the derived `ratio_to_dense` for sparse/dense comparison.
+///
+/// Both numeric fields are `Option<_>` so that:
+/// - `peak_memory_during_construction = None` → emitted as the empty string
+///   on non-Linux platforms where the `/proc/self/status` probe is
+///   unavailable. (On Linux the harness normally sets `Some(0..)`.)
+/// - `ratio_to_dense = None` → emitted as the empty string when no paired
+///   dense row exists in the same suite invocation. The blank-string
+///   convention (vs `NaN`) is locked by TEST-SPEC-0607 §IT-0607-03 — blanks
+///   are forward-compatible with downstream CSV consumers without requiring
+///   NaN-aware parsing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparseConstructionRow {
+    pub benchmark: BenchmarkId,
+    pub size: u32,
+    pub representation: NetRepresentation,
+    pub peak_memory_during_construction: Option<u64>,
+    pub ratio_to_dense: Option<f64>,
+}
+
+/// Write the sparse-construction-memory sub-CSV (SPEC-09 §3.4.5).
+///
+/// Header (locked by UT-0607-01, must match SPEC-09 R18a verbatim):
+///
+/// ```csv
+/// benchmark,size,representation,peak_memory_during_construction,ratio_to_dense
+/// ```
+///
+/// One row is emitted per (benchmark, size, representation) tuple. `None`
+/// values for `peak_memory_during_construction` and `ratio_to_dense` are
+/// emitted as the empty string (per the test-spec's locked convention —
+/// NOT `NaN`, NOT `0`).
+///
+/// The existing detail / rounds / summary CSV writers are unaffected by
+/// this writer; this is an additive emission channel.
+pub fn write_csv_sparse_construction<W: Write>(
+    writer: &mut W,
+    rows: &[SparseConstructionRow],
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "benchmark,size,representation,peak_memory_during_construction,ratio_to_dense"
+    )?;
+
+    for row in rows {
+        let peak_field = row
+            .peak_memory_during_construction
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let ratio_field = row
+            .ratio_to_dense
+            .map(|r| format!("{:.6}", r))
+            .unwrap_or_default();
+
+        writeln!(
+            writer,
+            "{},{},{},{},{}",
+            row.benchmark, row.size, row.representation, peak_field, ratio_field,
+        )?;
+    }
+    Ok(())
+}
+
+/// Build the sub-CSV rows from a slice of `BenchmarkResult` plus a
+/// per-(benchmark, size, representation) index of `peak_memory_during_construction`.
+///
+/// The bench harness collects construction-phase peaks during the suite
+/// run (one per `(BenchmarkId, size, NetRepresentation)` triple — see
+/// `SuiteResult.sparse_construction_rows`); this helper computes
+/// `ratio_to_dense` at emit time:
+///
+/// - Dense rows: `ratio_to_dense = Some(1.0)`.
+/// - Sparse rows: if a Dense row exists for the same `(benchmark, size)`
+///   AND both peaks are `Some(_)` AND the dense peak is non-zero, then
+///   `ratio_to_dense = Some(sparse_peak / dense_peak)`. Otherwise `None`
+///   (emitted blank).
+///
+/// Defined here so the writer test (UT-0607-01) and the full suite path
+/// (IT-0607-02 / IT-0607-04) share the same row-construction logic.
+pub fn compute_ratios_for_sparse_rows(rows: &mut [SparseConstructionRow]) {
+    use std::collections::HashMap;
+
+    // Index dense peaks by (benchmark, size) so sparse rows can look them up.
+    let mut dense_peaks: HashMap<(BenchmarkId, u32), Option<u64>> = HashMap::new();
+    for row in rows.iter() {
+        if row.representation == NetRepresentation::Dense {
+            dense_peaks.insert(
+                (row.benchmark, row.size),
+                row.peak_memory_during_construction,
+            );
+        }
+    }
+
+    for row in rows.iter_mut() {
+        match row.representation {
+            NetRepresentation::Dense => {
+                row.ratio_to_dense = Some(1.0);
+            }
+            NetRepresentation::Sparse => {
+                let key = (row.benchmark, row.size);
+                row.ratio_to_dense = match (
+                    row.peak_memory_during_construction,
+                    dense_peaks.get(&key).and_then(|v| *v),
+                ) {
+                    (Some(s), Some(d)) if d > 0 => Some(s as f64 / d as f64),
+                    _ => None,
+                };
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -279,5 +400,154 @@ mod tests {
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[1].starts_with("ep_annihilation,100,sequential,1"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0607 — sparse_construction_memory.csv writer (Phase D-3)
+    // -----------------------------------------------------------------------
+
+    /// UT-0607-01 — Header lock vs SPEC-09 §3.4.5.
+    ///
+    /// Pin the header line to the EXACT column order mandated by SPEC-09
+    /// §3.4.5 (committed `82b2d27`). Catches header drift, including the
+    /// legacy `peak_construction_bytes` name (the SPEC-09 R18a canonical
+    /// name `peak_memory_during_construction` is the SUPERSEDING column
+    /// header).
+    #[test]
+    fn sparse_csv_header_matches_spec_09_section_3_4_5() {
+        let mut buf = Vec::new();
+        write_csv_sparse_construction(&mut buf, &[]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "UT-0607-01: header-only output must be exactly 1 line; got {csv:?}"
+        );
+
+        let expected_header =
+            "benchmark,size,representation,peak_memory_during_construction,ratio_to_dense";
+        assert_eq!(
+            lines[0], expected_header,
+            "UT-0607-01: header must match SPEC-09 §3.4.5 verbatim. \
+             The canonical metric name is `peak_memory_during_construction` per \
+             SPEC-09 R18a (line 482, commit `82b2d27`); legacy `peak_construction_bytes` \
+             is REJECTED."
+        );
+
+        assert_eq!(
+            lines[0].matches(',').count() + 1,
+            5,
+            "UT-0607-01: header must have exactly 5 columns"
+        );
+    }
+
+    /// UT-0607-01b — Row formatting: well-formed values + blank-string
+    /// convention for `None`.
+    ///
+    /// Two rows: one Dense (peak=Some, ratio=Some(1.0)) and one Sparse
+    /// (peak=None, ratio=None) → the empty fields land as `""` (blank),
+    /// not `"NaN"`, not `"0"`. Locks the convention from TEST-SPEC-0607
+    /// §IT-0607-03.
+    #[test]
+    fn sparse_csv_row_emits_blank_for_none_values() {
+        let rows = vec![
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 12,
+                representation: NetRepresentation::Dense,
+                peak_memory_during_construction: Some(123_456_789),
+                ratio_to_dense: Some(1.0),
+            },
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 12,
+                representation: NetRepresentation::Sparse,
+                peak_memory_during_construction: None,
+                ratio_to_dense: None,
+            },
+        ];
+
+        let mut buf = Vec::new();
+        write_csv_sparse_construction(&mut buf, &rows).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+
+        assert_eq!(lines.len(), 3, "UT-0607-01b: header + 2 rows = 3 lines");
+        assert_eq!(
+            lines[1], "dual_tree,12,dense,123456789,1.000000",
+            "UT-0607-01b: dense row formatting"
+        );
+        assert_eq!(
+            lines[2], "dual_tree,12,sparse,,",
+            "UT-0607-01b: sparse row with None values must emit blank fields, not NaN or 0"
+        );
+    }
+
+    /// UT-0607-01c — `compute_ratios_for_sparse_rows` covers all 4 cases:
+    /// dense→1.0, sparse with paired dense, sparse without paired dense,
+    /// sparse with dense_peak=0 (div-by-zero guard).
+    #[test]
+    fn sparse_csv_ratio_computation_covers_all_cases() {
+        let mut rows = vec![
+            // Pair 1: full sparse + dense pair, ratio = 0.4.
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 12,
+                representation: NetRepresentation::Dense,
+                peak_memory_during_construction: Some(1000),
+                ratio_to_dense: None,
+            },
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 12,
+                representation: NetRepresentation::Sparse,
+                peak_memory_during_construction: Some(400),
+                ratio_to_dense: None,
+            },
+            // Pair 2: sparse without dense pair → ratio stays None.
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 8,
+                representation: NetRepresentation::Sparse,
+                peak_memory_during_construction: Some(200),
+                ratio_to_dense: None,
+            },
+            // Pair 3: dense_peak = 0 → ratio None (div-by-zero guard).
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 4,
+                representation: NetRepresentation::Dense,
+                peak_memory_during_construction: Some(0),
+                ratio_to_dense: None,
+            },
+            SparseConstructionRow {
+                benchmark: BenchmarkId::DualTree,
+                size: 4,
+                representation: NetRepresentation::Sparse,
+                peak_memory_during_construction: Some(50),
+                ratio_to_dense: None,
+            },
+        ];
+
+        compute_ratios_for_sparse_rows(&mut rows);
+
+        assert_eq!(rows[0].ratio_to_dense, Some(1.0), "dense row → 1.0");
+        assert_eq!(
+            rows[1].ratio_to_dense,
+            Some(0.4),
+            "sparse with paired dense → sparse/dense"
+        );
+        assert_eq!(rows[2].ratio_to_dense, None, "sparse w/o dense → None");
+        assert_eq!(
+            rows[3].ratio_to_dense,
+            Some(1.0),
+            "dense row → 1.0 even when peak is 0"
+        );
+        assert_eq!(
+            rows[4].ratio_to_dense, None,
+            "sparse with dense_peak=0 → None (div-by-zero guard)"
+        );
     }
 }
