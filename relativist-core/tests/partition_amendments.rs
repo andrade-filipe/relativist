@@ -84,6 +84,7 @@ fn make_p0() -> Partition {
         free_list_pops_non_border: 0,
         // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
         lifo_stalemate_fallbacks: 0,
+        stalemate_warned: false,
     };
 
     Partition {
@@ -706,6 +707,7 @@ fn ec_j_redex_queue_symmetric_pair_is_remapped() {
         free_list_pops_non_border: 0,
         // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
         lifo_stalemate_fallbacks: 0,
+        stalemate_warned: false,
     };
 
     let p = Partition {
@@ -865,6 +867,7 @@ fn ec_l_remap_next_id_postcondition_at_large_range_start() {
         free_list_pops_non_border: 0,
         // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
         lifo_stalemate_fallbacks: 0,
+        stalemate_warned: false,
     };
 
     let p = Partition {

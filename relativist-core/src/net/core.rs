@@ -190,6 +190,22 @@ pub struct Net {
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub lifo_stalemate_fallbacks: u64,
+
+    /// MF-003 (D-011 review): one-shot sentinel — `true` once the stalemate
+    /// `tracing::warn!` has been emitted for this `Net` instance. Suppresses
+    /// duplicate warnings under sustained stalemate (a sustained
+    /// border-protected free-list could produce thousands of stalemate events
+    /// in a single round; pre-MF-003 each one fired its own warn, flooding
+    /// the log and masking other diagnostics). The
+    /// `lifo_stalemate_fallbacks` counter still increments on every event.
+    ///
+    /// Reset on `Net::new()` / `Net::with_capacity()`. Always-present field
+    /// per TASK-0598 strategy (b); writes gated by
+    /// `#[cfg(debug_assertions)]` at the use site (MF-003 emits warns only
+    /// in debug builds anyway, so the field has no effect in release).
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub stalemate_warned: bool,
 }
 
 /// SPEC-22 R10b: recycling strategy for delta-mode rounds.
@@ -255,6 +271,7 @@ impl Net {
             free_list_pops_non_border: 0,
             // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
             lifo_stalemate_fallbacks: 0,
+            stalemate_warned: false,
         }
     }
 
@@ -286,6 +303,7 @@ impl Net {
             free_list_pops_non_border: 0,
             // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
             lifo_stalemate_fallbacks: 0,
+            stalemate_warned: false,
         }
     }
 
@@ -384,12 +402,30 @@ impl Net {
                             {
                                 self.lifo_stalemate_fallbacks += 1;
                             }
-                            tracing::warn!(
-                                free_list_len = self.free_list.len(),
-                                "TASK-0601 (QA-D010-016): LIFO non-protected stalemate — \
-                                 every free-list entry is border-protected; falling back \
-                                 to fresh next_id allocation"
-                            );
+                            // MF-003 (D-011 dispatch brief 2026-04-30):
+                            // emit the warning ONCE per Net instance instead
+                            // of on every `create_agent` call hitting the
+                            // stalemate. Pre-fix: a sustained stalemate over
+                            // 1000 allocations produced 1000 warns, flooding
+                            // the log and masking other diagnostics. Per the
+                            // brief option (b), `stalemate_warned: bool` is a
+                            // debug-only sentinel; release builds skip the
+                            // warn entirely (the counter still increments).
+                            #[cfg(debug_assertions)]
+                            {
+                                if !self.stalemate_warned {
+                                    self.stalemate_warned = true;
+                                    tracing::warn!(
+                                        free_list_len = self.free_list.len(),
+                                        cumulative_fallbacks = self.lifo_stalemate_fallbacks,
+                                        "TASK-0601 (QA-D010-016) / MF-003: LIFO non-protected \
+                                         stalemate — every free-list entry is border-protected; \
+                                         falling back to fresh next_id allocation. \
+                                         (This warning fires ONCE per Net instance; \
+                                         lifo_stalemate_fallbacks counter still tracks every event.)"
+                                    );
+                                }
+                            }
                             None
                         }
                     }
@@ -1009,6 +1045,8 @@ impl Net {
             free_list_pops_non_border: _flpnb_a,
             // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
             lifo_stalemate_fallbacks: _lsf_a,
+            // MF-003 (D-011): stalemate-warn one-shot sentinel (debug-only).
+            stalemate_warned: _sw_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -1030,6 +1068,8 @@ impl Net {
             free_list_pops_non_border: _flpnb_b,
             // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
             lifo_stalemate_fallbacks: _lsf_b,
+            // MF-003 (D-011): stalemate-warn one-shot sentinel (debug-only).
+            stalemate_warned: _sw_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -1130,6 +1170,7 @@ impl Net {
             free_list_pops_non_border: 0,
             // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
             lifo_stalemate_fallbacks: 0,
+            stalemate_warned: false,
         }
     }
 

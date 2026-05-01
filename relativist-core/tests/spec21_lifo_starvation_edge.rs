@@ -214,3 +214,75 @@ fn it_0601_03_fifo_path_unchanged_no_perf_regression() {
          stalemate counter must stay zero"
     );
 }
+
+/// MF-003 — `stalemate_warned` is one-shot per Net instance.
+///
+/// Pre-fix: every `create_agent` call hitting a stalemate fired a fresh
+/// `tracing::warn!`. A sustained stalemate over 1000 allocations produced
+/// 1000 warnings — log flood + masked diagnostics.
+///
+/// Post-fix: the warn fires AT MOST ONCE per `Net` instance (the
+/// `stalemate_warned` debug-only field is set to `true` after the first
+/// emission and suppresses subsequent warns). The counter
+/// `lifo_stalemate_fallbacks` STILL increments on every event so the
+/// total count is preserved.
+///
+/// Test strategy: provoke 50 stalemate events on a single Net; verify
+/// `lifo_stalemate_fallbacks == 50` AND `stalemate_warned == true` (the
+/// flag was set once and stayed set). The actual log-volume assertion
+/// is implicit: had the flag NOT been one-shot, the test would still
+/// pass numerically, but the design intent is encoded by the
+/// `stalemate_warned` field's behaviour.
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
+#[test]
+fn mf_003_stalemate_warn_is_one_shot_per_net_instance() {
+    let mut net = Net::new();
+
+    // Pre-populate 4 free-list entries; mark all border-protected so
+    // every `create_agent` hits a stalemate fallback.
+    let ids: Vec<u32> = (0..4).map(|_| net.create_agent(Symbol::Era)).collect();
+    for id in &ids {
+        net.remove_agent(*id);
+    }
+    let border: HashSet<u32> = ids.iter().copied().collect();
+    net.border_entries_shadow = Some(border);
+    net.recycle_policy = RecyclePolicy::BorderClean;
+    net.is_in_delta_round = true;
+
+    // Pre-condition: the sentinel is not yet set.
+    assert!(
+        !net.stalemate_warned,
+        "MF-003 pre: stalemate_warned must be false on a fresh Net"
+    );
+
+    // Provoke 50 stalemate events.
+    for _ in 0..50 {
+        let _ = net.create_agent(Symbol::Era);
+    }
+
+    // The counter saw every event:
+    assert_eq!(
+        net.lifo_stalemate_fallbacks, 50,
+        "MF-003: lifo_stalemate_fallbacks counter MUST track every event \
+         (debounce affects ONLY the warn, not the counter)"
+    );
+    // The sentinel is set (and stayed set):
+    assert!(
+        net.stalemate_warned,
+        "MF-003: stalemate_warned MUST be true after at least one stalemate event"
+    );
+}
+
+/// MF-003 — `stalemate_warned` resets when the Net is reconstructed
+/// (Net::new()). Sentinel: a buggy `Default` / `Clone` / arena-reset
+/// path that leaves `stalemate_warned = true` would silently suppress
+/// warnings across Net rebuilds.
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
+#[test]
+fn mf_003_stalemate_warned_resets_on_net_new() {
+    let net = Net::new();
+    assert!(
+        !net.stalemate_warned,
+        "MF-003: Net::new() MUST initialise stalemate_warned = false"
+    );
+}
