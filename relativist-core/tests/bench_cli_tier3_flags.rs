@@ -305,14 +305,11 @@ fn bench_args_to_suite_config_mapping_is_one_to_one() {
     );
 }
 
-/// IT-0603-09 — end-to-end CLI smoke. Marked `#[ignore]` until TASK-0604
-/// lands the streaming-path selection wiring in `bench/suite.rs`. With
-/// the current state (Phase C-1 + C-3 only), `--chunk-size 100` parses
-/// successfully but the bench harness still hits the eager path
-/// internally, so the smoke is a parse-only gate, not a streaming-path
-/// behavioral check. Promote out of `#[ignore]` after TASK-0604.
+/// IT-0603-09 — end-to-end CLI smoke. Originally `#[ignore]` pending TASK-0604;
+/// promoted to active after TASK-0604 landed the streaming-path selection
+/// wiring in `bench/suite.rs` (commit hash recorded in the dispatch summary).
+/// `--chunk-size 100` now exercises the streaming branch end-to-end.
 #[test]
-#[ignore = "smoke; requires bench harness wiring (TASK-0604)"]
 fn cli_smoke_chunk_size_100_workers_2_completes_zero() {
     use std::process::Command;
 
@@ -321,6 +318,8 @@ fn cli_smoke_chunk_size_100_workers_2_completes_zero() {
     let output = Command::new(env!("CARGO"))
         .args([
             "run",
+            "--package",
+            "relativist-cli",
             "--bin",
             "relativist",
             "--quiet",
