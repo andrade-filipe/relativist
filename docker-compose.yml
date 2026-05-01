@@ -28,20 +28,26 @@ services:
       replicas: ${NUM_WORKERS:-2}
 
   # ---------------------------------------------------------------------------
-  # bench-tcp profile — bench runner (runs bench subcommand in TCP mode)
-  # Usage:  docker compose --profile bench-tcp run --rm bench-tcp bench \
-  #           --benchmark ep_annihilation --sizes 1000 --workers 2 \
-  #           --chunk-size 100 --mode tcp_localhost \
-  #           --csv-detail /results/detail.csv
+  # bench-tcp profile — STREAMING bench runner (chunk_size set explicitly).
+  # Exercises the streaming path (TASK-0604, SPEC-21 §3.8 A3, SPEC-09 R18a).
+  #
+  # Usage:  CHUNK_SIZE=100 docker compose --profile bench-tcp run --rm bench-tcp
   #
   # Env vars forwarded to CLI flags (set on host or in a .env file):
-  #   CHUNK_SIZE              → --chunk-size          (default: 10000)
+  #   CHUNK_SIZE              → --chunk-size          (default: 100)
   #   MAX_PENDING_LIFETIME    → --max-pending-lifetime (default: 16)
   #   RECYCLE_POLICY          → --recycle-policy       (default: disable-under-delta)
   #   REPRESENTATION          → --representation       (default: dense)
   #   BENCH_SIZES             → --sizes                (default: 1000)
   #   BENCH_WORKERS           → --workers              (default: 1,2)
   #   BENCH_MODE              → --mode                 (default: tcp_localhost)
+  #
+  # QA-D011-004 (HIGH): the previous default `CHUNK_SIZE=10000` made the smoke
+  # take the streaming path implicitly. The `bench-tcp` service now explicitly
+  # opts into streaming via `CHUNK_SIZE=100` (small chunk to exercise
+  # multi-batch assembly). The eager (v1-equivalent) path is exercised by the
+  # `bench-tcp-eager` service below; CI runs BOTH so a regression in either
+  # path is caught.
   #
   # Note: the bench subcommand handles its own TCP coordinator/worker
   # lifecycle internally in tcp_localhost mode — no separate coordinator or
@@ -57,7 +63,37 @@ services:
       - --sizes=${BENCH_SIZES:-1000}
       - --workers=${BENCH_WORKERS:-1,2}
       - --mode=${BENCH_MODE:-tcp_localhost}
-      - --chunk-size=${CHUNK_SIZE:-10000}
+      - --chunk-size=${CHUNK_SIZE:-100}
+      - --max-pending-lifetime=${MAX_PENDING_LIFETIME:-16}
+      - --recycle-policy=${RECYCLE_POLICY:-disable-under-delta}
+      - --representation=${REPRESENTATION:-dense}
+      - --csv-detail=/results/detail.csv
+      - --csv-summary=/results/summary.csv
+    volumes:
+      - ./data:/data
+      - ./results:/results
+
+  # ---------------------------------------------------------------------------
+  # bench-tcp-eager profile — EAGER bench runner (no --chunk-size flag).
+  #
+  # Exercises the v1-equivalent eager path (status-quo materialisation via
+  # `bench.make_net(size)`). Used by CI for paired smoke validation per
+  # QA-D011-004.
+  #
+  # Same env vars as `bench-tcp` EXCEPT `CHUNK_SIZE` is NOT set — the
+  # `--chunk-size` flag is omitted so `BenchmarkSuiteConfig.chunk_size = None`
+  # and the harness takes the eager branch in `build_input_net_from_suite`.
+  # ---------------------------------------------------------------------------
+  bench-tcp-eager:
+    build: .
+    profiles:
+      - bench-tcp-eager
+    command:
+      - bench
+      - --benchmark=ep_annihilation
+      - --sizes=${BENCH_SIZES:-1000}
+      - --workers=${BENCH_WORKERS:-1,2}
+      - --mode=${BENCH_MODE:-tcp_localhost}
       - --max-pending-lifetime=${MAX_PENDING_LIFETIME:-16}
       - --recycle-policy=${RECYCLE_POLICY:-disable-under-delta}
       - --representation=${REPRESENTATION:-dense}

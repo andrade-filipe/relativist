@@ -90,7 +90,7 @@ docker compose --profile bench-tcp run --rm \
 
 | Variable               | CLI flag                    | Default              |
 |------------------------|-----------------------------|----------------------|
-| `CHUNK_SIZE`           | `--chunk-size`              | `10000`              |
+| `CHUNK_SIZE`           | `--chunk-size` (`bench-tcp` profile only) | `100`  |
 | `MAX_PENDING_LIFETIME` | `--max-pending-lifetime`    | `16`                 |
 | `RECYCLE_POLICY`       | `--recycle-policy`          | `disable-under-delta`|
 | `REPRESENTATION`       | `--representation`          | `dense`              |
