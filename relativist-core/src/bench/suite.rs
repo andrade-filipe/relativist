@@ -549,6 +549,10 @@ mod tests {
             max_rounds: None,
             strict_bsp: false,
             skip_g1: false,
+            chunk_size: None,
+            max_pending_lifetime: 16,
+            recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
+            representation: crate::bench::NetRepresentation::Dense,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -571,6 +575,10 @@ mod tests {
             max_rounds: None,
             strict_bsp: false,
             skip_g1: false,
+            chunk_size: None,
+            max_pending_lifetime: 16,
+            recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
+            representation: crate::bench::NetRepresentation::Dense,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -609,6 +617,10 @@ mod tests {
                 max_rounds: None,
                 strict_bsp: false,
                 skip_g1: false,
+                chunk_size: None,
+                max_pending_lifetime: 16,
+                recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
+                representation: crate::bench::NetRepresentation::Dense,
             };
             let result = run_benchmark_suite(&config).unwrap_or_else(|e| {
                 panic!("Suite failed for {bench_id}: {e}");
@@ -632,6 +644,10 @@ mod tests {
             max_rounds: None,
             strict_bsp: false,
             skip_g1: false,
+            chunk_size: None,
+            max_pending_lifetime: 16,
+            recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
+            representation: crate::bench::NetRepresentation::Dense,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
@@ -656,6 +672,10 @@ mod tests {
             max_rounds: None,
             strict_bsp: false,
             skip_g1: false,
+            chunk_size: None,
+            max_pending_lifetime: 16,
+            recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
+            representation: crate::bench::NetRepresentation::Dense,
         };
         let result = run_benchmark_suite(&config).unwrap();
         assert!(result.all_correct);
