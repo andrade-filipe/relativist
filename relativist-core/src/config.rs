@@ -626,6 +626,57 @@ pub struct BenchArgs {
     /// check. Results are marked "G1 weak" in the CSV.
     #[arg(long, default_value_t = false)]
     pub skip_g1: bool,
+
+    // -----------------------------------------------------------------------
+    // Tier 3 (D-011 Phase C-3, TASK-0603) — bench harness streaming /
+    // recycling / representation knobs. Defaults preserve the eager-path
+    // status quo so existing bench scripts remain valid (additive change).
+    // -----------------------------------------------------------------------
+    /// SPEC-09 R18a / SPEC-21 §3.8 A3 — streaming chunk size. When omitted
+    /// the bench harness takes the eager path (status quo); when set, the
+    /// harness routes through `merge::generate_and_partition_chunked_with_chunk_size_and_lifetime`
+    /// (path selection lands in TASK-0604).
+    #[arg(long)]
+    pub chunk_size: Option<u32>,
+
+    /// SPEC-21 R37g — pending-store memory bound. Defaults to 16, matching
+    /// the coordinator `GridConfig::default()` value.
+    #[arg(long, default_value_t = 16)]
+    pub max_pending_lifetime: u32,
+
+    /// SPEC-22 R10b — recycling policy under streaming + delta. Default:
+    /// `disable-under-delta` (safe — preserves v1 semantics).
+    #[arg(long, value_enum, default_value_t = crate::bench::RecyclePolicy::DisableUnderDelta)]
+    pub recycle_policy: crate::bench::RecyclePolicy,
+
+    /// SPEC-22 R12 — net representation during construction. Default:
+    /// `dense` (v1 status quo). Selecting `sparse` requires a workload
+    /// whose generator supports the sparse path (TASK-0606).
+    #[arg(long, value_enum, default_value_t = crate::bench::NetRepresentation::Dense)]
+    pub representation: crate::bench::NetRepresentation,
+}
+
+impl BenchArgs {
+    /// SPEC-09 R6 — populate the four Tier 3 fields of
+    /// [`crate::bench::BenchmarkSuiteConfig`] from this CLI struct.
+    /// Returned values are 1:1 with the parsed flags (no defaulting / no
+    /// translation); the caller is responsible for filling the
+    /// non-Tier-3 fields (existing pattern in `commands::run_bench`).
+    pub fn tier3_into_suite_config(
+        &self,
+    ) -> (
+        Option<u32>,
+        u32,
+        crate::bench::RecyclePolicy,
+        crate::bench::NetRepresentation,
+    ) {
+        (
+            self.chunk_size,
+            self.max_pending_lifetime,
+            self.recycle_policy,
+            self.representation,
+        )
+    }
 }
 
 /// CLI arguments for the `validate` subcommand (DATA-COLLECTION-PLAN Section 10).

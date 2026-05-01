@@ -382,12 +382,14 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         max_rounds: args.max_rounds,
         strict_bsp: args.strict_bsp,
         skip_g1: args.skip_g1,
-        // Tier 3 fields land in TASK-0603 via BenchArgs flags;
-        // defaults here preserve the eager-path status quo (TASK-0602).
-        chunk_size: None,
-        max_pending_lifetime: 16,
-        recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
-        representation: crate::bench::NetRepresentation::Dense,
+        // Tier 3 fields wired from BenchArgs CLI flags (TASK-0603).
+        // Defaults match the spec-mandated eager-path status quo when
+        // flags are omitted, preserving backward compatibility for
+        // existing bench scripts.
+        chunk_size: args.chunk_size,
+        max_pending_lifetime: args.max_pending_lifetime,
+        recycle_policy: args.recycle_policy,
+        representation: args.representation,
     };
 
     println!("=== Relativist Benchmark Suite ===");
