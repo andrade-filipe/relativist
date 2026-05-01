@@ -27,8 +27,13 @@
 //! completion. The fix is O(free_list.len()) per recycle attempt — the
 //! N=20 budget keeps the worst-case scan well under the gate.
 
+// Imports are needed only by tests gated `not(feature = "streaming-no-recycle")`.
+// Under the streaming-no-recycle feature, all tests in this file are excluded
+// (the LIFO recycle path being exercised here is compile-out under that feature).
+#[cfg(not(feature = "streaming-no-recycle"))]
 use std::collections::HashSet;
 
+#[cfg(not(feature = "streaming-no-recycle"))]
 use relativist_core::net::{Net, RecyclePolicy, Symbol};
 
 /// IT-0601-02 — `stale_chunk_completes_under_adversarial_arrivals`.

@@ -135,6 +135,29 @@ pub fn build_input_net_from_suite(
 
     let _ = workers_for_streaming; // reserved for future strategies; harness assembly is partition-free.
 
+    // QA-D011-001 (CRITICAL): the path-selection grid `(chunk_size, representation)`
+    // has a forbidden quadrant. When `chunk_size = Some(N)` AND
+    // `representation = Sparse`, the legacy `match` would (incorrectly) take the
+    // streaming branch and silently bypass `make_sparse_net`'s "sparse only
+    // supported for dual_tree" guard — producing a row whose
+    // `representation=sparse` field misrepresents the data structure used
+    // (the streaming branch always assembles via `SparseNet` regardless, but
+    // operator intent is "sparse-eager", which is incompatible with chunked
+    // streaming until D-012 ships a true sparse-streaming pipeline).
+    //
+    // Refuse the combination explicitly here. The error is structured so the
+    // bench harness halts (R38 halt-on-failure regime) before any row is emitted.
+    if let (Some(chunk), NetRepresentation::Sparse) = (config.chunk_size, config.representation) {
+        return Err(format!(
+            "QA-D011-001: representation=Sparse is not yet supported with chunk_size=Some({}); \
+             use --representation dense for streaming benchmarks (bench={} size={}). \
+             Tracking: D-012 sparse-streaming pipeline.",
+            chunk,
+            bench.id(),
+            size,
+        ));
+    }
+
     match config.chunk_size {
         None => match config.representation {
             NetRepresentation::Dense => Ok(bench.make_net(size)),
@@ -1292,5 +1315,88 @@ mod tests {
             bench_recycle_to_net_core(RecyclePolicy::BorderClean),
             crate::net::core::RecyclePolicy::BorderClean
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D011-001 (CRITICAL) — forbidden quadrant: chunk_size=Some + representation=Sparse
+    //
+    // Pre-fix: the outer `match config.chunk_size` would take the streaming
+    // branch unconditionally, silently overriding the operator's
+    // `representation=Sparse` choice and bypassing the `make_sparse_net`
+    // "non-dual_tree" guard. Post-fix: the harness errors out explicitly.
+    // ---------------------------------------------------------------------------
+
+    /// QA-D011-001 — sparse + chunk_size combo errors loudly (regression sentinel).
+    #[test]
+    fn qa_d011_001_sparse_plus_chunk_size_errors_explicitly() {
+        let bench = get_benchmark(BenchmarkId::EPAnnihilation);
+        let mut config = suite_config_default_tier3();
+        config.chunk_size = Some(50);
+        config.representation = NetRepresentation::Sparse;
+
+        let res = build_input_net_from_suite(&config, bench.as_ref(), 100, 2);
+        assert!(
+            res.is_err(),
+            "QA-D011-001: sparse + chunk_size MUST error, got Ok(_)"
+        );
+        let err = res.unwrap_err();
+        assert!(
+            err.contains("QA-D011-001"),
+            "QA-D011-001: error message MUST cite the finding ID; got: {err}"
+        );
+        assert!(
+            err.contains("Sparse") || err.contains("sparse"),
+            "QA-D011-001: error message MUST cite the offending representation; got: {err}"
+        );
+    }
+
+    /// QA-D011-001 — even for the otherwise-supported `dual_tree` benchmark,
+    /// sparse + chunk_size is rejected (the guard is purely on the path
+    /// combination, not on the benchmark).
+    #[test]
+    fn qa_d011_001_sparse_plus_chunk_size_rejected_for_dual_tree_too() {
+        let bench = get_benchmark(BenchmarkId::DualTree);
+        let mut config = suite_config_default_tier3();
+        config.chunk_size = Some(10);
+        config.representation = NetRepresentation::Sparse;
+
+        let res = build_input_net_from_suite(&config, bench.as_ref(), 5, 2);
+        assert!(
+            res.is_err(),
+            "QA-D011-001: sparse + chunk_size MUST error even for dual_tree"
+        );
+    }
+
+    /// QA-D011-001 (negative — the fix MUST NOT regress the three valid cells).
+    /// Confirms that all three valid `(chunk_size, representation)` cells still
+    /// build successfully:
+    ///   - (None, Dense)  — eager-dense (v1 status quo)
+    ///   - (Some, Dense)  — streaming
+    ///   - (None, Sparse) — sparse-eager (dual_tree only)
+    #[test]
+    fn qa_d011_001_three_valid_quadrants_still_build() {
+        let bench_ep = get_benchmark(BenchmarkId::EPAnnihilation);
+        let bench_dt = get_benchmark(BenchmarkId::DualTree);
+
+        // Cell 1: (None, Dense)
+        let mut c1 = suite_config_default_tier3();
+        c1.chunk_size = None;
+        c1.representation = NetRepresentation::Dense;
+        let _ = build_input_net_from_suite(&c1, bench_ep.as_ref(), 10, 1)
+            .expect("(None, Dense) MUST still build");
+
+        // Cell 2: (Some(N), Dense)
+        let mut c2 = suite_config_default_tier3();
+        c2.chunk_size = Some(20);
+        c2.representation = NetRepresentation::Dense;
+        let _ = build_input_net_from_suite(&c2, bench_ep.as_ref(), 50, 1)
+            .expect("(Some, Dense) MUST still build");
+
+        // Cell 3: (None, Sparse) on dual_tree
+        let mut c3 = suite_config_default_tier3();
+        c3.chunk_size = None;
+        c3.representation = NetRepresentation::Sparse;
+        let _ = build_input_net_from_suite(&c3, bench_dt.as_ref(), 4, 1)
+            .expect("(None, Sparse) on dual_tree MUST still build");
     }
 }
