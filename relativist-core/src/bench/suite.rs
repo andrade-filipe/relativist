@@ -158,6 +158,23 @@ pub fn build_input_net_from_suite(
         ));
     }
 
+    // QA-D011-008 (MEDIUM): reject `chunk_size = Some(0)` at the harness
+    // level. Pre-fix `ep_annihilation_stream(size, 0)` silently coerced
+    // `pairs_per_batch = (0 / 2).max(1) = 1`, so the actual chunk size
+    // used was 1 — the row's `chunk_size` column (post-MF-002) would
+    // mis-represent the measurement (`0` printed but `1` used). Reject
+    // explicitly so the operator notices a typo before any row is
+    // written.
+    if config.chunk_size == Some(0) {
+        return Err(format!(
+            "QA-D011-008: chunk_size=Some(0) is not a valid streaming chunk size \
+             (silent coercion to 1 pre-fix); pass chunk_size=None for the eager path \
+             or chunk_size=Some(N>=1) for streaming (bench={} size={}).",
+            bench.id(),
+            size,
+        ));
+    }
+
     match config.chunk_size {
         None => match config.representation {
             NetRepresentation::Dense => Ok(bench.make_net(size)),
@@ -1753,6 +1770,30 @@ mod tests {
         let result =
             run_benchmark_suite(&config).expect("legitimate streaming rodada must pass R37c gate");
         assert!(result.all_correct);
+    }
+
+    /// QA-D011-008 — `chunk_size=Some(0)` errors loudly (MEDIUM).
+    ///
+    /// Pre-fix: the harness silently coerced 0 → 1 via the
+    /// `ep_annihilation_stream` `.max(1)` defensive guard, so the row's
+    /// chunk_size column was mis-stamped. Post-fix: rejected at the harness
+    /// dispatcher.
+    #[test]
+    fn qa_d011_008_chunk_size_zero_is_rejected() {
+        let bench = get_benchmark(BenchmarkId::EPAnnihilation);
+        let mut config = suite_config_default_tier3();
+        config.chunk_size = Some(0);
+
+        let res = build_input_net_from_suite(&config, bench.as_ref(), 50, 1);
+        assert!(
+            res.is_err(),
+            "QA-D011-008: chunk_size=Some(0) MUST error, got Ok(_)"
+        );
+        let err = res.unwrap_err();
+        assert!(
+            err.contains("QA-D011-008"),
+            "QA-D011-008: error message MUST cite the finding ID; got: {err}"
+        );
     }
 
     /// QA-D011-001 (negative — the fix MUST NOT regress the three valid cells).
