@@ -214,6 +214,40 @@ pub struct BenchmarkResult {
     /// MUST always be populated (even for v1-equivalent rodadas — the column
     /// MUST NOT be omitted, per §4.9 line ~714).
     pub peak_memory_during_construction: u64,
+    /// SPEC-09 R18b (D-011 MF-002 / QA-D011-006): VmHWM sampled AFTER
+    /// `reduce_all` / `run_grid` returns. Functionally equivalent to the
+    /// legacy `peak_memory_bytes` for the v1 rodada; dual-stored under the
+    /// new spec-mandated name so the R39a 29-column schema is satisfied
+    /// without breaking the v1 22-column baseline join.
+    pub peak_memory_during_reduction: u64,
+    /// SPEC-09 R18c (D-011 MF-002): live-agent count at the construction-
+    /// complete program point. The "input-size invariant" against which
+    /// R18a is normalised in §4.9 acceptance gates.
+    pub agent_count_at_construction_complete: u32,
+    /// SPEC-09 R18d (D-011 MF-002): peak `count_live_agents()` observed
+    /// during reduction. Per the R18d sequential-mode discipline, this is
+    /// an end-of-reduction snapshot in sequential mode (one final sample);
+    /// in grid mode it is the maximum across `agents_per_round` (computed
+    /// at row-build time). See SF-001 — the per-round vs end-of-reduction
+    /// discipline is awaiting SPEC clarification; the implementation picks
+    /// the cheapest discipline for now (end-of-reduction snapshot for
+    /// sequential, max-of-rounds for grid).
+    pub live_agent_count_watermark: u32,
+    /// SPEC-09 R18e (D-011 MF-002): construction-phase data structure
+    /// used. Mirrors `BenchmarkSuiteConfig.representation` so a CSV row is
+    /// self-describing without requiring the operator to remember which
+    /// flag was passed. CSV-rendered as "dense" or "sparse" via Display.
+    pub representation: NetRepresentation,
+    /// SPEC-09 R18f (D-011 MF-002): chunk size selected for the
+    /// construction phase. Mirrors `BenchmarkSuiteConfig.chunk_size`.
+    /// CSV-rendered as `N` for `Some(N)` or as the empty string for
+    /// `None` (eager path).
+    pub chunk_size: Option<u32>,
+    /// SPEC-09 R18g (D-011 MF-002): free-list recycling policy under the
+    /// streaming + delta path. Mirrors `BenchmarkSuiteConfig.recycle_policy`.
+    /// CSV-rendered as the kebab-case form ("disable-under-delta" or
+    /// "border-clean") via the existing `clap::ValueEnum` rename.
+    pub recycle_policy: RecyclePolicy,
     pub agents_per_round: Vec<usize>,
 
     // --- Communication ---
@@ -781,6 +815,12 @@ mod tests {
             border_ratio_per_round: vec![],
             peak_memory_bytes: 0,
             peak_memory_during_construction: 0,
+            peak_memory_during_reduction: 0,
+            agent_count_at_construction_complete: 0,
+            live_agent_count_watermark: 0,
+            representation: NetRepresentation::Dense,
+            chunk_size: None,
+            recycle_policy: RecyclePolicy::DisableUnderDelta,
             agents_per_round: vec![],
             bytes_sent: 0,
             bytes_received: 0,

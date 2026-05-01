@@ -3,14 +3,66 @@
 use super::{AggregatedStats, BenchmarkId, BenchmarkResult, NetRepresentation};
 use std::io::{self, Write};
 
+/// Render `peak_memory_during_construction` (a `u64`) as a CSV cell, using
+/// the §4.9 non-Linux convention (blank string instead of literal `0`) when
+/// the probe is unavailable. Locally co-located here per SF-005 — the
+/// sub-CSV writer's helper was previously in `suite.rs` but only `csv.rs`
+/// consumed its output.
+///
+/// QA-D011-009 / SF-002: ensures the main `detail.csv` writer renders blank
+/// for non-Linux runs, matching the sub-CSV writer's convention. Linux runs
+/// (where VmHWM is non-zero) emit the literal byte count.
+fn render_peak_memory_cell(raw: u64) -> String {
+    if raw == 0 {
+        String::new()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Render `chunk_size: Option<u32>` as a CSV cell. `None` (eager path)
+/// renders as the empty string per SPEC-09 §4.9 (R18f); `Some(N)` renders
+/// as the literal integer.
+fn render_chunk_size_cell(value: Option<u32>) -> String {
+    match value {
+        None => String::new(),
+        Some(n) => n.to_string(),
+    }
+}
+
+/// Render `recycle_policy` as the kebab-case form ("disable-under-delta"
+/// / "border-clean") per SPEC-09 R18g, matching the `clap::ValueEnum`
+/// rename on the CLI side. Locally implemented here so a future drift in
+/// `RecyclePolicy::Display` (which doesn't exist today) doesn't silently
+/// change the CSV column.
+fn render_recycle_policy_cell(policy: super::RecyclePolicy) -> &'static str {
+    match policy {
+        super::RecyclePolicy::DisableUnderDelta => "disable-under-delta",
+        super::RecyclePolicy::BorderClean => "border-clean",
+    }
+}
+
 /// Write detail CSV: one row per datapoint (SPEC-09 R39a).
 ///
-/// SPEC-09 §4.9 R18a (D-011 Phase F-1, commit `82b2d27`): the v1 22-column
-/// schema is preserved at the LEFT; the Tier 3 measurement columns are
-/// appended to the RIGHT. TASK-0605 lands the first of those: column #23 is
-/// `peak_memory_during_construction`. v1-equivalent rodadas (eager path,
-/// dense, default recycle) MUST still populate this column with the measured
-/// VmHWM — the column MUST NOT be omitted (§4.9 line ~714).
+/// SPEC-09 §4.9 R18a-R18g (D-011 Phase F-1, commit `82b2d27`; D-011 MF-002
+/// extension): the v1 22-column schema is preserved at the LEFT; the Tier 3
+/// measurement columns are appended to the RIGHT. The 7 appended columns
+/// per R39a (line 711):
+///
+/// 23: `peak_memory_during_construction`  (R18a)
+/// 24: `peak_memory_during_reduction`     (R18b)
+/// 25: `agent_count_at_construction_complete` (R18c)
+/// 26: `live_agent_count_watermark`       (R18d)
+/// 27: `representation`                   (R18e)  "dense" / "sparse"
+/// 28: `chunk_size`                       (R18f)  N / blank
+/// 29: `recycle_policy`                   (R18g)  "disable-under-delta" / "border-clean"
+///
+/// v1-equivalent rodadas (eager path, dense, default recycle) MUST still
+/// populate every column — none of the rightmost 7 may be omitted (§4.9
+/// line ~714 / line 538). The `peak_memory_during_construction` and
+/// `peak_memory_during_reduction` cells render BLANK on non-Linux targets
+/// (where the VmHWM probe returns 0) per the §4.9 convention; literal
+/// `0` would be indistinguishable from "construction used 0 bytes".
 pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -> io::Result<()> {
     writeln!(
         writer,
@@ -18,13 +70,17 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
          total_interactions,mips,rounds,speedup,efficiency,overhead_ratio,\
          peak_memory_bytes,bytes_sent,bytes_received,\
          con_con,dup_dup,era_era,con_dup,con_era,dup_era,\
-         peak_memory_during_construction"
+         peak_memory_during_construction,peak_memory_during_reduction,\
+         agent_count_at_construction_complete,live_agent_count_watermark,\
+         representation,chunk_size,recycle_policy"
     )?;
 
     for r in results {
         writeln!(
             writer,
-            "{},{},{},{},{},{},{:.6},{},{:.3},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{:.6},{},{:.3},{},{:.4},{:.4},{:.4},{},{},{},\
+             {},{},{},{},{},{},\
+             {},{},{},{},{},{},{}",
             r.benchmark,
             r.input_size,
             r.mode,
@@ -47,7 +103,14 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
             r.interactions_by_rule.con_dup,
             r.interactions_by_rule.con_era,
             r.interactions_by_rule.dup_era,
-            r.peak_memory_during_construction,
+            // R18a-R18g (D-011 MF-002):
+            render_peak_memory_cell(r.peak_memory_during_construction),
+            render_peak_memory_cell(r.peak_memory_during_reduction),
+            r.agent_count_at_construction_complete,
+            r.live_agent_count_watermark,
+            r.representation,
+            render_chunk_size_cell(r.chunk_size),
+            render_recycle_policy_cell(r.recycle_policy),
         )?;
     }
     Ok(())
@@ -290,6 +353,12 @@ mod tests {
             border_ratio_per_round: vec![],
             peak_memory_bytes: 0,
             peak_memory_during_construction: 0,
+            peak_memory_during_reduction: 0,
+            agent_count_at_construction_complete: 0,
+            live_agent_count_watermark: 0,
+            representation: NetRepresentation::Dense,
+            chunk_size: None,
+            recycle_policy: RecyclePolicy::DisableUnderDelta,
             agents_per_round: vec![],
             bytes_sent: 0,
             bytes_received: 0,
@@ -312,6 +381,115 @@ mod tests {
         write_csv_detail(&mut buf, &[]).unwrap();
         let csv = String::from_utf8(buf).unwrap();
         assert!(csv.starts_with("benchmark,input_size,mode,workers"));
+    }
+
+    /// MF-002 / QA-D011-006 — `detail.csv` schema MUST be exactly 29 columns
+    /// in the SPEC-09 R39a-mandated order. Any drift here breaks the
+    /// downstream Python tooling that joins on (benchmark, size,
+    /// representation, chunk_size, workers, mode).
+    #[test]
+    fn detail_csv_header_locks_29_columns_spec_09_r39a() {
+        let mut buf = Vec::new();
+        write_csv_detail(&mut buf, &[]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+
+        let header = csv.lines().next().expect("header line must exist");
+        let columns: Vec<&str> = header.split(',').collect();
+        assert_eq!(
+            columns.len(),
+            29,
+            "MF-002: SPEC-09 R39a mandates exactly 29 columns; got {}",
+            columns.len()
+        );
+
+        // Verbatim column-name order — the v1 22 + 7 Tier 3 (R18a-R18g).
+        let expected: Vec<&str> = vec![
+            "benchmark",
+            "input_size",
+            "mode",
+            "workers",
+            "repetition",
+            "correct",
+            "wall_clock_secs",
+            "total_interactions",
+            "mips",
+            "rounds",
+            "speedup",
+            "efficiency",
+            "overhead_ratio",
+            "peak_memory_bytes",
+            "bytes_sent",
+            "bytes_received",
+            "con_con",
+            "dup_dup",
+            "era_era",
+            "con_dup",
+            "con_era",
+            "dup_era",
+            "peak_memory_during_construction",
+            "peak_memory_during_reduction",
+            "agent_count_at_construction_complete",
+            "live_agent_count_watermark",
+            "representation",
+            "chunk_size",
+            "recycle_policy",
+        ];
+        assert_eq!(
+            columns, expected,
+            "MF-002: detail.csv columns MUST match SPEC-09 R39a verbatim order"
+        );
+    }
+
+    /// MF-002 / QA-D011-006 — populated row contains all 7 Tier 3 columns
+    /// at the rightmost positions, with the documented value formatting:
+    /// `peak_memory_*` blank for `0`, `chunk_size` blank for `None`,
+    /// `representation` lowercase, `recycle_policy` kebab-case.
+    #[test]
+    fn detail_csv_row_renders_all_7_tier3_columns_with_correct_formatting() {
+        let mut r = sample_result();
+        r.peak_memory_during_construction = 0; // → blank
+        r.peak_memory_during_reduction = 12345;
+        r.agent_count_at_construction_complete = 200;
+        r.live_agent_count_watermark = 150;
+        r.representation = NetRepresentation::Sparse;
+        r.chunk_size = Some(100);
+        r.recycle_policy = RecyclePolicy::BorderClean;
+
+        let mut buf = Vec::new();
+        write_csv_detail(&mut buf, &[r]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 2, "header + 1 row");
+        let cells: Vec<&str> = lines[1].split(',').collect();
+        assert_eq!(cells.len(), 29, "row must have exactly 29 cells");
+
+        // Last 7 cells (R18a..R18g):
+        assert_eq!(
+            cells[22], "",
+            "peak_memory_during_construction = 0 must render blank, not '0'"
+        );
+        assert_eq!(cells[23], "12345", "peak_memory_during_reduction");
+        assert_eq!(cells[24], "200", "agent_count_at_construction_complete");
+        assert_eq!(cells[25], "150", "live_agent_count_watermark");
+        assert_eq!(cells[26], "sparse", "representation (lowercase)");
+        assert_eq!(cells[27], "100", "chunk_size = Some(100)");
+        assert_eq!(cells[28], "border-clean", "recycle_policy (kebab-case)");
+    }
+
+    /// MF-002 — `chunk_size = None` renders as the empty string in the
+    /// eager rodada.
+    #[test]
+    fn detail_csv_eager_path_chunk_size_renders_blank() {
+        let mut r = sample_result();
+        r.chunk_size = None;
+        let mut buf = Vec::new();
+        write_csv_detail(&mut buf, &[r]).unwrap();
+        let csv = String::from_utf8(buf).unwrap();
+        let cells: Vec<&str> = csv.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(
+            cells[27], "",
+            "MF-002: eager path (chunk_size=None) must render blank chunk_size cell"
+        );
     }
 
     #[test]

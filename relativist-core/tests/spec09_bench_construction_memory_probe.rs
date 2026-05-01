@@ -77,12 +77,15 @@ fn it_0605_04_probe_value_le_end_of_run_peak() {
     );
 }
 
-/// IT-0605-05 — CSV emits `peak_memory_during_construction` as a tail column.
+/// IT-0605-05 — CSV emits the SPEC-09 R18a-R18g Tier 3 columns.
 ///
-/// Acceptance criterion #6: the new column is appended at the RIGHT of the
-/// existing v1 22-column schema, NOT inserted in the middle. Defends
-/// `v1_local_baseline` cross-comparison (existing pandas joins on the v1
-/// column order MUST continue to work).
+/// Acceptance criterion #6 (TASK-0605, original): the new
+/// `peak_memory_during_construction` column is appended at the RIGHT of the
+/// existing v1 22-column schema. Updated by D-011 MF-002 / QA-D011-006:
+/// SIX more columns are appended (R18b-R18g), bringing the schema to 29
+/// columns. The v1 22-column ordering is preserved; the
+/// `peak_memory_during_construction` column is now at position 23 (no
+/// longer the rightmost), per SPEC-09 R39a.
 #[test]
 fn it_0605_05_csv_emits_peak_memory_during_construction_column() {
     let config = ep_config(1000, 2);
@@ -95,42 +98,52 @@ fn it_0605_05_csv_emits_peak_memory_during_construction_column() {
     let mut lines = csv.lines();
     let header = lines.next().expect("CSV must have a header line");
 
-    // Column-position assertions: header ends with the new column name.
-    assert!(
-        header.ends_with("peak_memory_during_construction"),
-        "IT-0605-05: header MUST end with the new column name (rightmost-appended); \
-         got header: {header}"
-    );
-    let v1_tail = "dup_era,peak_memory_during_construction";
-    assert!(
-        header.ends_with(v1_tail),
-        "IT-0605-05: new column MUST be appended immediately after the v1 schema's \
-         final column (`dup_era`); got header: {header}"
-    );
-
-    // Column-count assertions: exactly +1 over the v1 22-column schema = 23 columns.
-    let column_count = header.split(',').count();
+    let columns: Vec<&str> = header.split(',').collect();
+    // SPEC-09 R39a (D-011 MF-002): exactly 29 columns.
     assert_eq!(
-        column_count, 23,
-        "IT-0605-05: header MUST be 22 (v1) + 1 (TASK-0605) = 23 columns; got {column_count}"
+        columns.len(),
+        29,
+        "IT-0605-05: header MUST be 22 (v1) + 7 (R18a-R18g) = 29 columns; got {}",
+        columns.len()
     );
 
-    // Per-row check: the value parses as `u64`.
+    // R18a anchor: `peak_memory_during_construction` is at position 23
+    // (column index 22, 0-indexed), immediately after the v1 schema's
+    // final column `dup_era`.
+    assert_eq!(
+        columns[21], "dup_era",
+        "IT-0605-05: column 22 must be `dup_era` (last v1 column)"
+    );
+    assert_eq!(
+        columns[22], "peak_memory_during_construction",
+        "IT-0605-05: column 23 must be `peak_memory_during_construction` (R18a)"
+    );
+
+    // Per-row check: column 23 (peak_memory_during_construction) is either
+    // empty (non-Linux) or parses as u64 (Linux). On non-Linux the cell
+    // renders blank per SPEC-09 §4.9 convention; on Linux the cell is the
+    // VmHWM byte count.
     for line in lines {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let last = trimmed
-            .rsplit(',')
-            .next()
-            .expect("row must have at least one column");
-        let _v: u64 = last.parse().unwrap_or_else(|e| {
-            panic!(
-                "IT-0605-05: rightmost column value must parse as u64; \
-                    last={last}, error={e}, line={line}"
-            )
-        });
+        let cells: Vec<&str> = trimmed.split(',').collect();
+        assert_eq!(
+            cells.len(),
+            29,
+            "IT-0605-05: every row MUST have 29 cells; got {} for line: {line}",
+            cells.len()
+        );
+        let peak_cell = cells[22];
+        if !peak_cell.is_empty() {
+            let _v: u64 = peak_cell.parse().unwrap_or_else(|e| {
+                panic!(
+                    "IT-0605-05: peak_memory_during_construction cell MUST parse as u64 when non-empty; \
+                     cell={peak_cell}, error={e}, line={line}"
+                )
+            });
+        }
     }
 }
 

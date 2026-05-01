@@ -351,18 +351,40 @@ fn ibr_from_array(arr: [u64; 6]) -> InteractionsByRule {
     }
 }
 
+/// SPEC-09 R18a-R18g context (D-011 MF-002): values captured once per
+/// (benchmark, size) pair outside the repetition loop and forwarded into
+/// every row. Bundling them here keeps the `measure_sequential` /
+/// `measure_grid` signatures from drifting toward 10+ scalar params.
+struct R18Context {
+    /// R18a: VmHWM at the construction-complete program point.
+    peak_memory_during_construction: u64,
+    /// R18c: live-agent count at the construction-complete program point.
+    agent_count_at_construction_complete: u32,
+    /// R18e: construction-phase data structure.
+    representation: NetRepresentation,
+    /// R18f: chunk size (None = eager).
+    chunk_size: Option<u32>,
+    /// R18g: free-list recycling policy.
+    recycle_policy: BenchRecyclePolicy,
+}
+
 /// Measure a single sequential execution (R3, R23).
 ///
 /// SPEC-09 R18a (TASK-0605): `peak_memory_during_construction` is captured
 /// once for the (benchmark, size) outside the rep loop and forwarded into
 /// each row. The per-rep `peak_memory_bytes` (legacy R18) is sampled here
 /// AFTER `reduce_all` returns.
+///
+/// SPEC-09 R18b-R18g (D-011 MF-002): the new Tier 3 columns are populated
+/// from `R18Context` (forwarded once per benchmark+size) plus per-rep
+/// measurements (R18b end-of-reduction VmHWM; R18d end-of-reduction live
+/// agent count).
 fn measure_sequential(
     net: &Net,
     benchmark_id: BenchmarkId,
     size: u32,
     repetition: u32,
-    peak_memory_during_construction: u64,
+    r18: &R18Context,
 ) -> (BenchmarkResult, Net) {
     let mut net_clone = net.clone();
     let start = Instant::now();
@@ -374,6 +396,15 @@ fn measure_sequential(
     } else {
         0.0
     };
+
+    // R18b: VmHWM AFTER reduce_all returns. Equivalent to the legacy
+    // `peak_memory_bytes` for sequential mode; dual-stored under the
+    // SPEC-09 R39a-mandated name so the 29-column schema is satisfied.
+    let peak_memory_after_reduction = get_peak_memory_bytes();
+    // R18d (sequential mode): end-of-reduction live-agent count snapshot.
+    // Per SF-001 the spec is silent on per-step sampling for sequential;
+    // this end-of-reduction snapshot is the cheapest valid discipline.
+    let live_agent_count_watermark = net_clone.count_live_agents() as u32;
 
     let result = BenchmarkResult {
         benchmark: benchmark_id,
@@ -389,8 +420,14 @@ fn measure_sequential(
         rounds: 0,
         border_redexes_per_round: vec![],
         border_ratio_per_round: vec![],
-        peak_memory_bytes: get_peak_memory_bytes(),
-        peak_memory_during_construction,
+        peak_memory_bytes: peak_memory_after_reduction,
+        peak_memory_during_construction: r18.peak_memory_during_construction,
+        peak_memory_during_reduction: peak_memory_after_reduction,
+        agent_count_at_construction_complete: r18.agent_count_at_construction_complete,
+        live_agent_count_watermark,
+        representation: r18.representation,
+        chunk_size: r18.chunk_size,
+        recycle_policy: r18.recycle_policy,
         agents_per_round: vec![],
         bytes_sent: 0,
         bytes_received: 0,
@@ -432,10 +469,12 @@ struct GridMeasureParams<'a> {
     /// from `BenchmarkSuiteConfig.recycle_policy` so the streaming + delta
     /// path's recycle behavior matches operator choice.
     recycle_policy: BenchRecyclePolicy,
-    /// SPEC-09 R18a (TASK-0605): VmHWM watermark sampled at the
-    /// construction-complete program point — captured once per (benchmark,
-    /// size) before the rep loop and forwarded into every grid row.
-    peak_memory_during_construction: u64,
+    /// SPEC-09 R18a-R18g (TASK-0605 / D-011 MF-002): the construction-phase
+    /// context, captured once per (benchmark, size) before the rep loop and
+    /// forwarded into every grid row. Bundling `representation`, `chunk_size`,
+    /// and `recycle_policy` (and the original `peak_memory_during_construction`)
+    /// here keeps `GridMeasureParams` from drifting past 15 fields.
+    r18: &'a R18Context,
 }
 
 fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
@@ -509,6 +548,25 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         })
         .collect();
 
+    // R18b (D-011 MF-002): VmHWM AFTER `run_grid` returns. Same probe as
+    // legacy `peak_memory_bytes`; dual-stored under the new spec-mandated
+    // name. Sampled once here so every cell in the row sees the same
+    // value (the row IS the reduction trace; sampling twice would show
+    // the same VmHWM since it is monotonic non-decreasing).
+    let peak_memory_after_reduction = get_peak_memory_bytes();
+    // R18d (grid mode, D-011 MF-002): peak `agents_per_round` (a
+    // monotonic-snapshot per round). End-of-round samples bound the
+    // live-agent watermark from above; the maximum across rounds is the
+    // operational watermark. Per SF-001, this is the chosen discipline
+    // for grid mode (sequential mode uses the simpler end-of-reduction
+    // snapshot — see `measure_sequential`).
+    let live_agent_count_watermark = grid_metrics
+        .agents_per_round
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0) as u32;
+
     BenchmarkResult {
         benchmark: params.benchmark.id(),
         input_size: params.size,
@@ -523,8 +581,14 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         rounds: grid_metrics.rounds,
         border_redexes_per_round: grid_metrics.border_redexes_per_round.clone(),
         border_ratio_per_round,
-        peak_memory_bytes: get_peak_memory_bytes(),
-        peak_memory_during_construction: params.peak_memory_during_construction,
+        peak_memory_bytes: peak_memory_after_reduction,
+        peak_memory_during_construction: params.r18.peak_memory_during_construction,
+        peak_memory_during_reduction: peak_memory_after_reduction,
+        agent_count_at_construction_complete: params.r18.agent_count_at_construction_complete,
+        live_agent_count_watermark,
+        representation: params.r18.representation,
+        chunk_size: params.r18.chunk_size,
+        recycle_policy: params.r18.recycle_policy,
         agents_per_round: grid_metrics.agents_per_round.clone(),
         bytes_sent: grid_metrics.bytes_sent_per_round.iter().sum::<usize>() as u64,
         bytes_received: grid_metrics.bytes_received_per_round.iter().sum::<usize>() as u64,
@@ -677,6 +741,24 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             // (the field is a property of the constructed input net, not of an
             // individual reduction trace).
             let peak_memory_during_construction = get_peak_memory_during_construction();
+            // SPEC-09 R18b-R18g context (D-011 MF-002 / QA-D011-006). All
+            // construction-phase fields captured ONCE per (benchmark, size)
+            // and forwarded into every subsequent row via the R18Context
+            // bundle (so `measure_sequential` / `measure_grid` signatures
+            // do not have to thread 5+ scalar params).
+            //
+            // R18c (`agent_count_at_construction_complete`): the live-agent
+            // count of `input_net` at the construction-complete program
+            // point. The CSV writer divides R18a by this value to compute
+            // per-agent memory consumption (the §4.9 "input-size invariant"
+            // normalisation).
+            let r18 = R18Context {
+                peak_memory_during_construction,
+                agent_count_at_construction_complete: input_net.count_live_agents() as u32,
+                representation: config.representation,
+                chunk_size: config.chunk_size,
+                recycle_policy: config.recycle_policy,
+            };
 
             // SPEC-09 R37c construction-isomorphism gate (QA-D011-005 / MF-001).
             //
@@ -795,13 +877,8 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             let mut seq_reference_net: Option<Net> = None;
 
             for rep in 0..config.repetitions {
-                let (result, reduced_net) = measure_sequential(
-                    &input_net,
-                    bench_id,
-                    size,
-                    rep,
-                    peak_memory_during_construction,
-                );
+                let (result, reduced_net) =
+                    measure_sequential(&input_net, bench_id, size, rep, &r18);
 
                 // R37b: verify each sequential repetition against the first.
                 // Under --skip-g1, use the symbol-count fast check.
@@ -875,7 +952,7 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                         skip_g1: config.skip_g1,
                         max_pending_lifetime: config.max_pending_lifetime,
                         recycle_policy: config.recycle_policy,
-                        peak_memory_during_construction,
+                        r18: &r18,
                     });
 
                     // R38: halt on correctness failure
@@ -951,11 +1028,25 @@ mod tests {
         assert_eq!(ibr.total(), 210);
     }
 
+    /// Test-only helper: build a default `R18Context` for unit tests that
+    /// invoke `measure_sequential` / `measure_grid` directly. Mirrors the
+    /// eager-path defaults so the legacy v1 row shape is preserved.
+    fn r18_default() -> R18Context {
+        R18Context {
+            peak_memory_during_construction: 0,
+            agent_count_at_construction_complete: 0,
+            representation: NetRepresentation::Dense,
+            chunk_size: None,
+            recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
+        }
+    }
+
     #[test]
     fn test_measure_sequential_ep() {
         let bench = get_benchmark(BenchmarkId::EPAnnihilation);
         let net = bench.make_net(10);
-        let (result, reduced) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, 0, 0);
+        let r18 = r18_default();
+        let (result, reduced) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, 0, &r18);
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Sequential);
         assert_eq!(result.workers, 0);
@@ -972,6 +1063,7 @@ mod tests {
         reduce_all(&mut seq_net);
         let seq_baseline = 0.001; // arbitrary baseline for test
 
+        let r18 = r18_default();
         let result = measure_grid(&GridMeasureParams {
             net: &net,
             benchmark: bench.as_ref(),
@@ -985,7 +1077,7 @@ mod tests {
             skip_g1: false,
             max_pending_lifetime: 16,
             recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
-            peak_memory_during_construction: 0,
+            r18: &r18,
         });
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Local);
@@ -997,9 +1089,10 @@ mod tests {
     fn test_aggregate_basic() {
         let bench = get_benchmark(BenchmarkId::EPAnnihilation);
         let net = bench.make_net(10);
+        let r18 = r18_default();
         let mut results = Vec::new();
         for rep in 0..3 {
-            let (r, _) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, rep, 0);
+            let (r, _) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, rep, &r18);
             results.push(r);
         }
         let agg = aggregate(&results);
@@ -1174,6 +1267,7 @@ mod tests {
         let mut seq_net = net.clone();
         reduce_all(&mut seq_net);
 
+        let r18 = r18_default();
         let result = measure_grid(&GridMeasureParams {
             net: &net,
             benchmark: bench.as_ref(),
@@ -1187,7 +1281,7 @@ mod tests {
             skip_g1: false,
             max_pending_lifetime: 16,
             recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
-            peak_memory_during_construction: 0,
+            r18: &r18,
         });
         // Speedup = baseline / elapsed. Since EP is fast, speedup should be large
         assert!(result.speedup > 0.0);
