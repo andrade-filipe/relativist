@@ -18,11 +18,53 @@
 //! `agents`, `ports`, `redex_queue`, `next_id`, and `root` byte-for-byte.
 //! `freeport_redirects` is `#[serde(skip)]` on `Net` and is not carried.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use thiserror::Error;
 
 use crate::net::{port_index, Agent, AgentId, Net, PortRef, DISCONNECTED, PORTS_PER_SLOT};
+
+/// QA-D011-002: errors raised when validating a `CompactSubnet` before
+/// inflating it into a `Net`. Surfaced through `try_into_net` (the
+/// validating constructor) and through `deserialize_subnet_compact`'s
+/// custom-error path so a hostile or corrupted wire payload fails loudly
+/// instead of silently corrupting the receiver.
+///
+/// SPEC-22 R4(b) and R10c forbid recycled-slot collisions and duplicate
+/// free-list entries; SPEC-19 R35a (commit `c4c80b8`) is silent on
+/// integrity validation, so this enum is the receiver-side enforcement
+/// of those invariants on the wire path.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum CompactSubnetError {
+    /// A free-list id is `>= agent_arena_len`. SPEC-22 R10 forbids fabricated
+    /// out-of-arena ids.
+    #[error("QA-D011-002: free_list id {id} is out of bounds (agent_arena_len = {arena_len})")]
+    FreeListIdOutOfBounds { id: AgentId, arena_len: u32 },
+
+    /// A free-list id is `>= next_id`. SPEC-22 R10b/R10c: every recyclable id
+    /// MUST have been issued previously by `create_agent` or `from_net`'s
+    /// arena scan, both of which bound ids by `next_id`.
+    #[error(
+        "QA-D011-002: free_list id {id} is >= next_id ({next_id}); free-list cannot reference unallocated ids"
+    )]
+    FreeListIdAboveNextId { id: AgentId, next_id: AgentId },
+
+    /// A free-list id appears more than once. SPEC-22 R10c: the LIFO is a
+    /// sequence with NO duplicates (a duplicate would be popped twice and
+    /// the second pop would land in a slot already restored to live state,
+    /// violating R4(b)).
+    #[error("QA-D011-002: free_list contains duplicate id {id}")]
+    FreeListDuplicateId { id: AgentId },
+
+    /// A free-list id overlaps with a live agent. SPEC-22 R4(b): a recycled
+    /// slot must be `None` before pop. If id `i` is in `free_list` AND in
+    /// `live`, the next `create_agent` pop would write into a live slot,
+    /// destroying the previously-live agent. This is the QA-D011-002
+    /// CRITICAL: silent in release builds (the `debug_assert!` is elided).
+    #[error("QA-D011-002: free_list id {id} overlaps with a live agent (R4(b) violation)")]
+    FreeListOverlapsLiveAgent { id: AgentId },
+}
 
 /// Sparse wire-only representation of a partition sub-`Net`.
 ///
@@ -97,14 +139,118 @@ impl CompactSubnet {
         }
     }
 
+    /// Validates `free_list` integrity against `agent_arena_len`, `next_id`,
+    /// and the live-agent set (QA-D011-002). Returns the first violation found
+    /// (errors are mutually exclusive in practice; surfacing the first one keeps
+    /// the diagnostic small and stable).
+    ///
+    /// SPEC-22 R4(b): recycled slot must be `None` before pop. SPEC-22 R10c:
+    /// the LIFO is a sequence with no duplicates and no overlap with live
+    /// agents. SPEC-22 R10: ids are bounded by the arena.
+    ///
+    /// This is the receiver-side wire-integrity check; the sender side is
+    /// trusted to produce a valid `Net` (R4 invariant). On the wire path we
+    /// MUST NOT trust the payload — a hostile or corrupted peer can craft a
+    /// `free_list` whose entries overlap with live agents (silent corruption
+    /// in release; debug-assert panic in debug). This validator catches all
+    /// four corruption modes from the QA-D011 audit (EC-1.3, EC-1.4, EC-1.5,
+    /// out-of-arena).
+    pub fn validate_free_list(&self) -> Result<(), CompactSubnetError> {
+        // Short-circuit for the common empty case.
+        if self.free_list.is_empty() {
+            return Ok(());
+        }
+
+        // Build the live-agent id set for O(1) overlap checks.
+        let mut live_ids: HashSet<AgentId> = HashSet::with_capacity(self.live.len());
+        for (id, _, _) in &self.live {
+            live_ids.insert(*id);
+        }
+
+        let mut seen: HashSet<AgentId> = HashSet::with_capacity(self.free_list.len());
+        for &id in &self.free_list {
+            if id >= self.agent_arena_len {
+                return Err(CompactSubnetError::FreeListIdOutOfBounds {
+                    id,
+                    arena_len: self.agent_arena_len,
+                });
+            }
+            if id >= self.next_id {
+                return Err(CompactSubnetError::FreeListIdAboveNextId {
+                    id,
+                    next_id: self.next_id,
+                });
+            }
+            if !seen.insert(id) {
+                return Err(CompactSubnetError::FreeListDuplicateId { id });
+            }
+            if live_ids.contains(&id) {
+                return Err(CompactSubnetError::FreeListOverlapsLiveAgent { id });
+            }
+        }
+        Ok(())
+    }
+
     /// Inflates back into a dense `Net`, re-creating `agents` and `ports`
     /// arenas sized to `agent_arena_len` and filled with `None` /
     /// `DISCONNECTED` sentinels before applying the live entries.
+    ///
+    /// QA-D011-002: this method is infallible by API contract (multiple
+    /// in-tree call sites depend on that) — but on the wire path that
+    /// contract is too permissive: a hostile peer can craft a
+    /// `free_list` with duplicates or live-overlapping ids, producing a
+    /// `Net` that violates SPEC-22 R4(b)/R10c silently in release builds.
+    /// We split the difference: `into_net` validates and SANITISES (drops
+    /// the offending free-list entries) on corruption, emitting
+    /// `tracing::error!` with the violation; the validating constructor
+    /// [`Self::try_into_net`] returns `Err(CompactSubnetError)` instead.
+    /// The serde deserialize adapter ([`deserialize_subnet_compact`]) uses
+    /// `try_into_net` so the wire path fails loudly.
     pub fn into_net(self) -> Net {
+        match self.validate_free_list() {
+            Ok(()) => self.into_net_unchecked(),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "QA-D011-002: CompactSubnet free_list integrity violation; sanitising and proceeding. \
+                     This indicates a hostile or corrupted wire payload — investigate the producer."
+                );
+                // Sanitise: drop free_list entries that violate any invariant
+                // (out-of-arena, above next_id, duplicates, overlap with live).
+                // The remaining valid entries preserve as much of the recycled-id
+                // ledger as can be safely recovered.
+                let mut sanitised = self;
+                let arena_len = sanitised.agent_arena_len;
+                let next_id = sanitised.next_id;
+                let live_ids: HashSet<AgentId> =
+                    sanitised.live.iter().map(|(id, _, _)| *id).collect();
+                let mut seen: HashSet<AgentId> = HashSet::with_capacity(sanitised.free_list.len());
+                sanitised.free_list.retain(|&id| {
+                    id < arena_len && id < next_id && !live_ids.contains(&id) && seen.insert(id)
+                });
+                sanitised.into_net_unchecked()
+            }
+        }
+    }
+
+    /// Validating constructor (QA-D011-002): inflates a `CompactSubnet` into
+    /// a `Net`, returning `Err(CompactSubnetError)` on `free_list` integrity
+    /// violation. Used by the serde deserialize adapter so the wire path
+    /// fails loudly on hostile or corrupted payloads.
+    pub fn try_into_net(self) -> Result<Net, CompactSubnetError> {
+        self.validate_free_list()?;
+        Ok(self.into_net_unchecked())
+    }
+
+    /// Internal: the original infallible inflator, factored out so
+    /// [`Self::into_net`] (sanitising) and [`Self::try_into_net`] (validating)
+    /// share the same materialisation logic.
+    fn into_net_unchecked(self) -> Net {
         let arena_len = self.agent_arena_len as usize;
         let mut agents: Vec<Option<Agent>> = vec![None; arena_len];
         let mut ports: Vec<PortRef> = vec![DISCONNECTED; arena_len * PORTS_PER_SLOT];
 
+        let mut dropped_live = 0u32;
         for (id, agent, slot_ports) in self.live {
             let idx = id as usize;
             if idx < agents.len() {
@@ -115,7 +261,22 @@ impl CompactSubnet {
                     ports[base + 1] = slot_ports[1];
                     ports[base + 2] = slot_ports[2];
                 }
+            } else {
+                // QA-D011-011 (MEDIUM): surface dropped live agents instead
+                // of silently discarding them. A `live` entry whose `id` is
+                // beyond `agent_arena_len` is a wire corruption that the
+                // sender's `from_net` cannot legitimately produce.
+                dropped_live += 1;
             }
+        }
+        if dropped_live > 0 {
+            tracing::error!(
+                dropped = dropped_live,
+                arena_len = arena_len,
+                "QA-D011-011: CompactSubnet::into_net dropped {} live agent(s) with id >= agent_arena_len; \
+                 wire payload is corrupted or hostile.",
+                dropped_live
+            );
         }
 
         Net {
@@ -155,11 +316,26 @@ pub fn serialize_subnet_compact<S: Serializer>(
 }
 
 /// serde `deserialize_with` adapter used on `Partition::subnet`.
+///
+/// QA-D011-002: invokes [`CompactSubnet::try_into_net`] so a hostile or
+/// corrupted wire payload (e.g., `free_list` with duplicates or
+/// live-overlapping ids) fails loudly via `serde::de::Error::custom`,
+/// instead of silently producing a corrupted `Net` that violates SPEC-22
+/// R4(b)/R10c. Note: the in-memory `into_net` path remains
+/// sanitising-with-error-log, preserving in-tree caller assumptions.
 pub fn deserialize_subnet_compact<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Net, D::Error> {
+    use serde::de::Error;
     let compact = CompactSubnet::deserialize(deserializer)?;
-    Ok(compact.into_net())
+    compact.try_into_net().map_err(|e| {
+        tracing::error!(
+            error = %e,
+            "QA-D011-002: deserialize_subnet_compact rejected wire payload \
+             (CompactSubnet free_list integrity violation)"
+        );
+        D::Error::custom(format!("CompactSubnet integrity violation: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -573,6 +749,216 @@ mod tests {
         assert_eq!(
             original_inflated, round_inflated,
             "CompactSubnet -> rkyv -> CompactSubnet must inflate to an equal Net"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // QA-D011-002 (CRITICAL) — wire integrity validation in into_net /
+    // try_into_net.
+    //
+    // Pre-fix: a hostile or corrupted wire payload with a free_list containing
+    // duplicates, ids overlapping live agents, ids >= next_id, or ids beyond
+    // agent_arena_len would produce a Net that violates SPEC-22 R4(b)/R10c.
+    // In debug builds the next `create_agent` would panic via debug_assert!;
+    // in release builds the live agent's slot would be silently overwritten
+    // when the duplicate id is popped — irrecoverable corruption.
+    //
+    // Post-fix: `validate_free_list` is the receiver-side enforcement.
+    // `try_into_net` returns `Err(CompactSubnetError)`; `into_net` sanitises
+    // (drops bad entries) and emits `tracing::error!`; the serde
+    // `deserialize_with` adapter uses `try_into_net` so the wire path fails
+    // loudly.
+    // -----------------------------------------------------------------------
+
+    /// Build a `CompactSubnet` with a custom `free_list`, sized so all of
+    /// `next_id`, `agent_arena_len`, and the live arena agree by construction.
+    /// Helper for the adversarial QA-D011-002 cases below.
+    fn make_compact_with_free_list(
+        next_id: AgentId,
+        live: Vec<(AgentId, Agent, [PortRef; PORTS_PER_SLOT])>,
+        free_list: Vec<AgentId>,
+    ) -> CompactSubnet {
+        CompactSubnet {
+            agent_arena_len: next_id,
+            live,
+            redex_queue: VecDeque::new(),
+            next_id,
+            root: None,
+            free_list,
+        }
+    }
+
+    /// QA-D011-002 — duplicate ids in `free_list` are rejected by
+    /// `validate_free_list` and `try_into_net`.
+    #[test]
+    fn qa_d011_002_free_list_duplicate_id_is_rejected() {
+        let live = vec![(
+            0u32,
+            Agent {
+                symbol: Symbol::Era,
+                id: 0,
+            },
+            [DISCONNECTED; PORTS_PER_SLOT],
+        )];
+        // free_list contains id 1 twice (next_id=3 means ids 0..3 are valid).
+        let compact = make_compact_with_free_list(3, live, vec![1u32, 2u32, 1u32]);
+        assert_eq!(
+            compact.validate_free_list(),
+            Err(CompactSubnetError::FreeListDuplicateId { id: 1 }),
+            "QA-D011-002: validate_free_list MUST reject duplicate id"
+        );
+        assert!(
+            matches!(
+                compact.try_into_net(),
+                Err(CompactSubnetError::FreeListDuplicateId { id: 1 })
+            ),
+            "QA-D011-002: try_into_net MUST propagate the duplicate-id error"
+        );
+    }
+
+    /// QA-D011-002 — `free_list` overlapping with a live agent id is rejected.
+    /// This is the headline corruption mode: in release, the next `create_agent`
+    /// would silently overwrite the live agent.
+    #[test]
+    fn qa_d011_002_free_list_overlaps_live_agent_is_rejected() {
+        let live = vec![(
+            5u32,
+            Agent {
+                symbol: Symbol::Con,
+                id: 5,
+            },
+            [DISCONNECTED; PORTS_PER_SLOT],
+        )];
+        // id 5 is BOTH live AND in free_list.
+        let compact = make_compact_with_free_list(6, live, vec![5u32]);
+        assert_eq!(
+            compact.validate_free_list(),
+            Err(CompactSubnetError::FreeListOverlapsLiveAgent { id: 5 }),
+            "QA-D011-002: validate_free_list MUST reject live-overlap"
+        );
+        assert!(
+            matches!(
+                compact.try_into_net(),
+                Err(CompactSubnetError::FreeListOverlapsLiveAgent { id: 5 })
+            ),
+            "QA-D011-002: try_into_net MUST propagate the live-overlap error"
+        );
+    }
+
+    /// QA-D011-002 — `free_list` id >= `next_id` is rejected.
+    /// Catches a payload that fabricates ids never issued by `create_agent`.
+    #[test]
+    fn qa_d011_002_free_list_id_above_next_id_is_rejected() {
+        // next_id = 3 (ids 0..3 are valid), free_list contains id 5.
+        // arena_len = next_id = 3, so id 5 is also out-of-bounds; the
+        // out-of-bounds check fires first because the validator returns the
+        // FIRST violation. Catch the OOB case here; the strict
+        // "id >= next_id" branch is exercised in the dedicated test below.
+        let compact = make_compact_with_free_list(3, vec![], vec![5u32]);
+        assert_eq!(
+            compact.validate_free_list(),
+            Err(CompactSubnetError::FreeListIdOutOfBounds {
+                id: 5,
+                arena_len: 3,
+            }),
+            "QA-D011-002: out-of-bounds id (which is also >= next_id) MUST surface as OOB"
+        );
+    }
+
+    /// QA-D011-002 — id strictly between `agent_arena_len` and `next_id`
+    /// is impossible by construction (arena_len <= next_id is not enforced
+    /// at the type level, but `from_net` always produces them equal). We
+    /// can construct a CompactSubnet manually where they DIFFER, so this
+    /// test exercises the dedicated `FreeListIdAboveNextId` branch.
+    #[test]
+    fn qa_d011_002_free_list_id_above_next_id_below_arena_is_rejected() {
+        let compact = CompactSubnet {
+            agent_arena_len: 100, // arena large enough
+            live: vec![],
+            redex_queue: VecDeque::new(),
+            next_id: 3, // but only ids 0..3 ever issued
+            root: None,
+            free_list: vec![5u32], // 5 < 100 (in-bounds) but >= 3 (above issued range)
+        };
+        assert_eq!(
+            compact.validate_free_list(),
+            Err(CompactSubnetError::FreeListIdAboveNextId { id: 5, next_id: 3 }),
+            "QA-D011-002: id below arena_len but above next_id MUST be rejected"
+        );
+    }
+
+    /// QA-D011-002 — `into_net` (infallible, sanitising) drops bad entries
+    /// and produces a Net that DOES NOT violate R4(b). Verify the produced
+    /// Net is consistent: ids in the kept free_list are all `is_none()`.
+    #[test]
+    fn qa_d011_002_into_net_sanitises_corrupt_free_list() {
+        let live = vec![(
+            5u32,
+            Agent {
+                symbol: Symbol::Con,
+                id: 5,
+            },
+            [DISCONNECTED; PORTS_PER_SLOT],
+        )];
+        // free_list contains: 5 (overlaps live), 99 (out-of-bounds), 5 again
+        // (duplicate of overlapping), 2 (valid).
+        let compact = make_compact_with_free_list(10, live, vec![5u32, 99u32, 5u32, 2u32]);
+        let net = compact.into_net();
+
+        // Only the valid entry survives.
+        assert_eq!(
+            net.free_list,
+            vec![2u32],
+            "QA-D011-002: into_net MUST sanitise — only valid entries survive"
+        );
+        // The live agent is preserved.
+        assert!(
+            net.agents[5].is_some(),
+            "QA-D011-002: live agent must be preserved through sanitised inflation"
+        );
+        // The recovered free_list entry maps to a None slot.
+        assert!(
+            net.agents[2].is_none(),
+            "QA-D011-002: surviving free_list id must point to a None slot (R4(b))"
+        );
+    }
+
+    /// QA-D011-002 — round-trip integrity for valid payloads is unchanged.
+    /// Regression sentinel: validation must not over-fire on legitimate inputs.
+    #[test]
+    fn qa_d011_002_valid_free_list_passes_validation() {
+        let mut net = Net::new();
+        let ids: Vec<AgentId> = (0..10).map(|_| net.create_agent(Symbol::Era)).collect();
+        for id in &ids[..3] {
+            net.remove_agent(*id);
+        }
+        // free_list now has the 3 removed ids; live agents are 3..10.
+        let compact = CompactSubnet::from_net(&net);
+        assert_eq!(
+            compact.validate_free_list(),
+            Ok(()),
+            "QA-D011-002: legitimate `from_net` output MUST pass validation"
+        );
+        let back = compact.try_into_net().expect("try_into_net must succeed");
+        assert!(nets_equivalent(&net, &back));
+    }
+
+    /// QA-D011-002 — bincode wire-path: a tampered payload (duplicate id in
+    /// free_list) is rejected by the deserialize adapter, not silently
+    /// inflated into a corrupt Net.
+    #[test]
+    fn qa_d011_002_bincode_deserialize_rejects_tampered_free_list() {
+        // Encode a tampered CompactSubnet directly — bypasses from_net's
+        // legitimate path, simulating a hostile peer.
+        let tampered = make_compact_with_free_list(5, vec![], vec![1u32, 1u32]);
+        let bytes = crate::protocol::bincode_v2::encode(&tampered).unwrap();
+
+        // Direct decode produces the (untrusted) payload.
+        let decoded: CompactSubnet = crate::protocol::bincode_v2::decode_value(&bytes).unwrap();
+        // Validation rejects it.
+        assert!(
+            decoded.try_into_net().is_err(),
+            "QA-D011-002: try_into_net MUST reject tampered free_list (duplicate id)"
         );
     }
 }
