@@ -23,7 +23,7 @@ use crate::bench::benchmarks::{
     mixed_net::MixedNet,
     tree_sum::{TreeSum, TreeSumBalanced},
 };
-use crate::bench::isomorphism::nets_match_counts;
+use crate::bench::isomorphism::{nets_isomorphic, nets_match_counts};
 use crate::bench::memory::{get_peak_memory_bytes, get_peak_memory_during_construction};
 use crate::bench::stats;
 use crate::bench::{
@@ -677,6 +677,53 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             // (the field is a property of the constructed input net, not of an
             // individual reduction trace).
             let peak_memory_during_construction = get_peak_memory_during_construction();
+
+            // SPEC-09 R37c construction-isomorphism gate (QA-D011-005 / MF-001).
+            //
+            // Pre-fix: when `chunk_size = Some(N)` OR `representation = Sparse`,
+            // the harness produced a row without ever comparing the constructed
+            // input_net against the eager reference. R37c (commit `82b2d27`,
+            // §4.9 sequencing constraint) MANDATES that comparison: the test
+            // suite encodes it (IT-0604-07, PT-0604-10, IT-0606-01) but only
+            // for hand-picked sizes; the production rodada at `--sizes 10000`
+            // had zero R37c protection.
+            //
+            // Post-fix: build the eager reference here (AFTER the R18a sample,
+            // per §4.9 step 3), run `nets_isomorphic` (R37a fast-path for
+            // ≥5000 agents), drop the reference (so it does not poison
+            // `peak_memory_bytes` — R18a is already frozen). Mismatch is a
+            // halt-on-failure error (R38).
+            //
+            // The fast path: when the input_net has > 5000 agents, full
+            // backtracking isomorphism is too expensive at production scale
+            // (`nets_isomorphic` is exponential worst-case). Fall back to
+            // `nets_match_counts` (R37a — symbol-count agreement), which is a
+            // necessary condition for isomorphism. The full check still fires
+            // on smaller nets where it is tractable.
+            if config.chunk_size.is_some() || config.representation == NetRepresentation::Sparse {
+                let reference_net = bench.make_net(size);
+                let live_agents = input_net.count_live_agents();
+                let isomorphic = if live_agents > 5000 {
+                    // Fast path: symbol-count agreement (necessary condition).
+                    nets_match_counts(&reference_net, &input_net)
+                } else {
+                    nets_isomorphic(&reference_net, &input_net)
+                };
+                if !isomorphic {
+                    return Err(format!(
+                        "SPEC-09 R37c construction-isomorphism gate failed (QA-D011-005 / MF-001): \
+                         bench={}, size={}, chunk_size={:?}, representation={:?}. \
+                         The constructed input net is NOT graph-isomorphic to the eager \
+                         reference `make_net(size)`. R38 halt-on-failure: aborting before reduction.",
+                        bench_id, size, config.chunk_size, config.representation
+                    ));
+                }
+                // Drop the reference net (explicit drop is documentation; the
+                // borrow ends at end-of-scope anyway, but the explicit drop
+                // makes the intent — "do not let this poison subsequent
+                // memory metrics" — readable).
+                drop(reference_net);
+            }
 
             // TASK-0607: sparse-construction-memory sub-CSV row collection.
             //
@@ -1471,6 +1518,161 @@ mod tests {
         assert_eq!(dense_rows[0].benchmark, BenchmarkId::DualTree);
         assert_eq!(sparse_rows[0].size, 3);
         assert_eq!(dense_rows[0].size, 3);
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D011-005 / MF-001 (HIGH) — runtime R37c construction-isomorphism gate.
+    //
+    // Pre-fix: when `chunk_size = Some(N)` OR `representation = Sparse`, the
+    // harness produced rows without ever comparing the constructed input_net
+    // against the eager reference. R37c MANDATES that comparison.
+    //
+    // Post-fix: the gate fires in `run_benchmark_suite` after R18a is captured
+    // and BEFORE any reduction. A divergence is a halt-on-failure error (R38).
+    // ---------------------------------------------------------------------------
+
+    use crate::bench::Benchmark;
+    use crate::partition::streaming::{AgentBatch, ConnectionDirective};
+
+    /// Test-only adversarial benchmark whose `make_net_stream` produces a Net
+    /// with FEWER agents than `make_net(size)`. Used to verify the R37c gate
+    /// rejects non-isomorphic constructions.
+    ///
+    /// `make_net(size)` builds `2*size` Era agents; `make_net_stream(size, _)`
+    /// builds only `size` Era agents — deliberately divergent symbol counts so
+    /// `nets_match_counts` (the fast-path check) AND `nets_isomorphic` both
+    /// fail.
+    struct AdversarialNonIsomorphicBench;
+
+    impl Benchmark for AdversarialNonIsomorphicBench {
+        fn id(&self) -> BenchmarkId {
+            BenchmarkId::EPAnnihilation // borrow an existing id; the suite
+                                        // doesn't introspect it for the gate
+        }
+        fn describe(&self, size: u32) -> String {
+            format!("adversarial-non-iso(size={size})")
+        }
+        fn make_net(&self, size: u32) -> Net {
+            // 2 * size agents — same as ep_annihilation.
+            let mut net = Net::new();
+            for _ in 0..(2 * size) {
+                let _ = net.create_agent(crate::net::Symbol::Era);
+            }
+            net
+        }
+        fn make_net_stream(
+            &self,
+            size: u32,
+            _chunk_size: usize,
+        ) -> Box<dyn Iterator<Item = AgentBatch>> {
+            // Only `size` agents — divergent from `make_net`.
+            let agents: Vec<(u32, crate::net::Symbol)> =
+                (0..size).map(|i| (i, crate::net::Symbol::Era)).collect();
+            let batch = AgentBatch {
+                agents,
+                connections: Vec::<ConnectionDirective>::new(),
+            };
+            Box::new(std::iter::once(batch))
+        }
+        fn default_sizes(&self) -> Vec<u32> {
+            vec![10]
+        }
+        fn verify(&self, _seq: &Net, _dist: &Net) -> bool {
+            true
+        }
+    }
+
+    /// QA-D011-005 — the R37c gate fires when the streaming-built net is NOT
+    /// isomorphic to the eager reference.
+    #[test]
+    fn qa_d011_005_r37c_gate_rejects_non_isomorphic_streaming_net() {
+        // Run the gate logic directly against the adversarial benchmark.
+        // We can't easily plug a custom Benchmark into `run_benchmark_suite`
+        // (the dispatcher uses `get_benchmark(BenchmarkId::EPAnnihilation)`),
+        // but we can exercise the gate inline.
+        let bench = AdversarialNonIsomorphicBench;
+        let size = 10u32;
+
+        // Build the streaming net the same way `run_benchmark_suite` does.
+        let mut config = suite_config_default_tier3();
+        config.chunk_size = Some(5);
+        config.representation = NetRepresentation::Dense;
+
+        let input_net = build_input_net_from_suite(&config, &bench, size, 1)
+            .expect("build_input_net_from_suite must succeed for the adversarial bench");
+        let reference = bench.make_net(size);
+        // The gate's check.
+        let live_count = input_net.count_live_agents();
+        let isomorphic = if live_count > 5000 {
+            nets_match_counts(&reference, &input_net)
+        } else {
+            crate::bench::isomorphism::nets_isomorphic(&reference, &input_net)
+        };
+        assert!(
+            !isomorphic,
+            "QA-D011-005: adversarial non-isomorphic streaming net MUST be rejected by the R37c gate"
+        );
+    }
+
+    /// QA-D011-005 — the R37c gate is dormant when neither `chunk_size` nor
+    /// `representation=Sparse` is selected. Sentinel: a regression that
+    /// fires the gate on every rodada (e.g., dropping the `if` guard) would
+    /// double the bench wall-clock. This test confirms the eager-dense path
+    /// is unaffected.
+    #[test]
+    fn qa_d011_005_r37c_gate_dormant_on_eager_dense_path() {
+        let config = BenchmarkSuiteConfig {
+            benchmarks: vec![BenchmarkId::EPAnnihilation],
+            sizes: Some(vec![10]),
+            workers: vec![],
+            mode: Mode::Sequential,
+            warmup_runs: 0,
+            repetitions: 1,
+            csv_detail_path: None,
+            csv_rounds_path: None,
+            csv_summary_path: None,
+            max_rounds: None,
+            strict_bsp: false,
+            skip_g1: false,
+            chunk_size: None, // gate dormant
+            max_pending_lifetime: 16,
+            recycle_policy: RecyclePolicy::DisableUnderDelta,
+            representation: NetRepresentation::Dense, // gate dormant
+            sparse_construction_memory_csv_path: None,
+        };
+        let result = run_benchmark_suite(&config).expect("eager-dense rodada must succeed");
+        assert!(result.all_correct);
+    }
+
+    /// QA-D011-005 — the R37c gate fires AND PASSES on the legitimate
+    /// streaming path (ep_annihilation streaming is isomorphic to eager by
+    /// design — TASK-0604 acceptance criterion). Sentinel: if a future
+    /// change to `ep_annihilation_stream` accidentally produces a divergent
+    /// net, this test catches it before the production rodada.
+    #[test]
+    fn qa_d011_005_r37c_gate_passes_for_legitimate_streaming_path() {
+        let config = BenchmarkSuiteConfig {
+            benchmarks: vec![BenchmarkId::EPAnnihilation],
+            sizes: Some(vec![20]),
+            workers: vec![],
+            mode: Mode::Sequential,
+            warmup_runs: 0,
+            repetitions: 1,
+            csv_detail_path: None,
+            csv_rounds_path: None,
+            csv_summary_path: None,
+            max_rounds: None,
+            strict_bsp: false,
+            skip_g1: false,
+            chunk_size: Some(10), // gate ARMED
+            max_pending_lifetime: 16,
+            recycle_policy: RecyclePolicy::DisableUnderDelta,
+            representation: NetRepresentation::Dense,
+            sparse_construction_memory_csv_path: None,
+        };
+        let result =
+            run_benchmark_suite(&config).expect("legitimate streaming rodada must pass R37c gate");
+        assert!(result.all_correct);
     }
 
     /// QA-D011-001 (negative — the fix MUST NOT regress the three valid cells).
