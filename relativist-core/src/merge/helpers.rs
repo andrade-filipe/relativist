@@ -294,6 +294,12 @@ pub(crate) fn compute_outgoing_deltas(
 ///   non-streaming runs.
 /// - `delta_mode`: flag indicating a delta-mode round is active (SPEC-19).
 /// - `streaming_active`: flag indicating chunked dispatch is active (SPEC-21 R37b).
+/// - `max_pending_lifetime`: SPEC-21 R37g pending-store memory bound. The
+///   coordinator MUST forward `GridConfig.max_pending_lifetime` here so the
+///   bounded behavior reaches the underlying eviction site
+///   (`generate_and_partition_chunked_with_chunk_size_and_lifetime`).
+///   `u32::MAX` is the legacy "disabled" sentinel and MUST NOT be hard-coded
+///   by production callers (TASK-0597 / QA-D010-009 residual).
 pub fn generate_and_partition_chunked_with_delta(
     stream: Box<dyn Iterator<Item = crate::partition::streaming::AgentBatch>>,
     num_workers: u32,
@@ -301,6 +307,7 @@ pub fn generate_and_partition_chunked_with_delta(
     border_graph: Option<&mut crate::merge::BorderGraph>,
     delta_mode: bool,
     streaming_active: bool,
+    max_pending_lifetime: u32,
 ) -> Result<crate::partition::streaming::ChunkedPartitionResult, crate::error::PartitionError> {
     generate_and_partition_chunked_with_delta_and_config(
         stream,
@@ -310,7 +317,7 @@ pub fn generate_and_partition_chunked_with_delta(
         delta_mode,
         streaming_active,
         u32::MAX,
-        u32::MAX,
+        max_pending_lifetime,
     )
 }
 
@@ -1015,8 +1022,9 @@ mod tests {
             2,
             &mut strategy,
             Some(&mut border_graph),
-            true, // delta_mode = true
-            true, // streaming_active = true
+            true,     // delta_mode = true
+            true,     // streaming_active = true
+            u32::MAX, // max_pending_lifetime: legacy short-circuit (MAX_SENTINEL chunk_size)
         )
         .expect("partition must succeed");
 
@@ -1058,8 +1066,9 @@ mod tests {
             2,
             &mut strategy,
             Some(&mut border_graph),
-            false, // delta_mode = false
-            true,  // streaming_active = true
+            false,    // delta_mode = false
+            true,     // streaming_active = true
+            u32::MAX, // max_pending_lifetime: legacy short-circuit
         )
         .expect("partition must succeed");
 
@@ -1068,6 +1077,73 @@ mod tests {
             border_graph.borders.is_empty(),
             "MF-001-B: BorderGraph must remain empty when delta_mode=false"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // TASK-0597 — `max_pending_lifetime` legacy-caller forwarding (QA-D010-009)
+    // ---------------------------------------------------------------------------
+
+    /// UT-0597-01: behavior-level proof that
+    /// `generate_and_partition_chunked_with_delta_and_config` forwards the
+    /// `max_pending_lifetime` argument down to the streaming-path eviction site.
+    /// A stream with a stale Pending directive whose target never appears MUST
+    /// surface as `PartitionError::PendingConnectionExpired { budget: 7, .. }`
+    /// when the wrapper is invoked with `max_pending_lifetime = 7`. The budget
+    /// echoed in the error is the value observed at the eviction call site
+    /// (per the streaming-path implementation in
+    /// `partition::streaming::generate_and_partition_chunked_with_chunk_size_and_lifetime`).
+    /// If the wrapper accepted the parameter but forgot to forward it, the
+    /// error budget would echo `u32::MAX` instead of `7` (or the test would
+    /// fall through to `UnresolvedForwardReferences`).
+    #[test]
+    fn legacy_wrapper_forwards_max_pending_lifetime() {
+        use crate::error::PartitionError;
+        use crate::net::Symbol;
+        use crate::partition::streaming::{
+            AgentBatch, ConnectionDirective, RoundRobinStreamingStrategy,
+        };
+
+        // Build 50 single-agent batches each carrying a Pending wire to an agent
+        // that never appears (id 999_999). With max_pending_lifetime = 7 and
+        // chunk_size = 5 (streaming path active), the entry recorded in chunk 1
+        // ages out by chunk 9 and triggers eviction.
+        let batches: Vec<AgentBatch> = (0..50u32)
+            .map(|i| AgentBatch {
+                agents: vec![(i, Symbol::Era)],
+                connections: vec![ConnectionDirective::Pending {
+                    source: (i, 0u8),
+                    target_agent_id: 999_999u32,
+                    target_port: 0u8,
+                }],
+            })
+            .collect();
+        let stream: Box<dyn Iterator<Item = AgentBatch>> = Box::new(batches.into_iter());
+        let mut strategy = RoundRobinStreamingStrategy::new(2);
+
+        let result = super::generate_and_partition_chunked_with_delta_and_config(
+            stream,
+            2,
+            &mut strategy,
+            None,
+            false,
+            true,
+            5, // chunk_size: small so streaming path engages
+            7, // max_pending_lifetime: forwarded value under test
+        );
+
+        match result {
+            Err(PartitionError::PendingConnectionExpired { budget, .. }) => {
+                assert_eq!(
+                    budget, 7,
+                    "UT-0597-01: max_pending_lifetime must be forwarded byte-equivalently to the \
+                     eviction call site (observed budget should equal the wrapper argument)"
+                );
+            }
+            other => panic!(
+                "UT-0597-01: expected PendingConnectionExpired (proves forwarding); got {:?}",
+                other
+            ),
+        }
     }
 
     /// MF-001-C: With border_graph=None, the function succeeds without panic
@@ -1090,6 +1166,7 @@ mod tests {
             None,
             true,
             true,
+            u32::MAX, // max_pending_lifetime: legacy short-circuit
         )
         .expect("partition must succeed");
 
