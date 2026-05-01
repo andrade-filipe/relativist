@@ -3,6 +3,7 @@
 use crate::bench::streaming::dual_tree_stream;
 use crate::bench::{Benchmark, BenchmarkId};
 use crate::io::generators;
+use crate::net::sparse::SparseNet;
 use crate::net::Net;
 use crate::partition::streaming::AgentBatch;
 
@@ -35,6 +36,22 @@ impl Benchmark for DualTree {
         chunk_size: usize,
     ) -> Box<dyn Iterator<Item = AgentBatch>> {
         dual_tree_stream(size, chunk_size)
+    }
+
+    /// Native sparse-construction override (D-011 Phase D-1, TASK-0606).
+    ///
+    /// `dual_tree` is the only benchmark in the v2 suite that supports the
+    /// SPEC-22 R12 sparse-net path (per the D-011 plan §D-1 scope). Building
+    /// directly into a `SparseNet` lets the harness sample VmHWM after the
+    /// recursive build but before any dense-arena allocation, so the
+    /// construction-phase memory peak (SPEC-09 R18a) reflects the sparse
+    /// representation only.
+    ///
+    /// SPEC-09 R37c construction-isomorphism: the returned `SparseNet`, after
+    /// `to_dense(None)`, is graph-isomorphic to `make_net(size)` for every
+    /// `size`. UT-0606-01 in `io::generators::tests` enforces this.
+    fn make_sparse_net(&self, size: u32) -> Result<SparseNet, String> {
+        Ok(generators::dual_tree_sparse(size))
     }
 
     fn default_sizes(&self) -> Vec<u32> {

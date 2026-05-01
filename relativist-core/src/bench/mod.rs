@@ -13,6 +13,7 @@ pub mod streaming;
 pub mod suite;
 pub mod validate;
 
+use crate::net::sparse::SparseNet;
 use crate::net::Net;
 use crate::partition::streaming::AgentBatch;
 
@@ -133,6 +134,35 @@ pub trait Benchmark {
         _chunk_size: usize,
     ) -> Box<dyn Iterator<Item = AgentBatch>> {
         streaming::default_chunked_iter(self.make_net(size))
+    }
+
+    /// Generate the input net as a [`SparseNet`] (D-011 Phase D-1, TASK-0606).
+    ///
+    /// SPEC-22 R12 sparse-net path: invoked by the bench harness when
+    /// `BenchmarkSuiteConfig.representation == NetRepresentation::Sparse`.
+    /// The sparse net is converted to a dense `Net` via `SparseNet::to_dense`
+    /// before being handed to `run_grid` / `reduce_all`; the construction-phase
+    /// memory peak is sampled BETWEEN those two steps via the SPEC-09 R18a
+    /// probe.
+    ///
+    /// # Default implementation
+    ///
+    /// Returns `Err(_)` with a descriptive message. Per the D-011 Phase D-1
+    /// scope, only `dual_tree` is required to support the sparse path; every
+    /// other benchmark falls back to this default and the harness reports an
+    /// "unsupported representation" error.
+    ///
+    /// Implementors that override this MUST guarantee the SPEC-09 R37c
+    /// construction-isomorphism contract: the returned `SparseNet`, after
+    /// `to_dense(None)`, is graph-isomorphic to `make_net(size)` for every
+    /// `size`.
+    fn make_sparse_net(&self, size: u32) -> Result<SparseNet, String> {
+        let _ = size;
+        Err(format!(
+            "benchmark {} does not support representation=sparse \
+             (D-011 Phase D-1 scope: dual_tree only); use representation=dense",
+            self.id()
+        ))
     }
 
     /// Default sizes for this benchmark (logarithmic variation, R24).

@@ -28,7 +28,7 @@ use crate::bench::memory::{get_peak_memory_bytes, get_peak_memory_during_constru
 use crate::bench::stats;
 use crate::bench::{
     AggregatedStats, Benchmark, BenchmarkId, BenchmarkResult, BenchmarkSuiteConfig,
-    InteractionsByRule, Mode, RecyclePolicy as BenchRecyclePolicy,
+    InteractionsByRule, Mode, NetRepresentation, RecyclePolicy as BenchRecyclePolicy,
 };
 use crate::merge::{run_grid, GridConfig};
 use crate::net::Net;
@@ -136,7 +136,44 @@ pub fn build_input_net_from_suite(
     let _ = workers_for_streaming; // reserved for future strategies; harness assembly is partition-free.
 
     match config.chunk_size {
-        None => Ok(bench.make_net(size)),
+        None => match config.representation {
+            NetRepresentation::Dense => Ok(bench.make_net(size)),
+            NetRepresentation::Sparse => {
+                // D-011 Phase D-1 (TASK-0606): sparse-eager construction path.
+                //
+                // 1. Build directly into a `SparseNet` so the construction
+                //    peak does not include dense-arena allocation.
+                // 2. Convert to a dense `Net` via `SparseNet::to_dense(None)`.
+                //    The handoff to `run_grid` / `reduce_all` is unchanged.
+                //
+                // Per SPEC-09 R37c the resulting Net is graph-isomorphic to
+                // `bench.make_net(size)`; UT-0606-01 (io::generators::tests)
+                // enforces this for `dual_tree`.
+                //
+                // Behavior A (per D-011 dispatch): benchmarks other than
+                // `dual_tree` return an explicit error rather than silently
+                // falling back to dense, so an operator typo does not produce
+                // a row whose `representation=sparse` field misrepresents the
+                // measurement.
+                let sparse = bench.make_sparse_net(size).map_err(|e| {
+                    format!(
+                        "TASK-0606 sparse-eager assembly: bench={} size={}: {}",
+                        bench.id(),
+                        size,
+                        e
+                    )
+                })?;
+                sparse.to_dense(None).map_err(|e| {
+                    format!(
+                        "TASK-0606 sparse-eager assembly: SparseNet::to_dense \
+                         failed for bench={} size={}: {:?}",
+                        bench.id(),
+                        size,
+                        e
+                    )
+                })
+            }
+        },
         Some(chunk_size) => {
             // Streaming branch: use the benchmark's stream override
             // (`make_net_stream` is overridden by `EPAnnihilation` to

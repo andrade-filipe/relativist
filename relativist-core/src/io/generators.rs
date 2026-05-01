@@ -3,6 +3,7 @@
 //! Each generator creates a parametric IC net for benchmarking or
 //! testing. Size parameter `n` controls the number of agents/pairs.
 
+use crate::net::sparse::SparseNet;
 use crate::net::{Net, PortRef, Symbol};
 
 /// Available example nets, matching benchmark profiles from SPEC-09.
@@ -141,6 +142,44 @@ pub fn dual_tree(depth: u32) -> Net {
     let mut free_id = 0u32;
 
     fn build_tree(net: &mut Net, depth: u32, free_id: &mut u32) -> PortRef {
+        if depth == 0 {
+            let fp = PortRef::FreePort(*free_id);
+            *free_id += 1;
+            return fp;
+        }
+        let node = net.create_agent(Symbol::Con);
+        let left = build_tree(net, depth - 1, free_id);
+        let right = build_tree(net, depth - 1, free_id);
+        net.connect(PortRef::AgentPort(node, 1), left);
+        net.connect(PortRef::AgentPort(node, 2), right);
+        PortRef::AgentPort(node, 0)
+    }
+
+    let root_a = build_tree(&mut net, depth, &mut free_id);
+    let root_b = build_tree(&mut net, depth, &mut free_id);
+    net.connect(root_a, root_b);
+
+    net
+}
+
+/// Dual tree of depth D, built directly as a [`SparseNet`] (D-011 Phase D-1,
+/// TASK-0606).
+///
+/// Functionally equivalent to [`dual_tree`] but emits a `SparseNet` so the
+/// construction-phase memory peak can be measured before any dense-arena
+/// allocation. After capturing `peak_memory_during_construction` (SPEC-09
+/// R18a), the bench harness converts to a dense `Net` via `SparseNet::to_dense`
+/// and proceeds with the standard pipeline.
+///
+/// The construction order is identical to `dual_tree`: depth-first build of
+/// the left tree, then the right tree, then the principal-principal connect
+/// at the roots. Per SPEC-09 R37c (commit `82b2d27`) this guarantees that
+/// `dual_tree_sparse(d).to_dense(None)` is graph-isomorphic to `dual_tree(d)`.
+pub fn dual_tree_sparse(depth: u32) -> SparseNet {
+    let mut net = SparseNet::new();
+    let mut free_id = 0u32;
+
+    fn build_tree(net: &mut SparseNet, depth: u32, free_id: &mut u32) -> PortRef {
         if depth == 0 {
             let fp = PortRef::FreePort(*free_id);
             *free_id += 1;
@@ -382,6 +421,55 @@ mod tests {
         let mut net = dual_tree(3);
         reduce_all(&mut net);
         assert_eq!(net.count_live_agents(), 0);
+    }
+
+    /// UT-0606-01 — Generator-level: `dual_tree_sparse(N)` followed by
+    /// `to_dense(None)` produces a Net graph-isomorphic to `dual_tree(N)`.
+    ///
+    /// Validates the construction-isomorphism contract per SPEC-09 R37c
+    /// (commit `82b2d27`): the sparse-direct generator must produce a net
+    /// agent-isomorphic to the dense baseline, otherwise the entire D-011
+    /// Phase D micro-bench is invalid (TASK-0606 AC #2).
+    ///
+    /// Note on size: N=4 (depth 4 → 30 live CON agents) exercises the
+    /// recursive build at non-trivial depth while keeping the O(N!)
+    /// `nets_isomorphic` backtracking tractable.
+    #[test]
+    fn ut_0606_01_sparse_direct_construction_matches_dense_after_to_dense() {
+        use crate::bench::isomorphism::nets_isomorphic;
+
+        let depth = 4u32;
+        let dense = dual_tree(depth);
+        let sparse = dual_tree_sparse(depth);
+        let converted = sparse
+            .to_dense(None)
+            .expect("UT-0606-01: to_dense must succeed for the sparse dual_tree");
+
+        assert_eq!(
+            dense.count_live_agents(),
+            converted.count_live_agents(),
+            "UT-0606-01: live-agent count must match between dense and sparse-converted nets"
+        );
+
+        // Per-symbol counts must match (necessary condition for isomorphism).
+        let mut counts_dense = std::collections::HashMap::new();
+        for ag in dense.live_agents() {
+            *counts_dense.entry(ag.symbol).or_insert(0u32) += 1;
+        }
+        let mut counts_conv = std::collections::HashMap::new();
+        for ag in converted.live_agents() {
+            *counts_conv.entry(ag.symbol).or_insert(0u32) += 1;
+        }
+        assert_eq!(
+            counts_dense, counts_conv,
+            "UT-0606-01: symbol counts must match between dense and sparse-converted nets"
+        );
+
+        // Full graph isomorphism (G1 invariant per SPEC-01).
+        assert!(
+            nets_isomorphic(&dense, &converted),
+            "UT-0606-01: dense and sparse-converted nets must be graph-isomorphic"
+        );
     }
 
     #[test]
