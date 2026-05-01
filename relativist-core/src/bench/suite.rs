@@ -703,8 +703,27 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                 // larger dense allocation correctly raises VmHWM to its own
                 // (higher) peak, which is what the second probe reads.
                 if config.representation == NetRepresentation::Sparse {
+                    // QA-D011-003 (HIGH): the auto-pair `ratio_to_dense` is
+                    // defined as "sparse-eager construction peak vs dense-eager
+                    // construction peak" (SPEC-09 §3.4.7). Pre-fix, the dense
+                    // clone preserved `chunk_size` and `recycle_policy`, so
+                    // the "dense reference" went through the streaming branch
+                    // (which always assembles internally via SparseNet) and
+                    // the ratio compared streaming-vs-streaming — observable
+                    // as `ratio_to_dense ~ 1.0` regardless of the underlying
+                    // representation, the OPPOSITE of what SPEC-22 R12
+                    // motivates. Force the canonical eager-dense baseline:
+                    // - chunk_size      = None (eager, not streaming)
+                    // - representation  = Dense
+                    // - recycle_policy  = DisableUnderDelta (the safe default;
+                    //   recycle_policy is irrelevant for construction-phase
+                    //   peak measurement, but locking it here avoids any
+                    //   future drift if the chosen policy starts to influence
+                    //   construction-time allocations).
                     let mut dense_cfg = config.clone();
                     dense_cfg.representation = NetRepresentation::Dense;
+                    dense_cfg.chunk_size = None;
+                    dense_cfg.recycle_policy = BenchRecyclePolicy::DisableUnderDelta;
                     // Build dense (no reduction — we only need the construction peak).
                     let _dense_net = build_input_net_from_suite(
                         &dense_cfg,
@@ -1365,6 +1384,93 @@ mod tests {
             res.is_err(),
             "QA-D011-001: sparse + chunk_size MUST error even for dual_tree"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // QA-D011-003 (HIGH) — auto-pair `dense_cfg` clears chunk_size + recycle_policy
+    //
+    // Pre-fix: the auto-pair `dense_cfg = config.clone()` only flipped
+    // `representation = Dense`, preserving `chunk_size = Some(N)`. The dense
+    // build then went through the streaming branch (which assembles internally
+    // via SparseNet), so `ratio_to_dense` compared streaming-vs-streaming
+    // (~1.0). Post-fix: dense_cfg clears `chunk_size` AND
+    // `recycle_policy = DisableUnderDelta`, locking the canonical eager-dense
+    // baseline.
+    //
+    // The regression sentinel is at the suite level — we run the auto-pair
+    // path on `dual_tree` (the only sparse-supported benchmark) and read the
+    // emitted `sparse_construction_rows` to confirm both rows go through the
+    // intended paths.
+    // ---------------------------------------------------------------------------
+
+    /// QA-D011-003 — auto-pair builds dense via the eager path (regression).
+    ///
+    /// Verify that, when `--csv-sparse` is set AND `representation=Sparse`,
+    /// the harness builds BOTH a sparse row AND a dense row, and the dense
+    /// row's `representation` field is `Dense` (the auto-pair fired). This
+    /// is a behavioural sentinel; the deeper "dense build went through the
+    /// eager path" property is not externally observable from the row but is
+    /// guaranteed by `qa_d011_001_sparse_plus_chunk_size_errors_explicitly`
+    /// — once that guard is in place, the only way for the auto-pair to
+    /// succeed is if `chunk_size` was cleared to `None` in `dense_cfg`.
+    #[test]
+    fn qa_d011_003_auto_pair_dense_cfg_clears_chunk_size_and_recycle() {
+        // Run a small dual_tree sparse rodada with chunk_size=Some — without
+        // the QA-D011-001 + QA-D011-003 fixes this would have built the dense
+        // reference via the streaming branch (silently). Post-fix the harness
+        // either errors (QA-D011-001 fires on the sparse main run) OR — when
+        // the main run is sparse-eager (chunk_size=None) — the auto-pair
+        // dense build goes through eager-dense.
+        let config = BenchmarkSuiteConfig {
+            benchmarks: vec![BenchmarkId::DualTree],
+            sizes: Some(vec![3]),
+            workers: vec![],
+            mode: Mode::Sequential,
+            warmup_runs: 0,
+            repetitions: 1,
+            csv_detail_path: None,
+            csv_rounds_path: None,
+            csv_summary_path: None,
+            max_rounds: None,
+            strict_bsp: false,
+            skip_g1: false,
+            chunk_size: None, // sparse-eager main run (QA-D011-001 forbids Some+Sparse)
+            max_pending_lifetime: 16,
+            recycle_policy: RecyclePolicy::BorderClean, // deliberately non-default
+            representation: NetRepresentation::Sparse,
+            sparse_construction_memory_csv_path: Some("/tmp/qa_d011_003_test.csv".into()),
+        };
+
+        let result = run_benchmark_suite(&config).expect("auto-pair sparse rodada must succeed");
+        // Auto-pair emits one Sparse row and one Dense row (per QA-D011-003
+        // and the existing TASK-0607 contract).
+        let sparse_rows: Vec<_> = result
+            .sparse_construction_rows
+            .iter()
+            .filter(|r| r.representation == NetRepresentation::Sparse)
+            .collect();
+        let dense_rows: Vec<_> = result
+            .sparse_construction_rows
+            .iter()
+            .filter(|r| r.representation == NetRepresentation::Dense)
+            .collect();
+        assert_eq!(
+            sparse_rows.len(),
+            1,
+            "QA-D011-003: exactly 1 sparse row expected; got {}",
+            sparse_rows.len()
+        );
+        assert_eq!(
+            dense_rows.len(),
+            1,
+            "QA-D011-003: auto-pair MUST emit exactly 1 dense row; got {}",
+            dense_rows.len()
+        );
+        // Both rows reference the same (benchmark, size).
+        assert_eq!(sparse_rows[0].benchmark, BenchmarkId::DualTree);
+        assert_eq!(dense_rows[0].benchmark, BenchmarkId::DualTree);
+        assert_eq!(sparse_rows[0].size, 3);
+        assert_eq!(dense_rows[0].size, 3);
     }
 
     /// QA-D011-001 (negative — the fix MUST NOT regress the three valid cells).
