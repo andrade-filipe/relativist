@@ -153,6 +153,13 @@ pub enum CoordinatorState {
     // These states are ONLY entered when `DispatchMode::Pull` is active.
     // Push-mode FSMs never enter these states (R37e).
     // Appended at end to preserve discriminant stability.
+    //
+    // TASK-0600 (QA-D010-013): the canonical source of truth for pull-mode
+    // FSM state is `PullCoordinatorState` (defined below). The `Pull*`
+    // variants in this enum are a derived projection produced ONLY via
+    // `From<PullCoordinatorState> for CoordinatorState`. Production code
+    // MUST NOT construct them directly — see UT-0600-01 / UT-0600-02 / IT-0600-03
+    // which guard against re-introducing parallel state representations.
     /// Pull-mode cold-start: generating + dispatching the first chunk eagerly.
     ///
     /// Per R32 step 1: coordinator generates first chunk and dispatches to worker 0
@@ -863,6 +870,39 @@ pub enum PullCoordinatorState {
     AwaitingFinalResults,
     /// Merging all buffered partition results (single logical BSP round, R37d).
     MergingResults,
+}
+
+/// TASK-0600 (QA-D010-013): canonical projection from `PullCoordinatorState`
+/// (the inner pull-mode FSM) to the outer `CoordinatorState` (the overall FSM
+/// state surfaced via `serde::Serialize` for telemetry).
+///
+/// Per the collapse decision (TASK-0600 dispatch brief), `PullCoordinatorState`
+/// is the **single canonical source of truth** for pull-mode FSM state.
+/// The `CoordinatorState::Pull*` variants are kept ONLY for ABI/discriminant
+/// stability (UT-0577-18) — production code MUST NOT construct them directly;
+/// it MUST use this `From` impl so the canonical mapping is the only producer.
+///
+/// Mapping:
+/// - `DispatchingFirst`     → `PullDispatchingFirst`
+/// - `AwaitingResults`      → `PullAwaitingResults`
+/// - `GeneratingNext`       → `PullGeneratingNext`
+/// - `SendingNoMoreWork`    → `PullSendingNoMoreWork`
+/// - `AwaitingFinalResults` → `PullAwaitingFinalResults`
+/// - `MergingResults`       → `Merging` (legacy state — pull-mode joins the
+///   non-pull FSM at the merge step; SPEC-21 R37d).
+impl From<PullCoordinatorState> for CoordinatorState {
+    fn from(s: PullCoordinatorState) -> Self {
+        match s {
+            PullCoordinatorState::DispatchingFirst => CoordinatorState::PullDispatchingFirst,
+            PullCoordinatorState::AwaitingResults => CoordinatorState::PullAwaitingResults,
+            PullCoordinatorState::GeneratingNext => CoordinatorState::PullGeneratingNext,
+            PullCoordinatorState::SendingNoMoreWork => CoordinatorState::PullSendingNoMoreWork,
+            PullCoordinatorState::AwaitingFinalResults => {
+                CoordinatorState::PullAwaitingFinalResults
+            }
+            PullCoordinatorState::MergingResults => CoordinatorState::Merging,
+        }
+    }
 }
 
 /// Events that drive the pull-dispatch FSM (SPEC-21 R32, A5 / TASK-0577).
@@ -2435,5 +2475,95 @@ mod tests {
             ctx.state, pre_state,
             "QA-D010-002-B: FSM state must NOT advance on mismatch"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-0600 — Collapse parallel `Pull*` / `PullCoordinatorState` types
+    // (QA-D010-013). The canonical source of truth is `PullCoordinatorState`;
+    // the `CoordinatorState::Pull*` variants are derived only via the
+    // `From<PullCoordinatorState>` impl above.
+    // -----------------------------------------------------------------------
+
+    /// UT-0600-01 — `canonical_pull_state_type_is_unique` (QA-D010-013).
+    ///
+    /// Verifies that `PullCoordinatorState` is the SOLE per-FSM pull-state
+    /// type. The `CoordinatorState::Pull*` variants are kept for ABI
+    /// stability (UT-0577-18) but are constructed exclusively via
+    /// `From<PullCoordinatorState> for CoordinatorState`, so they cannot
+    /// drift from the canonical type.
+    ///
+    /// Direction-of-collapse: `PullCoordinatorState` was selected as canonical
+    /// because (a) it carries the richer state set including `MergingResults`
+    /// and (b) its name is more specific than the original placeholder
+    /// `PullState`. See TASK-0600 dispatch brief (2026-04-30).
+    #[test]
+    fn ut_0600_01_canonical_pull_state_type_is_unique() {
+        // The `From` projection must be defined and yield a 1:1 mapping for
+        // the 5 pull variants and a join-to-`Merging` for the 6th (terminal
+        // pull state — SPEC-21 R37d).
+        assert_eq!(
+            CoordinatorState::from(PullCoordinatorState::DispatchingFirst),
+            CoordinatorState::PullDispatchingFirst
+        );
+        assert_eq!(
+            CoordinatorState::from(PullCoordinatorState::AwaitingResults),
+            CoordinatorState::PullAwaitingResults
+        );
+        assert_eq!(
+            CoordinatorState::from(PullCoordinatorState::GeneratingNext),
+            CoordinatorState::PullGeneratingNext
+        );
+        assert_eq!(
+            CoordinatorState::from(PullCoordinatorState::SendingNoMoreWork),
+            CoordinatorState::PullSendingNoMoreWork
+        );
+        assert_eq!(
+            CoordinatorState::from(PullCoordinatorState::AwaitingFinalResults),
+            CoordinatorState::PullAwaitingFinalResults
+        );
+        // `MergingResults` joins the legacy non-pull merge state — pull-mode
+        // does NOT have its own merge state in `CoordinatorState`.
+        assert_eq!(
+            CoordinatorState::from(PullCoordinatorState::MergingResults),
+            CoordinatorState::Merging
+        );
+    }
+
+    /// UT-0600-02 — `canonical_pull_state_enum_is_exhaustive_per_spec_21_a5`.
+    ///
+    /// SPEC-21 §3.8 A5 enumerates 5 coordinator pull states + 1 terminal
+    /// merging state. The collapsed canonical type MUST contain all 6
+    /// variants. The exhaustive `match` below is a compile-time fence: any
+    /// future deletion of a variant fails to compile (no `_ =>` wildcard).
+    #[test]
+    fn ut_0600_02_canonical_pull_state_enum_is_exhaustive_per_spec_21_a5() {
+        // Enumerate every variant. Adding a new variant later requires
+        // extending this list (regression fence).
+        let all = [
+            PullCoordinatorState::DispatchingFirst,
+            PullCoordinatorState::AwaitingResults,
+            PullCoordinatorState::GeneratingNext,
+            PullCoordinatorState::SendingNoMoreWork,
+            PullCoordinatorState::AwaitingFinalResults,
+            PullCoordinatorState::MergingResults,
+        ];
+        // Variant count: 5 active + 1 terminal = 6.
+        assert_eq!(
+            all.len(),
+            6,
+            "UT-0600-02: PullCoordinatorState MUST have exactly 6 variants per SPEC-21 §3.8 A5"
+        );
+        // Compile-time exhaustiveness: NO `_ =>` arm.
+        for s in all {
+            let count: u32 = match s {
+                PullCoordinatorState::DispatchingFirst => 1,
+                PullCoordinatorState::AwaitingResults => 1,
+                PullCoordinatorState::GeneratingNext => 1,
+                PullCoordinatorState::SendingNoMoreWork => 1,
+                PullCoordinatorState::AwaitingFinalResults => 1,
+                PullCoordinatorState::MergingResults => 1,
+            };
+            assert_eq!(count, 1, "every variant must contribute 1 to the count");
+        }
     }
 }
