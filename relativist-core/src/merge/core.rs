@@ -31,6 +31,10 @@ use super::helpers::is_principal_pair;
 /// - Redex queue contains only border redexes (partition queues discarded).
 /// - In debug mode, assert_all_invariants() passes (R11).
 pub fn merge(plan: PartitionPlan) -> (Net, u32) {
+    // `mut` is only needed by the debug-only protected_tombstones drain below
+    // (`for partition in &mut partitions` under cfg(debug_assertions)).
+    // In release builds that loop is elided, so the binding looks unused-mut.
+    #[allow(unused_mut)]
     let PartitionPlan {
         mut partitions,
         borders,

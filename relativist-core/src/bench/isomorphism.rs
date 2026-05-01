@@ -205,6 +205,21 @@ fn is_consistent(
     agent_b: AgentId,
     mapping: &HashMap<AgentId, AgentId>,
 ) -> bool {
+    is_consistent_with_fp_strictness(a, b, agent_a, agent_b, mapping, true)
+}
+
+/// Internal worker for `is_consistent` parameterised by whether FreePort
+/// labels must match by index (strict, IC composition semantics) or are
+/// allowed to be related by an as-yet-unknown bijection (relaxed,
+/// graph-structural semantics — used by `nets_graph_isomorphic`).
+fn is_consistent_with_fp_strictness(
+    a: &Net,
+    b: &Net,
+    agent_a: AgentId,
+    agent_b: AgentId,
+    mapping: &HashMap<AgentId, AgentId>,
+    strict_freeport: bool,
+) -> bool {
     let sym = a.get_agent(agent_a).unwrap().symbol;
     let num_ports = total_ports(sym);
 
@@ -232,9 +247,18 @@ fn is_consistent(
                 }
                 // If ta_id is not yet mapped, no constraint (will be validated later)
             }
-            // Both are FreePort — must have same index
+            // Both are FreePort — strict mode requires identical index;
+            // relaxed mode accepts any FP↔FP correspondence (the implied
+            // bijection is checked in a second pass after the agent
+            // bijection is found).
             (PortRef::FreePort(fa), PortRef::FreePort(fb)) => {
-                if fa != fb {
+                if strict_freeport && fa != fb {
+                    return false;
+                }
+                // In relaxed mode, the only constraint is "both are
+                // FreePorts" — already guaranteed by this match arm.
+                // DISCONNECTED-vs-real-FP is also rejected (fa==MAX iff fb==MAX).
+                if (fa == u32::MAX) != (fb == u32::MAX) {
                     return false;
                 }
             }
@@ -243,6 +267,169 @@ fn is_consistent(
         }
     }
     true
+}
+
+/// Same as [`nets_isomorphic`] but treats FreePort labels as anonymous
+/// interface vertices: the predicate accepts any bijection over FreePort
+/// indices (subject to the wire structure being preserved). Use this for
+/// SPEC-09 R37c construction-isomorphism, where the streaming generator and
+/// the eager generator MAY label FreePorts differently — for example,
+/// `dual_tree_stream` keeps Lafont FreePort IDs above the agent-id space
+/// (`freeport_base = 2 * nodes_per_tree`) to avoid colliding with the
+/// `partition::streaming` border allocator (QA-D010-004), while
+/// `io::generators::dual_tree` numbers FreePorts from 0 in DFS-leaf order.
+/// Both nets describe the same graph but with different external labels.
+///
+/// `nets_isomorphic` (strict-FP) MUST still be used wherever the FreePort
+/// labels are part of the IC composition signature (e.g., the T8 sentinel
+/// or a future net-composition equality check).
+///
+/// Algorithm: two-pass. Pass 1 finds an agent bijection using a relaxed
+/// per-port consistency check that ignores FreePort labels. Pass 2 walks
+/// the agent bijection and derives the implied FreePort bijection from the
+/// agent-port wires; the bijection is a function (no two distinct FP_a
+/// map to the same FP_b) and an injection (and thus a bijection on equal
+/// FP-counts).
+pub fn nets_graph_isomorphic(a: &Net, b: &Net) -> bool {
+    // Quick reject: same agent counts per symbol.
+    let counts_a = count_agents_by_symbol(a);
+    let counts_b = count_agents_by_symbol(b);
+    if counts_a != counts_b {
+        return false;
+    }
+    if counts_a.is_empty() {
+        return true;
+    }
+
+    // Pass 1: agent bijection with relaxed FreePort matching.
+    let groups_b = group_agents_by_symbol(b);
+    let mut agents_a: Vec<AgentId> = a.live_agents().map(|ag| ag.id).collect();
+    agents_a.sort_by_key(|&id| {
+        let sym = a.get_agent(id).unwrap().symbol;
+        let candidate_count = groups_b.get(&sym).map_or(0, |v| v.len());
+        (candidate_count, id)
+    });
+
+    let mut mapping: HashMap<AgentId, AgentId> = HashMap::new();
+    let mut reverse: HashMap<AgentId, AgentId> = HashMap::new();
+    if !backtrack_relaxed(a, b, &agents_a, &mut mapping, &mut reverse, &groups_b) {
+        return false;
+    }
+
+    // Pass 2: derive and verify FreePort bijection.
+    let mut fp_fwd: HashMap<u32, u32> = HashMap::new();
+    let mut fp_rev: HashMap<u32, u32> = HashMap::new();
+    for (&agent_a_id, &agent_b_id) in &mapping {
+        let sym = a.get_agent(agent_a_id).unwrap().symbol;
+        let nports = total_ports(sym);
+        for p in 0..nports {
+            let ta = a.get_target(PortRef::AgentPort(agent_a_id, p));
+            let tb = b.get_target(PortRef::AgentPort(agent_b_id, p));
+            if let (PortRef::FreePort(fa), PortRef::FreePort(fb)) = (ta, tb) {
+                if fa == u32::MAX && fb == u32::MAX {
+                    continue; // both DISCONNECTED — no bijection constraint
+                }
+                if fa == u32::MAX || fb == u32::MAX {
+                    return false; // mixed
+                }
+                match fp_fwd.get(&fa) {
+                    Some(&prev) if prev != fb => return false,
+                    Some(_) => {} // already consistent
+                    None => {
+                        if fp_rev.contains_key(&fb) {
+                            // Some other fa' already mapped to fb — bijection violated.
+                            return false;
+                        }
+                        fp_fwd.insert(fa, fb);
+                        fp_rev.insert(fb, fa);
+                    }
+                }
+            }
+        }
+    }
+
+    true
+}
+
+/// Variant of `backtrack` that uses the relaxed (FreePort-labels-ignored)
+/// per-port consistency check. Otherwise identical to the strict
+/// `backtrack` — same iterative structure, same backtracking discipline.
+#[allow(clippy::too_many_arguments)]
+fn backtrack_relaxed(
+    a: &Net,
+    b: &Net,
+    agents_a: &[AgentId],
+    mapping: &mut HashMap<AgentId, AgentId>,
+    reverse: &mut HashMap<AgentId, AgentId>,
+    groups_b: &HashMap<Symbol, Vec<AgentId>>,
+) -> bool {
+    let mut stack: Vec<usize> = Vec::with_capacity(agents_a.len());
+    let mut index = 0usize;
+
+    loop {
+        if index == agents_a.len() {
+            return true;
+        }
+        let id_a = agents_a[index];
+        let sym = a.get_agent(id_a).unwrap().symbol;
+        let candidates = match groups_b.get(&sym) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let mut found = false;
+        for (ci, &id_b) in candidates.iter().enumerate() {
+            if reverse.contains_key(&id_b) {
+                continue;
+            }
+            if is_consistent_with_fp_strictness(a, b, id_a, id_b, mapping, false) {
+                mapping.insert(id_a, id_b);
+                reverse.insert(id_b, id_a);
+                stack.push(ci + 1);
+                index += 1;
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            // Backtrack
+            loop {
+                if let Some(cand_start) = stack.pop() {
+                    index -= 1;
+                    let prev_a = agents_a[index];
+                    let prev_sym = a.get_agent(prev_a).unwrap().symbol;
+                    let prev_candidates = &groups_b[&prev_sym];
+                    if let Some(&mapped_b) = mapping.get(&prev_a) {
+                        reverse.remove(&mapped_b);
+                    }
+                    mapping.remove(&prev_a);
+
+                    let mut bf = false;
+                    #[allow(clippy::needless_range_loop)]
+                    for ci in cand_start..prev_candidates.len() {
+                        let id_b = prev_candidates[ci];
+                        if reverse.contains_key(&id_b) {
+                            continue;
+                        }
+                        if is_consistent_with_fp_strictness(a, b, prev_a, id_b, mapping, false) {
+                            mapping.insert(prev_a, id_b);
+                            reverse.insert(id_b, prev_a);
+                            stack.push(ci + 1);
+                            index += 1;
+                            bf = true;
+                            break;
+                        }
+                    }
+                    if bf {
+                        break;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Count live agents per symbol.

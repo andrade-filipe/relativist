@@ -23,7 +23,7 @@ use crate::bench::benchmarks::{
     mixed_net::MixedNet,
     tree_sum::{TreeSum, TreeSumBalanced},
 };
-use crate::bench::isomorphism::{nets_isomorphic, nets_match_counts};
+use crate::bench::isomorphism::{nets_graph_isomorphic, nets_match_counts};
 use crate::bench::memory::{get_peak_memory_bytes, get_peak_memory_during_construction};
 use crate::bench::stats;
 use crate::bench::{
@@ -792,7 +792,16 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                     // Fast path: symbol-count agreement (necessary condition).
                     nets_match_counts(&reference_net, &input_net)
                 } else {
-                    nets_isomorphic(&reference_net, &input_net)
+                    // HOTFIX-D011-005-A (2026-05-01): use the structural
+                    // (graph-isomorphism) variant rather than the strict
+                    // (IC-composition-equality) variant. The streaming
+                    // generators may relabel Lafont FreePort IDs (e.g.,
+                    // `dual_tree_stream` keeps FreePort IDs above the
+                    // agent-id space to dodge the partition::streaming
+                    // border allocator — see QA-D010-004) while preserving
+                    // the graph structure. R37c demands graph isomorphism;
+                    // the strict-FP check is over-conservative here.
+                    nets_graph_isomorphic(&reference_net, &input_net)
                 };
                 if !isomorphic {
                     return Err(format!(
@@ -1356,6 +1365,46 @@ mod tests {
         );
     }
 
+    /// HOTFIX-D011-005-A — dual_tree(4) with chunk_size large enough to fit the
+    /// whole tree in one batch must still produce a net graph-isomorphic to
+    /// the eager `make_net(4)` (SPEC-09 R37c).
+    ///
+    /// Bench rodada F-2 (2026-05-01) surfaced a divergence: dual_tree size=4
+    /// (depth=4, 30 agents) with chunk_size=10000 fails the R37c gate. The
+    /// existing `dual_tree_stream_large_chunk_single_batch` test (in
+    /// streaming.rs) only checks the agent count, missing the structural
+    /// divergence on the root↔root principal wire.
+    #[test]
+    fn hotfix_d011_005_a_dual_tree_single_batch_isomorphic_to_eager() {
+        use crate::bench::isomorphism::nets_graph_isomorphic;
+        let bench = get_benchmark(BenchmarkId::DualTree);
+        let mut config = suite_config_default_tier3();
+        config.chunk_size = Some(10000);
+
+        let streaming = build_input_net_from_suite(&config, bench.as_ref(), 4, 1)
+            .expect("HOTFIX-D011-005-A: streaming build must succeed");
+        let eager = bench.make_net(4);
+
+        assert!(
+            nets_graph_isomorphic(&eager, &streaming),
+            "HOTFIX-D011-005-A: streaming dual_tree(4) net MUST be graph-isomorphic to eager (eager.live={}, stream.live={})",
+            eager.count_live_agents(),
+            streaming.count_live_agents(),
+        );
+
+        // Cover the smaller boundary too — depth=2 (6 agents) and depth=3
+        // (14 agents) also fit in one batch with chunk_size=10000.
+        for depth in [2u32, 3, 5, 6] {
+            let eager_d = bench.make_net(depth);
+            let stream_d = build_input_net_from_suite(&config, bench.as_ref(), depth, 1)
+                .unwrap_or_else(|e| panic!("depth={depth}: build failed: {e}"));
+            assert!(
+                nets_graph_isomorphic(&eager_d, &stream_d),
+                "HOTFIX-D011-005-A depth={depth}: streaming dual_tree must be isomorphic to eager"
+            );
+        }
+    }
+
     /// UT-0604-02 — `None` routes through the eager path.
     ///
     /// Symmetric pair with UT-0604-01. The eager branch's output is bit-stable
@@ -1703,7 +1752,13 @@ mod tests {
         let isomorphic = if live_count > 5000 {
             nets_match_counts(&reference, &input_net)
         } else {
-            crate::bench::isomorphism::nets_isomorphic(&reference, &input_net)
+            // HOTFIX-D011-005-A: gate now uses `nets_graph_isomorphic`
+            // (relaxed FreePort labels) so this adversarial test must
+            // produce a net that fails even the structural check. The
+            // adversarial bench drops half the agents, which fails
+            // `nets_match_counts` (the inner pre-filter of
+            // `nets_graph_isomorphic`).
+            crate::bench::isomorphism::nets_graph_isomorphic(&reference, &input_net)
         };
         assert!(
             !isomorphic,
