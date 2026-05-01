@@ -174,6 +174,16 @@ pub struct BenchmarkResult {
 
     // --- Memory ---
     pub peak_memory_bytes: u64,
+    /// SPEC-09 R18a (D-011 Phase F-1, commit `82b2d27`): VmHWM sampled at the
+    /// construction-complete program point — AFTER net materialization /
+    /// chunked partition pipeline returns, BEFORE the first `reduce_all` /
+    /// `run_grid` invocation. On non-Linux targets returns `0`.
+    ///
+    /// Per SPEC-09 §4.9 the legacy `peak_memory_bytes` field is preserved for
+    /// backward compatibility with `v1_local_baseline`; the new field
+    /// MUST always be populated (even for v1-equivalent rodadas — the column
+    /// MUST NOT be omitted, per §4.9 line ~714).
+    pub peak_memory_during_construction: u64,
     pub agents_per_round: Vec<usize>,
 
     // --- Communication ---
@@ -716,6 +726,7 @@ mod tests {
             border_redexes_per_round: vec![],
             border_ratio_per_round: vec![],
             peak_memory_bytes: 0,
+            peak_memory_during_construction: 0,
             agents_per_round: vec![],
             bytes_sent: 0,
             bytes_received: 0,

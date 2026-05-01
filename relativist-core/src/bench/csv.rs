@@ -4,19 +4,27 @@ use super::{AggregatedStats, BenchmarkResult};
 use std::io::{self, Write};
 
 /// Write detail CSV: one row per datapoint (SPEC-09 R39a).
+///
+/// SPEC-09 §4.9 R18a (D-011 Phase F-1, commit `82b2d27`): the v1 22-column
+/// schema is preserved at the LEFT; the Tier 3 measurement columns are
+/// appended to the RIGHT. TASK-0605 lands the first of those: column #23 is
+/// `peak_memory_during_construction`. v1-equivalent rodadas (eager path,
+/// dense, default recycle) MUST still populate this column with the measured
+/// VmHWM — the column MUST NOT be omitted (§4.9 line ~714).
 pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -> io::Result<()> {
     writeln!(
         writer,
         "benchmark,input_size,mode,workers,repetition,correct,wall_clock_secs,\
          total_interactions,mips,rounds,speedup,efficiency,overhead_ratio,\
          peak_memory_bytes,bytes_sent,bytes_received,\
-         con_con,dup_dup,era_era,con_dup,con_era,dup_era"
+         con_con,dup_dup,era_era,con_dup,con_era,dup_era,\
+         peak_memory_during_construction"
     )?;
 
     for r in results {
         writeln!(
             writer,
-            "{},{},{},{},{},{},{:.6},{},{:.3},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{:.6},{},{:.3},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{}",
             r.benchmark,
             r.input_size,
             r.mode,
@@ -39,6 +47,7 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
             r.interactions_by_rule.con_dup,
             r.interactions_by_rule.con_era,
             r.interactions_by_rule.dup_era,
+            r.peak_memory_during_construction,
         )?;
     }
     Ok(())
@@ -159,6 +168,7 @@ mod tests {
             border_redexes_per_round: vec![],
             border_ratio_per_round: vec![],
             peak_memory_bytes: 0,
+            peak_memory_during_construction: 0,
             agents_per_round: vec![],
             bytes_sent: 0,
             bytes_received: 0,

@@ -24,7 +24,7 @@ use crate::bench::benchmarks::{
     tree_sum::{TreeSum, TreeSumBalanced},
 };
 use crate::bench::isomorphism::nets_match_counts;
-use crate::bench::memory::get_peak_memory_bytes;
+use crate::bench::memory::{get_peak_memory_bytes, get_peak_memory_during_construction};
 use crate::bench::stats;
 use crate::bench::{
     AggregatedStats, Benchmark, BenchmarkId, BenchmarkResult, BenchmarkSuiteConfig,
@@ -276,11 +276,17 @@ fn ibr_from_array(arr: [u64; 6]) -> InteractionsByRule {
 }
 
 /// Measure a single sequential execution (R3, R23).
+///
+/// SPEC-09 R18a (TASK-0605): `peak_memory_during_construction` is captured
+/// once for the (benchmark, size) outside the rep loop and forwarded into
+/// each row. The per-rep `peak_memory_bytes` (legacy R18) is sampled here
+/// AFTER `reduce_all` returns.
 fn measure_sequential(
     net: &Net,
     benchmark_id: BenchmarkId,
     size: u32,
     repetition: u32,
+    peak_memory_during_construction: u64,
 ) -> (BenchmarkResult, Net) {
     let mut net_clone = net.clone();
     let start = Instant::now();
@@ -308,6 +314,7 @@ fn measure_sequential(
         border_redexes_per_round: vec![],
         border_ratio_per_round: vec![],
         peak_memory_bytes: get_peak_memory_bytes(),
+        peak_memory_during_construction,
         agents_per_round: vec![],
         bytes_sent: 0,
         bytes_received: 0,
@@ -349,6 +356,10 @@ struct GridMeasureParams<'a> {
     /// from `BenchmarkSuiteConfig.recycle_policy` so the streaming + delta
     /// path's recycle behavior matches operator choice.
     recycle_policy: BenchRecyclePolicy,
+    /// SPEC-09 R18a (TASK-0605): VmHWM watermark sampled at the
+    /// construction-complete program point — captured once per (benchmark,
+    /// size) before the rep loop and forwarded into every grid row.
+    peak_memory_during_construction: u64,
 }
 
 fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
@@ -437,6 +448,7 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         border_redexes_per_round: grid_metrics.border_redexes_per_round.clone(),
         border_ratio_per_round,
         peak_memory_bytes: get_peak_memory_bytes(),
+        peak_memory_during_construction: params.peak_memory_during_construction,
         agents_per_round: grid_metrics.agents_per_round.clone(),
         bytes_sent: grid_metrics.bytes_sent_per_round.iter().sum::<usize>() as u64,
         bytes_received: grid_metrics.bytes_received_per_round.iter().sum::<usize>() as u64,
@@ -559,11 +571,27 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             let workers_for_streaming = config.workers.first().copied().unwrap_or(1).max(1);
             let input_net =
                 build_input_net_from_suite(config, bench.as_ref(), size, workers_for_streaming)?;
+
+            // SPEC-09 R18a (TASK-0605): sample VmHWM at the construction-complete
+            // program point — AFTER `build_input_net_from_suite` returns AND
+            // BEFORE the first `reduce_all` / `run_grid` invocation. The watermark
+            // is captured ONCE per (benchmark, size) and forwarded into every
+            // sequential and grid row, so all reps share the same R18a value
+            // (the field is a property of the constructed input net, not of an
+            // individual reduction trace).
+            let peak_memory_during_construction = get_peak_memory_during_construction();
+
             let mut seq_results: Vec<BenchmarkResult> = Vec::new();
             let mut seq_reference_net: Option<Net> = None;
 
             for rep in 0..config.repetitions {
-                let (result, reduced_net) = measure_sequential(&input_net, bench_id, size, rep);
+                let (result, reduced_net) = measure_sequential(
+                    &input_net,
+                    bench_id,
+                    size,
+                    rep,
+                    peak_memory_during_construction,
+                );
 
                 // R37b: verify each sequential repetition against the first.
                 // Under --skip-g1, use the symbol-count fast check.
@@ -637,6 +665,7 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                         skip_g1: config.skip_g1,
                         max_pending_lifetime: config.max_pending_lifetime,
                         recycle_policy: config.recycle_policy,
+                        peak_memory_during_construction,
                     });
 
                     // R38: halt on correctness failure
@@ -710,7 +739,7 @@ mod tests {
     fn test_measure_sequential_ep() {
         let bench = get_benchmark(BenchmarkId::EPAnnihilation);
         let net = bench.make_net(10);
-        let (result, reduced) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, 0);
+        let (result, reduced) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, 0, 0);
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Sequential);
         assert_eq!(result.workers, 0);
@@ -740,6 +769,7 @@ mod tests {
             skip_g1: false,
             max_pending_lifetime: 16,
             recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
+            peak_memory_during_construction: 0,
         });
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Local);
@@ -753,7 +783,7 @@ mod tests {
         let net = bench.make_net(10);
         let mut results = Vec::new();
         for rep in 0..3 {
-            let (r, _) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, rep);
+            let (r, _) = measure_sequential(&net, BenchmarkId::EPAnnihilation, 10, rep, 0);
             results.push(r);
         }
         let agg = aggregate(&results);
@@ -936,6 +966,7 @@ mod tests {
             skip_g1: false,
             max_pending_lifetime: 16,
             recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
+            peak_memory_during_construction: 0,
         });
         // Speedup = baseline / elapsed. Since EP is fast, speedup should be large
         assert!(result.speedup > 0.0);
