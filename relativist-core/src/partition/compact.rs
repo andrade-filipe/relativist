@@ -135,13 +135,10 @@ impl CompactSubnet {
             recycle_policy: crate::net::core::RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
             streaming_active: false,
-            #[cfg(debug_assertions)]
+            // TASK-0598: counter fields always present (no cfg gate).
             protected_tombstones: None,
-            #[cfg(debug_assertions)]
             free_list_pops: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_border: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_non_border: 0,
         }
     }

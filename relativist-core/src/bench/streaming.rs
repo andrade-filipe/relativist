@@ -489,7 +489,12 @@ fn build_dual_tree_batches(depth: u32, chunk_size: usize) -> Vec<AgentBatch> {
 /// the module-level doc-comment for the post-dispatch discipline.
 pub struct R15MonotonicityChecker {
     inner: Box<dyn Iterator<Item = AgentBatch>>,
-    #[cfg(debug_assertions)]
+    // TASK-0598 (QA-D010-014): always-present counter field; the assertion body
+    // that *reads* / writes it remains gated by `#[cfg(debug_assertions)]` at
+    // the use site. On release the field stays at its initial `None` value;
+    // `#[allow(dead_code)]` suppresses the dead-code warning on release where
+    // the read/write sites are compiled out.
+    #[allow(dead_code)]
     last_max_id: Option<AgentId>,
 }
 
@@ -531,7 +536,7 @@ pub fn r15_monotonicity_checked(
 ) -> R15MonotonicityChecker {
     R15MonotonicityChecker {
         inner: stream,
-        #[cfg(debug_assertions)]
+        // TASK-0598: field always-present (no cfg gate).
         last_max_id: None,
     }
 }

@@ -120,20 +120,26 @@ pub struct Net {
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub streaming_active: bool,
 
-    /// SPEC-22 R10c (debug-only): protected tombstones — IDs that were
-    /// border-referenced when removed under delta mode. Excluded from the
-    /// free-list until the next `reconstruct` clean-boundary moment.
-    #[cfg(debug_assertions)]
+    /// SPEC-22 R10c: protected tombstones — IDs that were border-referenced
+    /// when removed under delta mode. Excluded from the free-list until the
+    /// next `reconstruct` clean-boundary moment.
+    ///
+    /// TASK-0598 (QA-D010-014, strategy b): the field is ALWAYS present in
+    /// the struct (no `#[cfg(debug_assertions)]` gate on the declaration),
+    /// so the struct's ABI is identical across debug/release. Writes remain
+    /// gated by `#[cfg(debug_assertions)]` at the use site, so on release the
+    /// field stays at its default `None` and pays no runtime cost.
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub protected_tombstones: Option<HashSet<AgentId>>,
 
-    /// SPEC-21 R37b / TASK-0589 (debug-only): cumulative count of successful
-    /// free-list pops. Incremented each time `create_agent` takes the recycle
-    /// path (SPEC-22 R3/R5 free-list branch). Zero under Strategy A + streaming.
+    /// SPEC-21 R37b / TASK-0589: cumulative count of successful free-list
+    /// pops. Incremented each time `create_agent` takes the recycle path
+    /// (SPEC-22 R3/R5 free-list branch). Zero under Strategy A + streaming.
     ///
-    /// Gated on `debug_assertions` to stay at zero overhead in release builds.
-    #[cfg(debug_assertions)]
+    /// TASK-0598 (QA-D010-014, strategy b): always-present field; writes
+    /// gated by `#[cfg(debug_assertions)]` at the use site. On release the
+    /// counter is observably always zero.
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub free_list_pops: u64,
@@ -157,14 +163,18 @@ pub struct Net {
     /// To diagnose a true G1 violation under Strategy B, cross-reference
     /// this counter with `is_in_delta_round || streaming_active` at the
     /// time of the pop.
-    #[cfg(debug_assertions)]
+    ///
+    /// TASK-0598 (QA-D010-014, strategy b): always-present field; writes
+    /// gated by `#[cfg(debug_assertions)]` at the use site.
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub free_list_pops_border: u64,
 
-    /// SPEC-21 R37b / TASK-0590 (debug-only): pops where the popped ID is NOT in
+    /// SPEC-21 R37b / TASK-0590: pops where the popped ID is NOT in
     /// `border_entries_shadow` (Strategy B non-border precision-recycling path).
-    #[cfg(debug_assertions)]
+    ///
+    /// TASK-0598 (QA-D010-014, strategy b): always-present field; writes
+    /// gated by `#[cfg(debug_assertions)]` at the use site.
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub free_list_pops_non_border: u64,
@@ -225,13 +235,11 @@ impl Net {
             recycle_policy: RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
             streaming_active: false,
-            #[cfg(debug_assertions)]
+            // TASK-0598 (QA-D010-014): counter fields always present; writes
+            // are gated by `#[cfg(debug_assertions)]` at the use site.
             protected_tombstones: None,
-            #[cfg(debug_assertions)]
             free_list_pops: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_border: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_non_border: 0,
         }
     }
@@ -257,13 +265,10 @@ impl Net {
             recycle_policy: RecyclePolicy::DisableUnderDelta,
             is_in_delta_round: false,
             streaming_active: false,
-            #[cfg(debug_assertions)]
+            // TASK-0598: see Net::new() — fields always present.
             protected_tombstones: None,
-            #[cfg(debug_assertions)]
             free_list_pops: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_border: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_non_border: 0,
         }
     }
@@ -939,14 +944,11 @@ impl Net {
             recycle_policy: recycle_policy_a,
             is_in_delta_round: _delta_a,
             streaming_active: _sa_a,
-            #[cfg(debug_assertions)]
-                protected_tombstones: _pt_a,
-            #[cfg(debug_assertions)]
-                free_list_pops: _flp_a,
-            #[cfg(debug_assertions)]
-                free_list_pops_border: _flpb_a,
-            #[cfg(debug_assertions)]
-                free_list_pops_non_border: _flpnb_a,
+            // TASK-0598: counter fields always present (no cfg gate).
+            protected_tombstones: _pt_a,
+            free_list_pops: _flp_a,
+            free_list_pops_border: _flpb_a,
+            free_list_pops_non_border: _flpnb_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -961,14 +963,11 @@ impl Net {
             recycle_policy: _rp_b,
             is_in_delta_round: _delta_b,
             streaming_active: _sa_b,
-            #[cfg(debug_assertions)]
-                protected_tombstones: _pt_b,
-            #[cfg(debug_assertions)]
-                free_list_pops: _flp_b,
-            #[cfg(debug_assertions)]
-                free_list_pops_border: _flpb_b,
-            #[cfg(debug_assertions)]
-                free_list_pops_non_border: _flpnb_b,
+            // TASK-0598: counter fields always present (no cfg gate).
+            protected_tombstones: _pt_b,
+            free_list_pops: _flp_b,
+            free_list_pops_border: _flpb_b,
+            free_list_pops_non_border: _flpnb_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -1062,13 +1061,10 @@ impl Net {
             recycle_policy: recycle_policy_a,
             is_in_delta_round: false,
             streaming_active: false,
-            #[cfg(debug_assertions)]
+            // TASK-0598: counter fields always present (no cfg gate).
             protected_tombstones: None,
-            #[cfg(debug_assertions)]
             free_list_pops: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_border: 0,
-            #[cfg(debug_assertions)]
             free_list_pops_non_border: 0,
         }
     }
@@ -3910,5 +3906,125 @@ mod tests {
             net.free_list.is_empty(),
             "UT-0589-08: free_list must be empty after 4 pops"
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // TASK-0598 — Counter ABI parity (QA-D010-014)
+    //
+    // Strategy (b): counter fields are ALWAYS-PRESENT in the struct definition;
+    // only writes are gated by `#[cfg(debug_assertions)]`. The four tests below
+    // form the headline regression fence — UT-0598-01/02 verify field presence
+    // on debug AND release; UT-0598-03/04 verify writes are active on debug
+    // and inert on release.
+    // ----------------------------------------------------------------------
+
+    /// UT-0598-01 — `counter_fields_present_on_debug_build`.
+    ///
+    /// On debug, every counter field on `Net` MUST be present in the struct
+    /// definition. The test compiles iff each field is accessible by name.
+    /// The body is byte-for-byte identical to UT-0598-02 (release mirror).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn ut_0598_01_counter_fields_present_on_debug_build() {
+        let net = Net::new();
+        let _ = &net.protected_tombstones;
+        let _ = net.free_list_pops;
+        let _ = net.free_list_pops_border;
+        let _ = net.free_list_pops_non_border;
+        assert!(
+            net.protected_tombstones.is_none(),
+            "protected_tombstones must be None at construction"
+        );
+        assert_eq!(net.free_list_pops, 0);
+        assert_eq!(net.free_list_pops_border, 0);
+        assert_eq!(net.free_list_pops_non_border, 0);
+    }
+
+    /// UT-0598-02 — `counter_fields_present_on_release_build`.
+    ///
+    /// Release-side mirror of UT-0598-01. The body MUST be byte-for-byte
+    /// identical to UT-0598-01 — the only difference is the `cfg` gate. This
+    /// pair is the headline regression for ABI drift (QA-D010-014).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn ut_0598_02_counter_fields_present_on_release_build() {
+        let net = Net::new();
+        let _ = &net.protected_tombstones;
+        let _ = net.free_list_pops;
+        let _ = net.free_list_pops_border;
+        let _ = net.free_list_pops_non_border;
+        assert!(
+            net.protected_tombstones.is_none(),
+            "protected_tombstones must be None at construction"
+        );
+        assert_eq!(net.free_list_pops, 0);
+        assert_eq!(net.free_list_pops_border, 0);
+        assert_eq!(net.free_list_pops_non_border, 0);
+    }
+
+    /// UT-0598-03 — `counter_writes_active_in_debug`.
+    ///
+    /// On debug, the counter writes (still gated by `#[cfg(debug_assertions)]`
+    /// at the use site, per strategy (b)) actually fire — the counters
+    /// increment when the gated code path runs.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn ut_0598_03_counter_writes_active_in_debug() {
+        let mut net = Net::new();
+        // Pre-populate free-list with 3 IDs by create+remove pairs.
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(net.create_agent(Symbol::Era));
+        }
+        for id in &ids {
+            net.remove_agent(*id);
+        }
+        // Push mode: gate off so create_agent will pop from the free-list.
+        net.is_in_delta_round = false;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        for _ in 0..3 {
+            net.create_agent(Symbol::Era);
+        }
+        assert_eq!(
+            net.free_list_pops, 3,
+            "debug builds: counter writes are active (3 pops recorded)"
+        );
+    }
+
+    /// UT-0598-04 — `counter_writes_inert_in_release`.
+    ///
+    /// On release, the counter writes (gated at the use site) do NOT fire —
+    /// the field stays at its initial value (zero) regardless of how many
+    /// times the gated code path runs. The struct's externally observable
+    /// behavior (queue contents, sizes, etc.) is identical to debug — only
+    /// the diagnostic counter values differ.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn ut_0598_04_counter_writes_inert_in_release() {
+        let mut net = Net::new();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(net.create_agent(Symbol::Era));
+        }
+        for id in &ids {
+            net.remove_agent(*id);
+        }
+        net.is_in_delta_round = false;
+        net.recycle_policy = RecyclePolicy::DisableUnderDelta;
+        for _ in 0..3 {
+            net.create_agent(Symbol::Era);
+        }
+        // External behavior unchanged: free-list is now empty (3 pops succeeded).
+        assert!(
+            net.free_list.is_empty(),
+            "release builds: external behavior identical to debug — free_list drained"
+        );
+        // But the counter never moved — writes are gated at the use site.
+        assert_eq!(
+            net.free_list_pops, 0,
+            "release builds: counter writes are inert (field stays at initial 0)"
+        );
+        assert_eq!(net.free_list_pops_border, 0);
+        assert_eq!(net.free_list_pops_non_border, 0);
     }
 }
