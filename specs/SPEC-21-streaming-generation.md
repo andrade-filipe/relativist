@@ -201,6 +201,8 @@ fn generate_and_partition_chunked(
 
 **Closing note on R15 ↔ I3' reconciliation (closes SC-009).** R15 is a generator-phase contract, strictly stronger than SPEC-01 I3' as amended by SPEC-22 §3.8 A1. The contract scope is the **generation** path (`make_net_stream`, `generate_and_partition_chunked`, `PartitionAccumulator`). Once a chunk has been dispatched and a worker fires reduction rules, the worker's arena MAY recycle slot IDs per I3' / SPEC-22 R1-R10c. Code in `src/partition/streaming.rs` MUST NOT assume monotonicity on agents created post-dispatch (e.g., MUST NOT write `assert!(new_id > old_max_id)` patterns; cf. SPEC-22 §3.8 A6 forbidden assertion list). Implementers reading R15 in isolation should treat the property as a generator output bound, not a global invariant.
 
+**Bench-harness measurement protocol:** see SPEC-09 §4.9 (Streaming Architecture) for the bench-harness selection between EAGER (`chunk_size == None`) and STREAMING (`chunk_size == Some(N)`) paths, the acceptance gates that validate R10/R12's memory-scaling property empirically, and the provenance discipline for distinguishing Tier 3 streaming rodadas from `v1_local_baseline`.
+
 ### 3.6 Lazy/Demand-Driven Generation (ROADMAP 2.36) — Amendment
 
 This section is an amendment to SPEC-21, adding a pull-based orchestration layer on top of the streaming pipeline defined in Sections 3.1-3.5. In the push model (Sections 3.1-3.3), the coordinator generates chunks eagerly and dispatches them to workers. In the pull model (this section), workers request work on demand, and the coordinator generates and dispatches chunks only when requested.

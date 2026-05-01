@@ -1,6 +1,6 @@
 # SPEC-09: Benchmark Suite
 
-**Status:** Revised v3.1.2 — R2 amended per SPEC-21 §3.8 A4 (`Benchmark` trait gains `make_net_stream` with default impl)
+**Status:** Revised v3.2 — D-011 Phase F-1 Tier 3 measurement protocol amendment (R18a–R18g, R29a–R29c, R37c, §4.9)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-12 (User I/O -- canonical generators), SPEC-14 (Arithmetic Encoding -- Church numeral benchmarks)
 **Amends:** SPEC-21 §3.8 A4 (R2 — `Benchmark` trait gains `fn make_net_stream(&self, size, chunk_size) -> Box<dyn Iterator<Item = AgentBatch>>` with default impl that wraps `make_net`; SPEC-21 R10, R11, R12)
 **Gray zones resolved:** Z4 (communication overhead vs. parallelism benefit), Z6 (scalability transfer from shared to distributed memory), Z7 (work granularity)
@@ -475,6 +475,68 @@ pub struct WorkerBenchStats {
 }
 ```
 
+#### 3.3.X Streaming Representation Metrics (Tier 3 measurement protocol)
+
+The Tier 3 hardening campaign (D-011) exercises the streaming generation pipeline (SPEC-21), the worker arena recycling discipline (SPEC-22 R1–R10c), and the Sparse construction representation (SPEC-22 §3.2). The legacy `peak_memory_bytes` field (R18) is the process-wide peak RSS (`VmHWM`) sampled AFTER reduction completes; this single watermark conflates construction-phase memory with reduction-phase memory and is therefore insufficient to validate the SPEC-21 R10 / R12 acceptance gate ("memory scales with `chunk_size`, not `total_agents`") or the SPEC-22 R32 free-list memory budget at the M5 milestone (100M agents on a 2 GB coordinator). Requirements R18a–R18g extend `BenchmarkResult` with the metrics needed to validate those gates without breaking the v1 detail.csv schema.
+
+**R18a.** `BenchmarkResult` MUST carry a field `peak_memory_during_construction: u64` (bytes). The framework MUST capture this value at a single, well-defined program point, defined per construction path:
+
+- **Eager path (`chunk_size == None`):** AFTER `Benchmark::make_net(size)` returns AND BEFORE any `reduce_all` / `run_grid` invocation, with no other heap allocation between the return and the sample.
+- **Streaming path (`chunk_size == Some(N)`):** AFTER `merge::generate_and_partition_chunked_with_chunk_size_and_lifetime` returns (i.e., all `AgentBatch`es have been produced AND ingested by the partitioner AND all worker partitions have been finalized) AND BEFORE the first `AssignPartition` is dispatched. Sampling at the iterator-exhaustion point but before the partitioner has finalized worker partitions is FORBIDDEN: it underestimates the streaming-architecture's actual memory footprint and produces R18a numbers that are not comparable across implementations.
+- **Sparse path (`representation == Sparse`):** AFTER `to_dense(id_range)` returns (i.e., the dense net is materialized) AND BEFORE any `reduce_all` invocation. The Sparse path's R18a thus captures the maximum of (SparseNet construction watermark, `to_dense` peak), since `VmHWM` is monotone-non-decreasing.
+
+On Linux, the value MUST be obtained by reading `/proc/self/status` `VmHWM` at the exact program point above. On non-Linux platforms (Windows development environment), the value MUST be `0` and the limitation MUST be documented (consistent with R18 / §4.4 posture). This is the variable that validates SPEC-21 R10/R12 (memory scales with `chunk_size`) and SPEC-22 R32 (free-list memory budget at M5). **(MUST on Linux; MAY on non-Linux)**
+
+**R18b.** `BenchmarkResult` MUST carry a field `peak_memory_during_reduction: u64` (bytes). The framework MUST capture this value AFTER the final `reduce_all` / `run_grid` call returns and BEFORE any merge cleanup. On Linux, the value MUST be obtained by reading `/proc/self/status` `VmHWM` at that program point. The DIFFERENCE `R18b - R18a` is the working-set delta induced by reduction itself (arena recycling, border state, BorderGraph allocation). The legacy R18 field `peak_memory_bytes` is preserved for backward CSV compatibility with `v1_local_baseline` and MUST be set to `max(R18a, R18b)` (the process-wide watermark over the full execution). This preserves the existing detail.csv column `peak_memory_bytes` unchanged in semantics for all v1-equivalent rodadas (which only exercise the eager path, where R18a ≈ R18b ≈ R18 by construction). **(MUST)**
+
+**R18c.** `BenchmarkResult` MUST carry a field `agent_count_at_construction_complete: u64`. The framework MUST set this value at the same program point as R18a, by the following dispatching discipline (evaluated in order; first match wins):
+
+1. **Sparse path (`representation == Sparse`):** `SparseNet::agents.len() as u64` (a `HashMap::len`, NOT the eventual dense-arena length). Sampled BEFORE the `to_dense(id_range)` conversion. This rule applies regardless of `chunk_size`. Closes F3 of Round 1 review by giving the Sparse axis priority over the streaming axis when both are active.
+2. **Streaming path (`chunk_size == Some(N)`, `representation == Dense`):** the sum of `AgentBatch::agents.len()` across all batches produced during construction. Forward references that are subsequently resolved by overwrite are NOT double-counted: the sum is over distinct `AgentId`s emitted by the generator iterator.
+3. **Eager path (`chunk_size == None`, `representation == Dense`):** `net.live_agents() as u64` (or equivalently `count_live_agents()` per SPEC-02 R16a, which excludes free-list slots).
+
+Rationale: this is the input-size invariant against which R18d (working-set watermark) and R18a (memory-watermark) are compared in the acceptance gates of §4.9. **(MUST)**
+
+**R18d.** `BenchmarkResult` MUST carry a field `live_agent_count_watermark: u64`. The framework MUST sample the live-agent count at each round boundary during reduction (at the same program point at which `agents_per_round` is recorded, R18) and record the maximum value observed across all rounds. The sampling primitive is `net.agents.iter().filter(|s| s.is_some()).count()` (or equivalently `count_live_agents()`, SPEC-02 R16a). For the Sparse path, R18d is sampled on the dense net produced by `to_dense`, NOT on the original `SparseNet`. R18d closes the empirical-validation gate for "Profile B (expansion + collapse)" benchmarks, where the live-agent count grows above `agent_count_at_construction_complete` mid-reduction before collapsing to the normal form. Without R18d, the only memory-related signal available is post-reduction process-wide RSS, which underestimates the working-set peak. **(MUST)**
+
+**R18e.** `BenchmarkResult` MUST carry a field `representation: NetRepresentation` recording the construction-phase data structure used. The enum `NetRepresentation` is defined in §4.1 alongside `Mode`:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NetRepresentation {
+    Dense,
+    Sparse,
+}
+```
+
+R18e MUST be set from the `BenchmarkSuiteConfig::representation` field (D-011 Phase C plan, `relativist-core/src/bench/mod.rs:231-251`). Default value: `Dense`. **(MUST)**
+
+**R18f.** `BenchmarkResult` MUST carry a field `chunk_size: Option<u32>` recording the streaming construction-path chunk size used. `None` denotes the eager path; `Some(N)` denotes the streaming path with `N`-agent batches. R18f MUST be set from the `BenchmarkSuiteConfig::chunk_size` field. **(MUST)**
+
+**R18g.** `BenchmarkResult` MUST carry a field `recycle_policy: RecyclePolicy` recording the worker arena recycling discipline used. The Rust enum `RecyclePolicy` is FIRST DEFINED HERE (SPEC-09 §4.1) for cross-module use; the SEMANTICS of the two variants are governed by SPEC-22 R10b/R10c (the SPEC-22 spec describes the BEHAVIOR; SPEC-09 owns the enum TYPE for `BenchmarkSuiteConfig` and `BenchmarkResult` provenance). Wire-format / persistence concerns, if any, defer to SPEC-22. The variants are:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RecyclePolicy {
+    DisableUnderDelta,
+    BorderClean,
+}
+```
+
+R18g MUST be set from the `BenchmarkSuiteConfig::recycle_policy` field. Default value: `DisableUnderDelta`. **(MUST)**
+
+**Backward compatibility with v1 CSVs (joinability gate).** R18a–R18g extend the `detail.csv` schema (R39a) by appending seven new columns to the RIGHT of the existing v1 column order. R39a is the source of truth for the v1 column order; the seven new columns are listed in R39a's schema block following the v1 column sequence. The new columns appear in the order:
+
+```
+peak_memory_during_construction,peak_memory_during_reduction,
+agent_count_at_construction_complete,live_agent_count_watermark,
+representation,chunk_size,recycle_policy
+```
+
+This guarantees that `v1_local_baseline/phase2_detail.csv` (which has only the v1 columns) remains joinable to Tier 3 detail.csv by the composite key `(benchmark, input_size, workers, mode, repetition)` without any column-mapping shim — pandas `pd.merge(on=[...])` ignores the rightmost 7 columns of the Tier 3 frame when v1 lacks them, and the leftmost 22 columns are byte-identical in order and semantics. The `summary.csv` (R40) and `rounds.csv` (R39b) schemas are NOT extended by R18a–R18g; per-round memory sampling is intentionally out of scope for this campaign. **(MUST)**
+
+**Field-population discipline for v1-equivalent rodadas.** When `chunk_size == None`, `representation == Dense`, and `recycle_policy == DisableUnderDelta` (i.e., the v1 path), the framework MUST populate R18a–R18d with their meaningful values (memory watermarks and agent counts MUST be measured), and MUST populate R18e–R18g with their default values (`Dense`, `None`, `DisableUnderDelta`). v1-equivalent rodadas thereby produce a strict superset of the v1 detail.csv columns; downstream Python tools that join Tier 3 detail.csv against `v1_local_baseline` detail.csv MAY simply ignore the rightmost 7 columns to recover the v1 schema. **(MUST)**
+
 **R19.** The following metrics MUST be reported for EACH datapoint. **(MUST)**
 
 | Metric | Field | Unit | Source | Gap addressed |
@@ -540,6 +602,33 @@ pub struct WorkerBenchStats {
 
 **R29.** The suite MAY include alternative strategies (redex-aware, etc.) as future experimental variables. **(MAY)**
 
+#### 3.4.5 Chunk size
+
+**R29a.** The bench harness MUST expose a variable `chunk_size: Option<u32>` controlling the streaming construction path defined in SPEC-21 §3.5 (chunked pipeline). The semantics of the value are:
+
+- `chunk_size == None` selects the EAGER construction path. The net is materialized in full via `Benchmark::make_net(size)` before any reduction call; this is the v1-equivalent baseline and the only path exercised by the frozen `v1_local_baseline` campaign. **(MUST)**
+- `chunk_size == Some(N)` selects the STREAMING construction path. The net is generated as a sequence of `AgentBatch` chunks of `N` agents each via `Benchmark::make_net_stream(size, N)` and partitioned incrementally per batch via `merge::generate_and_partition_chunked_with_chunk_size_and_lifetime` (SPEC-21 R10–R12, R37g). **(MUST when streaming is exercised)**
+
+The chunk size MUST be held constant within a single bench rodada (i.e., across all repetitions of all (benchmark, size, workers, mode) triples in one CSV output). Comparative experiments that vary `chunk_size` across rodadas are out of scope for the D-011 production rodada and are deferred to a future memory-scaling study. The default value for the v2 bench rodada is `Some(10000)`; the eager baseline is `None`. The selected value MUST be recorded in every `BenchmarkResult` row via the new field `chunk_size` (R18f).
+
+#### 3.4.6 Recycle policy
+
+**R29b.** The bench harness MUST expose a variable `recycle_policy ∈ {DisableUnderDelta, BorderClean}` controlling worker-side arena recycling discipline as defined in SPEC-22 R10b/R10c. The semantics are:
+
+- `DisableUnderDelta` (default): recycling is suppressed when a partition is in `delta_mode` AND the reused id belongs to the border-referenced set. This is the conservative SPEC-22 R10b posture. **(MUST as default)**
+- `BorderClean`: recycling proceeds unconditionally except for slots whose ids are protected tombstones on the active border (SPEC-22 R10c). MAY be exercised in D-011 Phase C smoke testing only; the production rodada uses the default. **(MAY)**
+
+The selected policy MUST be recorded in every `BenchmarkResult` row via the new field `recycle_policy` (R18g). Production-grade rodadas that mix policies in the same CSV are forbidden; if both policies are exercised, they MUST be written to distinct CSV outputs to preserve provenance.
+
+#### 3.4.7 Representation
+
+**R29c.** The bench harness MUST expose a variable `representation ∈ {Dense, Sparse}` controlling the construction-phase data structure as defined in SPEC-22 §3.2:
+
+- `Dense` (default): the standard `Net` (`Vec<Option<Agent>>`) representation, v1-equivalent. All benchmarks MUST support `Dense`. **(MUST)**
+- `Sparse`: the `SparseNet` (`HashMap`-backed) representation. Construction occurs into a `SparseNet`; the structure is converted via `to_dense(id_range)` (SPEC-22 R20) before reduction begins. The `Sparse` value is exercised ONLY in the SparseNet micro-bench scope of D-011 Phase D, restricted to the `dual_tree` benchmark, and is NOT part of the main 13-benchmark experimental matrix (§4.7). **(MAY for `Sparse`)**
+
+The selected representation MUST be recorded in every `BenchmarkResult` row via the new field `representation` (R18e). Sparse-path datapoints MUST be written to a distinct CSV output from dense-path datapoints to preserve provenance and avoid joining Sparse rows against `v1_local_baseline` Dense rows.
+
 ### 3.5 Statistical Methodology
 
 **R30.** Each datapoint MUST be produced by a measurement protocol with warmup and repetitions. **(MUST)**
@@ -586,6 +675,23 @@ For each (benchmark, size, workers, mode):
 
 **R37b.** For the sequential baseline, correctness MUST be verified by comparing the result of each repetition against the first sequential result by graph isomorphism. This validates invariant T6 (uniqueness of normal form, SPEC-01): all sequential runs MUST produce the same normal form regardless of reduction order. A mismatch indicates a reduction engine bug. **(MUST)**
 
+**R37c.** When `representation == Sparse` OR `chunk_size.is_some()` (i.e., any Tier 3 construction path is active), the verifier MUST additionally assert that the net OBSERVED at the end of construction — that is, AT the program point of R18a (defined per path in R18a's bullet list, before any `reduce_all` / `run_grid` invocation) — is graph-isomorphic to the eager-constructed reference net produced by `Benchmark::make_net(size)`. The check MUST use the standard isomorphism primitive `nets_isomorphic` defined in SPEC-08; the lightweight fast-path of R37a (matching agent counts per symbol, wire counts, free-port counts, and redex counts without the canonical structural pass) is permitted on nets larger than 5000 agents, mirroring R37a's threshold. For the Sparse path, the isomorphism check MUST be performed AFTER `to_dense(id_range)` and BEFORE any reduction call, on the dense net produced by the conversion.
+
+**Sequencing constraint (closes F2 of Round 1 review).** The reference eager net's allocation MUST NOT poison R18a. The framework MUST sequence the operations as follows:
+
+1. Build the Tier 3 net (streaming or sparse path).
+2. Sample `VmHWM` and write to `peak_memory_during_construction` (R18a).
+3. Build the reference eager net via `Benchmark::make_net(size)`.
+4. Run `nets_isomorphic` between the Tier 3 net (post-`to_dense` for Sparse; post-finalize for streaming) and the reference eager net.
+5. Discard the reference eager net (drop the binding).
+6. Proceed to `run_grid` / `reduce_all`.
+
+After step 2, R18a is frozen for the row. The reference net's allocation in step 3 is permitted to raise process-wide `VmHWM` but MUST NOT influence R18a (already captured) and MUST NOT influence R18b (which is sampled AFTER reduction completes — the reference net's allocation pre-dates step 6 by construction, so its watermark contribution is captured by the legacy `peak_memory_bytes` field but NOT by R18b unless the reduction itself rises above it).
+
+Implementations MAY alternatively perform the isomorphism check in a separate "verification run" of the same benchmark, with R18a sampled in a "measurement run" that omits the reference allocation; this is operationally heavier but produces identical `BenchmarkResult` values for R18a/R18b/R37c-validity. Both alternatives satisfy R37c.
+
+Rationale: streaming-built nets MAY have different internal `AgentId` assignments and different arena layouts than their eager equivalents (SPEC-21 R6, R10) but MUST be reduction-equivalent (SPEC-21 R10 / R27 D1). Without this gate, a streaming bug that produces a structurally-different but reducible net would silently pass R37 (which only checks the post-reduction normal form) — for example, a streaming partitioner that drops a wire but happens to preserve the post-reduction agent count for an empty-result benchmark like `ep_annihilation`. R37c closes this hole by requiring construction-phase structural equivalence to the eager reference. The check is conditional (only when Tier 3 paths are active) to avoid imposing the cost on v1-equivalent rodadas, where eager construction IS the reference and the check would be tautological. **(MUST when `representation == Sparse` OR `chunk_size.is_some()`)**
+
 **R38.** A correctness failure on any datapoint MUST halt the suite and report full details: benchmark, size, workers, mode, repetition, and the nature of the divergence (agent count, topology, etc.). **(MUST)**
 
 ### 3.7 Output
@@ -599,8 +705,13 @@ benchmark,input_size,mode,workers,repetition,correct,
 wall_clock_secs,total_interactions,mips,
 rounds,speedup,efficiency,overhead_ratio,
 peak_memory_bytes,bytes_sent,bytes_received,
-con_con,dup_dup,era_era,con_dup,con_era,dup_era
+con_con,dup_dup,era_era,con_dup,con_era,dup_era,
+peak_memory_during_construction,peak_memory_during_reduction,
+agent_count_at_construction_complete,live_agent_count_watermark,
+representation,chunk_size,recycle_policy
 ```
+
+The leftmost 22 columns (through `dup_era`) are the v1 schema, frozen by `results/locked/v1_local_baseline/phase2_detail.csv`. The rightmost 7 columns (`peak_memory_during_construction` onward) are the Tier 3 measurement protocol additions per R18a–R18g (D-011 Phase F-1). v1-equivalent rodadas (eager path, dense, default recycle policy) MUST still populate the rightmost 7 columns with their default values per R18a–R18g; the rightmost columns MUST NOT be omitted from a v1-equivalent rodada's CSV.
 
 **R39b.** `rounds.csv`: One row per (benchmark, input_size, workers, mode, repetition, round). Only populated for distributed modes (Local, TcpLocalhost, TcpNetwork). Enables per-round analysis of overhead evolution and border ratio dynamics without JSON-in-CSV. Schema:
 
@@ -717,6 +828,29 @@ pub enum Mode {
     TcpNetwork,
 }
 
+/// Construction-phase data structure (R18e, R29c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NetRepresentation {
+    /// Standard `Net` (Vec<Option<Agent>>), v1-equivalent.
+    Dense,
+    /// SparseNet (HashMap-backed); converted via `to_dense` before reduction.
+    /// SPEC-22 §3.2.
+    Sparse,
+}
+
+/// Worker arena recycling discipline (R18g, R29b). Owned by SPEC-22 §3.1
+/// (R10a); re-exported into the bench module for `BenchmarkSuiteConfig`
+/// and `BenchmarkResult` provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RecyclePolicy {
+    /// Suppress recycling under delta_mode for border-referenced ids
+    /// (SPEC-22 R10b conservative posture, default).
+    DisableUnderDelta,
+    /// Recycle whenever the slot is not on the active border
+    /// (SPEC-22 R10c protected-tombstone posture, smoke-test only).
+    BorderClean,
+}
+
 /// Configuration for a benchmark suite run.
 #[derive(Debug, Clone)]
 pub struct BenchmarkSuiteConfig {
@@ -738,6 +872,21 @@ pub struct BenchmarkSuiteConfig {
     pub csv_summary: Option<PathBuf>,
     /// Grid loop round limit.
     pub max_rounds: Option<u32>,
+    /// Streaming construction chunk size (R29a). `None` selects the EAGER
+    /// path; `Some(N)` selects the STREAMING path with N-agent batches.
+    /// Default: `None` for v1-equivalent rodadas; `Some(10000)` for the
+    /// v2 production rodada.
+    pub chunk_size: Option<u32>,
+    /// Worker arena recycling discipline (R29b). Default:
+    /// `RecyclePolicy::DisableUnderDelta`.
+    pub recycle_policy: RecyclePolicy,
+    /// Construction-phase data structure (R29c). Default:
+    /// `NetRepresentation::Dense`. `Sparse` is exercised only in the
+    /// D-011 Phase D SparseNet micro-bench (dual_tree only).
+    pub representation: NetRepresentation,
+    /// Pending-reference lifetime budget for the streaming pipeline
+    /// (SPEC-21 R37g). Default: 16. Honored only when `chunk_size.is_some()`.
+    pub max_pending_lifetime: u32,
 }
 
 /// Aggregated statistics over a set of repetitions.
@@ -1068,6 +1217,46 @@ The benchmark suite SHOULD produce or enable the following visualizations for Se
 6. **Efficiency heatmap** (benchmark x workers, color = efficiency): provides an at-a-glance view of where distribution is viable.
 
 These visualizations MAY be produced by an external Python/R script reading the CSV output, not necessarily by the Rust binary itself.
+
+### 4.9 Streaming Architecture (Tier 3 measurement protocol)
+
+(Reference: SPEC-21 §3.5 chunked pipeline / R10–R12 / R37g, SPEC-22 §3.1 free-list lifecycle / R10b–R10c, SPEC-22 §3.2 SparseNet / R20.)
+
+The bench harness MUST select between two execution paths based on `BenchmarkSuiteConfig::chunk_size` (R29a):
+
+- `chunk_size == None` selects the **EAGER** path. The net is materialized in full via `Benchmark::make_net(size)`, then `run_grid` (or `reduce_all` for the sequential baseline) is invoked on the resulting `Net`. Memory peak (R18a) occurs at construction. This path is the v1-equivalent baseline and the only path exercised by `results/locked/v1_local_baseline/`.
+
+- `chunk_size == Some(N)` selects the **STREAMING** path. The net is generated as a sequence of `AgentBatch` chunks of `N` agents each via `Benchmark::make_net_stream(size, N)` (SPEC-09 R2 amendment, SPEC-21 §3.8 A4). Each batch is partitioned incrementally as it is produced, via `merge::generate_and_partition_chunked_with_chunk_size_and_lifetime`, and dispatched per-chunk to workers. Memory peak (R18a) is bounded by the largest chunk plus retained borders, per SPEC-21 R10 / R12.
+
+The `BenchmarkSuiteConfig::recycle_policy` field (R29b) selects the worker-side arena recycling discipline (SPEC-22 R10a / R10b / R10c):
+
+- `RecyclePolicy::DisableUnderDelta` (default): recycling is suppressed when a partition is in `delta_mode` AND the reused id is in the border-referenced set. This is the conservative SPEC-22 R10b posture and MUST be the production-rodada default.
+- `RecyclePolicy::BorderClean`: recycling proceeds whenever the slot is not on the active border (the protected-tombstone set per SPEC-22 R10c). This is the optimistic posture and is exercised in D-011 Phase C smoke testing only.
+
+The `BenchmarkSuiteConfig::representation` field (R29c) selects the construction-phase data structure:
+
+- `NetRepresentation::Dense` (default): standard `Net` (`Vec<Option<Agent>>`), v1-equivalent. All 13 benchmarks support this representation.
+- `NetRepresentation::Sparse`: `SparseNet` (`HashMap`-backed) construction (SPEC-22 §3.2). The structure is converted via `to_dense(id_range)` (SPEC-22 R20) before reduction. The Sparse path is exercised ONLY in the SparseNet micro-bench scope (D-011 Phase D), restricted to the `dual_tree` benchmark, and is NOT part of the main 13-benchmark experimental matrix (§4.7).
+
+#### 4.9.1 Pending-reference budget across batches
+
+The streaming pipeline accumulates forward references (`ConnectionDirective::Pending`) when a wire is emitted in chunk `i` but its target agent has not yet been emitted (it will appear in chunk `j > i`). Per SPEC-21 R37g, the pipeline MUST bound the lifetime of any pending entry to at most `max_pending_lifetime` chunks (default value: `16`, configurable via `GridConfig::max_pending_lifetime`). The bench harness MUST propagate the configured value into the streaming partitioner via `merge::generate_and_partition_chunked_with_chunk_size_and_lifetime`. Exceeding the budget MUST cause the streaming partitioner to return the error `PartitionError::PendingLifetimeExceeded` (this error variant is part of the Phase B-2 fix scope per the D-011 plan and is not yet present in the v2-development branch as of 2026-04-30; the bench harness MUST surface this error as a benchmark-level fatal failure, halting the suite per R38 with a diagnostic identifying the violating benchmark and chunk size).
+
+When `chunk_size == None` (eager path), the `BenchmarkSuiteConfig::max_pending_lifetime` field MUST be ignored: it MUST NOT be propagated, MUST NOT be validated against any bound, and MUST NOT alter the eager construction path's behavior. The field's default value (`16`) is reported in CSV provenance only when streaming is active; eager-path rodadas are silent on the field. (Closes F6 of Round 1 review.)
+
+#### 4.9.2 Acceptance gates per path
+
+The Tier 3 measurement protocol defines the following acceptance gates. Each gate is a per-benchmark assertion that MUST be checked by the post-processing pipeline (Python scripts under `scripts/plot_results.py`, or equivalent) AFTER the rodada's CSVs are produced. The gates are NOT enforced by the Rust binary at runtime; they are validation criteria for the rodada's output.
+
+- **EAGER acceptance gate (vs. v1_local_baseline).** For every (benchmark, size, workers, mode) row produced by an EAGER-path rodada (`chunk_size == None`, `representation == Dense`, `recycle_policy == DisableUnderDelta`), the median `wall_clock_secs`, median `mips`, and `peak_memory_bytes` MUST exhibit no statistically significant regression versus the corresponding row in `results/locked/v1_local_baseline/phase2_summary.csv`. "No regression" is defined as: the Tier 3 median `wall_clock_secs` is within the v1 bootstrap 95% CI band, the Tier 3 median `mips` is within the v1 bootstrap 95% CI band, and the Tier 3 `peak_memory_bytes` is within ±10% of the v1 value. A regression on any axis MUST be investigated before the rodada is locked. If `v1_local_baseline/phase2_summary.csv` lacks the bootstrap CI columns (`wall_clock_ci95_lo/hi`, `mips_ci95_lo/hi`) — which is the case for the v1 frozen artifact, since R32a is SHOULD and v1 deferred CI computation to Python post-processing — the post-processing step MUST recompute the v1 CI from `phase2_detail.csv` raw data per R32a's offline-bootstrap escape hatch, with 10,000 resamples on the median. **(MUST; closes F7 of Round 1 review)**
+
+- **STREAMING acceptance gate (memory-scaling validation).** For every (benchmark, size, workers, mode) row produced by a STREAMING-path rodada (`chunk_size == Some(N)`), `peak_memory_during_construction` (R18a) MUST be bounded by `O(chunk_size + |retained_borders|)`, independent of `total_agents`. The empirical validation protocol is: run the same benchmark at fixed `chunk_size` while doubling `input_size` (e.g., from `agent_count_at_construction_complete = 10000` to `20000` to `40000`); the median R18a values across the three rodada points MUST stay within a 2× envelope. Failure of this gate indicates that `max_pending_lifetime` is too high, that the generator violates the SPEC-21 R37g forward-reference discipline, or that border retention is unbounded — all of which MUST be triaged before the streaming numbers are reported. **(MUST when `chunk_size.is_some()`)**
+
+- **SPARSE acceptance gate (micro-bench, Phase D).** For the SparseNet micro-bench scope (D-011 Phase D, `dual_tree` benchmark only), the median `peak_memory_during_construction` (R18a) under `representation == Sparse` MUST be strictly less than 80% of the median R18a under `representation == Dense` at the same `input_size`. This is the empirical validation of SPEC-22's "memory savings on sparse-degree workloads" claim. Failure of this gate means SparseNet does not deliver the expected memory savings on `dual_tree` and MUST be triaged before the micro-bench is reported. **(MUST when `representation == Sparse` AND `benchmark == DualTree`)**
+
+#### 4.9.3 Provenance discipline
+
+Tier 3 rodadas (any rodada with `chunk_size.is_some()` OR `representation == Sparse`) MUST be written to CSV files distinct from any v1-equivalent rodada, to prevent silent provenance drift. The recommended naming convention is `{phase}_{path}_{detail|rounds|summary}.csv` where `path ∈ {eager, streaming_chunkN, sparse_dual_tree}`. Mixing paths in the same CSV is forbidden by R29b and R29c (recycle policy and representation are constant within a CSV); chunk_size MAY be constant within a CSV per R29a.
 
 ---
 
