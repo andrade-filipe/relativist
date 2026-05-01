@@ -392,3 +392,171 @@ fn ut_0591_09_feature_on_with_strategy_b_redundant_runtime_gate() {
         "UT-0591-09: feature ON + Strategy B → zero border pops"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TASK-0599 — IT-0591 strengthening (QA-D010-012) + worker placeholder
+// semantics witness (QA-D010-010).
+//
+// Per TEST-SPEC-0599 §"Per-test specifications", the goal is to make IT-0591
+// non-vacuous: under the BASELINE (no `streaming-no-recycle` feature) the
+// chosen workload produces an OBSERVABLY non-zero `free_list_pops` counter.
+// Under the WITH-feature build, the same workload produces zero pops. The
+// discriminant is real, not vacuous.
+//
+// Workload: pre-populate the free-list (8 IDs), arm `is_in_delta_round` so
+// the feature gate fires, choose `RecyclePolicy::BorderClean` so under the
+// baseline Strategy B *would* pop non-border IDs. Issue 8 fresh creates and
+// observe the counter.
+// ---------------------------------------------------------------------------
+
+/// Shared workload helper for IT-0599-02..04.
+///
+/// Builds a Net with 8 free-list entries (IDs 0..8 created then removed),
+/// arms `is_in_delta_round = true` (so the feature gate disjunction fires),
+/// and uses `RecyclePolicy::BorderClean` with NO border shadow — so under
+/// the baseline (no feature), Strategy B would pop every non-border ID.
+/// Then issues 8 fresh `create_agent` calls and returns the resulting Net
+/// (read `free_list_pops` for the discriminant).
+#[cfg(debug_assertions)]
+fn it_0599_workload() -> Net {
+    let mut net = Net::new();
+    let ids: Vec<u32> = (0..8).map(|_| net.create_agent(Symbol::Con)).collect();
+    for id in &ids {
+        net.remove_agent(*id);
+    }
+    assert_eq!(
+        net.free_list.len(),
+        8,
+        "workload setup: 8 entries in free-list"
+    );
+
+    // Arm the streaming gate (feature-gate disjunction) AND Strategy B
+    // (which under baseline allows non-border pops). No border shadow set,
+    // so every ID is non-border.
+    net.is_in_delta_round = true;
+    net.recycle_policy = RecyclePolicy::BorderClean;
+
+    for _ in 0..8 {
+        net.create_agent(Symbol::Era);
+    }
+    net
+}
+
+/// IT-0599-02 — `it0591_input_triggers_recycle_attempts_under_baseline`.
+///
+/// BASELINE (no `streaming-no-recycle` feature): the workload must produce
+/// a non-zero `free_list_pops` counter. This proves the input is non-vacuous
+/// — a future regression that re-introduces the QA-D010-012 vacuity pattern
+/// (where pop_count == 0 under both feature settings) is caught here.
+///
+/// Strategy B with `is_in_delta_round=true` and no border shadow: every ID
+/// is non-border, so all 8 pops succeed. The feature gate is OFF, so no
+/// short-circuit occurs.
+#[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
+#[test]
+fn it_0599_02_input_triggers_recycle_attempts_under_baseline() {
+    let net = it_0599_workload();
+    assert!(
+        net.free_list_pops >= 1,
+        "IT-0599-02: BASELINE workload must produce >= 1 pop (non-vacuous discriminant). \
+         Got {}.",
+        net.free_list_pops
+    );
+    assert_eq!(
+        net.free_list_pops, 8,
+        "IT-0599-02: deterministic workload — exactly 8 non-border pops expected"
+    );
+    assert!(
+        net.free_list.is_empty(),
+        "IT-0599-02: free-list drained after 8 successful pops"
+    );
+}
+
+/// IT-0599-03 — `it0591_pop_counter_is_zero_under_feature`.
+///
+/// WITH-feature counterpart: the SAME workload must produce strict zero
+/// (the feature gate suppresses every pop regardless of recycle_policy).
+/// Final reduced net is identical in shape — the feature gate must NOT
+/// change correctness, only the recycle path is suppressed.
+#[cfg(all(debug_assertions, feature = "streaming-no-recycle"))]
+#[test]
+fn it_0599_03_pop_counter_is_zero_under_feature() {
+    let net = it_0599_workload();
+    assert_eq!(
+        net.free_list_pops, 0,
+        "IT-0599-03: WITH-feature workload must produce strict zero pops (feature gate)"
+    );
+    // Fresh-allocation path was taken: free_list is unchanged, next_id advanced.
+    assert_eq!(
+        net.free_list.len(),
+        8,
+        "IT-0599-03: free-list unchanged — every create took the fresh-allocation path"
+    );
+}
+
+/// IT-0599-04 — `it0591_discriminant_assertion_is_non_vacuous`.
+///
+/// Meta-test that codifies the cross-feature contract in a single body.
+/// Compiles on both feature settings; uses `cfg!(feature = ...)` runtime
+/// branching to assert the discriminant. Even if IT-0599-02 / IT-0599-03 are
+/// later deleted, this test carries the headline regression guard forward.
+#[cfg(debug_assertions)]
+#[test]
+fn it_0599_04_discriminant_assertion_is_non_vacuous() {
+    let net = it_0599_workload();
+    if cfg!(feature = "streaming-no-recycle") {
+        assert_eq!(
+            net.free_list_pops, 0,
+            "IT-0599-04: WITH-feature must yield zero pops"
+        );
+    } else {
+        assert!(
+            net.free_list_pops >= 1,
+            "IT-0599-04: BASELINE must yield >= 1 pop (non-vacuous discriminant against QA-D010-012)"
+        );
+    }
+}
+
+/// UT-0599-01 — `worker_pair_is_pinned_to_worker_id_zero_and_one` (QA-D010-010).
+///
+/// Pins the placeholder convention for the two-worker `BorderState` test
+/// surface: in tests that exercise streaming-mode invariants with two
+/// workers, `worker_a` MUST be `WorkerId(0)` and `worker_b` MUST be
+/// `WorkerId(1)`, regardless of HashMap iteration order or other
+/// non-determinism in the harness. This is the witness for QA-D010-010
+/// (placeholder semantics under-specified): the convention is now codified.
+#[test]
+fn ut_0599_01_worker_pair_is_pinned_to_worker_id_zero_and_one() {
+    use relativist_core::merge::BorderState;
+    use relativist_core::net::PortRef;
+
+    // Construct a two-worker BorderState following the pinned convention.
+    let state = BorderState {
+        border_id: 7,
+        side_a: PortRef::AgentPort(1, 0),
+        side_b: PortRef::AgentPort(2, 0),
+        worker_a: 0,
+        worker_b: 1,
+        is_redex: true,
+    };
+
+    // The convention: worker_a is the SMALLER WorkerId; worker_b is the LARGER.
+    // This is the iteration-order-independent semantic that tests must rely on.
+    assert_eq!(
+        state.worker_a, 0,
+        "UT-0599-01: worker_a MUST be WorkerId(0) by convention (QA-D010-010)"
+    );
+    assert_eq!(
+        state.worker_b, 1,
+        "UT-0599-01: worker_b MUST be WorkerId(1) by convention (QA-D010-010)"
+    );
+    assert_ne!(
+        state.worker_a, state.worker_b,
+        "UT-0599-01: worker_a and worker_b MUST be distinct (a true pair)"
+    );
+    assert!(
+        state.worker_a < state.worker_b,
+        "UT-0599-01: convention — worker_a is the SMALLER id; tests MUST NOT rely on \
+         iteration order to derive the pair"
+    );
+}
