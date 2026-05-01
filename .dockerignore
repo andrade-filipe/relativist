@@ -3,7 +3,16 @@ target/
 .github/
 docs/
 specs/
+# Root-level tests/ (legacy path — kept for safety)
 tests/
+# Workspace member test directories (IT-0608-05: tests must not land in image)
+relativist-core/tests/
+relativist-cli/tests/
+# Workspace member benchmark sources (not needed in production image)
+relativist-core/benches/
 *.md
 .claude/
 .gitignore
+# Results and plan artefacts
+results/
+plans/
