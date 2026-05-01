@@ -178,6 +178,18 @@ pub struct Net {
     #[serde(skip)]
     #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
     pub free_list_pops_non_border: u64,
+
+    /// TASK-0601 (QA-D010-016): cumulative count of LIFO non-protected
+    /// stalemate fallbacks. Incremented each time `create_agent` finds the
+    /// LIFO top non-evictable AND every other free-list entry also
+    /// non-evictable, forcing a fall-back to fresh `next_id` allocation
+    /// while emitting a `tracing::warn!`. Zero in any non-Strategy-B run.
+    ///
+    /// Always-present field per TASK-0598 strategy (b); writes gated by
+    /// `#[cfg(debug_assertions)]` at the use site.
+    #[serde(skip)]
+    #[cfg_attr(feature = "zero-copy", rkyv(with = rkyv::with::Skip))]
+    pub lifo_stalemate_fallbacks: u64,
 }
 
 /// SPEC-22 R10b: recycling strategy for delta-mode rounds.
@@ -241,6 +253,8 @@ impl Net {
             free_list_pops: 0,
             free_list_pops_border: 0,
             free_list_pops_non_border: 0,
+            // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+            lifo_stalemate_fallbacks: 0,
         }
     }
 
@@ -270,6 +284,8 @@ impl Net {
             free_list_pops: 0,
             free_list_pops_border: 0,
             free_list_pops_non_border: 0,
+            // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+            lifo_stalemate_fallbacks: 0,
         }
     }
 
@@ -327,19 +343,61 @@ impl Net {
 
         if !skip_recycle {
             // SPEC-22 R5 (LIFO): try to pop the most recently freed ID.
-            // Strategy B: if popped ID is border-protected, re-push and fall through.
+            // Strategy B: if popped ID is border-protected, scan deeper in the
+            // free-list for a non-protected entry (TASK-0601 / QA-D010-016 fix).
+            // If every entry is protected, fall through to fresh allocation
+            // and emit a one-shot tracing warn for observability.
             if let Some(id) = self.free_list.pop() {
                 // SPEC-22 R10b Strategy B (TASK-0590): per-id protection gate.
                 // Engages when `is_in_delta_round || streaming_active` (R37b disjunction,
                 // QA-D010-001 fix). In push mode (both flags false), the gate is inactive
                 // and border IDs MAY be recycled as normal (SPEC-22 R3).
-                if round_protected
-                    && self.recycle_policy == RecyclePolicy::BorderClean
-                    && self.is_border_protected(id)
-                {
-                    self.free_list.push(id);
-                    // Fall through to fresh allocation below.
+                let strategy_b_protect_engaged =
+                    round_protected && self.recycle_policy == RecyclePolicy::BorderClean;
+
+                let pop_id = if strategy_b_protect_engaged && self.is_border_protected(id) {
+                    // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fix.
+                    // The LIFO top is protected; scan deeper for the first
+                    // non-protected entry. If found, swap (push the protected
+                    // top back, use the deeper entry); otherwise fall through to
+                    // fresh allocation with a tracing warn.
+                    let mut deeper: Option<usize> = None;
+                    for (idx, &candidate) in self.free_list.iter().enumerate().rev() {
+                        if !self.is_border_protected(candidate) {
+                            deeper = Some(idx);
+                            break;
+                        }
+                    }
+                    match deeper {
+                        Some(idx) => {
+                            // Use the deeper non-protected entry; push the
+                            // protected top back to the LIFO stack.
+                            let chosen = self.free_list.remove(idx);
+                            self.free_list.push(id);
+                            Some(chosen)
+                        }
+                        None => {
+                            // True stalemate: every entry is protected.
+                            // Push the original top back; fall through to fresh.
+                            self.free_list.push(id);
+                            #[cfg(debug_assertions)]
+                            {
+                                self.lifo_stalemate_fallbacks += 1;
+                            }
+                            tracing::warn!(
+                                free_list_len = self.free_list.len(),
+                                "TASK-0601 (QA-D010-016): LIFO non-protected stalemate — \
+                                 every free-list entry is border-protected; falling back \
+                                 to fresh next_id allocation"
+                            );
+                            None
+                        }
+                    }
                 } else {
+                    Some(id)
+                };
+
+                if let Some(id) = pop_id {
                     // SPEC-22 R10: defensive — verify ID is in partition's range (debug only).
                     // Only fire for IDs that were allocated FROM the fresh range (id >= range.start).
                     // Pre-split agent IDs (id < range.start) are always below the fresh range and
@@ -949,6 +1007,8 @@ impl Net {
             free_list_pops: _flp_a,
             free_list_pops_border: _flpb_a,
             free_list_pops_non_border: _flpnb_a,
+            // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+            lifo_stalemate_fallbacks: _lsf_a,
         } = self;
         let Net {
             agents: agents_b,
@@ -968,6 +1028,8 @@ impl Net {
             free_list_pops: _flp_b,
             free_list_pops_border: _flpb_b,
             free_list_pops_non_border: _flpnb_b,
+            // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+            lifo_stalemate_fallbacks: _lsf_b,
         } = other;
 
         let merged_next_id = std::cmp::max(next_id_a, next_id_b);
@@ -1066,6 +1128,8 @@ impl Net {
             free_list_pops: 0,
             free_list_pops_border: 0,
             free_list_pops_non_border: 0,
+            // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+            lifo_stalemate_fallbacks: 0,
         }
     }
 
@@ -3988,6 +4052,57 @@ mod tests {
         assert_eq!(
             net.free_list_pops, 3,
             "debug builds: counter writes are active (3 pops recorded)"
+        );
+    }
+
+    /// UT-0601-01 — `lifo_dispatch_skips_protected_in_flight_chunks`
+    /// (QA-D010-016).
+    ///
+    /// With two free-list entries — the LIFO top is border-protected, the
+    /// deeper entry is NOT — the next `create_agent` call MUST recycle the
+    /// deeper non-protected entry (TASK-0601 fix); the protected top remains
+    /// in the free-list. Mirrors the test-spec UT-0601-01 unit-level witness.
+    ///
+    /// Gated `not(feature = "streaming-no-recycle")` because that feature
+    /// bypasses the entire free-list during `is_in_delta_round` — the
+    /// TASK-0601 scan logic is dormant under the feature.
+    #[cfg(all(debug_assertions, not(feature = "streaming-no-recycle")))]
+    #[test]
+    fn ut_0601_01_lifo_dispatch_skips_protected_in_flight_chunks() {
+        use std::collections::HashSet;
+
+        let mut net = Net::new();
+        let id_old = net.create_agent(Symbol::Era);
+        let id_new = net.create_agent(Symbol::Era);
+        net.remove_agent(id_old);
+        net.remove_agent(id_new);
+        // Stack now: [id_old, id_new] with id_new on top (LIFO).
+        assert_eq!(net.free_list, vec![id_old, id_new]);
+
+        // Protect ONLY the LIFO top (id_new). Old behavior: re-push and
+        // fresh-allocate. New behavior: scan deeper, recycle id_old, push
+        // id_new back.
+        let mut border = HashSet::new();
+        border.insert(id_new);
+        net.border_entries_shadow = Some(border);
+        net.recycle_policy = RecyclePolicy::BorderClean;
+        net.is_in_delta_round = true;
+
+        let recycled = net.create_agent(Symbol::Era);
+
+        assert_eq!(
+            recycled, id_old,
+            "UT-0601-01: deeper non-protected ID must be recycled (TASK-0601 fix)"
+        );
+        // Protected top remains in the free-list.
+        assert_eq!(
+            net.free_list,
+            vec![id_new],
+            "UT-0601-01: protected top remains in the free-list after deeper recycle"
+        );
+        assert_eq!(
+            net.lifo_stalemate_fallbacks, 0,
+            "UT-0601-01: no stalemate fallback when a deeper non-protected entry exists"
         );
     }
 

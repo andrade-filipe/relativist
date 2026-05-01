@@ -77,14 +77,13 @@ fn make_p0() -> Partition {
         recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
         streaming_active: false,
-        #[cfg(debug_assertions)]
+        // TASK-0598 (QA-D010-014): counter fields always present (no cfg gate).
         protected_tombstones: None,
-        #[cfg(debug_assertions)]
         free_list_pops: 0,
-        #[cfg(debug_assertions)]
         free_list_pops_border: 0,
-        #[cfg(debug_assertions)]
         free_list_pops_non_border: 0,
+        // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+        lifo_stalemate_fallbacks: 0,
     };
 
     Partition {
@@ -700,14 +699,13 @@ fn ec_j_redex_queue_symmetric_pair_is_remapped() {
         recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
         streaming_active: false,
-        #[cfg(debug_assertions)]
+        // TASK-0598 (QA-D010-014): counter fields always present (no cfg gate).
         protected_tombstones: None,
-        #[cfg(debug_assertions)]
         free_list_pops: 0,
-        #[cfg(debug_assertions)]
         free_list_pops_border: 0,
-        #[cfg(debug_assertions)]
         free_list_pops_non_border: 0,
+        // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+        lifo_stalemate_fallbacks: 0,
     };
 
     let p = Partition {
@@ -860,14 +858,13 @@ fn ec_l_remap_next_id_postcondition_at_large_range_start() {
         recycle_policy: relativist_core::net::core::RecyclePolicy::DisableUnderDelta,
         is_in_delta_round: false,
         streaming_active: false,
-        #[cfg(debug_assertions)]
+        // TASK-0598 (QA-D010-014): counter fields always present (no cfg gate).
         protected_tombstones: None,
-        #[cfg(debug_assertions)]
         free_list_pops: 0,
-        #[cfg(debug_assertions)]
         free_list_pops_border: 0,
-        #[cfg(debug_assertions)]
         free_list_pops_non_border: 0,
+        // TASK-0601 (QA-D010-016): LIFO non-protected stalemate fallback counter.
+        lifo_stalemate_fallbacks: 0,
     };
 
     let p = Partition {
