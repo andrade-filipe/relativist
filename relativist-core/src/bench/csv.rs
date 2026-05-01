@@ -3,11 +3,29 @@
 use super::{AggregatedStats, BenchmarkId, BenchmarkResult, NetRepresentation};
 use std::io::{self, Write};
 
+/// SF-005 (D-011 review): convert the raw VmHWM probe value to the
+/// `Option<u64>` representation used by
+/// [`SparseConstructionRow::peak_memory_during_construction`]. Pre-fix this
+/// helper lived in `suite.rs` but was only consumed here in `csv.rs`;
+/// co-located here for cohesion. `pub(super)` so `suite.rs` can still call
+/// it on the construction-time probe value.
+///
+/// The probe returns `0` on non-Linux targets where `/proc/self/status` is
+/// unavailable. Per TEST-SPEC-0607, the CSV column should be **blank** in
+/// that case (not literal `0`, which would be indistinguishable from
+/// "sparse used zero memory" — a false success signal). Linux captures
+/// (`>0`) round-trip as `Some(_)`.
+pub(super) fn peak_for_sparse_row(raw: u64) -> Option<u64> {
+    if raw == 0 {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
 /// Render `peak_memory_during_construction` (a `u64`) as a CSV cell, using
 /// the §4.9 non-Linux convention (blank string instead of literal `0`) when
-/// the probe is unavailable. Locally co-located here per SF-005 — the
-/// sub-CSV writer's helper was previously in `suite.rs` but only `csv.rs`
-/// consumed its output.
+/// the probe is unavailable.
 ///
 /// QA-D011-009 / SF-002: ensures the main `detail.csv` writer renders blank
 /// for non-Linux runs, matching the sub-CSV writer's convention. Linux runs

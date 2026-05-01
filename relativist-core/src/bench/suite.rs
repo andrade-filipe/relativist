@@ -322,22 +322,6 @@ struct PendingEntry {
     target_port: u8,
 }
 
-/// Convert the raw VmHWM probe value to the row representation used by
-/// `SparseConstructionRow.peak_memory_during_construction`.
-///
-/// The probe returns `0` on non-Linux targets where `/proc/self/status` is
-/// unavailable. Per TEST-SPEC-0607, the CSV column should be **blank** in
-/// that case (not literal `0`, which would be indistinguishable from
-/// "sparse used zero memory" — a false success signal). Linux Hub captures
-/// (`>0`) round-trip as `Some(_)`.
-fn peak_for_sparse_row(raw: u64) -> Option<u64> {
-    if raw == 0 {
-        None
-    } else {
-        Some(raw)
-    }
-}
-
 /// Convert the engine's [u64; 6] per-rule array to InteractionsByRule.
 /// Index order: [CON-CON, CON-DUP, CON-ERA, DUP-DUP, DUP-ERA, ERA-ERA].
 fn ibr_from_array(arr: [u64; 6]) -> InteractionsByRule {
@@ -694,7 +678,9 @@ pub struct SuiteResult {
 ///
 /// Returns `Err` on correctness failure (R38: halt on first failure).
 pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult, String> {
-    use crate::bench::csv::{compute_ratios_for_sparse_rows, SparseConstructionRow};
+    use crate::bench::csv::{
+        compute_ratios_for_sparse_rows, peak_for_sparse_row, SparseConstructionRow,
+    };
 
     let mut all_results: Vec<BenchmarkResult> = Vec::new();
     let mut all_summaries: Vec<AggregatedStats> = Vec::new();
