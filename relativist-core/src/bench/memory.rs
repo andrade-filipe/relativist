@@ -1,20 +1,22 @@
 //! Peak memory measurement (SPEC-09 R21, Section 4.4; R18a § Tier 3 D-011).
+//!
+//! MF-004 (D-011 review): the original API had two byte-identical functions
+//! (`get_peak_memory_bytes` and `get_peak_memory_during_construction`) — only
+//! their doc-comments documented different call-site semantics. The DRY
+//! violation has been collapsed: both functions are now thin wrappers around
+//! a single private `sample_vmhwm` reader, preserving the spec-mandated
+//! API surface (R18 / R18a both name-resolve) while keeping a single source
+//! of truth for the actual VmHWM probe logic.
 
 /// Obtain the peak memory usage (resident set size) of the current process.
 ///
 /// On Linux: reads `/proc/self/status`, parses VmHWM (peak RSS in kB),
 /// and converts to bytes.
 /// On other OSes: returns 0 (metric unavailable).
+///
+/// SPEC-09 R18 (legacy): sampled AT END-OF-RUN by the bench harness.
 pub fn get_peak_memory_bytes() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        read_vmhwm_bytes()
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        0
-    }
+    sample_vmhwm()
 }
 
 /// SPEC-09 R18a — sample `VmHWM` at the construction-complete program point.
@@ -29,15 +31,20 @@ pub fn get_peak_memory_bytes() -> u64 {
 ///   returns AND BEFORE any `reduce_all` invocation.
 ///
 /// This function shares the underlying VmHWM reader with
-/// [`get_peak_memory_bytes`] (the legacy R18 metric). The two functions are
-/// distinguished only by their CALL SITE in `bench/suite.rs`: this one is
-/// invoked between net construction and reduction; `get_peak_memory_bytes` is
-/// invoked at end-of-run. Both rely on `VmHWM` being monotonic non-decreasing,
-/// so the construction-time snapshot is a valid lower bound for the eventual
-/// end-of-run reading.
-///
-/// On non-Linux targets returns `0` (matches `get_peak_memory_bytes` convention).
+/// [`get_peak_memory_bytes`] (the legacy R18 metric); the two are
+/// distinguished ONLY by their CALL SITE in `bench/suite.rs`. On non-Linux
+/// targets returns `0` (matches `get_peak_memory_bytes` convention). Both
+/// rely on `VmHWM` being monotonic non-decreasing, so the construction-time
+/// snapshot is a valid lower bound for the eventual end-of-run reading.
 pub fn get_peak_memory_during_construction() -> u64 {
+    sample_vmhwm()
+}
+
+/// MF-004 (D-011 review): the single VmHWM probe. Linux-only; returns 0
+/// elsewhere. Kept private — callers should use the named wrappers above so
+/// the call-site discipline is documented at the type-system level (the
+/// only public surface is the two named functions).
+fn sample_vmhwm() -> u64 {
     #[cfg(target_os = "linux")]
     {
         read_vmhwm_bytes()
