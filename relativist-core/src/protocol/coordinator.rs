@@ -170,7 +170,7 @@ fn push_partial_round_metrics(metrics: &mut GridMetrics) {
 
 /// Current wire protocol version.
 ///
-/// Cites: SPEC-20 R37; SPEC-22 R9a; SPEC-21 §3.7 R37c.
+/// Cites: SPEC-20 R37; SPEC-22 R9a; SPEC-21 §3.7 R37c; SPEC-19 §3.4 R35a.
 ///
 /// Version history:
 /// - v1: initial release
@@ -187,25 +187,35 @@ fn push_partial_round_metrics(metrics: &mut GridMetrics) {
 ///   `Register.protocol_version < PROTOCOL_VERSION` with `RegisterNack`.
 ///   SPEC-21 §3.7 R37c; SPEC-06 R5 (discriminant stability preserved by
 ///   append-only amendment).
+/// - v7: SPEC-19 §3.4 R35a — `CompactSubnet` wire encoding gains a
+///   `free_list: Vec<AgentId>` suffix (D-011 Phase A, commit `c4c80b8`,
+///   TASK-0596). REJECT-v6 policy: a v6 worker speaks the `Partition` wire
+///   form WITHOUT the `free_list` suffix; deserializing such a payload at v7
+///   would silently default to `Vec::new()` and re-introduce QA-D009-001
+///   (`next_id` divergence between coordinator and worker, SPEC-22
+///   R10b/R12a violation). The coordinator therefore rejects any
+///   `Register.protocol_version < PROTOCOL_VERSION` with `RegisterNack`
+///   (handled in `accept_workers` below — same gate that enforced v5/v6).
 ///
 // TODO(spec-realign, MF-001): SPEC-18 §4.7 constant table and R28 text still
 // say "bump from 2 to 3" / "PROTOCOL_VERSION: u8 = 3", which are stale after
 // the D-006 elastic-grid bump (v2→v4) that preceded D-009. The actual deployed
-// values before this bump were PREVIOUS_LIVE_VERSION = 5, PROTOCOL_VERSION = 6.
+// values before this bump were PREVIOUS_LIVE_VERSION = 6, PROTOCOL_VERSION = 7.
 // SPEC-22 R9a and SPEC-18 lines 163/538-539 need updating by ESPECIALISTA EM
 // SPECS. See REVIEW-PHASE-D009-spec22-arena-2026-04-27.md §MF-001.
-pub const PROTOCOL_VERSION: u8 = 6;
+pub const PROTOCOL_VERSION: u8 = 7;
 
 /// The protocol version immediately preceding the current one.
 ///
-/// Captured at TASK-0576 implementation time as the value of
-/// `PROTOCOL_VERSION` immediately before the SPEC-21 R31 bump.
-/// Used by tests to assert `PROTOCOL_VERSION == PREVIOUS_LIVE_VERSION + 1`
-/// (landing-order-aware defensive contract; TEST-SPEC-0576 / TEST-SPEC-0476
-/// / TEST-SPEC-0511).
+/// Captured at TASK-0596 implementation time as the value of
+/// `PROTOCOL_VERSION` immediately before the SPEC-19 R35a bump (D-011
+/// Phase A, commit `c4c80b8`). Used by tests to assert
+/// `PROTOCOL_VERSION == PREVIOUS_LIVE_VERSION + 1` (landing-order-aware
+/// defensive contract; TEST-SPEC-0596 / TEST-SPEC-0576 / TEST-SPEC-0476 /
+/// TEST-SPEC-0511).
 ///
-/// NEVER hardcode the integer 5 in any test — always reference this constant.
-pub const PREVIOUS_LIVE_VERSION: u8 = 5;
+/// NEVER hardcode the integer in any test — always reference this constant.
+pub const PREVIOUS_LIVE_VERSION: u8 = 6;
 
 // Compile-time defensive guard: prevents misuse when PROTOCOL_VERSION differs
 // from PREVIOUS_LIVE_VERSION + 1 (landing-order-aware defensive contract per
@@ -1735,6 +1745,30 @@ mod tests {
              (was {} before this bump; now {})",
             PREVIOUS_LIVE_VERSION,
             PROTOCOL_VERSION
+        );
+    }
+
+    /// UT-0596-07: PROTOCOL_VERSION matches the SPEC-19 R35a bump.
+    ///
+    /// SPEC-19 R35a (commit `c4c80b8`) mandates `PROTOCOL_VERSION =
+    /// PREVIOUS_LIVE_VERSION + 1` after the CompactSubnet `free_list` wire
+    /// suffix landed. This test pins the defensive +1 contract (also caught
+    /// by the `const _` assertion at the constant declaration site) and the
+    /// landing-order-agnostic check that `PREVIOUS_LIVE_VERSION` is non-zero
+    /// (see precedent: TEST-SPEC-0476 / TEST-SPEC-0576). We deliberately
+    /// avoid hardcoding either integer.
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn protocol_version_constant_matches_spec_19_r35a() {
+        assert_eq!(
+            PROTOCOL_VERSION,
+            PREVIOUS_LIVE_VERSION + 1,
+            "SPEC-19 R35a (commit c4c80b8): PROTOCOL_VERSION must be exactly \
+             PREVIOUS_LIVE_VERSION + 1 after the D-011 Phase A bump",
+        );
+        assert!(
+            PREVIOUS_LIVE_VERSION > 0,
+            "PREVIOUS_LIVE_VERSION must be non-zero (at least one prior bump exists)",
         );
     }
 
