@@ -12,6 +12,11 @@ services:
       - --input=/data/input.bin
       - --output=/data/output.bin
       - --metrics=/data/metrics.json
+      # Tier 3 flags wired for D-011 Phase F-2 docker TCP rodada (SPEC-21).
+      # Defaults match the v2 local rodada baseline; env-var override allows
+      # bench_docker_v2.sh and ad-hoc experiments to sweep different values.
+      - --chunk-size=${CHUNK_SIZE:-10000}
+      - --max-pending-lifetime=${MAX_PENDING_LIFETIME:-16}
     ports:
       - "9000:9000"
     volumes:

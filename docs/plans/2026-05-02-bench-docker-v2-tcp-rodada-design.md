@@ -17,10 +17,11 @@ This design adapts the v1 script for v2 with Tier 3 active in the coordinator, e
 ## 2. Goals
 
 - Produce TCP rodada CSVs comparable directly to `phase2_*` (Axis 1: v1-TCP vs v2-TCP).
-- Produce TCP rodada CSVs covering the workload of `v2_local_full_summary.csv` (Axis 2: v2-local vs v2-TCP), filtered to viable configs.
 - Tier 3 optimizations active in coordinator path (free-list recycling, CompactSubnet wire fix, `--chunk-size`, `--max-pending-lifetime`).
 - Resume capability mandatory — partial CSVs survive interruption.
 - All in a single user-runnable script, no code changes to `relativist` binary required.
+
+**Scope amendment (2026-05-02, post-design validation):** Axis 2 (v2-local vs v2-TCP) was originally planned but dropped after empirical validation showed the v2 local rodada uses sizes ≤100K with sequential reduction times ≤38ms (max). Docker compose startup overhead (~5s/cycle) would dominate signal by 100-1000×, producing ratio-of-noise data. Cross-axis comparison v2-local vs v2-TCP requires a v2-local-**expanded** rodada at v1's size scale (500K-5M for ep_ann_con, depths 18-22 for dual_tree) — deferred to a future bundle (see §10.1).
 
 ## 3. Non-goals
 
@@ -74,19 +75,9 @@ condup_expansion    × {1_000, 5_000}
 
 Same as `bench_docker.sh` v1 line 62-71.
 
-**Axis 2 — v2-local bridge (filtered subset):**
+**Axis 2 — DROPPED.** See scope amendment in §2.
 
-Loaded dynamically from `results/v2_local_full_summary.csv` at script startup. Filter rule:
-
-```
-keep (benchmark, size) where mode=sequential AND wall_clock_mean >= 0.050
-```
-
-Rationale: Docker compose startup overhead is ~5s/cycle. A 50ms filter ensures the actual reduction time is ≥1% of total wall-clock — the docker overhead is bounded contamination. Configs faster than 50ms produce ratio-of-noise data points.
-
-Expected after filtering: ~30 configs (most cascade_cross, church_*, dual_tree<10, ep_ann<5K drop out; ep_ann_con/dup at ≥10K, dual_tree≥10, condup_expansion≥1K, mixed_net≥5K, erasure_propagation≥5K survive).
-
-**Workers:** `(1, 2, 4, 8)` for both axes.
+**Workers:** `(1, 2, 4, 8)` for Axis 1.
 
 **Repetitions:** 10 measurements + 2 warmups per (bench, size, workers) tuple.
 
@@ -176,11 +167,9 @@ If any fails, fix before the full rodada. Cost of pre-flight: <30 min vs downsid
 | Write `bench_docker_v2.sh` + compose update + commit | ~2h | Claude |
 | Pre-flight 4 smokes | ~30min | User+Claude |
 | Axis 1 — 8 configs × 4 workers × 12 reps (~384 cycles) | ~8h | Background |
-| Axis 2 batch A — ~15 larger configs | ~10h | Background |
-| Axis 2 batch B — ~15 remaining | ~10h | Background |
-| F-3 close-out (move to `results/locked/v2_tcp_baseline/`, `progress.md`, `next-steps.md`, open D-012 if needed) | ~1h | Claude |
-| **Total wall-clock** | **~3-4 days** | |
-| **Total active user time** | **~2h** | |
+| F-3 close-out (move to `results/locked/v2_tcp_baseline/`, `progress.md`, `next-steps.md`, open D-013 candidate for v2-local-expanded) | ~1h | Claude |
+| **Total wall-clock** | **~12h (1-2 days)** | |
+| **Total active user time** | **~30min** | |
 
 ## 8. Files modified
 
@@ -194,13 +183,26 @@ If any fails, fix before the full rodada. Cost of pre-flight: <30 min vs downsid
 ## 9. Acceptance criteria
 
 - All 4 pre-flight smokes pass.
-- Axis 1 produces ≥384 datapoints (32 configs × 12 reps) with `all_correct=true` ratio ≥ 0.95.
-- Axis 2 produces ≥240 datapoints (≥20 surviving configs × 12 reps) with `all_correct=true` ratio ≥ 0.95.
+- Axis 1 produces ≥384 datapoints (32 (bench, size, workers) tuples × 12 reps) with `all_correct=true` ratio ≥ 0.95.
 - `summary.csv` rows for `mode=tcp_localhost` have non-zero `speedup_mean` and finite `cv`.
 - Re-invocation after partial run skips completed configs (resume verified).
 - Schema parses cleanly with `pandas.read_csv` (no quoting issues, no truncated rows).
 
-## 10. Out-of-scope follow-ups (potential D-012)
+## 10. Out-of-scope follow-ups
+
+### 10.1 D-013 candidate — v2-local-expanded + matching TCP rodada (Axis 2 deferred)
+
+To enable cross-axis comparison `v2-local vs v2-TCP` on the same workload, run two coupled rodadas at v1's size scale:
+
+1. **v2-local-expanded:** re-run the bench harness in `--mode local` with the same 8 configs as v1's docker rodada (ep_annihilation_con × {500K, 1M, 5M}, dual_tree × {18, 20, 22}, condup_expansion × {1K, 5K}). Schema: 29 columns (full Tier 3 measurement protocol). Output: `results/v2_local_expanded_baseline/`. Estimated ~4-6h.
+
+2. **v2-TCP-expanded:** trivial — already covered by this bundle's `bench_docker_v2.sh` (Axis 1 uses identical configs). Output is `results/v2_tcp_baseline/`.
+
+Then the comparison `v2_local_expanded_summary.csv` vs `v2_tcp_baseline/summary.csv` on the 22 shared columns yields the missing axis. Total additional time: ~6h, all reusing existing infrastructure.
+
+**Decision rationale (2026-05-02):** deferred from D-011 to keep the bundle scope tight. Axis 1 (v1-TCP vs v2-TCP) is sufficient for the TCC's primary defense ("Tier 3 doesn't regress TCP"); the local-vs-TCP decomposition is nice-to-have, not load-bearing for the thesis.
+
+### 10.2 Other deferred work (potential D-012, D-014, etc.)
 
 - TCP dispatch inside `bench` subcommand (Path A from the discussion).
 - Strong G1 (`nets_graph_isomorphic`) exposed via a `relativist verify` subcommand.
