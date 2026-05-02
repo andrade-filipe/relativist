@@ -8,8 +8,10 @@ tests/
 # Workspace member test directories (IT-0608-05: tests must not land in image)
 relativist-core/tests/
 relativist-cli/tests/
-# Workspace member benchmark sources (not needed in production image)
-relativist-core/benches/
+# NOTE: relativist-core/benches/ MUST be present in the build context — the
+# manifest declares `[[bench]]` and cargo refuses to parse it without the
+# source file. Benches don't ship in the runtime image (only the binary is
+# COPY'd from the builder stage).
 *.md
 .claude/
 .gitignore

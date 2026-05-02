@@ -47,7 +47,11 @@ futures = "0.3"
 async-trait = "0.1"
 
 # Socket tuning (SPEC-17 R21 — TCP keepalive, buffer sizes via SockRef)
-socket2 = "0.5"
+# `features = ["all"]` is required for `TcpKeepalive::with_retries` on Linux —
+# without it the call site in `protocol/tcp.rs` compiles only on Windows
+# (where the cfg gate is false and the method is never invoked). See socket2
+# 0.5 docs: `with_retries` is gated by `cfg(all(feature = "all", target_os …))`.
+socket2 = { version = "0.5", features = ["all"] }
 
 # Local parallelism (SPEC-07 R20 — rayon for fair comparison)
 rayon = "1"
