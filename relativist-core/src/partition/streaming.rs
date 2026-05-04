@@ -838,7 +838,7 @@ impl PartitionAccumulator {
             });
         }
 
-        let dense = match self.subnet {
+        let mut dense = match self.subnet {
             AccumulatorNet::Sparse(s) => {
                 // Convert SparseNet → dense Net scoped to id_range.
                 s.to_dense(Some(id_range.start..id_range.end))
@@ -846,6 +846,22 @@ impl PartitionAccumulator {
             }
             AccumulatorNet::Dense(n) => n,
         };
+
+        // QA-D011-POST-FIX-AUDIT F-001 (2026-05-04): mirror split.rs:96-98 +
+        // helpers.rs:390 invariant — the resulting subnet's next_id MUST lie in
+        // [id_range.start, id_range.end) so AF-2 doesn't fire when downstream
+        // callers invoke create_agent. SparseNet::to_dense propagates self.next_id
+        // verbatim (sparse.rs:396), and SparseNet::create_agent_at sets
+        // next_id = max(next_id, id+1) which can land at id_range.end. Widen
+        // upward to id_range.start so empty/below-start cases are seeded.
+        // SPEC-22 R10 / D3 / SC-001 (closes the dormant streaming-side analog
+        // of Bug 2 fixed for dense build_subnet at helpers.rs:390).
+        dense.next_id = std::cmp::max(dense.next_id, id_range.start);
+        // Mirror dense build_subnet's id_range population so AF-2 has the bound
+        // available for downstream create_agent calls.
+        if dense.id_range.is_none() {
+            dense.id_range = Some(id_range.start..id_range.end);
+        }
 
         Ok(Partition {
             subnet: dense,
@@ -2652,22 +2668,55 @@ mod tests {
         );
     }
 
-    /// UT-0552-05: Exactly 4× threshold passes (strict greater-than discipline).
+    /// UT-0552-05 (REVISED 2026-05-04 — D-011 / QA F-004 / Reviewer F-003):
+    /// effective_arena_size == 4 × live_count exactly passes (strict-greater
+    /// discipline of SPEC-22 R30: only `>` rejects, `==` accepts).
+    ///
+    /// Setup: live=4 agents at IDs {0, 5, 10, 15} → max_assigned_id=15,
+    /// effective_arena_size=16, 4×live=16 → 16 > 16 is false → accepted.
+    /// Sibling test `finalize_just_above_4x_threshold` pins the strict `>`
+    /// direction (eff=17 > 16 → rejected under sparse_build=false).
     #[test]
     fn finalize_at_exactly_4x_threshold() {
         let mut acc = PartitionAccumulator::new(0);
-        for i in 0u32..100 {
-            acc.add_agent(i, Symbol::Era);
+        for &id in &[0u32, 5, 10, 15] {
+            acc.add_agent(id, Symbol::Era);
         }
-        // Under SPEC-22 v2.4 R22 metric: effective_arena_size = max_assigned_id + 1
-        // = 100, 4 × live_count = 400, 100 < 400 → does NOT exceed (test still
-        // passes; semantics shifted from "boundary at id_range_size" to "well
-        // below threshold under new metric").
-        let id_range = IdRange { start: 0, end: 400 };
+        // effective_arena_size = max_assigned_id + 1 = 16, 4 × live_count = 16.
+        // Strict greater-than: 16 > 16 == false → finalize succeeds.
+        let id_range = IdRange { start: 0, end: 100 };
         let result = acc.finalize(id_range, 0, 0);
         assert!(
             result.is_ok(),
-            "exactly 4× threshold must pass (strict > check, not >=)"
+            "QA F-004: exactly 4× threshold must pass (strict > check, not >=); got {:?}",
+            result
+        );
+    }
+
+    /// UT-0552-05b (NEW 2026-05-04 — QA F-004 / Reviewer F-003): pins the
+    /// strict `>` direction of SPEC-22 R30 — 1 unit ABOVE the boundary
+    /// (effective_arena_size == 4 × live_count + 1) MUST reject.
+    #[test]
+    fn finalize_just_above_4x_threshold() {
+        let mut acc = PartitionAccumulator::new(0);
+        // 4 live agents at IDs {0, 5, 10, 16} → max_assigned_id=16,
+        // effective_arena_size=17, 4×live=16 → 17 > 16 → reject.
+        for &id in &[0u32, 5, 10, 16] {
+            acc.add_agent(id, Symbol::Era);
+        }
+        let id_range = IdRange { start: 0, end: 100 };
+        let result = acc.finalize(id_range, 0, 0);
+        assert!(
+            matches!(
+                result,
+                Err(PartitionError::DenseAllocationExceedsThreshold {
+                    effective_arena_size: 17,
+                    live_count: 4,
+                    ..
+                })
+            ),
+            "QA F-004: eff_arena=17 with live=4 (1 above 4× boundary) must reject; got {:?}",
+            result
         );
     }
 
@@ -3356,6 +3405,72 @@ mod tests {
             "QA-D010-009 negative-control: with max_pending_lifetime=u32::MAX, must \
              fall through to UnresolvedForwardReferences; got {:?}",
             result
+        );
+    }
+
+    /// QA-D011-POST-FIX-AUDIT F-001: PartitionAccumulator::finalize MUST seed
+    /// the resulting Net's next_id to lie within id_range so subsequent
+    /// create_agent calls do not trip AF-2 (debug guard at net/core.rs:536-548).
+    ///
+    /// Two scenarios pinned (mirrors the dense build_subnet Bug 2 witness at
+    /// helpers.rs::tests::qa_d011_bug2_dense_build_subnet_next_id_in_range):
+    ///
+    /// 1. Empty partition (no agents assigned): SparseNet::new() leaves
+    ///    next_id = 0; without the widen, AF-2 would panic on next_id < range.start
+    ///    when the resulting Partition is reduced.
+    /// 2. Boundary partition (agent at id == band_end - 1): SparseNet::create_agent_at
+    ///    sets next_id = max(next_id, id+1) which can land at id_range.end. The
+    ///    widen here keeps next_id at >= id_range.start; bound enforcement at
+    ///    range.end is the responsibility of downstream allocation paths.
+    #[test]
+    fn qa_d011_postfix_f001_streaming_finalize_seeds_next_id_in_range() {
+        // Scenario 1: empty partition.
+        let acc = PartitionAccumulator::new(0);
+        let id_range = IdRange {
+            start: 100,
+            end: 200,
+        };
+        let part1 = acc
+            .finalize(id_range, 0, 0)
+            .expect("finalize should succeed for empty partition");
+        assert!(
+            part1.subnet.next_id >= 100,
+            "QA-D011-POST-FIX-AUDIT F-001: empty streaming partition next_id ({}) must be >= id_range.start (100)",
+            part1.subnet.next_id
+        );
+        assert!(
+            part1.subnet.next_id <= 200,
+            "QA-D011-POST-FIX-AUDIT F-001: empty streaming partition next_id ({}) must be <= id_range.end (200)",
+            part1.subnet.next_id
+        );
+        // id_range must be propagated so AF-2 has the bound to check against.
+        assert!(
+            part1.subnet.id_range.is_some(),
+            "QA-D011-POST-FIX-AUDIT F-001: empty streaming partition must propagate id_range"
+        );
+
+        // Scenario 2: worker holds an agent at id = band_end - 1, with enough
+        // dense neighbours that the SPEC-22 R30 threshold (eff_arena <= 4*live)
+        // is satisfied (50 live agents at IDs 150..200, max=199, eff_arena=200,
+        // 4*live=200 → not exceeded).
+        let mut acc2 = PartitionAccumulator::new(0);
+        for i in 150u32..200u32 {
+            acc2.add_agent(i, Symbol::Era);
+        }
+        let part2 = acc2
+            .finalize(
+                IdRange {
+                    start: 100,
+                    end: 200,
+                },
+                0,
+                0,
+            )
+            .expect("finalize should succeed for boundary partition");
+        assert!(
+            part2.subnet.next_id >= 100,
+            "QA-D011-POST-FIX-AUDIT F-001: boundary partition next_id ({}) must be >= id_range.start (100)",
+            part2.subnet.next_id
         );
     }
 }

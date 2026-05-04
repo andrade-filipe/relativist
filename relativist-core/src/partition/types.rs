@@ -295,7 +295,7 @@ impl PartitionPlan {
 /// subnet. The default is the sparse path (`sparse_build: true`), which is
 /// safe for all partition sizes. The dense path (`sparse_build: false`) is
 /// only honored when the id_range is small relative to the live agent count
-/// (threshold: `id_range_size <= 4 × live_count`); exceeding the threshold
+/// (threshold: `effective_arena_size <= 4 × live_count`); exceeding the threshold
 /// with `sparse_build: false` is rejected with
 /// `PartitionError::DenseAllocationExceedsThreshold` to guard against the
 /// M5 memory pathology.
@@ -304,7 +304,8 @@ pub struct PartitionConfig {
     /// SPEC-22 §3.4 R30: whether to use sparse arena construction.
     ///
     /// Default: `true` (sparse path). When `false`, the dense path is used
-    /// if and only if `id_range_size <= 4 × live_count`. Any configuration
+    /// if and only if `effective_arena_size (= max_live_id + 1) <= 4 × live_count`.
+    /// Any configuration
     /// that exceeds the threshold with `sparse_build: false` is rejected with
     /// `PartitionError::DenseAllocationExceedsThreshold`.
     pub sparse_build: bool,

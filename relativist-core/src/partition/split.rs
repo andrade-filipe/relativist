@@ -62,7 +62,8 @@ pub fn split_with_config(
     let mut partitions = Vec::with_capacity(num_workers as usize);
 
     // SPEC-22 R22/R30: use the config-driven path that applies the sparse
-    // threshold guard and routes to SparseNet when id_range_size > 4 × live_count.
+    // threshold guard and routes to SparseNet when effective_arena_size
+    // (max_live_id + 1) > 4 × live_count.
     // Default config has sparse_build: true — the sparse path is always taken
     // when the threshold is exceeded, never returning DenseAllocationExceedsThreshold.
     // SF-004: `partition_config` is now passed from the caller so
@@ -250,7 +251,7 @@ mod tests {
     // MF-002 regression: split() must route through build_subnet_with_config.
     //
     // Verified directly via build_subnet_with_config:
-    // - sparse_build=false + id_range_size >> 4*live_count → Err (guard fires)
+    // - sparse_build=false + effective_arena_size > 4*live_count → Err (guard fires)
     // - sparse_build=true (default) + same ratio → Ok (sparse path transparently used)
     // split() now delegates to build_subnet_with_config with the default config,
     // so the sparse path is reachable from the production entry point.

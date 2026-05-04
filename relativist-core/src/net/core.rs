@@ -533,6 +533,11 @@ impl Net {
         // allocations escaping the partition's id_range. Without this guard,
         // any future build_* path that forgets to seed next_id correctly
         // silently re-introduces cross-partition collisions (the Bug 2 class).
+        //
+        // QA-D011-POST-FIX-AUDIT F-006 (2026-05-04): this guard is debug-only.
+        // Release builds rely on `build_subnet`/`build_subnet_sparse`
+        // correctness for the id_range invariant; if those paths regress,
+        // release builds will silently allocate cross-partition.
         #[cfg(debug_assertions)]
         if let Some(ref range) = self.id_range {
             debug_assert!(

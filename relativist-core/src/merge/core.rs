@@ -118,6 +118,11 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
                 // panic at end-of-merge. If multiple partitions wrote live
                 // agents to the same arena slot, this fires with a clear
                 // diagnostic. Cheap, debug-only.
+                //
+                // QA-D011-POST-FIX-AUDIT F-006 (2026-05-04): this guard is
+                // debug-only. Release builds will silently overwrite colliding
+                // slots (the Bug 2 failure mode), then surface as I1 violations
+                // later in `assert_all_invariants` OR as silent wrong results.
                 debug_assert!(
                     result.agents[i].is_none(),
                     "merge: agent ID {} appears in multiple partitions (D3 live-set violation)",
