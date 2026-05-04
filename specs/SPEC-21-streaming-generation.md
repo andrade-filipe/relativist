@@ -749,7 +749,7 @@ In SPEC-04, border IDs start at `max_existing_freeport_id(net) + 1` (R12). In th
 
 ### 4.9 Partition Accumulator Design (SparseNet adoption per SPEC-22 R22; closes SC-006)
 
-Each `PartitionAccumulator` wraps EITHER a `SparseNet` (SPEC-22 R22 / §4.4) OR a dense `Net` (SPEC-02), selected at construction time using the same `id_range > 4 × live_agent_count` threshold rule that SPEC-22 R10a/R22 mandates for `build_subnet`. SparseNet is the default for accumulators that may receive non-contiguous agent IDs (e.g., FENNEL strategy assigns agent 0 and agent 5_000_000 to the same worker, owning ~1000 agents total — the dense layout would inflate to 5_000_001 × 3 = 15M `PortRef` entries to hold ~3000 live ports). The accumulator finalizes to a dense `Net` via `to_dense(Some(id_range))` (SPEC-22 §4.6 signature) only at the end of the pipeline, before `Partition` construction.
+Each `PartitionAccumulator` wraps EITHER a `SparseNet` (SPEC-22 R22 / §4.4) OR a dense `Net` (SPEC-02), selected at construction time using the same `effective_arena_size > 4 × live_agent_count` threshold rule that SPEC-22 R10a/R22 mandates for `build_subnet` (where `effective_arena_size = max_live_id + 1` per SPEC-22 R22 D-011 Amendment 2026-05-04 — supersedes the pre-D-011 `id_range > 4 × live_agent_count` formulation that this section originally cited). SparseNet is the default for accumulators that may receive non-contiguous agent IDs (e.g., FENNEL strategy assigns agent 0 and agent 5_000_000 to the same worker, owning ~1000 agents total — the dense layout would inflate to 5_000_001 × 3 = 15M `PortRef` entries to hold ~3000 live ports). The accumulator finalizes to a dense `Net` via `to_dense(Some(id_range))` (SPEC-22 §4.6 signature) only at the end of the pipeline, before `Partition` construction.
 
 The §4.9 design adopts SPEC-22 SparseNet rather than recreating the M5 dense-arena pathology (closes SC-006). The `freeport_redirects` field is preserved across the SparseNet→Net conversion per SPEC-22 R13/§4.4. The frame-reuse pattern of accumulator construction (one persistent SparseNet per worker, mutated chunk-by-chunk) follows AC-010 (HVM4 WNF Evaluation) — the WNF goto-state-machine reuses frames across reduction steps; the accumulator analogously reuses one SparseNet across chunks rather than reallocating per chunk.
 
@@ -761,7 +761,10 @@ use std::collections::HashMap;
 
 /// Internal representation of the per-worker accumulator.
 /// SparseNet is the default; Dense is used only when the threshold check
-/// at construction time confirms that id_range <= 4 * expected_live_count.
+/// at construction time confirms that effective_arena_size <= 4 * expected_live_count
+/// (per SPEC-22 R22 D-011 Amendment 2026-05-04, where
+/// effective_arena_size = max_live_id + 1; supersedes the pre-D-011
+/// id_range-based metric).
 enum AccumulatorNet {
     Sparse(SparseNet),
     Dense(Net),
@@ -779,7 +782,9 @@ struct PartitionAccumulator {
     /// Worker ID.
     worker_id: WorkerId,
     /// Tracked for the final id_range computation and the
-    /// id_range > 4 * live_agent_count threshold check at finalize().
+    /// effective_arena_size > 4 * live_agent_count threshold check at finalize()
+    /// (per SPEC-22 R22 D-011 Amendment 2026-05-04, where
+    /// effective_arena_size = max_live_id + 1).
     min_assigned_id: Option<AgentId>,
     max_assigned_id: Option<AgentId>,
     live_agent_count: u64,
@@ -849,7 +854,7 @@ impl PartitionAccumulator {
 **Key properties (post-SparseNet adoption):**
 - *In-progress accumulator memory:* O(live_agent_count) regardless of `id_range`. The dense-arena inflation (`id_range × PORTS_PER_SLOT` PortRef entries for sparse assignments) is eliminated.
 - *Finalization:* `to_dense(Some(id_range))` produces a `Net` whose `agents.len() == id_range.end - id_range.start` and whose port array is sized to `(id_range.end - id_range.start) × PORTS_PER_SLOT` — sized to the partition's owning ID range, not the global `max_agent_id`. This is the same sparse-final layout as SPEC-04 §4.5 Step 5, but built via SparseNet incrementally.
-- *Threshold contract:* The streaming pipeline MUST follow SPEC-22 R10a/R22: when `id_range > 4 × live_agent_count` at finalize-time, SparseNet is mandatory through the conversion; the dense path SHALL be rejected with `PartitionError::DenseAllocationExceedsThreshold` (SPEC-22 R30). T10 (§7.4) MUST exercise this path.
+- *Threshold contract:* The streaming pipeline MUST follow SPEC-22 R10a/R22: when `effective_arena_size > 4 × live_agent_count` at finalize-time (where `effective_arena_size = max_live_id + 1` per SPEC-22 R22 D-011 Amendment 2026-05-04 — supersedes the pre-D-011 `id_range > 4 × live_agent_count` formulation that this clause originally cited), SparseNet is mandatory through the conversion; the dense path SHALL be rejected with `PartitionError::DenseAllocationExceedsThreshold` (SPEC-22 R30). T10 (§7.4) MUST exercise this path.
 - *R23 reconciliation:* R23's "MUST be sized to `max_agent_id_in_this_worker + 1`" applies to the dense-finalized form, NOT the in-progress SparseNet accumulator. Implementers MUST NOT pre-size a dense Vec at construction time hoping to "amortize" the resize — that resurrects SC-006.
 
 ### 4.10 Diagram: Streaming vs. Batch Pipeline
@@ -1060,7 +1065,7 @@ let plan = if config.streaming {
 
 **Q5. Root port handling in streaming.** SPEC-04 R28 requires the root port to be propagated to the partition containing the root agent. In the streaming pipeline, the root agent may appear in any batch. The pipeline MUST defer root assignment until the batch containing the root agent is processed. If the generator does not specify a root, or if root is determined post-generation, this is a non-issue. *(Acknowledged as a debug-assertion edge case; the C1-C3 assertions in R28 operate on the finalized `Vec<Partition>` after the last chunk per the pipeline pseudocode §4.6 Step 5, so they cannot fire prematurely on a missing-root mid-stream.)*
 
-**Q6. Port array sizing in accumulators.** *(RESOLVED via SPEC-22 SparseNet adoption in §4.9; see Round 2 closure of SC-006.)* The accumulator now uses SparseNet by default and converts to dense `Net` only at finalize-time via `to_dense(Some(id_range))` (SPEC-22 §4.6). Under FENNEL's non-contiguous assignment, the in-progress representation is HashMap-based (SparseNet's `agents: HashMap<AgentId, Agent>`); the dense conversion at finalize is sized to `id_range.end - id_range.start`, NOT to `max_agent_id + 1`. The dense path SHALL be rejected with `PartitionError::DenseAllocationExceedsThreshold` (SPEC-22 R30) if `id_range > 4 × live_agent_count` at finalize-time.
+**Q6. Port array sizing in accumulators.** *(RESOLVED via SPEC-22 SparseNet adoption in §4.9; see Round 2 closure of SC-006.)* The accumulator now uses SparseNet by default and converts to dense `Net` only at finalize-time via `to_dense(Some(id_range))` (SPEC-22 §4.6). Under FENNEL's non-contiguous assignment, the in-progress representation is HashMap-based (SparseNet's `agents: HashMap<AgentId, Agent>`); the dense conversion at finalize is sized to `id_range.end - id_range.start`, NOT to `max_agent_id + 1`. The dense path SHALL be rejected with `PartitionError::DenseAllocationExceedsThreshold` (SPEC-22 R30) if `effective_arena_size > 4 × live_agent_count` at finalize-time (per SPEC-22 R22 D-011 Amendment 2026-05-04, where `effective_arena_size = max_live_id + 1` — supersedes the pre-D-011 `id_range > 4 × live_agent_count` formulation that this paragraph originally cited).
 
 ---
 
