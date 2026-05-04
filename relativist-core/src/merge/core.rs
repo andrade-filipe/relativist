@@ -113,6 +113,16 @@ pub fn merge(plan: PartitionPlan) -> (Net, u32) {
                 if result.agents.len() <= i {
                     result.agents.resize(i + 1, None);
                 }
+                // QA-D011-BUG2 AF-3 (2026-05-04): catch cross-partition agent
+                // collisions at the merge boundary instead of waiting for I1
+                // panic at end-of-merge. If multiple partitions wrote live
+                // agents to the same arena slot, this fires with a clear
+                // diagnostic. Cheap, debug-only.
+                debug_assert!(
+                    result.agents[i].is_none(),
+                    "merge: agent ID {} appears in multiple partitions (D3 live-set violation)",
+                    i
+                );
                 result.agents[i] = Some(*agent);
 
                 // Expand port array if needed

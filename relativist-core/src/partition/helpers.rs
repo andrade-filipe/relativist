@@ -379,9 +379,22 @@ pub fn build_subnet(
         agents,
         ports,
         redex_queue,
-        next_id: 0, // Caller sets this based on ID range
+        // QA-D011-BUG2 (2026-05-04): mirror sparse path's `next_id = id_range.start`
+        // initialization so split.rs:96-98's `max(subnet.next_id, max_agent_id+1)`
+        // override always yields a value INSIDE the worker's assigned range.
+        // The previous `next_id: 0` made worker 0 begin fresh allocation at
+        // `max_agent_id+1` (e.g., ID 5 for condup_expansion(5) w=2), colliding
+        // with worker 1's pre-existing IDs and producing I1 violations after
+        // merge. See docs/qa/QA-D011-BUG2-i1-violation-2026-05-04.md §4 for the
+        // full trace. SC-001 / SPEC-22 R10 / D3.
+        next_id: id_range.start,
         root: None, // Caller sets this based on R28
-        freeport_redirects: std::collections::HashMap::new(),
+        // SC-001 second surface: preserve freeport_redirects from source net so
+        // border-wire redirections survive build_subnet → reduce → merge. The
+        // sparse path (line 608) does this; dense was non-compliant. Latent
+        // since SPEC-22 R10a addition; surfaced when D-011 metric correction
+        // routed real workloads through dense. SC-001.
+        freeport_redirects: net.freeport_redirects.clone(),
         free_list,
         id_range: Some(id_range),
         border_entries_shadow,
@@ -399,22 +412,54 @@ pub fn build_subnet(
     }
 }
 
-/// SPEC-22 §3.4 R30: `build_subnet` with config-driven M5 threshold guard.
+/// SPEC-22 §3.4 R30 (D-011 amendment 2026-05-04): `build_subnet` with
+/// effective-arena threshold guard.
 ///
-/// Wraps `build_subnet` with a threshold check when `config.sparse_build == false`:
-/// - If `id_range_size > 4 × live_count`: returns
+/// Wraps `build_subnet` with a threshold check. Routes between dense and
+/// sparse construction based on the metric:
+///
+/// ```text
+/// effective_arena_size = max_live_id + 1   (matches dense allocation, build_subnet line 301-303)
+/// threshold_exceeded   = effective_arena_size > 4 × live_count
+/// ```
+///
+/// - If `worker_agents.is_empty()` AND `config.sparse_build == true` →
+///   SPARSE path (carve-out: empty partitions need id_range/next_id
+///   preservation for downstream `create_agent`, which dense's
+///   `Net::new()` discards — QA-D009-009 contract).
+/// - If `threshold_exceeded && !config.sparse_build` → returns
 ///   `Err(PartitionError::DenseAllocationExceedsThreshold { ... })`.
-/// - If `id_range_size <= 4 × live_count` OR `config.sparse_build == true`:
-///   delegates to `build_subnet` and returns `Ok(net)`.
+/// - If `threshold_exceeded && config.sparse_build` → SPARSE path
+///   (`build_subnet_sparse` → `to_dense(id_range)`). M5 budget honored.
+/// - Otherwise → DENSE path (`build_subnet`).
 ///
 /// The `partition_index` parameter is passed through to the error payload
-/// for diagnostic purposes (identifies which partition triggered the guard).
+/// for diagnostic purposes.
 ///
-/// # Threshold
+/// # Threshold rationale (D-011 BLOCKER 2026-05-04)
 ///
-/// The 4× factor is a fixed safety margin (SPEC-22 R22). It is NOT parameterized.
-/// A dense arena with `id_range_size > 4 × live_count` would have >75% `None`
-/// slots, reaching the 800 MiB pathology at ~200K agents (M5 evidence base).
+/// The 4× factor (SPEC-22 R22) is a fixed safety margin against the M5
+/// pathology (`>75%` dead slots in the arena). The PRE-D-011 formulation
+/// measured `id_range_size` (the planning range from `compute_id_ranges`),
+/// which is decoupled from actual arena memory: dense `build_subnet`
+/// allocates `Vec<Option<Agent>>` of size `max_live_id + 1` regardless of
+/// `id_range.end`. Using the planning range routed every healthy workload
+/// through SPARSE — a 5–7× wall-clock regression on `ep_con 5M w=2`. See
+/// `docs/next-steps.md` BLOCKER 2026-05-04 for the bisect transcript.
+///
+/// M5 pathology (recycled-id fragmentation under delta mode) is still
+/// detected (it manifests as `max_live_id ≫ live_count` and trips the
+/// same constant 4× — SPEC-22 R22a).
+///
+/// # Empty partition
+///
+/// `worker_agents.is_empty()` ⇒ `effective_arena_size = 0`,
+/// `threshold_exceeded = false`. Routed to SPARSE when
+/// `config.sparse_build == true` to preserve id_range/next_id (the dense
+/// `build_subnet` returns `Net::new()` and discards both, breaking
+/// QA-D009-009). When `sparse_build == false` empty partitions still go
+/// through dense — same behavior as pre-D-011 since the threshold also
+/// did not trigger then for empty workers.
 // 8 params — justified: config, partition_index, net, agents, sigma, borders, worker_id, id_range.
 // The signature mirrors `build_subnet` with config prepended; further reduction would
 // require a builder struct (not warranted for this guard-only wrapper).
@@ -429,24 +474,44 @@ pub fn build_subnet_with_config(
     worker_id: WorkerId,
     id_range: core::ops::Range<AgentId>,
 ) -> Result<Net, crate::error::PartitionError> {
-    let id_range_size = (id_range.end as u64).saturating_sub(id_range.start as u64);
+    // SPEC-22 R22 (D-011 amendment 2026-05-04): threshold metric matches the
+    // actual `Vec<Option<Agent>>` size that dense `build_subnet` would
+    // allocate. The previous metric used `id_range.end - id_range.start`,
+    // which is the PLANNING range from `compute_id_ranges` and is decoupled
+    // from real arena memory (dense allocates by `max_live_id + 1`, see
+    // `build_subnet` line 301-303). Using the planning range routed every
+    // healthy workload through SPARSE; see `docs/next-steps.md` BLOCKER
+    // 2026-05-04 for the bisect transcript.
     let live_count = worker_agents.len() as u64;
-    let threshold_exceeded = id_range_size > 4 * live_count;
+    let effective_arena_size: u64 = worker_agents
+        .iter()
+        .copied()
+        .max()
+        .map(|max_id| max_id as u64 + 1)
+        .unwrap_or(0);
+    let threshold_exceeded = effective_arena_size > 4 * live_count;
+
+    // QA-D009-009 carve-out: empty partitions must preserve id_range/next_id
+    // for downstream `create_agent`. Dense `build_subnet` returns
+    // `Net::new()` for empty workers (line 297-299) which discards both.
+    // SPARSE `build_subnet_sparse` has an explicit empty-worker branch
+    // (line 499-507) that preserves them.
+    let force_sparse_for_empty = worker_agents.is_empty() && config.sparse_build;
 
     if threshold_exceeded && !config.sparse_build {
         // SPEC-22 R30: threshold check for the dense path.
         return Err(
             crate::error::PartitionError::DenseAllocationExceedsThreshold {
                 partition_index,
-                id_range_size,
+                effective_arena_size,
                 live_count,
             },
         );
     }
 
-    if threshold_exceeded {
+    if threshold_exceeded || force_sparse_for_empty {
         // SPEC-22 R22: sparse path — builds via SparseNet then converts to dense.
-        // Memory is proportional to live_count rather than id_range_size (M5 fix).
+        // Memory is proportional to live_count rather than effective_arena_size (M5 fix).
         let mut subnet = build_subnet_sparse(
             net,
             worker_agents,
@@ -1369,103 +1434,129 @@ mod tests {
         );
     }
 
-    // UT-0484-03: sparse_build=false, id_range == 5 * live_count (exceeds threshold)
-    // -> build_subnet_with_config returns Err(DenseAllocationExceedsThreshold).
+    // UT-0484-03 (REVISED 2026-05-04 — D-011 BLOCKER fix):
+    // sparse_build=false with effective_arena_size > 4 × live_count must reject.
+    // Under the NEW SPEC-22 v2.4 R22 metric, "above threshold" requires scattered
+    // live IDs (not just a generous id_range.end). 10 live agents at IDs
+    // {0, 5, 10, ..., 45} give max_live_id = 45 → effective_arena_size = 46.
+    // 46 > 4 × 10 = 40 → threshold exceeded under new metric.
     #[test]
     fn sparse_build_false_above_threshold_rejects() {
         use crate::error::PartitionError;
         use crate::partition::PartitionConfig;
 
-        // 10 live agents, id_range = 0..50 (50 > 4 * 10 = 40, exceeds)
         let mut net = Net::new();
-        for _ in 0..10 {
-            net.create_agent(Symbol::Era);
+        for _ in 0..50 {
+            net.create_agent(Symbol::Era); // creates IDs 0..49
         }
-        for i in 0..10u32 {
+        // Live agents at {0, 5, 10, ..., 45} (10 agents); remove the rest.
+        let live: Vec<u32> = (0..50).step_by(5).collect();
+        let to_remove: Vec<u32> = (0..50).filter(|i| !live.contains(i)).collect();
+        for id in to_remove {
+            net.remove_agent(id);
+        }
+        for &i in &live {
             let port_idx = i as usize * PORTS_PER_SLOT;
             net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
         }
-        let agents: Vec<u32> = (0..10).collect();
+        let agents = live.clone();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
         let cfg = PartitionConfig {
             sparse_build: false,
             ..PartitionConfig::default()
         };
+        // id_range value is no longer relevant under new metric; what matters is max_live_id.
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..50);
         assert!(
             matches!(
                 result,
                 Err(PartitionError::DenseAllocationExceedsThreshold { .. })
             ),
-            "exceeded threshold (id_range=50, live=10): expected DenseAllocationExceedsThreshold, got {:?}",
+            "scattered live IDs (max=45, live=10): expected DenseAllocationExceedsThreshold under new metric, got {:?}",
             result
         );
     }
 
-    // UT-0484-04: sparse_build=true, threshold exceeded -> Ok (sparse path, no rejection).
+    // UT-0484-04 (REVISED 2026-05-04 — D-011 BLOCKER fix):
+    // sparse_build=true with effective_arena_size > 4 × live_count must succeed
+    // via SPARSE path (no rejection). Same scattered-ID setup as UT-0484-03.
     #[test]
     fn sparse_build_true_above_threshold_uses_sparse_path() {
         use crate::partition::PartitionConfig;
 
         let mut net = Net::new();
-        for _ in 0..10 {
+        for _ in 0..50 {
             net.create_agent(Symbol::Era);
         }
-        for i in 0..10u32 {
+        let live: Vec<u32> = (0..50).step_by(5).collect();
+        let to_remove: Vec<u32> = (0..50).filter(|i| !live.contains(i)).collect();
+        for id in to_remove {
+            net.remove_agent(id);
+        }
+        for &i in &live {
             let port_idx = i as usize * PORTS_PER_SLOT;
             net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
         }
-        let agents: Vec<u32> = (0..10).collect();
+        let agents = live.clone();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
         let cfg = PartitionConfig {
             sparse_build: true,
             ..PartitionConfig::default()
         };
-        // id_range = 0..50 (50 > 4*10; threshold exceeded) but sparse_build=true -> Ok
         let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..50);
         assert!(
             result.is_ok(),
-            "sparse_build=true: must not reject above threshold, got {:?}",
+            "sparse_build=true above threshold (scattered live IDs): must not reject, got {:?}",
             result
         );
     }
 
-    // UT-0484-05: error fields contain the actual id_range_size and live_count.
+    // UT-0484-05 (REVISED 2026-05-04 — D-011 BLOCKER fix):
+    // Error variant carries effective_arena_size + live_count under new SPEC-22 v2.4
+    // metric. 100 live agents at IDs {0, 5, 10, ..., 495}: max=495,
+    // effective_arena_size=496, 4×100=400 → exceeded.
     #[test]
-    fn error_field_id_range_size_correct() {
+    fn error_field_effective_arena_size_correct() {
         use crate::error::PartitionError;
         use crate::partition::PartitionConfig;
 
-        // id_range = 0..500, live_count = 100 → id_range_size=500, live=100
         let mut net = Net::new();
-        for _ in 0..100 {
+        for _ in 0..500 {
             net.create_agent(Symbol::Era);
         }
-        for i in 0..100u32 {
+        let live: Vec<u32> = (0..500).step_by(5).collect();
+        let to_remove: Vec<u32> = (0..500).filter(|i| !live.contains(i)).collect();
+        for id in to_remove {
+            net.remove_agent(id);
+        }
+        for &i in &live {
             let port_idx = i as usize * PORTS_PER_SLOT;
             net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
         }
-        let agents: Vec<u32> = (0..100).collect();
+        let agents = live.clone();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
 
         let cfg = PartitionConfig {
             sparse_build: false,
             ..PartitionConfig::default()
         };
-        let result = build_subnet_with_config(&cfg, 7, &net, &agents, &sigma, &[], 0, 0..500);
+        let result = build_subnet_with_config(&cfg, 7, &net, &agents, &sigma, &[], 0, 0..1000);
         match result {
             Err(PartitionError::DenseAllocationExceedsThreshold {
                 partition_index,
-                id_range_size,
+                effective_arena_size,
                 live_count,
             }) => {
                 assert_eq!(
                     partition_index, 7,
                     "partition_index must match the passed index"
                 );
-                assert_eq!(id_range_size, 500, "id_range_size must be 500");
+                assert_eq!(
+                    effective_arena_size, 496,
+                    "effective_arena_size = max_live_id + 1 = 495 + 1 = 496"
+                );
                 assert_eq!(live_count, 100, "live_count must be 100");
             }
             other => panic!("expected DenseAllocationExceedsThreshold, got {:?}", other),
@@ -1473,13 +1564,14 @@ mod tests {
     }
 
     // UT-0484-06: error variant is in PartitionError, derives Debug, and matches.
+    // (Field name updated 2026-05-04: id_range_size → effective_arena_size.)
     #[test]
     fn error_variant_in_partition_error_enum() {
         use crate::error::PartitionError;
 
         let err = PartitionError::DenseAllocationExceedsThreshold {
             partition_index: 0,
-            id_range_size: 500,
+            effective_arena_size: 500,
             live_count: 100,
         };
         // Must be Debug-printable and match the variant
@@ -1499,40 +1591,53 @@ mod tests {
     // TEST-SPEC-0492 — sparse-then-dense build_subnet (R22, TASK-0492)
     // -----------------------------------------------------------------------
 
-    /// UT-0492-01: sparse_path_taken_above_threshold — sparse path produces Ok.
+    /// UT-0492-01 (REVISED 2026-05-04 — D-011): sparse path taken when
+    /// effective_arena_size > 4 × live_count (scattered live IDs).
     #[test]
     fn sparse_path_taken_above_threshold() {
-        use crate::partition::PartitionConfig;
+        // 10 live at IDs {0, 6, 12, ..., 54} → max_live_id = 54,
+        // effective_arena_size = 55, 55 > 40 → SPARSE.
         let mut net = Net::new();
-        // 10 live agents; id_range = 0..60 (60 > 4*10 = 40, threshold exceeded).
-        for _ in 0..10 {
+        for _ in 0..55 {
             net.create_agent(Symbol::Era);
         }
-        // Assign all agents to worker 0; wire all to FreePorts so they land in subnet.
-        for i in 0..10u32 {
+        let live: Vec<u32> = (0..55).step_by(6).take(10).collect();
+        assert_eq!(live.len(), 10, "test setup expects exactly 10 live agents");
+        let to_remove: Vec<u32> = (0..55).filter(|i| !live.contains(i)).collect();
+        for id in to_remove {
+            net.remove_agent(id);
+        }
+        for &i in &live {
             let port_idx = i as usize * PORTS_PER_SLOT;
             net.ports[port_idx] = PortRef::FreePort(1_000_000 + i);
         }
-        let agents: Vec<u32> = (0..10).collect();
+        let agents = live.clone();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig {
-            sparse_build: true,
-            ..PartitionConfig::default()
-        };
-        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..60);
+        let cfg = crate::partition::PartitionConfig::default(); // sparse_build = true
+
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..55);
         assert!(
             result.is_ok(),
             "sparse_build=true + threshold exceeded should succeed, got {:?}",
             result
         );
+        let subnet = result.unwrap();
+        assert_eq!(subnet.count_live_agents(), 10);
+        // Sparse path was taken: id_range is preserved on the returned net.
+        assert_eq!(
+            subnet.id_range,
+            Some(0..55),
+            "SPARSE path must preserve id_range on returned net"
+        );
     }
 
-    /// UT-0492-02: dense path taken below threshold.
+    /// UT-0492-02 (REVISED 2026-05-04 — D-011): dense path taken when
+    /// effective_arena_size ≤ 4 × live_count.
     #[test]
     fn dense_path_taken_below_threshold() {
-        use crate::partition::PartitionConfig;
+        // 10 live agents densely packed at IDs 0..10. max_live_id = 9,
+        // effective_arena_size = 10, 10 < 40.
         let mut net = Net::new();
-        // 10 live agents; id_range = 0..30 (30 < 4*10 = 40, threshold NOT exceeded).
         for _ in 0..10 {
             net.create_agent(Symbol::Era);
         }
@@ -1542,13 +1647,19 @@ mod tests {
         }
         let agents: Vec<u32> = (0..10).collect();
         let sigma: HashMap<AgentId, WorkerId> = agents.iter().map(|&id| (id, 0u32)).collect();
-        let cfg = PartitionConfig {
-            sparse_build: true,
-            ..PartitionConfig::default()
-        };
-        // id_range = 0..30 → 30 NOT > 40 (dense path).
-        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..30);
-        assert!(result.is_ok(), "dense path below threshold should succeed");
+        let cfg = crate::partition::PartitionConfig::default(); // sparse_build = true
+
+        // id_range = 0..1000 (NOT relevant under new metric; what matters is max_live_id).
+        let result = build_subnet_with_config(&cfg, 0, &net, &agents, &sigma, &[], 0, 0..1000);
+        assert!(result.is_ok());
+        let subnet = result.unwrap();
+        // Dense path sizes arena to max_live_id + 1 = 10.
+        assert_eq!(
+            subnet.agents.len(),
+            10,
+            "dense branch: arena = max_live_id + 1 = 10 (NOT id_range.end = 1000)"
+        );
+        assert_eq!(subnet.count_live_agents(), 10);
     }
 
     /// UT-0492-04: sparse path sets id_range on returned net.
@@ -1771,5 +1882,87 @@ mod tests {
             "QA-D009-009: empty sparse partition must set next_id = id_range.start (got {})",
             result.next_id
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // QA-D011-BUG2 regression witnesses (2026-05-04)
+    // See docs/qa/QA-D011-BUG2-i1-violation-2026-05-04.md §7 for spec.
+    // -----------------------------------------------------------------------
+
+    /// QA-D011-BUG2 regression: dense `build_subnet` MUST initialize `next_id`
+    /// to `id_range.start` so that subsequent `create_agent` calls allocate
+    /// inside the partition's assigned ID range.
+    ///
+    /// Witness: a 2-worker split of a net where worker 0's `max_agent_id <
+    /// id_range.start`. Worker 0 must NOT be able to create an agent at any
+    /// ID inside worker 1's id_range.
+    #[test]
+    fn qa_d011_bug2_dense_build_subnet_next_id_in_range() {
+        let mut net = Net::new();
+        // 4 agents 0..3, 1 cross-partition redex (1↔2)
+        let a = net.create_agent(Symbol::Con); // 0
+        let b = net.create_agent(Symbol::Dup); // 1
+        let c = net.create_agent(Symbol::Con); // 2
+        let d = net.create_agent(Symbol::Dup); // 3
+        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
+        net.connect(PortRef::AgentPort(a, 1), PortRef::AgentPort(b, 1));
+        net.connect(PortRef::AgentPort(a, 2), PortRef::AgentPort(b, 2));
+        net.connect(PortRef::AgentPort(b, 0), PortRef::AgentPort(c, 0)); // border redex
+        net.connect(PortRef::AgentPort(c, 1), PortRef::AgentPort(d, 1));
+        net.connect(PortRef::AgentPort(c, 2), PortRef::AgentPort(d, 2));
+        net.connect(PortRef::AgentPort(d, 0), PortRef::FreePort(1));
+
+        let worker_agents_0 = vec![0u32, 1u32];
+        let sigma: HashMap<AgentId, WorkerId> =
+            [(0, 0), (1, 0), (2, 1), (3, 1)].into_iter().collect();
+        let border_entries: Vec<(AgentId, PortId, u32)> = vec![(1, 0, 100)]; // bid=100
+
+        // Use a non-trivial id_range to expose the bug.
+        let id_range = 1000u32..2000u32;
+
+        let subnet = build_subnet(
+            &net,
+            &worker_agents_0,
+            &sigma,
+            &border_entries,
+            0,
+            id_range.clone(),
+        );
+        // PRIMARY ASSERTION: next_id must be at id_range.start (not 0).
+        assert_eq!(
+            subnet.next_id, id_range.start,
+            "QA-D011-BUG2: dense build_subnet must initialize next_id = id_range.start, got {}",
+            subnet.next_id
+        );
+
+        // Secondary: end-to-end through split + create_agent must allocate inside range.
+        let mut subnet2 = subnet;
+        subnet2.next_id = std::cmp::max(subnet2.next_id, /* max_agent_id+1 */ 2);
+        let new_id = subnet2.create_agent(Symbol::Era);
+        assert!(
+            id_range.contains(&new_id),
+            "QA-D011-BUG2: create_agent allocated id {} OUTSIDE id_range {:?}",
+            new_id,
+            id_range
+        );
+    }
+
+    /// QA-D011-BUG2 end-to-end: condup_expansion(5) with workers=2 must produce
+    /// a merged net whose I1 invariant holds (no AgentPort/FreePort asymmetry).
+    #[test]
+    fn qa_d011_bug2_condup_expansion_e2e() {
+        let net = crate::io::generators::con_dup_expansion(5);
+        let cfg = crate::merge::GridConfig {
+            num_workers: 2,
+            max_rounds: Some(20),
+            ..Default::default()
+        };
+        let strategy = crate::partition::ContiguousIdStrategy;
+        let (result, _metrics) = crate::merge::run_grid(net, &cfg, &strategy);
+        // The debug-only invariant check inside merge would have already panicked.
+        // This explicit call is belt-and-braces and reads naturally as a witness.
+        #[cfg(debug_assertions)]
+        result.assert_all_invariants();
+        let _ = result; // suppress unused in release
     }
 }

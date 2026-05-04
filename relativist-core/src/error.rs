@@ -125,22 +125,31 @@ pub enum PartitionError {
         range_size: u32,
     },
 
-    /// SPEC-22 §3.4 R30 — returned by `build_subnet_with_config` when
-    /// `sparse_build == false` AND `id_range_size > 4 × live_count`.
+    /// SPEC-22 §3.4 R30 (D-011 amendment 2026-05-04): rejected because the
+    /// dense arena would allocate `effective_arena_size = max_live_id + 1`
+    /// slots, which exceeds `4 × live_count` (M5 budget). Returned by
+    /// `build_subnet_with_config` when `sparse_build == false`.
     ///
-    /// Guards against the M5 memory pathology: a dense arena of size
-    /// `id_range_size` with very few live agents wastes up to 800 MiB
-    /// per partition. Callers must either set `sparse_build: true` or
-    /// reduce the id_range to satisfy the 4× threshold.
+    /// The previous formulation measured `id_range.end - id_range.start`
+    /// (the planning range from `compute_id_ranges`), which is decoupled
+    /// from the actual arena memory `build_subnet` would allocate. Under
+    /// that metric every healthy workload routed through SPARSE — see
+    /// `docs/next-steps.md` BLOCKER 2026-05-04 for the bisect transcript.
+    ///
+    /// M5 pathology (recycled-id fragmentation under delta mode) is still
+    /// detected: it manifests as `max_live_id ≫ live_count` and trips the
+    /// same constant 4×.
     #[error(
-        "dense allocation exceeds threshold: partition {partition_index} has id_range_size={id_range_size} but live_count={live_count} (threshold: id_range_size <= 4 × live_count)"
+        "dense allocation exceeds threshold: partition {partition_index} would size arena to {effective_arena_size} slots (= max_live_id + 1) but only has live_count={live_count} live agents (threshold: effective_arena_size <= 4 × live_count); see SPEC-22 R30"
     )]
     DenseAllocationExceedsThreshold {
         /// Zero-based index of the partition that triggered the guard.
         partition_index: usize,
-        /// Size of the id_range (`id_range.end - id_range.start`) as `u64`
-        /// to avoid overflow when the range spans the full u32 space.
-        id_range_size: u64,
+        /// Size of the dense arena that `build_subnet` would allocate
+        /// (`max_live_id + 1`), as `u64` to avoid overflow when
+        /// `max_live_id` approaches `u32::MAX`. Matches the actual
+        /// `Vec<Option<Agent>>` size, NOT `id_range.end - id_range.start`.
+        effective_arena_size: u64,
         /// Number of live agents in the partition's worker_agents list.
         live_count: u64,
     },

@@ -90,9 +90,14 @@ pub fn split_with_config(
             panic!("build_subnet_with_config failed unexpectedly: {e}");
         });
 
-        // Set next_id: max(id_range.start, max_agent_id + 1)
-        // sparse path sets next_id = id_range.start; dense path sets next_id = 0.
-        // Ensure max_agent_id + 1 is also respected (I3' upper bound).
+        // Widen subnet.next_id to ensure I3' (next_id > all live agent IDs).
+        // Both build_subnet (dense, helpers.rs:382) and build_subnet_sparse
+        // (helpers.rs:616) now initialize subnet.next_id = id_range.start, so
+        // this max() preserves that range placement and only widens further
+        // when max_agent_id + 1 > id_range.start (rare). QA-D011-BUG2 fix
+        // (2026-05-04) made the dense path symmetric with sparse on this
+        // invariant; before that fix, dense returned next_id=0 and worker 0
+        // could allocate outside its assigned range.
         let max_agent_id = worker_agents[i].iter().copied().max();
         let min_next_id = max_agent_id.map(|m| m + 1).unwrap_or(0);
         subnet.next_id = std::cmp::max(subnet.next_id, min_next_id);
@@ -253,15 +258,28 @@ mod tests {
     fn mf002_build_subnet_with_config_enforces_threshold() {
         use crate::partition::{helpers::build_subnet_with_config, PartitionConfig};
 
+        // SPEC-22 v2.4 R22 (D-011 amendment 2026-05-04): threshold metric is
+        // `effective_arena_size = max_live_id + 1`, not `id_range_size`. To
+        // exceed the threshold we need a single live agent at a high ID, so
+        // that `max_live_id + 1 > 4 * live_count = 4`. We create 5 agents,
+        // remove the first 4, leaving live agent at id=4: max_live_id+1=5 > 4.
         let mut net = Net::new();
-        // 1 agent; id_range_size=1000 >> 4*1=4 → threshold exceeded
-        let a = net.create_agent(Symbol::Era);
-        net.connect(PortRef::AgentPort(a, 0), PortRef::FreePort(0));
+        for _ in 0..5 {
+            net.create_agent(Symbol::Era);
+        }
+        // Remove ids 0..3, keeping live agent at id=4.
+        for id in 0..4u32 {
+            net.remove_agent(id);
+        }
+        // Wire principal port to a FreePort for T1 compliance.
+        // ports[id * PORTS_PER_SLOT + 0] is the principal port of agent `id`.
+        net.ports[4 * crate::net::types::PORTS_PER_SLOT] = PortRef::FreePort(0);
 
-        let agents = vec![a];
-        let sigma: std::collections::HashMap<_, _> = [(a, 0u32)].into_iter().collect();
+        let agents = vec![4u32];
+        let sigma: std::collections::HashMap<_, _> = [(4u32, 0u32)].into_iter().collect();
 
         // sparse_build=false → Err when threshold exceeded
+        // (eff_arena = 5, 4 * live_count = 4, 5 > 4 → exceeded)
         let strict_cfg = PartitionConfig {
             sparse_build: false,
             ..PartitionConfig::default()

@@ -797,16 +797,23 @@ impl PartitionAccumulator {
     /// For the `Sparse` variant, calls `SparseNet::to_dense(Some(id_range))`
     /// (SPEC-22 R20 / TASK-0490). For `Dense`, uses the inner `Net` directly.
     ///
-    /// # Threshold guard (SPEC-22 R10a / R22 / R30)
+    /// # Threshold guard (SPEC-22 R10a / R22 / R30, D-011 amendment 2026-05-04)
     ///
-    /// If `id_range_size > 4 × live_agent_count`, returns
+    /// If `effective_arena_size > 4 × live_agent_count` returns
     /// `Err(PartitionError::DenseAllocationExceedsThreshold)`. The
     /// inequality is STRICT (`>`): exactly 4× is accepted.
+    ///
+    /// `effective_arena_size = max_assigned_id + 1` matches the actual
+    /// `Vec<Option<Agent>>` size that `SparseNet::to_dense` (or the
+    /// `AccumulatorNet::Dense` direct path) would allocate. The pre-D-011
+    /// metric used `id_range.end - id_range.start` (the planning range
+    /// from `compute_id_ranges`), which routed healthy workloads through
+    /// the threshold; see `docs/next-steps.md` BLOCKER 2026-05-04.
     ///
     /// # R23 reconciliation
     ///
     /// The dense `Net` produced by `to_dense(Some(id_range))` has
-    /// `agents.len() == id_range.end - id_range.start`, satisfying R23
+    /// `agents.len() == max_assigned_id + 1`, satisfying R23
     /// ("sized to max_agent_id_in_this_worker + 1") for partition-scoped
     /// layouts.
     pub(crate) fn finalize(
@@ -815,13 +822,18 @@ impl PartitionAccumulator {
         border_id_start: u32,
         border_id_end: u32,
     ) -> Result<Partition, PartitionError> {
-        let id_range_size = (id_range.end as u64).saturating_sub(id_range.start as u64);
+        // SPEC-22 R22 (D-011 amendment 2026-05-04): metric is the actual
+        // dense arena size (`max_assigned_id + 1`), not the planning range.
+        let effective_arena_size: u64 = self
+            .max_assigned_id
+            .map(|max_id| max_id as u64 + 1)
+            .unwrap_or(0);
 
         // SPEC-22 R30 threshold check: strict greater-than.
-        if id_range_size > 4 * self.live_agent_count {
+        if effective_arena_size > 4 * self.live_agent_count {
             return Err(PartitionError::DenseAllocationExceedsThreshold {
                 partition_index: self.worker_id as usize,
-                id_range_size,
+                effective_arena_size,
                 live_count: self.live_agent_count,
             });
         }
@@ -2612,12 +2624,18 @@ mod tests {
         );
     }
 
-    /// UT-0552-04: Finalize with id_range >> 4×live_count returns threshold error.
+    /// UT-0552-04 (REVISED 2026-05-04 — D-011): Finalize with scattered live
+    /// IDs such that `effective_arena_size > 4 × live_count` returns threshold
+    /// error. Under SPEC-22 v2.4 R22 the metric is `max_assigned_id + 1`, not
+    /// `id_range.end - id_range.start`, so we MUST place at least one agent
+    /// at a high ID to exceed `4 × live_count`. 100 live agents at IDs
+    /// {0, 5, 10, ..., 495} → max_assigned_id = 495, eff_arena = 496,
+    /// 4 × live_count = 400, 496 > 400 → threshold tripped.
     #[test]
     fn finalize_dense_rejection_above_threshold() {
         let mut acc = PartitionAccumulator::new(0);
-        // 100 live agents but id_range of 10_000 (100× > 4×)
-        for i in 0u32..100 {
+        // 100 live agents at scattered IDs to inflate max_assigned_id.
+        for i in (0u32..500).step_by(5) {
             acc.add_agent(i, Symbol::Era);
         }
         let id_range = IdRange {
@@ -2630,7 +2648,7 @@ mod tests {
                 result,
                 Err(PartitionError::DenseAllocationExceedsThreshold { .. })
             ),
-            "id_range 100× live_count must trigger threshold error"
+            "scattered IDs (max=495, live=100): expected DenseAllocationExceedsThreshold under new metric"
         );
     }
 
@@ -2641,7 +2659,10 @@ mod tests {
         for i in 0u32..100 {
             acc.add_agent(i, Symbol::Era);
         }
-        // id_range_size = 400 == 4 × 100; strictly equal, not greater-than → passes.
+        // Under SPEC-22 v2.4 R22 metric: effective_arena_size = max_assigned_id + 1
+        // = 100, 4 × live_count = 400, 100 < 400 → does NOT exceed (test still
+        // passes; semantics shifted from "boundary at id_range_size" to "well
+        // below threshold under new metric").
         let id_range = IdRange { start: 0, end: 400 };
         let result = acc.finalize(id_range, 0, 0);
         assert!(

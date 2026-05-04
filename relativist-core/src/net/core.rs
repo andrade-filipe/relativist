@@ -529,6 +529,23 @@ impl Net {
             "AgentId space exhausted: next_id has reached u32::MAX ({})",
             u32::MAX
         );
+        // QA-D011-BUG2 AF-2 (2026-05-04): defensive guard against fresh
+        // allocations escaping the partition's id_range. Without this guard,
+        // any future build_* path that forgets to seed next_id correctly
+        // silently re-introduces cross-partition collisions (the Bug 2 class).
+        #[cfg(debug_assertions)]
+        if let Some(ref range) = self.id_range {
+            debug_assert!(
+                self.next_id < range.end,
+                "SPEC-22 R10 / D3 violation: fresh next_id {} reached id_range.end {} (would allocate outside partition range)",
+                self.next_id, range.end
+            );
+            debug_assert!(
+                self.next_id >= range.start,
+                "SPEC-22 R10 / D3 violation: fresh next_id {} below id_range.start {} (cross-partition collision risk)",
+                self.next_id, range.start
+            );
+        }
         let id = self.next_id;
         self.next_id += 1;
 
@@ -2654,22 +2671,31 @@ mod tests {
     }
 
     /// UT-0480-04 (debug-only): out-of-range pop triggers debug_assert.
+    ///
+    /// Note (2026-05-04, QA-D011-BUG2 AF-2): id_range is set AFTER agent
+    /// creation to avoid tripping the new fresh-allocation guard in
+    /// create_agent (which fires when next_id < range.start or
+    /// next_id >= range.end). The original setup created agents with
+    /// id_range already configured — that pattern is now caught earlier
+    /// by AF-2; this test specifically targets the recycle-pop path.
     #[cfg(debug_assertions)]
     #[test]
     fn id_range_some_traps_out_of_range_pop() {
         use std::panic;
         let mut net = Net::new();
-        net.id_range = Some(0..100);
-        // Synthetic invalid state: inject out-of-range id into free_list
-        // Need arena to be large enough to contain slot 150
+        // Build the arena BEFORE installing id_range: AF-2 guards fresh
+        // allocation, so we cannot create 151 agents while id_range = Some(0..100).
         for _ in 0..151 {
             net.create_agent(Symbol::Con);
         }
-        net.remove_agent(150); // would normally push 150 to free_list
-                               // But 150 is outside 0..100; simulate the violation by directly injecting
-                               // (the remove_agent will have pushed it since id_range check is only in create_agent)
+        net.remove_agent(150); // pushes 150 to free_list
+                               // Now install the partition range. Slot 150 is already in free_list
+                               // (synthetic state simulating an out-of-range entry that should not
+                               // exist in well-formed code).
+        net.id_range = Some(0..100);
         assert!(net.free_list.contains(&150));
-        // Creating an agent should pop 150, and the debug_assert in create_agent fires
+        // Creating an agent should pop 150, and the debug_assert in
+        // create_agent (recycle path, line 442-451) fires.
         let result = panic::catch_unwind(move || {
             net.create_agent(Symbol::Con);
         });
