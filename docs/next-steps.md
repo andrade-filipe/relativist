@@ -6,6 +6,18 @@
 
 **Maintained by:** sdd-pipeline agent (see `docs/WORKFLOWS.md`)
 
+### ✅ D-011 BLOCKER — Performance regression CLOSED 2026-05-04
+
+The partition perf regression flagged in the v2_tcp_baseline rodada is **CLOSED**. Bundle in 7 commits `e941273..b1f9c10`: SPEC-22 v2.4 R22 metric correction (effective_arena_size = max_live_id + 1) + 2 latent dense `build_subnet` bug fixes (Bug 1: freeport_redirects propagation; Bug 2: next_id = id_range.start) + AF-2/AF-3 defensive guards + 8 Cat A test rewrites + 4 regression witnesses + boundary tests. Full narrative + scientific finding (the apparent regression masked 2 latent correctness bugs that v1 never detected) in `docs/progress.md` 2026-05-04 entry.
+
+**Bench verification (TASK-0614, `0fd27c0`):** ep_con 5M w=2 local wall median v1 = 14.247 s vs HEAD post-fix = 15.775 s, ratio **1.11× (within noise floor)**. ~88% of the +83% regression closed.
+
+**Test floor advanced:** 1683→1784 default / 1726→1828 zero-copy / 1680→1775 streaming-no-recycle. v1 floor=690 inviolable.
+
+**Deferred (separate follow-up tasks, NOT blocking):** QA F-003 (empty dense partition + AF-2 brittleness — pre-existing QA-D009-009 contract gap, unrelated to D-011); QA F-005 (`freeport_redirects` memory cost at scale — perf concern, not correctness).
+
+---
+
 ### Active Bundle — Tier 3 (Memory Efficiency) — D-011 NEXT (D-009 + D-010 CLOSED)
 
 **Authoritative plan:** `docs/plans/2026-04-24-tier-4-master-plan.md` §3.
