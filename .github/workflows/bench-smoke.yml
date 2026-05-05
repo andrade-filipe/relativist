@@ -14,7 +14,7 @@ on:
       - docker-compose.yml
       - relativist-core/**
       - relativist-cli/**
-      - .github/workflows/docker-bench-smoke.yml
+      - .github/workflows/bench-smoke.yml
   pull_request:
     branches: [main, v2-development]
     paths:
@@ -22,7 +22,7 @@ on:
       - docker-compose.yml
       - relativist-core/**
       - relativist-cli/**
-      - .github/workflows/docker-bench-smoke.yml
+      - .github/workflows/bench-smoke.yml
   workflow_dispatch:
 
 jobs:
