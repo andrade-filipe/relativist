@@ -1870,6 +1870,12 @@ mod tests {
         );
         match err.unwrap_err() {
             PullCoordinatorError::UnexpectedEvent { .. } => {}
+            PullCoordinatorError::WorkerIdMismatch { .. } => {
+                panic!(
+                    "unexpected WorkerIdMismatch from DispatchingFirst + RequestWork; \
+                     expected UnexpectedEvent"
+                );
+            }
         }
     }
 

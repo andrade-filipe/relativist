@@ -1528,6 +1528,7 @@ fn verify_no_redexes_full_scan(net: &Net) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::PortRef;
     use crate::net::Symbol;
     use crate::partition::ContiguousIdStrategy;
 

@@ -170,7 +170,7 @@ impl Net {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 mod tests {
     use super::super::core::Net;
     use super::super::types::*;

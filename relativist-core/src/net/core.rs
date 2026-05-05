@@ -3756,7 +3756,10 @@ mod tests {
     }
 
     /// UT-0497-04: assert_next_id_valid is I3'-compatible.
+    /// Gated `debug_assertions` because `assert_next_id_valid` is a debug-only
+    /// method on `Net` (see `net/debug.rs:88` inside `#[cfg(debug_assertions)] impl Net`).
     #[test]
+    #[cfg(debug_assertions)]
     fn assert_next_id_valid_preserved() {
         let mut net = Net::new();
         let a = net.create_agent(Symbol::Con);
