@@ -10,7 +10,10 @@ Start here if you want to **use** Relativist.
 
 | Document | Description |
 |----------|-------------|
-| [**guides/**](guides/README.md) | Step-by-step learning path (7 numbered guides, Portuguese-BR) |
+| [**guides/**](guides/README.md) | Step-by-step learning path (10 numbered guides, Portuguese-BR) |
+| [guides/08-elastic-grid.md](guides/08-elastic-grid.md) | SPEC-20 — hybrid coordinator + dynamic join/departure |
+| [guides/09-streaming-generation.md](guides/09-streaming-generation.md) | SPEC-21 — chunked generation + streaming partitioning |
+| [guides/10-arena-management.md](guides/10-arena-management.md) | SPEC-22 — free-list recycle + dense/sparse routing |
 | [reference/cli.md](reference/cli.md) | Complete CLI reference — every subcommand, every flag |
 | [reference/file-formats.md](reference/file-formats.md) | `.bin` and `.ic` formats |
 | [reference/invariants.md](reference/invariants.md) | G1/D3/D6 + amendments (SPEC-19 bundle 2.26) |
@@ -39,7 +42,7 @@ All specs live in [`specs/`](../specs/). See the [README specs table](../README.
 | SPEC-15 to SPEC-16 | Operations: distribution & packaging, worker daemon mode |
 | SPEC-17 onwards | v2: transport abstraction, wire format v2 (SPEC-18), delta protocol (SPEC-19), elastic grid, streaming, arena, compact memory, WAN, recipe gen, GUI, encoder API |
 
-Guides cover the user-facing v2 features: [06-delta-protocol](guides/06-delta-protocol.md) (SPEC-19), [07-zero-copy](guides/07-zero-copy.md) (SPEC-18).
+Guides cover the user-facing v2 features: [06-delta-protocol](guides/06-delta-protocol.md) (SPEC-19), [07-zero-copy](guides/07-zero-copy.md) (SPEC-18), [08-elastic-grid](guides/08-elastic-grid.md) (SPEC-20), [09-streaming-generation](guides/09-streaming-generation.md) (SPEC-21), [10-arena-management](guides/10-arena-management.md) (SPEC-22).
 
 ## Benchmark Results
 

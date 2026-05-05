@@ -9,7 +9,7 @@ Relativist is a Rust implementation of [Lafont's Interaction Combinators](https:
 - **Deterministic distributed reduction** — Strong confluence ensures the result is identical whether computed on 1 machine or 8
 - **Zero coordination overhead for correctness** — Workers reduce independently; only boundary redexes require cross-node resolution
 - **Formally specified** — Every module has a detailed spec with invariants, requirements, and Rust type signatures
-- **TDD from specs** — 690+ tests, 13 benchmarks across 3 workload profiles
+- **TDD from specs** — 1798 default / 1842 zero-copy / 1789 streaming-no-recycle / 1740 release tests on `v2-development` (v1 inviolable floor: 690 on `v1-feature-complete`); 13 benchmarks across 3 workload profiles
 
 ## Architecture
 
@@ -68,13 +68,28 @@ Both `inspect` calls must show identical agent counts and `Normal Form: yes`. Th
 docker compose up --scale worker=4
 ```
 
+## What's new in v2
+
+- **SPEC-17 transport abstraction** — `Transport` trait with `TcpTransport`, `UnixTransport` (UDS) and `ChannelTransport` (in-process) backends. `--transport tcp|unix` flag plus full TCP knob suite (`--keepalive`, `--send-buffer`, `--recv-buffer`, `--no-tcp-nodelay`).
+- **SPEC-18 wire format v2** — bincode v2 (varint), `PortRef` compacto (2-5 bytes), LZ4 compression above `--compression-threshold`, optional rkyv zero-copy archive on hot-path messages (`--features zero-copy` + `--use-zero-copy`).
+- **SPEC-19 delta protocol** — stateful workers; only border deltas cross the wire (`--delta-mode`). Coordinator BorderGraph replaces the merged net during convergence; final reconstruct only at Global Normal Form.
+- **SPEC-21 streaming generation** — chunked generate -> partition -> dispatch pipeline (`--chunk-size`, default 10000). Coordinator peak memory bounded by O(chunk_size + border state) instead of O(total_agents). Round-robin and FENNEL streaming strategies.
+- **SPEC-22 arena management** — free-list recycle of consumed agent slots (`--recycle-policy`, default `disable-under-delta`) plus dense/sparse routing for build_subnet (`--representation` for bench; automatic threshold for runtime).
+- **D-011 dense-path bug fix** — `effective_arena_size = max_live_id + 1` replaces the misleading planning-range metric in SPEC-22 R22; closes the +83% wall-clock regression on `ep_annihilation_con 5M w=2`.
+- **D-012 instrumentation restored** — `compute_time_secs`, `network_time_secs`, and `mips_mean` are populated for every TCP-mode row in the canonical baseline. Wall-time is now decomposed by component (compute / network / merge), enabling targeted analysis of where each ms is spent.
+
+User guides: [08 Elastic Grid](docs/guides/08-elastic-grid.md), [09 Streaming Generation](docs/guides/09-streaming-generation.md), [10 Arena Management](docs/guides/10-arena-management.md).
+
 ## Documentation
 
 Start here based on your goal:
 
 | Goal                                   | Start at                                                               |
 |----------------------------------------|------------------------------------------------------------------------|
-| Learn Relativist step by step          | [**docs/guides/**](docs/guides/README.md) — 7-step learning path        |
+| Learn Relativist step by step          | [**docs/guides/**](docs/guides/README.md) — 10-step learning path       |
+| Use SPEC-20 elastic grid               | [docs/guides/08-elastic-grid.md](docs/guides/08-elastic-grid.md)        |
+| Use SPEC-21 streaming generation       | [docs/guides/09-streaming-generation.md](docs/guides/09-streaming-generation.md) |
+| Use SPEC-22 arena management           | [docs/guides/10-arena-management.md](docs/guides/10-arena-management.md)|
 | Look up a command or flag              | [docs/reference/cli.md](docs/reference/cli.md)                          |
 | Reproduce or extend benchmarks         | [docs/benchmarks/](docs/benchmarks/README.md)                           |
 | Understand the invariants (G1, D3, D6) | [docs/reference/invariants.md](docs/reference/invariants.md)            |
@@ -82,7 +97,7 @@ Start here based on your goal:
 | Contribute code                        | [CONTRIBUTING.md](CONTRIBUTING.md)                                      |
 | Navigate everything else               | [docs/INDEX.md](docs/INDEX.md)                                          |
 
-v2 features already documented: [delta protocol (SPEC-19)](docs/guides/06-delta-protocol.md), [zero-copy wire format (SPEC-18)](docs/guides/07-zero-copy.md).
+v2 features already documented: [delta protocol (SPEC-19)](docs/guides/06-delta-protocol.md), [zero-copy wire format (SPEC-18)](docs/guides/07-zero-copy.md), [elastic grid (SPEC-20)](docs/guides/08-elastic-grid.md), [streaming generation (SPEC-21)](docs/guides/09-streaming-generation.md), [arena management (SPEC-22)](docs/guides/10-arena-management.md).
 
 ## Interaction Combinators
 
@@ -111,12 +126,23 @@ All design decisions are documented in formal specifications under [`specs/`](sp
 
 ## Benchmark Results
 
-**Zero correctness failures in 4,490 benchmark executions.**
+**Canonical baseline (v2):** [`results/locked/v2_post_d012_baseline_2026-05-05/`](results/locked/v2_post_d012_baseline_2026-05-05/)
 
-| Campaign | Reps | Wall Clock | Correctness | Mode |
-|----------|------|------------|-------------|------|
-| Phase 1 (in-process) | 3,800+ | 11 min 39 s | 0 failures | Local shared-memory |
-| Phase 2 (Docker/TCP) | 400 | 43 min 42 s | 0 failures | TCP localhost containers |
+| Property | Value |
+|----------|-------|
+| `all_correct=true` slots | **32 / 32** distributed + 8 / 8 sequential |
+| Repetitions per slot | 10 |
+| `mips_mean` range (TCP-mode) | 0.002 – 1.261 |
+| `network_time_secs` populated | 100% of TCP rows (D-012 RF-04 closed) |
+| `compute_time_secs` populated | 100% of TCP rows (D-012 RF-05 closed) |
+
+**Per-component decomposition headline (`ep_annihilation_con 500k w=1`):** wall = 0.460 s = compute 0.10 s + network 0.39 s + merge 0.04 s. The wire dominates ~85% of round time on Docker localhost — Phase 3 LAN will quantify how much further it grows on real cabling.
+
+| Campaign (historical) | Reps | Wall Clock | Correctness | Mode |
+|-----------------------|------|------------|-------------|------|
+| Phase 1 (in-process)  | 3,800+ | 11 min 39 s | 0 failures | Local shared-memory |
+| Phase 2 v1 (Docker/TCP) | 400 | 43 min 42 s | 0 failures | TCP localhost containers (v1) |
+| Phase 2 v2 post-D-012 | 400 | 2 h 8 min | 0 failures | TCP localhost containers (v2 canonical) |
 
 Every single data point is verified by the fundamental property:
 
@@ -130,7 +156,10 @@ where ≅ denotes graph isomorphism (structural equality modulo ID renaming).
 - `cascade_cross(N)` terminates in N rounds (workers ≥ 2)
 - `dual_tree(d)` terminates in d rounds (workers ≥ 2)
 
-Full data: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baseline/) — frozen with SHA-256 checksums and provenance manifest. Reproduction: [docs/benchmarks/campaigns/v1-local-baseline.md](docs/benchmarks/campaigns/v1-local-baseline.md).
+Full data and SHA-256 checksums:
+- v2 canonical: [`results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md`](results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md)
+- v1 frozen reference: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baseline/) — Reproduction: [docs/benchmarks/campaigns/v1-local-baseline.md](docs/benchmarks/campaigns/v1-local-baseline.md).
+- Cold post-mortem analysis: [docs/analysis/D011-final-baseline-analysis-2026-05-04.md](docs/analysis/D011-final-baseline-analysis-2026-05-04.md).
 
 ## Known Limitations
 

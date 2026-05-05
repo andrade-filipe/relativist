@@ -1,6 +1,6 @@
 # Guias do Relativist — Trilha de Aprendizado
 
-Bem-vindo(a). Esta pasta organiza o caminho de aprendizado do Relativist em **sete guias curtos**, pensados para serem lidos em ordem. Cada guia cobre um conceito por vez, com exemplos executaveis e ponteiros para a especificacao formal.
+Bem-vindo(a). Esta pasta organiza o caminho de aprendizado do Relativist em **dez guias curtos**, pensados para serem lidos em ordem. Cada guia cobre um conceito por vez, com exemplos executaveis e ponteiros para a especificacao formal.
 
 ## Antes de comecar
 
@@ -19,6 +19,9 @@ Bem-vindo(a). Esta pasta organiza o caminho de aprendizado do Relativist em **se
 | 5 | [Modo Distribuido TCP](05-distributed-tcp.md) | Subir `coordinator` + `worker` em maquinas (ou containers) diferentes | 20 min |
 | 6 | [Protocolo Delta (v2)](06-delta-protocol.md) | Reduzir trafego de borda com `--delta-mode` (SPEC-19) | 10 min |
 | 7 | [Bundle Zero-Copy (v2)](07-zero-copy.md) | Reduzir alocacoes no pipeline de merge com `--features zero-copy` (SPEC-18) | 5 min |
+| 8 | [Elastic Grid (v2)](08-elastic-grid.md) | Coordinator hibrido + join/departure dinamicos com `--hybrid` / `--elastic-*` (SPEC-20) | 15 min |
+| 9 | [Streaming Generation (v2)](09-streaming-generation.md) | Geracao e particionamento incrementais com `--chunk-size` (SPEC-21) | 15 min |
+| 10 | [Arena Management (v2)](10-arena-management.md) | Free-list recycle + dense/sparse routing com `--recycle-policy` / `--representation` (SPEC-22) | 10 min |
 
 ## Depois da trilha
 

@@ -204,6 +204,55 @@ relativist completions powershell >> $PROFILE
 
 ---
 
+## Flags v2 (multi-subcomando)
+
+As flags abaixo foram introduzidas em v2 e aplicam-se a `coordinator`, `local` e/ou `bench`. Os defaults preservam comportamento v1 quando aplicavel; ative apenas o que voce realmente quer medir/usar.
+
+### Streaming + arena (SPEC-21 / SPEC-22)
+
+| Flag                          | Aplica a                       | Default                  | Descricao                                                                                  | Guia                                       |
+|-------------------------------|--------------------------------|--------------------------|--------------------------------------------------------------------------------------------|--------------------------------------------|
+| `--chunk-size <N>`            | `coordinator`, `local`, `bench`| 10000 (None em `bench`)  | Tamanho do `AgentBatch` no streaming. `4294967295` (`u32::MAX`) desliga streaming.         | [09](../guides/09-streaming-generation.md) |
+| `--max-pending-lifetime <N>`  | `coordinator`, `local`, `bench`| 16                       | Numero maximo de batches que uma forward reference pode ficar nao-resolvida.               | [09](../guides/09-streaming-generation.md) |
+| `--streaming-strategy <S>`    | `coordinator`, `local`         | `round-robin`            | Strategy de allocate_batch. `round-robin` ou `fennel`.                                     | [09](../guides/09-streaming-generation.md) |
+| `--fennel-alpha <F>`          | `coordinator`, `local`         | (none)                   | Penalidade de capacidade do Fennel; requer `--streaming-strategy fennel`.                  | [09](../guides/09-streaming-generation.md) |
+| `--dispatch-mode <M>`         | `coordinator`, `local`         | `auto`                   | `auto` / `push` / `pull`. SPEC-21 R34.                                                     | [09](../guides/09-streaming-generation.md) |
+| `--recycle-policy <P>`        | `bench`                        | `disable-under-delta`    | Politica de recycle do free-list. `disable-under-delta` / `border-clean` / `disable`.       | [10](../guides/10-arena-management.md)     |
+| `--representation <R>`        | `bench`                        | `dense`                  | Construcao de subnet via `Net` denso ou `SparseNet`. `dense` / `sparse`.                    | [10](../guides/10-arena-management.md)     |
+| `--csv-sparse <PATH>`         | `bench`                        | none                     | Sub-CSV para acceptance gate dual_tree (SPEC-09 §3.4.5).                                    | [10](../guides/10-arena-management.md)     |
+
+### Elastic grid (SPEC-20)
+
+| Flag                          | Aplica a                  | Default | Descricao                                                                          | Guia                                       |
+|-------------------------------|---------------------------|---------|------------------------------------------------------------------------------------|--------------------------------------------|
+| `--hybrid`                    | `coordinator`, `local`    | off     | Coordinator atua como worker (self-partition, `WorkerId = 0`).                     | [08](../guides/08-elastic-grid.md)         |
+| `--elastic-join`              | `coordinator`, `local`    | off     | Drena conexoes pendentes entre rodadas. Auto-on com `--hybrid` ou `--elastic-departure`. | [08](../guides/08-elastic-grid.md)   |
+| `--elastic-departure`         | `coordinator`, `local`    | off     | Recupera particoes de workers que caem. Auto-ativa `--retain-partitions`.          | [08](../guides/08-elastic-grid.md)         |
+| `--retain-partitions`         | `coordinator`, `local`    | off     | Forca o coord a guardar `retained_initial` + `retained_last_acked`.                | [08](../guides/08-elastic-grid.md)         |
+| `--checkpoint-partitions`     | `coordinator`, `local`    | off     | Persistencia em disco das retained partitions (planejado).                         | [08](../guides/08-elastic-grid.md)         |
+| `--initial-wait-timeout <S>`  | `coordinator`, `local`    | 30      | Janela inicial em segundos antes de entrar em SoloReducing (com `--hybrid`).       | [08](../guides/08-elastic-grid.md)         |
+| `--join-window-min-ms <MS>`   | `coordinator`             | 50      | Janela minima de drain de joins entre rodadas.                                     | [08](../guides/08-elastic-grid.md)         |
+| `--join-window-max-ms <MS>`   | `coordinator`             | 500     | Janela maxima.                                                                     | [08](../guides/08-elastic-grid.md)         |
+| `--solo-budget <N>`           | `coordinator`, `local`    | 10000   | Interacoes por batch no `SoloReducing`. `u32::MAX` desativa polling.               | [08](../guides/08-elastic-grid.md)         |
+
+### Wire format / transporte (SPEC-17 / SPEC-18 / SPEC-19)
+
+| Flag                          | Aplica a                  | Default | Descricao                                                                          | Guia                                       |
+|-------------------------------|---------------------------|---------|------------------------------------------------------------------------------------|--------------------------------------------|
+| `--delta-mode`                | `coordinator`, `local`    | off     | Ativa o protocolo delta (workers stateful + BorderGraph).                          | [06](../guides/06-delta-protocol.md)       |
+| `--use-zero-copy`             | `coordinator`, `worker`   | off     | Solicita rkyv archive em hot-path messages. Requer build com `--features zero-copy`. | [07](../guides/07-zero-copy.md)         |
+| `--compression-threshold <B>` | `coordinator`, `worker`   | 1024    | LZ4 frame compression threshold (bytes). `0` comprime tudo.                        | [07](../guides/07-zero-copy.md)            |
+| `--transport <T>`             | `coordinator`, `worker`   | `tcp`   | Backend de transporte. `tcp` ou `unix` (UDS).                                      | [05](../guides/05-distributed-tcp.md)      |
+| `--socket-path <PATH>`        | `coordinator`, `worker`   | (none)  | Path da UDS quando `--transport unix`.                                             | [05](../guides/05-distributed-tcp.md)      |
+| `--no-tcp-nodelay`            | `coordinator`, `worker`   | off     | Desativa TCP_NODELAY (ativa Nagle). Default e `nodelay=on`.                        | [05](../guides/05-distributed-tcp.md)      |
+| `--send-buffer <B>`           | `coordinator`, `worker`   | 4 MiB   | SO_SNDBUF (bytes).                                                                 | [05](../guides/05-distributed-tcp.md)      |
+| `--recv-buffer <B>`           | `coordinator`, `worker`   | 4 MiB   | SO_RCVBUF (bytes).                                                                 | [05](../guides/05-distributed-tcp.md)      |
+| `--keepalive <S>`             | `coordinator`, `worker`   | 30      | TCP keepalive idle em segundos. `0` desativa.                                      | [05](../guides/05-distributed-tcp.md)      |
+
+> **Nota.** As flags por subcomando documentadas nas tabelas anteriores (`generate`, `inspect`, `reduce`, `local`, `compute`, `coordinator`, `worker`, `bench`) continuam validas. As flags de v2 acima estao **adicionadas** em cima do que ja existia em v1; este e um overview unificado.
+
+---
+
 ## Verificacoes pre-push (desenvolvimento)
 
 Antes de commit/push ou criar tag de release, rode as mesmas checagens que o CI faz:
