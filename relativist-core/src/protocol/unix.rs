@@ -99,7 +99,6 @@ mod tests {
     use super::*;
     use crate::protocol::frame::{recv_frame, send_frame};
     use crate::protocol::types::Message;
-    use std::path::Path;
 
     // TR2: UnixTransport round-trip (R10, R2)
     #[tokio::test]
