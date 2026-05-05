@@ -1,6 +1,21 @@
 # TEST-SPEC-0616 — Tests for TASK-0616 — D-011-FU-COMPMETRIC: aggregate per-worker compute time on the distributed path
 
 **Task:** TASK-0616 (D-012 Instrumentation Restore — Stage 3 DEV scope).
+
+> **D-012 Stage 6 REFACTOR amendment (2026-05-05).** The aggregation rule for
+> the distributed compute time was changed from **SUM** (commit `ca3634c`) to
+> **MAX** to close QA-D012-001. The Stage 3 commit body justified SUM via
+> in-process parity ("the in-process loop is sequential, so SUM ≈ wall-clock
+> of that loop"); QA-D012-001 showed that argument fails for parallel
+> workers on TCP, where SUM produces `compute_time > wall_clock` and the
+> downstream `bench/suite.rs::measure_grid::overhead_ratio = 1 - compute_total/elapsed`
+> goes negative. MAX (slowest-worker wall-clock = BSP critical-path) restores
+> the invariant `compute_time_per_round[r] <= wall_clock_per_round[r]` for
+> all r. IT-0616-02 and IT-0616-03 below are amended to assert MAX rather
+> than SUM. A new IT-0616-A6 + IT-0616-A7 are added to witness, respectively,
+> the SUM-vs-MAX divergence and the f64-INFINITY/NAN clamp.
+> See `docs/qa/QA-D012-instrumentation-restore-2026-05-05.md` QA-D012-001
+> for full rationale.
 **Spec:** none (instrumentation-only). Production-side field already declared at `relativist-core/src/merge/types.rs` (`compute_time_per_round: Vec<Duration>`). In-process path already pushes correctly at `relativist-core/src/merge/grid.rs:154,564,1476`. Distributed (TCP) path does NOT.
 **Closes red flag:** RF-05 (`docs/analysis/D011-final-baseline-analysis-2026-05-04.md` §3 RF-05, lines 148–154) — `compute_time_secs = 0.0` everywhere on v2 distributed rows.
 **Origin:** `docs/handoffs/2026-05-05-D012-instrumentation-restore-handoff.md` §3 D-011-FU-COMPMETRIC + `docs/backlog/TASK-0616-d011-fu-compmetric-aggregate-worker-compute-time.md` Acceptance criteria.

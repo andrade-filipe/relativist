@@ -1872,8 +1872,12 @@ mod tests {
             PullCoordinatorError::UnexpectedEvent { .. } => {}
             PullCoordinatorError::WorkerIdMismatch { .. } => {
                 panic!(
-                    "unexpected WorkerIdMismatch from DispatchingFirst + RequestWork; \
-                     expected UnexpectedEvent"
+                    "FSM behavior change: DispatchingFirst + RequestWork now rejects on \
+                     WorkerIdMismatch first (event-type check ran second). If this is \
+                     intentional, update this test to assert the new variant; if it is a \
+                     regression, restore event-type-first ordering. \
+                     See ut_0577_08_rejected_transition_dispatching_first_request_work \
+                     and TASK-0617."
                 );
             }
         }

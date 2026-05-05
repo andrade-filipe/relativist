@@ -162,6 +162,35 @@ fn push_partial_round_metrics(metrics: &mut GridMetrics) {
             .join_window_time_per_round
             .push(Duration::from_secs(0));
     }
+    // D-012 REFACTOR (QA-D012-007 / reviewer MF-001 / SF-005):
+    // The five per-round Vecs below are normally pushed at end-of-round,
+    // AFTER the early-return sites above. On any `?` early return mid-round,
+    // they would silently lag `effective_slots_per_round.len()` by one, and
+    // a downstream zip-by-index in `bench/suite.rs` (or
+    // `bench/csv.rs::write_rounds_row` indexing via
+    // `.get(round).unwrap_or(0.0)`) would silently drop the partial round —
+    // or worse, mis-align rounds across columns.
+    //
+    // Pushing zero placeholders here keeps the parity invariant honest:
+    // `bytes_*` / `network_*_time` / `compute_time` Vecs MUST satisfy
+    // `len() == effective_slots_per_round.len()` at every observation
+    // point. The end-of-`run_coordinator` debug_assert below pins this
+    // contract loudly in debug builds.
+    while metrics.bytes_sent_per_round.len() < target {
+        metrics.bytes_sent_per_round.push(0);
+    }
+    while metrics.bytes_received_per_round.len() < target {
+        metrics.bytes_received_per_round.push(0);
+    }
+    while metrics.network_send_time_per_round.len() < target {
+        metrics.network_send_time_per_round.push(Duration::ZERO);
+    }
+    while metrics.network_recv_time_per_round.len() < target {
+        metrics.network_recv_time_per_round.push(Duration::ZERO);
+    }
+    while metrics.compute_time_per_round.len() < target {
+        metrics.compute_time_per_round.push(Duration::ZERO);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -969,12 +998,20 @@ pub async fn run_coordinator(
         for (wid, stream) in streams_to_poll {
             let recv_future = recv_frame(stream, config.max_payload_size);
             // TASK-0615: time the wire-facing collect recv await per worker.
-            // Records the actual `await` time, not the timeout overhead.
+            // D-012 REFACTOR (QA-D012-008): only accumulate `t_recv.elapsed()`
+            // on the SUCCESSFUL recv branch. Including the elapsed for a
+            // timeout fire (`Err(_)` arm at the bottom) would contaminate the
+            // metric by `collect_timeout` whenever a worker is slow, and
+            // including it for a connection-loss `Ok(Err(_))` would
+            // double-count the loss as both a network event AND a recovery
+            // event. The handoff §3 implementation hint #1 explicitly
+            // mandates "measure the `await`, not the timeout overhead."
             let t_recv = Instant::now();
             let recv_outcome = tokio::time::timeout(config.collect_timeout, recv_future).await;
-            network_recv_time = network_recv_time.saturating_add(t_recv.elapsed());
+            let recv_elapsed = t_recv.elapsed();
             match recv_outcome {
                 Ok(Ok((msg, nbytes))) => {
+                    network_recv_time = network_recv_time.saturating_add(recv_elapsed);
                     bytes_received += nbytes;
                     match msg {
                         Message::PartitionResult {
@@ -1385,19 +1422,49 @@ pub async fn run_coordinator(
         // for the distributed (TCP) path. Path (a) — recommended: workers
         // already report `WorkerRoundStats.reduce_duration_secs` (set in
         // `protocol/worker.rs:256` straddling `reduce_all`); the coordinator
-        // sums across workers and pushes to `metrics.compute_time_per_round`.
+        // takes the MAX across workers and pushes to
+        // `metrics.compute_time_per_round`. RF-05 closure.
         //
-        // Aggregation rule: SUM (total CPU work across W workers). This
-        // mirrors the in-process path at `merge/grid.rs:103,154`, which
-        // pushes `t_compute.elapsed()` — the wall-clock of the SEQUENTIAL
-        // worker loop — equivalent to a sum since the loop runs workers
-        // serially. Maintaining this semantic across modes lets the bench
-        // harness compare in-process and distributed compute time directly.
-        // RF-05 closure.
-        let compute_time_secs: f64 = worker_stats.iter().map(|s| s.reduce_duration_secs).sum();
-        metrics
-            .compute_time_per_round
-            .push(Duration::from_secs_f64(compute_time_secs.max(0.0)));
+        // D-012 REFACTOR (QA-D012-001): aggregation rule was SUM in the
+        // initial implementation. SUM is wrong for parallel workers — it is
+        // total worker CPU-time, not wall-clock. Workers run truly
+        // concurrently on TCP, so SUM-of-W-100ms-workers = 4*100 = 400ms,
+        // while the BSP round wall-clock is ~100ms + dispatch + collect ≈
+        // 150ms. The downstream `bench/suite.rs::measure_grid` derives
+        // `overhead_ratio = 1.0 - compute_total / elapsed`; with SUM that
+        // formula goes NEGATIVE on multi-worker TCP (1.0 - 0.4/0.15 = -1.67).
+        //
+        // MAX (slowest-worker wall-clock = BSP critical-path duration) is
+        // the correct rule for a parallel-execution metric; it satisfies
+        // `compute_time_per_round[r] <= wall_clock_per_round[r]` for all r,
+        // which `overhead_ratio` requires to remain in [0, 1]. The
+        // in-process path at `merge/grid.rs:103,154` pushes
+        // `t_compute.elapsed()` of a SEQUENTIAL worker loop — for in-process
+        // MAX collapses to the same value as the loop's wall-clock (since
+        // workers run one-at-a-time). The semantic gap that motivated SUM
+        // (in-process pushes loop wall-clock ≈ sum of per-worker times) is
+        // resolved by recognizing both paths now report "wall-clock of the
+        // parallel-execution phase": MAX-of-parallel-workers (TCP) and
+        // sequential-loop wall-clock (in-process) are commensurate.
+        //
+        // QA-D012-005: a worker emitting `f64::INFINITY` or `NaN` would
+        // panic `Duration::from_secs_f64(+inf)` ("secs is not finite").
+        // Use `Duration::try_from_secs_f64` and fall back to `Duration::ZERO`
+        // with a `tracing::warn!` rather than crash the whole bench.
+        let max_secs = worker_stats
+            .iter()
+            .map(|s| s.reduce_duration_secs)
+            .filter(|s| s.is_finite() && *s >= 0.0)
+            .fold(0.0_f64, f64::max);
+        let compute_time = Duration::try_from_secs_f64(max_secs).unwrap_or_else(|_| {
+            tracing::warn!(
+                round = metrics.rounds,
+                max_secs,
+                "compute_time aggregation produced non-finite f64; defaulting to ZERO"
+            );
+            Duration::ZERO
+        });
+        metrics.compute_time_per_round.push(compute_time);
 
         // PHASE 3: MERGE
         let t_merge = Instant::now();
@@ -1651,6 +1718,42 @@ pub async fn run_coordinator(
 
     shutdown_workers(&mut worker_streams).await;
     metrics.total_time = start_time.elapsed();
+
+    // D-012 REFACTOR (reviewer MF-001 / QA-D012-007): per-round Vec parity
+    // invariant. After all early-return-tolerant pushes via
+    // `push_partial_round_metrics`, every per-round Vec MUST have exactly
+    // `effective_slots_per_round.len()` entries. CSV writers
+    // (`bench/csv.rs::write_rounds_row`) and the bench harness's zip-by-index
+    // (`bench/suite.rs:621-626`) both assume this invariant; a regression
+    // here would silently drop the last partial round or mis-align rounds
+    // across columns. The debug-only assertion fires loudly during tests and
+    // local `cargo run` while staying out of the release-mode hot path.
+    debug_assert_eq!(
+        metrics.network_send_time_per_round.len(),
+        metrics.effective_slots_per_round.len(),
+        "network_send_time_per_round parity broken on early return path"
+    );
+    debug_assert_eq!(
+        metrics.network_recv_time_per_round.len(),
+        metrics.effective_slots_per_round.len(),
+        "network_recv_time_per_round parity broken on early return path"
+    );
+    debug_assert_eq!(
+        metrics.compute_time_per_round.len(),
+        metrics.effective_slots_per_round.len(),
+        "compute_time_per_round parity broken on early return path"
+    );
+    debug_assert_eq!(
+        metrics.bytes_sent_per_round.len(),
+        metrics.effective_slots_per_round.len(),
+        "bytes_sent_per_round parity broken on early return path"
+    );
+    debug_assert_eq!(
+        metrics.bytes_received_per_round.len(),
+        metrics.effective_slots_per_round.len(),
+        "bytes_received_per_round parity broken on early return path"
+    );
+
     Ok((current_net, metrics))
 }
 

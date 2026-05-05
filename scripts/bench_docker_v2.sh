@@ -251,7 +251,37 @@ print(f'{t:.6f}')
 "
 }
 
+# QA-D012-002 (D-012 REFACTOR, 2026-05-05): extract total_interactions
+# (integer) from metrics.json so the summary writer can recompute
+# `mips_mean` from the same per-rep counters that detail.csv::mips uses.
+# Falls back to 0 on missing/zero. Caller threads the values as a
+# comma-separated list to `write_summary_row`.
+extract_total_interactions() {
+    local wpath
+    wpath=$(winpath "$1")
+    "$PYTHON" -c "
+import json
+with open(r'$wpath') as f:
+    m = json.load(f)
+print(int(m.get('total_interactions', 0)))
+"
+}
+
 # Compute summary stats from a list of wall_clock values
+#
+# QA-D012-002 (D-012 REFACTOR, 2026-05-05): the historical version of this
+# function hardcoded `mips = 0.0` because the summary writer was originally
+# disconnected from the per-rep `total_interactions` counter. The result
+# was that every row of `summary.csv::mips_mean` produced by this script
+# read 0.000, even though the matching rows of `detail.csv::mips` read the
+# real value (the detail writer at parse_metrics_to_detail recomputes mips
+# from `total_interactions / wall_clock`).
+#
+# After this refactor the summary recomputes `mips_mean` from the same
+# inputs the detail rows use. The 8th positional arg is the comma-separated
+# list of `total_interactions` values (one per rep, paired with the
+# wall_clock values that follow); when no values are passed the column
+# falls back to 0.0 with a deterministic note in run.log.
 write_summary_row() {
     local bench_name="$1"
     local input_size="$2"
@@ -260,7 +290,8 @@ write_summary_row() {
     local reps="$5"
     local all_correct="$6"
     local seq_baseline="$7"
-    shift 7
+    local total_interactions_csv="$8"
+    shift 8
     # remaining args are wall_clock values
 
     "$PYTHON" << PYEOF
@@ -271,6 +302,9 @@ n = len(values)
 if n == 0:
     exit(0)
 
+ti_raw = "$total_interactions_csv"
+ti_values = [int(v) for v in ti_raw.split(",") if v.strip()]
+
 mean_v = statistics.mean(values)
 std_v = statistics.pstdev(values) if n > 1 else 0.0
 median_v = statistics.median(values)
@@ -280,7 +314,21 @@ cv = std_v / mean_v if mean_v > 0 else 0.0
 
 seq_b = $seq_baseline
 w = int("$workers")
-mips = 0.0  # populated from detail rows; summary doesn't recompute
+
+# QA-D012-002 (D-012 REFACTOR): mips_mean now derives from the per-rep
+# (total_interactions, wall_clock) pairs, mirroring detail.csv::mips. If
+# `ti_values` is shorter than `values` (caller forgot to thread the new
+# arg through), fall back to 0.0 to preserve the legacy behavior rather
+# than crashing.
+if ti_values and len(ti_values) == len(values):
+    per_rep_mips = [
+        (ti / wc / 1e6) if wc > 0 else 0.0
+        for ti, wc in zip(ti_values, values)
+    ]
+    mips = statistics.mean(per_rep_mips)
+else:
+    mips = 0.0  # legacy fallback — see QA-D012-002
+
 speedup = seq_b / mean_v if mean_v > 0 else 0.0
 efficiency = speedup / w if w > 0 else speedup
 overhead = max(0.0, 1.0 - efficiency)
@@ -498,8 +546,13 @@ print(f'{statistics.median(vals):.6f}')
             SEQ_BASELINES["${bench_name}:${input_size}"]="$median"
 
             # Write summary row
+            # QA-D012-002 (D-012 REFACTOR): sequential rows do not have
+            # per-rep total_interactions in this script's path (the
+            # `relativist reduce` invocation above does not emit metrics.json
+            # for sequential runs); pass an empty 8th arg so the summary
+            # writer falls back to legacy `mips=0.0`.
             write_summary_row "$bench_name" "$input_size" "sequential" "0" \
-                "$REPETITIONS" "true" "$median" "${wall_clocks[@]}" >> "$SUMMARY_FILE"
+                "$REPETITIONS" "true" "$median" "" "${wall_clocks[@]}" >> "$SUMMARY_FILE"
 
             log "  Baseline: ${median}s (median of $REPETITIONS)"
         done
@@ -549,6 +602,7 @@ print(f'{statistics.median(vals):.6f}')
             fi
 
             local wall_clocks=()
+            local total_interactions_list=()
             local all_correct="true"
             local total_runs=$((WARMUP_RUNS + REPETITIONS))
 
@@ -595,9 +649,11 @@ print(f'{statistics.median(vals):.6f}')
                 fi
 
                 # Extract wall clock + write CSV rows
-                local wc
+                local wc ti
                 wc=$(extract_wall_clock "$metrics_file")
+                ti=$(extract_total_interactions "$metrics_file")
                 wall_clocks+=("$wc")
+                total_interactions_list+=("$ti")
 
                 parse_metrics_to_detail "$metrics_file" "$bench_name" "$input_size" \
                     "$workers" "$rep" "$seq_baseline" "$correct" >> "$DETAIL_FILE"
@@ -610,8 +666,15 @@ print(f'{statistics.median(vals):.6f}')
 
             # Write summary row
             if [ ${#wall_clocks[@]} -gt 0 ]; then
+                # QA-D012-002 (D-012 REFACTOR): pass the comma-joined per-rep
+                # `total_interactions` list as the new 8th positional arg so
+                # the summary writer recomputes `mips_mean` instead of
+                # hardcoding 0.0.
+                local ti_csv
+                ti_csv=$(join_comma "${total_interactions_list[@]}")
                 write_summary_row "$bench_name" "$input_size" "tcp_localhost" "$workers" \
-                    "${#wall_clocks[@]}" "$all_correct" "$seq_baseline" "${wall_clocks[@]}" >> "$SUMMARY_FILE"
+                    "${#wall_clocks[@]}" "$all_correct" "$seq_baseline" "$ti_csv" \
+                    "${wall_clocks[@]}" >> "$SUMMARY_FILE"
 
                 local median_wc
                 median_wc=$("$PYTHON" -c "

@@ -11,17 +11,25 @@ Relativist is a distributed Interaction Combinator reducer for Grid Computing, w
 
 - **v1:** frozen on branch `v1-feature-complete` (tag `v0.10.0-bench`). DO NOT modify.
 - **v2:** active development on branch `v2-development`.
-- **Tests:** 1181 default / 1224 `--features zero-copy` on `v2-development` (690 frozen on `v1-feature-complete`). The v1 floor of 690 must never be regressed.
+- **Tests (post-D-012, 2026-05-05):**
+  - `cargo test`: 1798 default
+  - `cargo test --features zero-copy`: 1842
+  - `cargo test --features streaming-no-recycle`: 1789
+  - `cargo test --release`: 1740 (compiles and runs after TASK-0617 + D-012 REFACTOR)
+  - v1 inviolable floor: 690 (frozen on `v1-feature-complete`).
 - **Specs:** 28 specs (SPEC-00 through SPEC-27) in `specs/`. v1 implements SPEC-00..16; v2 adds SPEC-17..27 (transport abstraction, wire format v2, delta protocol, elastic grid, streaming, arena, compact memory, WAN, recipe gen, GUI, encoder API).
 - **Benchmarks:** 4490 executions, 0 correctness failures (Phase 1 + Phase 2 frozen at v1 baseline)
 
 ## Build & Test
 
 ```bash
-cargo test                        # run all tests (expect 1181+ on v2-development; 690 floor on v1-feature-complete)
-cargo clippy -- -D warnings       # lint (must be clean)
-cargo fmt --check                 # formatting (must pass)
-cargo build --release             # release build
+cargo test                                    # run all tests (1798+ on v2-development; 690 floor on v1-feature-complete)
+cargo test --features zero-copy               # 1842+
+cargo test --features streaming-no-recycle    # 1789+
+cargo test --release                          # 1740+ (post-TASK-0617)
+cargo clippy --all-features -- -D warnings    # lint (must be clean)
+cargo fmt --check                             # formatting (must pass)
+cargo build --release                         # release build
 ```
 
 All three checks must pass before any commit.

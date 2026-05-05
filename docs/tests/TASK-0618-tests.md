@@ -1,6 +1,34 @@
 # TEST-SPEC-0618 — Tests for TASK-0618 — D-011-FU-MIPS: decide implement-or-drop for `mips_*` and `total_interactions` columns
 
 **Task:** TASK-0618 (D-012 Instrumentation Restore — Stage 3 DEV scope; LOW severity; independent).
+
+> **D-012 Stage 6 REFACTOR amendment (2026-05-05).** Two amendments:
+>
+> 1. **Wrong-layer correction (QA-D012-002).** The Stage 3 commit body
+>    described "Closes RF-07" but the literal `mips_mean = 0.000` failure
+>    mode shipped from `scripts/bench_docker_v2.sh:283`, where a Python
+>    embedded-in-bash literal hardcoded the column to `0.0`. The original
+>    IT-0618-A1 witness ran `run_grid` and stopped at the in-memory
+>    `GridMetrics` — it could never observe the bash hardcode. The Stage 6
+>    refactor (a) fixes `bench_docker_v2.sh:283` to recompute `mips_mean`
+>    from the per-rep `total_interactions` values (matching detail.csv's
+>    formula), and (b) adds IT-0618-A4 in `tests/d012_mips_witness.rs`
+>    that exercises `bench::suite::run_benchmark_suite` end-to-end through
+>    the CSV writer. Path-(a) is closed at both layers (Rust + bash).
+> 2. **Coverage gap (reviewer SF-004).** A new IT-0618-A3
+>    (`single_worker_path_records_nonzero_total_interactions`) covers the
+>    `run_single_worker` aggregation site at `merge/grid.rs:1466+` (which
+>    uses `=` instead of `+=` and pushes 0 to `border_interactions_per_round`).
+>    Many bench profiles use `workers=1` for a parallel-execution
+>    baseline; without A3, that path was unwitnessed.
+> 3. **Naming honesty (reviewer SF-003).** IT-0618-A1 is renamed from
+>    `tcp_round_records_nonzero_total_interactions_and_mips` to
+>    `metrics_struct_records_nonzero_total_interactions_and_mips` because
+>    the body uses `run_grid` (in-process), not a TCP round.
+>
+> See `docs/qa/QA-D012-instrumentation-restore-2026-05-05.md` QA-D012-002
+> and `docs/reviews/REVIEW-D012-instrumentation-restore-2026-05-05.md`
+> MF-002 / SF-003 / SF-004 for full rationale.
 **Spec:** none for path (b). Path (a) is purely additive instrumentation reusing TASK-0616's payload extension if both pick path (a).
 **Closes red flag:** RF-07 (`docs/analysis/D011-final-baseline-analysis-2026-05-04.md` §3 RF-07, lines 174–179) — `mips_mean = 0.000` and `total_interactions = 0` everywhere on **both** v1 and v2 (symmetric pre-existing dead column).
 **Origin:** `docs/handoffs/2026-05-05-D012-instrumentation-restore-handoff.md` §3 D-011-FU-MIPS + `docs/backlog/TASK-0618-d011-fu-mips-decide-implement-or-drop.md` Decision-required section.

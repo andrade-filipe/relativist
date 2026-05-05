@@ -476,6 +476,18 @@ struct GridMeasureParams<'a> {
     /// and `recycle_policy` (and the original `peak_memory_during_construction`)
     /// here keeps `GridMeasureParams` from drifting past 15 fields.
     r18: &'a R18Context,
+    /// D-012 REFACTOR (QA-D012-003): the operator-requested execution mode.
+    /// `measure_grid` always invokes the in-process `run_grid` path, so any
+    /// `--mode=tcp_localhost` request is functionally a no-op for the
+    /// measurement code path; however, the resulting CSV row now carries the
+    /// requested mode label so downstream consumers can filter rows
+    /// correctly (rather than the previous hardcoded `Mode::Local` which
+    /// silently mislabeled the row whenever the operator asked for
+    /// `tcp_localhost`). Note: `bench` subcommand's `--mode=tcp_localhost`
+    /// remains semantically equivalent to `local` for the actual execution
+    /// path; the proper TCP path lives in `scripts/bench_docker_v2.sh`. See
+    /// QA-D012-003 for the architectural gap and the followup ticket.
+    mode: Mode,
 }
 
 fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
@@ -571,7 +583,7 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
     BenchmarkResult {
         benchmark: params.benchmark.id(),
         input_size: params.size,
-        mode: Mode::Local,
+        mode: params.mode,
         workers: params.workers,
         repetition: params.repetition,
         correct,
@@ -965,6 +977,11 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
                         max_pending_lifetime: config.max_pending_lifetime,
                         recycle_policy: config.recycle_policy,
                         r18: &r18,
+                        // QA-D012-003: honor the operator-requested mode in
+                        // the CSV row label, even though `measure_grid`
+                        // always runs the in-process path. See
+                        // `GridMeasureParams.mode` doc-comment.
+                        mode: config.mode,
                     });
 
                     // R38: halt on correctness failure
@@ -1090,6 +1107,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
             r18: &r18,
+            mode: Mode::Local,
         });
         assert!(result.correct);
         assert_eq!(result.mode, Mode::Local);
@@ -1294,6 +1312,7 @@ mod tests {
             max_pending_lifetime: 16,
             recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
             r18: &r18,
+            mode: Mode::Local,
         });
         // Speedup = baseline / elapsed. Since EP is fast, speedup should be large
         assert!(result.speedup > 0.0);
