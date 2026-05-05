@@ -1,0 +1,538 @@
+
+[10:46:39] ================================================================
+[10:46:39] === bench_docker_v2.sh -- D-011 Phase F-2 (Axis 1) ===
+[10:46:39] ================================================================
+[10:46:39] Configs:     8
+[10:46:40] Workers:     1 2 4 8
+[10:46:40] Warmup:      2
+[10:46:40] Repetitions: 10
+[10:46:40] Timeout:     600s per docker cycle
+[10:46:40] Resume:      true
+[10:46:40] Output:      /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/v2_tcp_baseline
+[10:46:40] 
+[10:46:40] Building Docker image...
+
+[10:47:52] ================================================================
+[10:47:52] === bench_docker_v2.sh -- D-011 Phase F-2 (Axis 1) ===
+[10:47:52] ================================================================
+[10:47:52] Configs:     8
+[10:47:52] Workers:     1 2 4 8
+[10:47:52] Warmup:      2
+[10:47:52] Repetitions: 10
+[10:47:52] Timeout:     600s per docker cycle
+[10:47:52] Resume:      true
+[10:47:52] Output:      /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/v2_tcp_baseline
+[10:47:52] 
+[10:47:52] Building Docker image...
+[10:47:54] Docker image built.
+[10:47:54] Resume: no prior progress detected
+[10:47:54] 
+[10:47:54] --- Phase A: Sequential Baselines (native) ---
+[10:47:54] Sequential: ep_annihilation_con size=500000
+[10:48:01]   Baseline: 0.375761s (median of 10)
+[10:48:01] Sequential: ep_annihilation_con size=1000000
+[10:48:11]   Baseline: 0.553261s (median of 10)
+[10:48:11] Sequential: ep_annihilation_con size=5000000
+[10:48:46]   Baseline: 2.713928s (median of 10)
+[10:48:46] Sequential: dual_tree size=18
+[10:48:52]   Baseline: 0.271861s (median of 10)
+[10:48:52] Sequential: dual_tree size=20
+[10:49:00]   Baseline: 0.444333s (median of 10)
+[10:49:00] Sequential: dual_tree size=22
+[10:49:19]   Baseline: 1.316194s (median of 10)
+[10:49:19] Sequential: condup_expansion size=1000
+[10:49:23]   Baseline: 0.206323s (median of 10)
+[10:49:23] Sequential: condup_expansion size=5000
+[10:49:28]   Baseline: 0.210830s (median of 10)
+[10:49:28] 
+[10:49:28] --- Phase B: Docker (TcpLocalhost) Benchmarks ---
+[10:49:28] 
+[10:49:28] [1/32] ep_annihilation_con size=500000 workers=1
+[10:49:32]   Warmup 1/2
+[10:49:35]   Warmup 2/2
+[10:49:39]   Rep 1/10: 0.468768s correct=true
+[10:49:43]   Rep 2/10: 0.478071s correct=true
+[10:49:47]   Rep 3/10: 0.467441s correct=true
+[10:49:52]   Rep 4/10: 0.459573s correct=true
+[10:49:56]   Rep 5/10: 0.463522s correct=true
+[10:49:59]   Rep 6/10: 0.517265s correct=true
+[10:50:04]   Rep 7/10: 0.461681s correct=true
+[10:50:08]   Rep 8/10: 0.457610s correct=true
+[10:50:11]   Rep 9/10: 0.509366s correct=true
+[10:50:16]   Rep 10/10: 0.471228s correct=true
+[10:50:16]   Summary: median=0.468105s speedup=0.8027x correct=true
+[10:50:16] 
+[10:50:16] [2/32] ep_annihilation_con size=500000 workers=2
+[10:50:20]   Warmup 1/2
+[10:50:24]   Warmup 2/2
+[10:50:29]   Rep 1/10: 0.567880s correct=true
+[10:50:33]   Rep 2/10: 0.567036s correct=true
+[10:50:38]   Rep 3/10: 0.575415s correct=true
+[10:50:43]   Rep 4/10: 0.581948s correct=true
+[10:50:47]   Rep 5/10: 0.565284s correct=true
+[10:50:52]   Rep 6/10: 0.574654s correct=true
+[10:50:56]   Rep 7/10: 0.570320s correct=true
+[10:51:01]   Rep 8/10: 0.571756s correct=true
+[10:51:05]   Rep 9/10: 0.627439s correct=true
+[10:51:09]   Rep 10/10: 0.564504s correct=true
+[10:51:10]   Summary: median=0.571038s speedup=0.6580x correct=true
+[10:51:10] 
+[10:51:10] [3/32] ep_annihilation_con size=500000 workers=4
+[10:51:14]   Warmup 1/2
+[10:51:19]   Warmup 2/2
+[10:51:24]   Rep 1/10: 0.660243s correct=true
+[10:51:29]   Rep 2/10: 0.677076s correct=true
+[10:51:34]   Rep 3/10: 0.660073s correct=true
+[10:51:39]   Rep 4/10: 0.684248s correct=true
+[10:51:45]   Rep 5/10: 0.683628s correct=true
+[10:51:49]   Rep 6/10: 0.702835s correct=true
+[10:51:54]   Rep 7/10: 0.703329s correct=true
+[10:51:59]   Rep 8/10: 0.670541s correct=true
+[10:52:04]   Rep 9/10: 0.676651s correct=true
+[10:52:10]   Rep 10/10: 0.658149s correct=true
+[10:52:10]   Summary: median=0.676864s speedup=0.5551x correct=true
+[10:52:10] 
+[10:52:10] [4/32] ep_annihilation_con size=500000 workers=8
+[10:52:16]   Warmup 1/2
+[10:52:22]   Warmup 2/2
+[10:52:29]   Rep 1/10: 1.116367s correct=true
+[10:52:36]   Rep 2/10: 1.119569s correct=true
+[10:52:43]   Rep 3/10: 1.127595s correct=true
+[10:52:50]   Rep 4/10: 1.107053s correct=true
+[10:52:57]   Rep 5/10: 1.113365s correct=true
+[10:53:04]   Rep 6/10: 1.114452s correct=true
+[10:53:10]   Rep 7/10: 1.112611s correct=true
+[10:53:17]   Rep 8/10: 1.125573s correct=true
+[10:53:24]   Rep 9/10: 1.103641s correct=true
+[10:53:31]   Rep 10/10: 1.090976s correct=true
+[10:53:31]   Summary: median=1.113908s speedup=0.3373x correct=true
+[10:53:31] 
+[10:53:31] [5/32] ep_annihilation_con size=1000000 workers=1
+[10:53:36]   Warmup 1/2
+[10:53:40]   Warmup 2/2
+[10:53:45]   Rep 1/10: 0.926311s correct=true
+[10:53:50]   Rep 2/10: 0.924657s correct=true
+[10:53:55]   Rep 3/10: 0.928421s correct=true
+[10:54:00]   Rep 4/10: 0.940463s correct=true
+[10:54:05]   Rep 5/10: 0.941418s correct=true
+[10:54:10]   Rep 6/10: 0.910947s correct=true
+[10:54:15]   Rep 7/10: 0.927856s correct=true
+[10:54:19]   Rep 8/10: 0.909774s correct=true
+[10:54:24]   Rep 9/10: 0.907616s correct=true
+[10:54:29]   Rep 10/10: 0.973708s correct=true
+[10:54:30]   Summary: median=0.927083s speedup=0.5968x correct=true
+[10:54:30] 
+[10:54:30] [6/32] ep_annihilation_con size=1000000 workers=2
+[10:54:35]   Warmup 1/2
+[10:54:39]   Warmup 2/2
+[10:54:45]   Rep 1/10: 1.155071s correct=true
+[10:54:50]   Rep 2/10: 1.150006s correct=true
+[10:54:56]   Rep 3/10: 1.186157s correct=true
+[10:55:02]   Rep 4/10: 1.182953s correct=true
+[10:55:07]   Rep 5/10: 1.160405s correct=true
+[10:55:13]   Rep 6/10: 1.157803s correct=true
+[10:55:18]   Rep 7/10: 1.170399s correct=true
+[10:55:24]   Rep 8/10: 1.133843s correct=true
+[10:55:29]   Rep 9/10: 1.156108s correct=true
+[10:55:35]   Rep 10/10: 1.140647s correct=true
+[10:55:35]   Summary: median=1.156956s speedup=0.4782x correct=true
+[10:55:35] 
+[10:55:35] [7/32] ep_annihilation_con size=1000000 workers=4
+[10:55:41]   Warmup 1/2
+[10:55:46]   Warmup 2/2
+[10:55:52]   Rep 1/10: 1.335934s correct=true
+[10:55:58]   Rep 2/10: 1.304626s correct=true
+[10:56:05]   Rep 3/10: 1.316779s correct=true
+[10:56:11]   Rep 4/10: 1.317437s correct=true
+[10:56:17]   Rep 5/10: 1.307606s correct=true
+[10:56:23]   Rep 6/10: 1.325624s correct=true
+[10:56:29]   Rep 7/10: 1.297523s correct=true
+[10:56:35]   Rep 8/10: 1.334114s correct=true
+[10:56:41]   Rep 9/10: 1.342172s correct=true
+[10:56:47]   Rep 10/10: 1.308430s correct=true
+[10:56:48]   Summary: median=1.317108s speedup=0.4201x correct=true
+[10:56:48] 
+[10:56:48] [8/32] ep_annihilation_con size=1000000 workers=8
+[10:56:55]   Warmup 1/2
+[10:57:02]   Warmup 2/2
+[10:57:10]   Rep 1/10: 2.084475s correct=true
+[10:57:18]   Rep 2/10: 2.059964s correct=true
+[10:57:26]   Rep 3/10: 2.040569s correct=true
+[10:57:34]   Rep 4/10: 2.048539s correct=true
+[10:57:42]   Rep 5/10: 2.060271s correct=true
+[10:57:49]   Rep 6/10: 2.036454s correct=true
+[10:57:57]   Rep 7/10: 2.096156s correct=true
+[10:58:05]   Rep 8/10: 1.994917s correct=true
+[10:58:13]   Rep 9/10: 1.986392s correct=true
+[10:58:21]   Rep 10/10: 2.028631s correct=true
+[10:58:21]   Summary: median=2.044554s speedup=0.2706x correct=true
+[10:58:21] 
+[10:58:21] [9/32] ep_annihilation_con size=5000000 workers=1
+[10:58:33]   Warmup 1/2
+[10:58:45]   Warmup 2/2
+[10:58:58]   Rep 1/10: 5.740490s correct=true
+[10:59:11]   Rep 2/10: 5.691578s correct=true
+[10:59:24]   Rep 3/10: 5.733581s correct=true
+[10:59:37]   Rep 4/10: 5.790940s correct=true
+[10:59:50]   Rep 5/10: 5.658321s correct=true
+[11:00:03]   Rep 6/10: 5.700868s correct=true
+[11:00:16]   Rep 7/10: 5.655138s correct=true
+[11:00:29]   Rep 8/10: 5.650613s correct=true
+[11:00:43]   Rep 9/10: 5.863760s correct=true
+[11:00:56]   Rep 10/10: 5.705090s correct=true
+[11:00:56]   Summary: median=5.702979s speedup=0.4759x correct=true
+[11:00:56] 
+[11:00:56] [10/32] ep_annihilation_con size=5000000 workers=2
+[11:01:10]   Warmup 1/2
+[11:01:24]   Warmup 2/2
+[11:01:39]   Rep 1/10: 7.444984s correct=true
+[11:01:54]   Rep 2/10: 7.428420s correct=true
+[11:02:09]   Rep 3/10: 7.403351s correct=true
+[11:02:24]   Rep 4/10: 7.429968s correct=true
+[11:02:39]   Rep 5/10: 7.422662s correct=true
+[11:02:54]   Rep 6/10: 7.409877s correct=true
+[11:03:09]   Rep 7/10: 7.395667s correct=true
+[11:03:24]   Rep 8/10: 7.434104s correct=true
+[11:03:39]   Rep 9/10: 7.394881s correct=true
+[11:03:54]   Rep 10/10: 7.420066s correct=true
+[11:03:55]   Summary: median=7.421364s speedup=0.3657x correct=true
+[11:03:55] 
+[11:03:55] [11/32] ep_annihilation_con size=5000000 workers=4
+[11:04:10]   Warmup 1/2
+[11:04:25]   Warmup 2/2
+[11:04:41]   Rep 1/10: 8.002185s correct=true
+[11:04:58]   Rep 2/10: 8.707132s correct=true
+[11:05:16]   Rep 3/10: 8.038959s correct=true
+[11:05:32]   Rep 4/10: 8.166442s correct=true
+[11:05:49]   Rep 5/10: 7.997132s correct=true
+[11:06:05]   Rep 6/10: 8.027660s correct=true
+[11:06:21]   Rep 7/10: 8.006392s correct=true
+[11:06:38]   Rep 8/10: 8.090336s correct=true
+[11:06:54]   Rep 9/10: 7.928267s correct=true
+[11:07:10]   Rep 10/10: 7.929044s correct=true
+[11:07:11]   Summary: median=8.017026s speedup=0.3385x correct=true
+[11:07:11] 
+[11:07:11] [12/32] ep_annihilation_con size=5000000 workers=8
+[11:07:31]   Warmup 1/2
+[11:07:51]   Warmup 2/2
+[11:08:12]   Rep 1/10: 11.763504s correct=true
+[11:08:33]   Rep 2/10: 11.756799s correct=true
+[11:08:55]   Rep 3/10: 11.758333s correct=true
+[11:09:16]   Rep 4/10: 11.748840s correct=true
+[11:09:37]   Rep 5/10: 11.701617s correct=true
+[11:09:58]   Rep 6/10: 11.743767s correct=true
+[11:10:19]   Rep 7/10: 11.754939s correct=true
+[11:10:41]   Rep 8/10: 12.056542s correct=true
+[11:11:02]   Rep 9/10: 11.832443s correct=true
+[11:11:23]   Rep 10/10: 11.651675s correct=true
+[11:11:24]   Summary: median=11.755869s speedup=0.2309x correct=true
+[11:11:24] 
+[11:11:24] [13/32] dual_tree size=18 workers=1
+[11:11:27]   Warmup 1/2
+[11:11:29]   Warmup 2/2
+[11:11:33]   Rep 1/10: 0.332362s correct=true
+[11:11:36]   Rep 2/10: 0.259031s correct=true
+[11:11:40]   Rep 3/10: 0.251050s correct=true
+[11:11:43]   Rep 4/10: 0.259749s correct=true
+[11:11:46]   Rep 5/10: 0.261784s correct=true
+[11:11:49]   Rep 6/10: 0.266682s correct=true
+[11:11:52]   Rep 7/10: 0.272015s correct=true
+[11:11:56]   Rep 8/10: 0.288543s correct=true
+[11:11:59]   Rep 9/10: 0.248456s correct=true
+[11:12:02]   Rep 10/10: 0.257280s correct=true
+[11:12:03]   Summary: median=0.260767s speedup=1.0425x correct=true
+[11:12:03] 
+[11:12:03] [14/32] dual_tree size=18 workers=2
+[11:12:06]   Warmup 1/2
+[11:12:09]   Warmup 2/2
+[11:12:12]   Rep 1/10: 0.407738s correct=true
+[11:12:16]   Rep 2/10: 0.420572s correct=true
+[11:12:20]   Rep 3/10: 0.404499s correct=true
+[11:12:23]   Rep 4/10: 0.414223s correct=true
+[11:12:27]   Rep 5/10: 0.421413s correct=true
+[11:12:31]   Rep 6/10: 0.413930s correct=true
+[11:12:34]   Rep 7/10: 0.417286s correct=true
+[11:12:38]   Rep 8/10: 0.407231s correct=true
+[11:12:42]   Rep 9/10: 0.419141s correct=true
+[11:12:45]   Rep 10/10: 0.407403s correct=true
+[11:12:46]   Summary: median=0.414077s speedup=0.6565x correct=true
+[11:12:46] 
+[11:12:46] [15/32] dual_tree size=18 workers=4
+[11:12:50]   Warmup 1/2
+[11:12:54]   Warmup 2/2
+[11:12:58]   Rep 1/10: 0.503030s correct=true
+[11:13:03]   Rep 2/10: 0.495442s correct=true
+[11:13:08]   Rep 3/10: 0.500610s correct=true
+[11:13:12]   Rep 4/10: 0.504437s correct=true
+[11:13:17]   Rep 5/10: 0.500426s correct=true
+[11:13:21]   Rep 6/10: 0.494298s correct=true
+[11:13:26]   Rep 7/10: 0.505662s correct=true
+[11:13:30]   Rep 8/10: 0.501133s correct=true
+[11:13:35]   Rep 9/10: 0.492537s correct=true
+[11:13:40]   Rep 10/10: 0.514236s correct=true
+[11:13:40]   Summary: median=0.500872s speedup=0.5428x correct=true
+[11:13:40] 
+[11:13:40] [16/32] dual_tree size=18 workers=8
+[11:13:46]   Warmup 1/2
+[11:13:51]   Warmup 2/2
+[11:13:58]   Rep 1/10: 0.728851s correct=true
+[11:14:04]   Rep 2/10: 0.724995s correct=true
+[11:14:11]   Rep 3/10: 0.720839s correct=true
+[11:14:17]   Rep 4/10: 0.702615s correct=true
+[11:14:23]   Rep 5/10: 0.723070s correct=true
+[11:14:30]   Rep 6/10: 0.714015s correct=true
+[11:14:36]   Rep 7/10: 0.712308s correct=true
+[11:14:42]   Rep 8/10: 0.721755s correct=true
+[11:14:49]   Rep 9/10: 0.737911s correct=true
+[11:14:55]   Rep 10/10: 0.716014s correct=true
+[11:14:56]   Summary: median=0.721297s speedup=0.3769x correct=true
+[11:14:56] 
+[11:14:56] [17/32] dual_tree size=20 workers=1
+[11:15:00]   Warmup 1/2
+[11:15:04]   Warmup 2/2
+[11:15:09]   Rep 1/10: 0.792141s correct=true
+[11:15:13]   Rep 2/10: 0.779832s correct=true
+[11:15:18]   Rep 3/10: 0.795117s correct=true
+[11:15:23]   Rep 4/10: 0.786886s correct=true
+[11:15:28]   Rep 5/10: 0.796671s correct=true
+[11:15:33]   Rep 6/10: 0.803187s correct=true
+[11:15:38]   Rep 7/10: 0.789791s correct=true
+[11:15:43]   Rep 8/10: 0.784687s correct=true
+[11:15:48]   Rep 9/10: 0.786872s correct=true
+[11:15:53]   Rep 10/10: 0.801153s correct=true
+[11:15:53]   Summary: median=0.790966s speedup=0.5618x correct=true
+[11:15:53] 
+[11:15:53] [18/32] dual_tree size=20 workers=2
+[11:15:58]   Warmup 1/2
+[11:16:03]   Warmup 2/2
+[11:16:09]   Rep 1/10: 1.444230s correct=true
+[11:16:14]   Rep 2/10: 1.384825s correct=true
+[11:16:20]   Rep 3/10: 1.395888s correct=true
+[11:16:26]   Rep 4/10: 1.395993s correct=true
+[11:16:31]   Rep 5/10: 1.404792s correct=true
+[11:16:37]   Rep 6/10: 1.426906s correct=true
+[11:16:43]   Rep 7/10: 1.436272s correct=true
+[11:16:49]   Rep 8/10: 1.400429s correct=true
+[11:16:54]   Rep 9/10: 1.411876s correct=true
+[11:17:00]   Rep 10/10: 1.433907s correct=true
+[11:17:00]   Summary: median=1.408334s speedup=0.3155x correct=true
+[11:17:00] 
+[11:17:00] [19/32] dual_tree size=20 workers=4
+[11:17:06]   Warmup 1/2
+[11:17:11]   Warmup 2/2
+[11:17:18]   Rep 1/10: 1.559492s correct=true
+[11:17:24]   Rep 2/10: 1.569001s correct=true
+[11:17:31]   Rep 3/10: 1.571387s correct=true
+[11:17:37]   Rep 4/10: 1.586385s correct=true
+[11:17:44]   Rep 5/10: 1.724436s correct=true
+[11:17:50]   Rep 6/10: 1.552000s correct=true
+[11:17:56]   Rep 7/10: 1.581229s correct=true
+[11:18:03]   Rep 8/10: 1.587437s correct=true
+[11:18:09]   Rep 9/10: 1.548089s correct=true
+[11:18:15]   Rep 10/10: 1.551094s correct=true
+[11:18:16]   Summary: median=1.570194s speedup=0.2830x correct=true
+[11:18:16] 
+[11:18:16] [20/32] dual_tree size=20 workers=8
+[11:18:23]   Warmup 1/2
+[11:18:30]   Warmup 2/2
+[11:18:38]   Rep 1/10: 1.910657s correct=true
+[11:18:46]   Rep 2/10: 1.898863s correct=true
+[11:18:53]   Rep 3/10: 1.923468s correct=true
+[11:19:01]   Rep 4/10: 1.906304s correct=true
+[11:19:09]   Rep 5/10: 1.901691s correct=true
+[11:19:16]   Rep 6/10: 1.877240s correct=true
+[11:19:24]   Rep 7/10: 1.875384s correct=true
+[11:19:32]   Rep 8/10: 1.911791s correct=true
+[11:19:40]   Rep 9/10: 1.918903s correct=true
+[11:19:47]   Rep 10/10: 1.897736s correct=true
+[11:19:48]   Summary: median=1.903998s speedup=0.2334x correct=true
+[11:19:48] 
+[11:19:48] [21/32] dual_tree size=22 workers=1
+[11:19:55]   Warmup 1/2
+[11:20:03]   Warmup 2/2
+[11:20:11]   Rep 1/10: 3.577472s correct=true
+[11:20:20]   Rep 2/10: 3.585342s correct=true
+[11:20:29]   Rep 3/10: 3.592375s correct=true
+[11:20:37]   Rep 4/10: 3.575292s correct=true
+[11:20:46]   Rep 5/10: 3.664771s correct=true
+[11:20:55]   Rep 6/10: 3.652878s correct=true
+[11:21:03]   Rep 7/10: 3.656319s correct=true
+[11:21:12]   Rep 8/10: 3.640461s correct=true
+[11:21:20]   Rep 9/10: 3.613175s correct=true
+[11:21:29]   Rep 10/10: 3.670553s correct=true
+[11:21:30]   Summary: median=3.626818s speedup=0.3629x correct=true
+[11:21:30] 
+[11:21:30] [22/32] dual_tree size=22 workers=2
+[11:21:42]   Warmup 1/2
+[11:21:53]   Warmup 2/2
+[11:22:05]   Rep 1/10: 6.563041s correct=true
+[11:22:17]   Rep 2/10: 6.415766s correct=true
+[11:22:28]   Rep 3/10: 6.472577s correct=true
+[11:22:40]   Rep 4/10: 6.828215s correct=true
+[11:22:52]   Rep 5/10: 6.460152s correct=true
+[11:23:06]   Rep 6/10: 6.325670s correct=true
+[11:23:20]   Rep 7/10: 6.188089s correct=true
+[11:23:33]   Rep 8/10: 6.281390s correct=true
+[11:23:45]   Rep 9/10: 6.502625s correct=true
+[11:23:58]   Rep 10/10: 6.303271s correct=true
+[11:23:59]   Summary: median=6.437959s speedup=0.2044x correct=true
+[11:23:59] 
+[11:23:59] [23/32] dual_tree size=22 workers=4
+[11:24:12]   Warmup 1/2
+[11:24:26]   Warmup 2/2
+[11:24:41]   Rep 1/10: 7.166213s correct=true
+[11:24:56]   Rep 2/10: 7.157759s correct=true
+[11:25:11]   Rep 3/10: 7.129129s correct=true
+[11:25:26]   Rep 4/10: 7.099020s correct=true
+[11:25:41]   Rep 5/10: 7.294778s correct=true
+[11:25:55]   Rep 6/10: 7.141692s correct=true
+[11:26:10]   Rep 7/10: 7.140746s correct=true
+[11:26:25]   Rep 8/10: 7.078224s correct=true
+[11:26:39]   Rep 9/10: 7.188298s correct=true
+[11:26:54]   Rep 10/10: 7.147325s correct=true
+[11:26:55]   Summary: median=7.144509s speedup=0.1842x correct=true
+[11:26:55] 
+[11:26:55] [24/32] dual_tree size=22 workers=8
+[11:27:10]   Warmup 1/2
+[11:27:26]   Warmup 2/2
+[11:27:43]   Rep 1/10: 8.131990s correct=true
+[11:28:00]   Rep 2/10: 8.156531s correct=true
+[11:28:16]   Rep 3/10: 8.124060s correct=true
+[11:28:33]   Rep 4/10: 8.183038s correct=true
+[11:28:50]   Rep 5/10: 8.237268s correct=true
+[11:29:07]   Rep 6/10: 8.265234s correct=true
+[11:29:24]   Rep 7/10: 8.079461s correct=true
+[11:29:41]   Rep 8/10: 8.227050s correct=true
+[11:29:58]   Rep 9/10: 8.350372s correct=true
+[11:30:14]   Rep 10/10: 8.151818s correct=true
+[11:30:15]   Summary: median=8.169784s speedup=0.1611x correct=true
+[11:30:15] 
+[11:30:15] [25/32] condup_expansion size=1000 workers=1
+[11:30:17]   Warmup 1/2
+[11:30:19]   Warmup 2/2
+[11:30:22]   Rep 1/10: 0.052134s correct=true
+[11:30:25]   Rep 2/10: 0.054334s correct=true
+[11:30:28]   Rep 3/10: 0.053527s correct=true
+[11:30:31]   Rep 4/10: 0.053710s correct=true
+[11:30:34]   Rep 5/10: 0.052789s correct=true
+[11:30:37]   Rep 6/10: 0.053158s correct=true
+[11:30:40]   Rep 7/10: 0.053836s correct=true
+[11:30:43]   Rep 8/10: 0.053221s correct=true
+[11:30:46]   Rep 9/10: 0.053688s correct=true
+[11:30:49]   Rep 10/10: 0.053701s correct=true
+[11:30:49]   Summary: median=0.053608s speedup=3.8487x correct=true
+[11:30:49] 
+[11:30:49] [26/32] condup_expansion size=1000 workers=2
+[11:30:52]   Warmup 1/2
+[11:30:55]   Warmup 2/2
+[11:30:58]   Rep 1/10: 0.106007s correct=true
+[11:31:01]   Rep 2/10: 0.107008s correct=true
+[11:31:05]   Rep 3/10: 0.108240s correct=true
+[11:31:08]   Rep 4/10: 0.106842s correct=true
+[11:31:11]   Rep 5/10: 0.107386s correct=true
+[11:31:15]   Rep 6/10: 0.106351s correct=true
+[11:31:18]   Rep 7/10: 0.106801s correct=true
+[11:31:22]   Rep 8/10: 0.107222s correct=true
+[11:31:25]   Rep 9/10: 0.106292s correct=true
+[11:31:28]   Rep 10/10: 0.107646s correct=true
+[11:31:29]   Summary: median=0.106925s speedup=1.9296x correct=true
+[11:31:29] 
+[11:31:29] [27/32] condup_expansion size=1000 workers=4
+[11:31:32]   Warmup 1/2
+[11:31:36]   Warmup 2/2
+[11:31:40]   Rep 1/10: 0.217058s correct=true
+[11:31:45]   Rep 2/10: 0.216242s correct=true
+[11:31:49]   Rep 3/10: 0.217152s correct=true
+[11:31:53]   Rep 4/10: 0.218285s correct=true
+[11:31:57]   Rep 5/10: 0.215859s correct=true
+[11:32:01]   Rep 6/10: 0.215348s correct=true
+[11:32:06]   Rep 7/10: 0.214595s correct=true
+[11:32:10]   Rep 8/10: 0.219288s correct=true
+[11:32:14]   Rep 9/10: 0.216543s correct=true
+[11:32:18]   Rep 10/10: 0.218389s correct=true
+[11:32:19]   Summary: median=0.216801s speedup=0.9517x correct=true
+[11:32:19] 
+[11:32:19] [28/32] condup_expansion size=1000 workers=8
+[11:32:24]   Warmup 1/2
+[11:32:30]   Warmup 2/2
+[11:32:36]   Rep 1/10: 0.453828s correct=true
+[11:32:42]   Rep 2/10: 0.451923s correct=true
+[11:32:48]   Rep 3/10: 0.450049s correct=true
+[11:32:54]   Rep 4/10: 0.453060s correct=true
+[11:33:00]   Rep 5/10: 0.450788s correct=true
+[11:33:06]   Rep 6/10: 0.451227s correct=true
+[11:33:12]   Rep 7/10: 0.456452s correct=true
+[11:33:18]   Rep 8/10: 0.447127s correct=true
+[11:33:24]   Rep 9/10: 0.447094s correct=true
+[11:33:30]   Rep 10/10: 0.448417s correct=true
+[11:33:31]   Summary: median=0.451008s speedup=0.4575x correct=true
+[11:33:31] 
+[11:33:31] [29/32] condup_expansion size=5000 workers=1
+[11:33:33]   Warmup 1/2
+[11:33:36]   Warmup 2/2
+[11:33:38]   Rep 1/10: 0.058658s correct=true
+[11:33:41]   Rep 2/10: 0.058528s correct=true
+[11:33:44]   Rep 3/10: 0.058099s correct=true
+[11:33:47]   Rep 4/10: 0.057158s correct=true
+[11:33:50]   Rep 5/10: 0.058724s correct=true
+[11:33:53]   Rep 6/10: 0.058370s correct=true
+[11:33:56]   Rep 7/10: 0.058590s correct=true
+[11:33:59]   Rep 8/10: 0.059757s correct=true
+[11:34:02]   Rep 9/10: 0.058831s correct=true
+[11:34:05]   Rep 10/10: 0.058531s correct=true
+[11:34:06]   Summary: median=0.058561s speedup=3.6002x correct=true
+[11:34:06] 
+[11:34:06] [30/32] condup_expansion size=5000 workers=2
+[11:34:08]   Warmup 1/2
+[11:34:11]   Warmup 2/2
+[11:34:15]   Rep 1/10: 0.110072s correct=true
+[11:34:18]   Rep 2/10: 0.111471s correct=true
+[11:34:21]   Rep 3/10: 0.110879s correct=true
+[11:34:25]   Rep 4/10: 0.110201s correct=true
+[11:34:28]   Rep 5/10: 0.111323s correct=true
+[11:34:32]   Rep 6/10: 0.110732s correct=true
+[11:34:35]   Rep 7/10: 0.111336s correct=true
+[11:34:38]   Rep 8/10: 0.110255s correct=true
+[11:34:42]   Rep 9/10: 0.111059s correct=true
+[11:34:45]   Rep 10/10: 0.112209s correct=true
+[11:34:46]   Summary: median=0.110969s speedup=1.8999x correct=true
+[11:34:46] 
+[11:34:46] [31/32] condup_expansion size=5000 workers=4
+[11:34:49]   Warmup 1/2
+[11:34:53]   Warmup 2/2
+[11:34:57]   Rep 1/10: 0.220284s correct=true
+[11:35:01]   Rep 2/10: 0.220657s correct=true
+[11:35:05]   Rep 3/10: 0.220874s correct=true
+[11:35:10]   Rep 4/10: 0.219967s correct=true
+[11:35:14]   Rep 5/10: 0.221722s correct=true
+[11:35:18]   Rep 6/10: 0.219545s correct=true
+[11:35:22]   Rep 7/10: 0.219694s correct=true
+[11:35:27]   Rep 8/10: 0.218819s correct=true
+[11:35:31]   Rep 9/10: 0.221530s correct=true
+[11:35:35]   Rep 10/10: 0.219596s correct=true
+[11:35:36]   Summary: median=0.220126s speedup=0.9578x correct=true
+[11:35:36] 
+[11:35:36] [32/32] condup_expansion size=5000 workers=8
+[11:35:41]   Warmup 1/2
+[11:35:46]   Warmup 2/2
+[11:35:52]   Rep 1/10: 0.461072s correct=true
+[11:35:59]   Rep 2/10: 0.458754s correct=true
+[11:36:05]   Rep 3/10: 0.464745s correct=true
+[11:36:11]   Rep 4/10: 0.460168s correct=true
+[11:36:17]   Rep 5/10: 0.461085s correct=true
+[11:36:23]   Rep 6/10: 0.466306s correct=true
+[11:36:29]   Rep 7/10: 0.460676s correct=true
+[11:36:35]   Rep 8/10: 0.465811s correct=true
+[11:36:41]   Rep 9/10: 0.464061s correct=true
+[11:36:47]   Rep 10/10: 0.463050s correct=true
+[11:36:48]   Summary: median=0.462068s speedup=0.4563x correct=true
+[11:36:48] 
+[11:36:48] ==========================================
+[11:36:48]   bench_docker_v2 Complete
+[11:36:48] ==========================================
+[11:36:48] Output files:
+[11:36:48]   /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/v2_tcp_baseline/detail.csv
+[11:36:48]   /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/v2_tcp_baseline/summary.csv
+[11:36:48]   /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/v2_tcp_baseline/rounds.csv
+[11:36:48]   /c/Users/Filipe/Desktop/TCC_interaction_combinators_for_grid_computing/codigo/relativist/results/v2_tcp_baseline/run.log
+[11:36:48] Total datapoints: 400

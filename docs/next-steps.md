@@ -6,13 +6,16 @@
 
 **Maintained by:** sdd-pipeline agent (see `docs/WORKFLOWS.md`)
 
-### ✅ D-011 BLOCKER — Performance regression CLOSED 2026-05-04
+### ✅ D-011 BLOCKER — Performance regression CLOSED + LOCKED 2026-05-05
 
-The partition perf regression flagged in the v2_tcp_baseline rodada is **CLOSED**. Bundle in 7 commits `e941273..b1f9c10`: SPEC-22 v2.4 R22 metric correction (effective_arena_size = max_live_id + 1) + 2 latent dense `build_subnet` bug fixes (Bug 1: freeport_redirects propagation; Bug 2: next_id = id_range.start) + AF-2/AF-3 defensive guards + 8 Cat A test rewrites + 4 regression witnesses + boundary tests. Full narrative + scientific finding (the apparent regression masked 2 latent correctness bugs that v1 never detected) in `docs/progress.md` 2026-05-04 entry.
+The partition perf regression flagged in the v2_tcp_baseline rodada is **CLOSED + LOCKED**. Final empirical baseline frozen at `results/locked/v2_d011_final_baseline_2026-05-04/` (32 configs × 10 reps over Docker TcpLocalhost, sequential native baselines included; MANIFEST.md with full provenance + SHA-256). See `docs/progress.md` 2026-05-04 entry for the investigation arc and `docs/analysis/D011-final-baseline-analysis-2026-05-04.md` for the cold post-mortem analysis (red-flag catalog + thesis-impact assessment).
 
 **Bench verification (TASK-0614, `0fd27c0`):** ep_con 5M w=2 local wall median v1 = 14.247 s vs HEAD post-fix = 15.775 s, ratio **1.11× (within noise floor)**. ~88% of the +83% regression closed.
 
-**Test floor advanced:** 1683→1784 default / 1726→1828 zero-copy / 1680→1775 streaming-no-recycle. v1 floor=690 inviolable.
+**Test floor advanced:** 1683→1784 default / 1726→1828 zero-copy / 1680→1775 streaming-no-recycle. v1 floor=690 inviolable. Floor verified at HEAD `b079cdc` via `cargo test` (debug profile, 1784 passed / 0 failed). `cargo test --release` is **broken pre-D-011** (debug-only test imports in `net/debug.rs`; non-exhaustive match in `coordinator.rs::ut_0577_08`); does not affect production binary or this bench. Logged as a separate follow-up.
+
+**New follow-up surfaced by post-mortem analysis:**
+- **D-011-FU-NETMETRIC** — `rounds.csv::network_time_secs` is structurally 0.0 across all v2 datasets because `GridMetrics.network_send/recv_time_per_round` Vecs are declared + read-into-CSV but never written by production code. v1 had this metric working (~0.29 s/round on TCP-localhost). Pre-D-011, surfaced 2026-05-05.
 
 **Deferred (separate follow-up tasks, NOT blocking):** QA F-003 (empty dense partition + AF-2 brittleness — pre-existing QA-D009-009 contract gap, unrelated to D-011); QA F-005 (`freeport_redirects` memory cost at scale — perf concern, not correctness).
 
