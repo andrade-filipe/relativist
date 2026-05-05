@@ -846,6 +846,13 @@ pub async fn run_coordinator(
         let mut results: Vec<(Partition, WorkerRoundStats)> = Vec::with_capacity(k_eff);
         let mut bytes_sent = 0;
         let mut bytes_received = 0;
+        // TASK-0615 (D-011-FU-NETMETRIC): per-round network time accumulators.
+        // Wraps each wire-facing send/recv site with `Instant::now()` and
+        // accumulates the elapsed `Duration` per round. Pushed to
+        // `metrics.network_send_time_per_round` / `network_recv_time_per_round`
+        // alongside the byte counters at end of round. RF-04 closure.
+        let mut network_send_time = Duration::ZERO;
+        let mut network_recv_time = Duration::ZERO;
         let _t_grid = Instant::now();
 
         let mut partitions_iter = plan.partitions.iter().cloned();
@@ -889,14 +896,17 @@ pub async fn run_coordinator(
         // QA-003: each `?` early return below leaves the round's metric
         // Vecs lopsided unless we top them up with zero pushes first. The
         // helper restores parity to `effective_slots_per_round.len()`.
-        bytes_sent += match distribute_partitions(
+        // TASK-0615: time the wire-facing distribute_partitions await.
+        let t_send_dist = Instant::now();
+        let dist_result = distribute_partitions(
             &mut worker_streams,
             remote_partitions,
             metrics.rounds,
             config.distribute_timeout,
         )
-        .await
-        {
+        .await;
+        network_send_time = network_send_time.saturating_add(t_send_dist.elapsed());
+        bytes_sent += match dist_result {
             Ok(n) => n,
             Err(e) => {
                 push_partial_round_metrics(&mut metrics);
@@ -909,7 +919,11 @@ pub async fn run_coordinator(
                 round: metrics.rounds,
                 partition: p.clone(),
             };
-            match send_frame(&mut h.stream, &msg).await {
+            // TASK-0615: time the in-process self-worker dispatch send.
+            let t_send_self = Instant::now();
+            let send_outcome = send_frame(&mut h.stream, &msg).await;
+            network_send_time = network_send_time.saturating_add(t_send_self.elapsed());
+            match send_outcome {
                 Ok(n) => bytes_sent += n,
                 Err(e) => {
                     push_partial_round_metrics(&mut metrics);
@@ -954,7 +968,12 @@ pub async fn run_coordinator(
 
         for (wid, stream) in streams_to_poll {
             let recv_future = recv_frame(stream, config.max_payload_size);
-            match tokio::time::timeout(config.collect_timeout, recv_future).await {
+            // TASK-0615: time the wire-facing collect recv await per worker.
+            // Records the actual `await` time, not the timeout overhead.
+            let t_recv = Instant::now();
+            let recv_outcome = tokio::time::timeout(config.collect_timeout, recv_future).await;
+            network_recv_time = network_recv_time.saturating_add(t_recv.elapsed());
+            match recv_outcome {
                 Ok(Ok((msg, nbytes))) => {
                     bytes_received += nbytes;
                     match msg {
@@ -989,12 +1008,16 @@ pub async fn run_coordinator(
                             // a worker that DID send it (already buffered
                             // on the local socket) is observed.
                             let peek_timeout = std::time::Duration::from_millis(50);
-                            if let Ok(Ok((peek_msg, peek_bytes))) = tokio::time::timeout(
+                            // TASK-0615: include the trailing LeaveRequest peek
+                            // in the per-round network_recv_time accumulator.
+                            let t_peek = Instant::now();
+                            let peek_result = tokio::time::timeout(
                                 peek_timeout,
                                 recv_frame(stream, config.max_payload_size),
                             )
-                            .await
-                            {
+                            .await;
+                            network_recv_time = network_recv_time.saturating_add(t_peek.elapsed());
+                            if let Ok(Ok((peek_msg, peek_bytes))) = peek_result {
                                 bytes_received += peek_bytes;
                                 if let Message::LeaveRequest { kind } = peek_msg {
                                     let departure_type = match kind {
@@ -1342,6 +1365,13 @@ pub async fn run_coordinator(
         results.extend(collect_results_vec);
         metrics.bytes_sent_per_round.push(bytes_sent);
         metrics.bytes_received_per_round.push(bytes_received);
+        // TASK-0615 (D-011-FU-NETMETRIC): push the per-round network time
+        // accumulators alongside the byte counters. Send time covers the
+        // dispatch phase (distribute_partitions + self-handle AssignPartition);
+        // recv time covers the collect phase (per-worker recv_frame +
+        // trailing LeaveRequest peek). RF-04 closure.
+        metrics.network_send_time_per_round.push(network_send_time);
+        metrics.network_recv_time_per_round.push(network_recv_time);
 
         let mut reduced_partitions = Vec::with_capacity(results.len());
         let mut worker_stats = Vec::with_capacity(results.len());
