@@ -1,86 +1,10 @@
-[package]
-name = "relativist"
-version = "0.11.0"
+[workspace]
+members = ["relativist-core", "relativist-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.20.0-pre"
 edition = "2021"
 authors = ["Filipe Andrade Nascimento <filipeandrade.work@gmail.com>"]
 license = "MIT"
-description = "Distributed reduction of Interaction Combinators on Grid Computing"
 repository = "https://github.com/andrade-filipe/relativist"
-readme = "README.md"
-keywords = ["interaction-combinators", "grid-computing", "distributed", "reduction"]
-categories = ["science", "concurrency"]
-
-[dependencies]
-# Serialization (SPEC-02 R24, SPEC-06 R11, SPEC-13 R11)
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-bincode = "1"
-
-# CLI (SPEC-07 R2, SPEC-13 R11)
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
-
-# Error handling (PESQ-023 D2, SPEC-13 R11)
-thiserror = "2"
-
-# Observability (PESQ-023 D5, SPEC-13 R11)
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
-
-# Async runtime (SPEC-06, SPEC-13 R11)
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "io-util", "time", "signal"] }
-
-# Checksum (SPEC-06 R10)
-crc32fast = "1"
-
-# Async utilities (SPEC-06 R21 — concurrent partition sends)
-futures = "0.3"
-
-# Local parallelism (SPEC-07 R20 — rayon for fair comparison)
-rayon = "1"
-
-# Random number generation (SPEC-13 R11, SPEC-10 R9)
-rand = "0.8"
-
-# Security: token base64 encoding (SPEC-10 R10)
-base64 = "0.22"
-
-# Security: constant-time comparison (SPEC-10 R15)
-subtle = "2"
-
-# TLS (SPEC-10 — optional, SPEC-13 R12/R37)
-rustls = { version = "0.23", optional = true }
-tokio-rustls = { version = "0.26", optional = true }
-rustls-pemfile = { version = "2", optional = true }
-
-# Metrics (SPEC-11 — optional, SPEC-13 R12/R37)
-prometheus-client = { version = "0.23", optional = true }
-axum = { version = "0.8", optional = true }
-
-# OpenTelemetry (SPEC-11 — optional, SPEC-13 R12/R37)
-opentelemetry = { version = "0.28", optional = true }
-opentelemetry_sdk = { version = "0.28", optional = true }
-
-[dev-dependencies]
-# Property-based testing (PESQ-023 D6, SPEC-13 R13)
-proptest = "1"
-
-# Benchmarking (SPEC-13 R13)
-criterion = { version = "0.5", features = ["html_reports"] }
-
-# Async test utilities (SPEC-13 R13)
-tokio-test = "0.4"
-
-# HTTP testing (SPEC-11 R21 — metrics endpoint tests)
-tower = "0.5"
-
-[features]
-default = []
-tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]
-metrics = ["dep:prometheus-client", "dep:axum"]
-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
-full = ["tls", "metrics", "otel"]
-
-[[bench]]
-name = "benchmarks"
-harness = false

@@ -1,5 +1,7 @@
 # Roadmap
 
+> **NOTE:** For active implementation status, priorities, and milestones, see `next-steps.md`. This document provides the architectural rationale and detailed theoretical descriptions.
+
 This document lists features explicitly excluded from v1 (SPEC-13, R49-R50) and future architectural evolutions. Items marked with **(confluence-enabled)** are made possible specifically by the strong confluence property of Interaction Combinators -- they would be incorrect or require complex consensus in systems without this guarantee.
 
 ---
@@ -227,15 +229,13 @@ below is the deeper asynchronous streaming redesign, orthogonal to strict BSP.
 
 **v1 exclusion source:** SPEC-14 Open Question 0, DISC-009 Section 4.
 
-### 2.18 Native Numeric Types (HVM2-style)
+### 2.18 Native Numeric Types (HVM2-style) — ARCHIVED
 
-**v1 limitation:** Arithmetic uses Church numerals (unary encoding): church(n) requires O(n) agents. Multiplication requires O(a*b) interactions. This is theoretically correct but practically inefficient for large numbers.
+**Status:** ARCHIVED. Relativist's purpose is net partitioning and distributed reduction — it is a general-purpose IC reducer, not a computation engine like HVM2. Domain-specific operations (arithmetic, logic, etc.) are defined by the encoder/decoder layer, not by native agent types in the network. Church encoding validates the theoretical contribution (universality); practical encoding is the encoder's responsibility.
 
-**v2 change:** Add native agent types for numbers and operations, following HVM2's approach (REF-003): NUM (numeric literal), OPE (binary operator), SWI (conditional switch). These bypass Church encoding entirely, reducing `mul(1000, 1000)` from ~1M interactions to O(1).
+**Original proposal:** Add native agent types (NUM, OPE, SWI) following HVM2's approach (REF-003) to bypass Church encoding. This would reduce `mul(1000, 1000)` from ~1M interactions to O(1).
 
-**Why this is separate from universality:** Lafont's universality (REF-002, Theorem 1) guarantees that Church encoding works. Native types are a performance optimization that does not affect the theoretical contribution. The TCC validates the formal property with pure ICs; native types would be an engineering improvement for post-TCC practical use.
-
-**Complexity:** Medium. Requires extending the Symbol enum, adding reduction rules for native types, and updating serialization and partitioning to handle new agent kinds.
+**Why archived:** Different goal from HVM. HVM2 is a computation engine that needs efficient arithmetic; Relativist is a distributed reduction engine that needs efficient partitioning, transport, and merge. The encoder/decoder pattern (SPEC-14) already separates "what problem to solve" from "how to reduce the net."
 
 **v1 exclusion source:** SPEC-14 Section 5.1 (Church encoding chosen for simplicity and theoretical alignment).
 
@@ -362,6 +362,32 @@ Running v1 across the Internet is possible only with external scaffolding (VPN, 
 **Complexity.** High. Rough breakdown: ~600 lines for TLS and certificate handling (rustls integration in SPEC-06), ~400 lines for the rendezvous/relay server (a new crate, `relativist-relay`), ~300 lines for session-aware reconnect in coordinator and worker FSMs, ~200 lines for mTLS or OAuth2 auth, ~150 lines for adaptive timeouts, ~200 lines of tests, plus 4-5 SPEC rewrites (SPEC-06, SPEC-07, SPEC-10, SPEC-11 metrics) and one new SPEC (SPEC-16: WAN Deployment). Estimated effort: 3-4 weeks of focused work plus the standard spec/debate review pipeline. Not a weekend project.
 
 **v1 exclusion source:** SPEC-07 §5.5 (LAN-only discovery), SPEC-09 R27 ("TCP over LAN"), SPEC-10 R3 (plaintext token auth), SPEC-06 (no TLS, no reconnect), OBJETIVO_TCC.md (scope bounded to distributed baseline on LAN).
+
+### 2.21.1 End-to-End Security Analysis
+
+**Scope.** A systematic security analysis of the entire Relativist system when exposed to the public Internet via WAN deployment (2.21). This is not a code feature but a formal deliverable: a threat model document, attack surface enumeration, and mitigation mapping that validates the security design of SPEC-24 before implementation begins.
+
+**Motivation.** WAN deployment (2.21) introduces 7 sub-components (NAT traversal, TLS, strong auth, reconnect, adaptive timeouts, discovery, abuse mitigation), each with its own attack surface. Without a structured threat analysis, security decisions are ad-hoc and gaps are discovered in production. The TCC's claim that IC reduction can be distributed over a grid is only credible if the grid is deployable — and deployability over the Internet requires a defensible security posture, not just TLS.
+
+**Deliverables:**
+
+1. **Threat model.** STRIDE-based analysis of the coordinator, worker, and relay components. Enumerate: spoofing (identity), tampering (results, partitions), repudiation (who did what), information disclosure (net contents in transit/at rest), denial of service (resource exhaustion), elevation of privilege (worker→coordinator). Map each threat to the specific SPEC-24 requirement that mitigates it.
+
+2. **Attack surface enumeration.** Catalog every network-facing endpoint, protocol message, and trust boundary. For each: what input does it accept, what validation does it perform, what happens if validation is bypassed. Cover at minimum: TLS handshake, mTLS certificate validation, session token issuance/refresh, relay message forwarding, coordinator FSM transitions triggered by network input, worker result frame acceptance.
+
+3. **Mitigation mapping.** For each identified threat: (a) which SPEC-24 requirement addresses it, (b) the specific code-level mechanism (e.g., "rustls rejects non-TLS 1.3 handshakes at R-SEC-03"), (c) residual risk after mitigation. Flag any threats where SPEC-24 has no corresponding requirement — these become spec amendments.
+
+4. **Trust boundary diagram.** Visual (TikZ) diagram of the system's trust boundaries in WAN mode, showing: Internet ↔ relay ↔ coordinator ↔ worker, with annotations for each security control at each boundary crossing.
+
+5. **Residual risk register.** Explicit list of what is NOT mitigated by v2 (e.g., Byzantine workers, result integrity without redundant execution, relay compromise). Each entry states why it is deferred and what future work (v3+) would address it.
+
+**Relationship to 2.21.** This is a sub-item of WAN deployment, not a standalone feature. It runs in parallel with SPEC-24 creation and should be completed before SPEC-24 implementation begins. Any gaps found in the security analysis feed back as SPEC-24 amendments.
+
+**Relationship to SPEC-10 (Security).** SPEC-10 defines v1 security (shared token, plaintext TCP). The security analysis evaluates the delta between SPEC-10 and SPEC-24, ensuring that every v1 security assumption that is broken by WAN exposure is explicitly replaced by a stronger mechanism.
+
+**Complexity.** Medium. ~300 lines of analysis document (Markdown + TikZ diagram). No code changes, but may generate 5-10 SPEC-24 requirement amendments. Estimated effort: 1-2 weeks, primarily research and writing. Requires familiarity with STRIDE, TLS 1.3, mTLS, and common distributed system attack patterns.
+
+**Prerequisites.** SPEC-24 draft must exist (at least the requirements section) so that the analysis can map threats to specific requirements. If SPEC-24 is incomplete, the analysis flags unmapped threats as "spec gap — amendment required."
 
 ---
 
@@ -576,6 +602,21 @@ Complements 2.16 (streaming reduction) and 2.17 (streaming arithmetic) — a del
 - [Giraphx: Parallel Yet Serializable Large-Scale Graph Processing](https://www.researchgate.net/publication/262351791_Giraphx_Parallel_Yet_Serializable_Large-Scale_Graph_Processing) — introduces the border-vertex / internal-vertex split that this item adapts to interaction nets.
 - [A communication-reduced and computation-balanced framework for fast graph computation (Frontiers of Computer Science)](https://link.springer.com/article/10.1007/s11704-018-6400-1) — LCC-BSP model, directly motivates the delta approach.
 - [Round- and Message-Optimal Distributed Graph Algorithms (Haeupler et al., CMU)](https://www.cs.cmu.edu/~dwajc/pdfs/haeupler18.pdf) — theoretical bounds on how much communication can be reduced under BSP.
+
+#### 2.26 Invariant Amendments (SPEC-19 §3.5 — TASK-0392)
+
+This is narrative documentation of the SPEC-19 amendments. The formal text lives in SPEC-19 §3.5; the formal proofs are TCC work items (OQ-1, ARG-005, DISC-011). No SPEC-01 edit is required — SPEC-19 §3.5 is the canonical amendment location per the spec-critic ruling on AMB-D-3.
+
+**G1 (Fundamental Property) — R38. *Proof pending.***
+The delta protocol keeps the merged net distributed across workers between rounds. G1 is reformulated from `reduce_all(net) ~ extract_result(run_grid(net, n))` to `reduce_all(net) ~ extract_result(run_grid_delta(net, n))`, where `extract_result` performs Final State Collection (R27-R29) followed by `merge()`. SPEC-19 §3.5 R38 states this reformulation as MUST but defers the full formal proof of the recoverability property to Section 8 (OQ-1 → DISC-011 → ARG-005); this spec defines the design, and the theoretical proof is a separate TCC deliverable. **Operational guarantee in the implementation:** sub-bundle 2.26-C's convergence test exercises a canonical workload end-to-end with `delta_mode = true` and compares the decoded result to the `reduce_all` reference — this is the engineering discharge while the formal argument is outstanding.
+
+**D3 (Border Completeness) — R39. *Proof pending.***
+Border-redex detection is incremental via `BorderGraph.detect_border_redexes()` (shipped in bundle 2.35, TASK-0374..0388). The v1 exhaustive scan in `merge::find_border_redexes` is retained for the `delta_mode = false` path; the two oracles return the same set of redexes for any reachable coordinator state. Equivalence between the incremental and exhaustive oracles is the core correctness claim of the delta protocol and is pending formal proof (SPEC-19 §3.5 R39; see Section 8). The bundle 2.35 probes QA-A..QA-H (all passing; see the bundle 2.35 closure entry in `docs/progress.md`) are the empirical discharge until the proof lands.
+
+**D6 (Protocol Termination) — R40. *Operationally complete after 2.26-C.***
+Termination is anchored on **Global Normal Form**: (a) every worker reports `local_redexes == 0` AND `has_border_activity == false` (TASK-0348), AND (b) `BorderGraph.detect_border_redexes()` returns empty (bundle 2.35). The joint check is performed by the delta BSP loop in bundle 2.26-C (`check_delta_convergence`, TASK-0386). The termination argument is operational and self-contained in the spec text: each round consumes ≥ 1 interaction from the finite T7 budget, so the protocol terminates in ≤ N rounds strict / 1 round lenient (`R_delta_lenient = 1` in the absence of cross-partition cascades; `R_delta_strict ≤ N` matches the v1 strict-mode bound). No Section 8 deferral applies to R40. **Status:** PARTIAL after 2.26-D (this sub-bundle ships only the `delta_mode` flag plumbing via TASK-0389/0390 and the narrative notes here); **COMPLETE after 2.26-C** (the delta BSP loop with the Global Normal Form termination check ships there).
+
+**Configuration mechanism.** The `GridConfig.delta_mode: bool` field (TASK-0389) and the `--delta-mode` CLI flag (TASK-0390) toggle between the v1 path and the amended path. Default is `false` (SPEC-19 §3.6 R42 — backwards compatibility). The regression test `r42_default_delta_mode_preserves_v1_smoke_output` (TASK-0391) asserts that the default branch produces bit-identical behaviour to the pre-bundle baseline on a canonical smoke workload.
 
 ---
 
@@ -1240,6 +1281,73 @@ The **minimum viable change** for break-even requires reducing `c_o` by 77% (to 
 **Note on SPEC-16 (Worker Daemon Mode).** SPEC-16 (implemented in v0.11.0) keeps workers alive **between jobs** (between coordinator invocations) for operational convenience during benchmark campaigns. It does NOT keep worker state **between BSP rounds within a single job** — each round still receives a full `AssignPartition`. SPEC-16 addresses a different problem (campaign automation) than the break-even gap (per-round overhead). The break-even gap requires item 2.26.
 
 **Implication for the TCC.** This analysis produces a **clean negative result**: the v1 architecture validates correctness (0 failures in 4490 executions) but demonstrates that the O(N) partition/merge cost structurally exceeds the O(N) reduction cost, making speedup impossible at any scale. The negative result is scientifically valuable because it (a) identifies the exact bottleneck (c_o/c_r = 2.2, needing < 0.5), (b) proves the bottleneck is architectural rather than scale-dependent (N cancels), and (c) quantifies the engineering target for v2 (77% overhead reduction via 2.26 + 2.34 + 2.35).
+
+### 2.41 Encoder/Decoder API and Problem Registry
+
+**Motivation.** The only end-to-end encode→reduce→decode pipeline in v1 is Church numeral arithmetic (`relativist compute add 3 5`). Any other problem requires forking the codebase and writing Rust. This makes the Relativist a demonstration prototype, not an extensible library. DISC-012 (v2) analyzed this gap systematically and recommended a 4-layer approach.
+
+**Scope (Layers 1-3 of DISC-012).** Layer 0 (workspace restructure) is covered by SPEC-26 R1-R7.
+
+**Layer 1 — Traits + LambdaEncoder (~400 LoC).**
+- Define `Encoder` and `Decoder` traits (or unified `Codec`) in `relativist-core::encoding`.
+- Refactor existing Church numeral code to implement the trait.
+- Implement `LambdaEncoder`: encode/decode pure lambda-calculus terms via the Mackie/Pinto pipeline (REF-005, Theorems 5.2 and 6.2). Subconjunto: Lambda, Application, Variable, Erasure (no numerals, no types).
+- Decode via port-directed readback (simplified from Bend's `net_to_term`, documented in AC-013).
+- CLI integration: `relativist compute --encoder lambda --input '<term>'`.
+
+**Layer 2 — Encoder Registry (~300 LoC).**
+- `EncoderRegistry`: HashMap of named encoders, discoverable at runtime.
+- CLI: `relativist encoders list` to show available encoders.
+- CLI: `relativist compute --encoder <name> --input '<json>'` (generic dispatch).
+- Validation: every encoder output is checked against invariants T1-T7 (SPEC-01) before reduction.
+
+**Layer 3 — RecipeEncoder Generalization (~200 LoC).**
+- `RecipeEncoder` trait extending `Encoder` with `make_recipe()` and `generate_partition()`.
+- Generalizes SPEC-25 (Recipe-Based Generation) beyond the 9 built-in generators to any registered encoder.
+- Protocol: `AssignRecipe` message variant accepts recipes from any encoder in the registry.
+- Coordinator sends compact recipe (bytes to kilobytes); each worker materializes its partition locally.
+
+**Status (2026-04-16):** Layer 3 is **partially shipped**. R24+R25 (trait
+definition + non-coupling guarantee with the `Codec` registry) landed via
+TASK-0340 in Phase 6 mínimo. R26 (refactor SPEC-25 `GenerationRecipe`),
+R27 (generalize `AssignRecipe` wire message), and R28 (worker-side registry
+dispatch) are **deferred until SPEC-25 itself is implemented** (item 2.29,
+milestone M7). See `docs/DEFERRED-WORK.md` row D-001 for the unblock
+checklist and the files to revisit when M7 starts.
+
+**What stays out of scope (v2.x/v3).**
+- REST API (Layer 4 of DISC-012): ~800-1000 LoC, deferred.
+- FFI/Python bindings (PyO3): ~800 LoC, deferred.
+- WASM plugins: ~1500 LoC, deferred.
+- HVM/Bend compatibility (label support): ~1000+ LoC + formal revision, deferred. See 2.42.
+- DSL: descartada (reinvents Bend).
+
+**Estimated total:** ~900 LoC (Layers 1-3, excluding Layer 0 which is SPEC-26).
+
+**Depends on:** SPEC-26 R1-R7 (workspace restructure), SPEC-25 (recipe generation), SPEC-06 (wire protocol for AssignRecipe).
+
+**DISC reference:** DISC-012 v2 (Job Submission, Encoding, and Decoding), Sections 2, 6, 7, 11, 12.
+
+### 2.42 Label Support for Extended Interaction Combinators (Decision Pending)
+
+**Motivation.** HVM2/Bend uses labels (u16) to differentiate CON/DUP agents of different "scopes". Without labels, CON+CON is always annihilation in the Relativist; with labels, same-label pairs annihilate while different-label pairs commute. This is required for correct reduction of any non-trivial Bend program.
+
+**This is a fundamental architectural decision, not an incremental feature.** It changes:
+- Symbol representation (~30 LoC)
+- All 6 interaction rules (conditional on label match) (~200 LoC)
+- Redex identification (T3 invariant changes)
+- Wire protocol frame format (~150 LoC)
+- Serialization formats (binary, IC text, JSON) (~150 LoC)
+- Tests (690 existing need review + new label-specific tests) (~400 LoC)
+- Formal argument ARG-001 (must cite confluence for IC with labels, e.g., Mazza 2006)
+
+**Estimated effort:** ~1000+ LoC + formal invariant revision.
+
+**Status:** Decision pending. If HVM/Bend compatibility is strategically prioritized, labels enable the `LambdaEncoder` to work correctly for non-trivial programs. If the Relativist remains pure Lafont IC (3 symbols, no labels), this item is not needed but the HVM bridge is limited to a narrow subset.
+
+**Depends on:** Architectural decision on IC puro vs IC estendido.
+
+**DISC reference:** DISC-012 v2, Section 8 (HVM as Encoder), R-C5 corrected estimate.
 
 ---
 

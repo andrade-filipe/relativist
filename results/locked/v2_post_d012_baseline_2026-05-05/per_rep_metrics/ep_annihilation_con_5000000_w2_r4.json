@@ -1,0 +1,135 @@
+{
+  "rounds": 1,
+  "total_interactions": 5000000,
+  "total_interactions_by_rule": [
+    5000000,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "local_interactions_per_round": [
+    5000000
+  ],
+  "border_interactions_per_round": [
+    0
+  ],
+  "border_redexes_per_round": [
+    0
+  ],
+  "agents_per_round": [
+    10000000
+  ],
+  "partition_time_per_round": [
+    {
+      "secs": 3,
+      "nanos": 245433243
+    }
+  ],
+  "compute_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 969665473
+    }
+  ],
+  "merge_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 626452008
+    }
+  ],
+  "border_reduce_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 672
+    }
+  ],
+  "index_rebuild_time_per_round": [],
+  "bytes_sent_per_round": [
+    240964505
+  ],
+  "bytes_received_per_round": [
+    50064159
+  ],
+  "network_send_time_per_round": [
+    {
+      "secs": 1,
+      "nanos": 180146922
+    }
+  ],
+  "network_recv_time_per_round": [
+    {
+      "secs": 2,
+      "nanos": 140266916
+    }
+  ],
+  "total_time": {
+    "secs": 7,
+    "nanos": 382196727
+  },
+  "converged": true,
+  "worker_stats_per_round": [
+    [
+      {
+        "worker_id": 0,
+        "agents_before": 5000000,
+        "agents_after": 0,
+        "local_redexes": 2500000,
+        "reduce_duration_secs": 0.967199882,
+        "interactions_by_rule": [
+          2500000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "has_border_activity": false,
+        "is_coordinator_self": false
+      },
+      {
+        "worker_id": 1,
+        "agents_before": 5000000,
+        "agents_after": 0,
+        "local_redexes": 2500000,
+        "reduce_duration_secs": 0.969665473,
+        "interactions_by_rule": [
+          2500000,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "has_border_activity": false,
+        "is_coordinator_self": false
+      }
+    ]
+  ],
+  "coordinator_free_rounds": 0,
+  "delta_mode": false,
+  "delta_max_rounds_hit": null,
+  "workers_joined_per_round": [
+    0
+  ],
+  "workers_departed_per_round": [
+    0
+  ],
+  "effective_slots_per_round": [
+    2
+  ],
+  "partitions_redispatched_per_round": [
+    0
+  ],
+  "retained_initial_reclaims_per_round": [
+    0
+  ],
+  "retained_last_acked_reclaims_per_round": [
+    0
+  ],
+  "join_round_overhead_ms_per_round": [
+    0
+  ],
+  "join_window_time_per_round": []
+}

@@ -1,7 +1,8 @@
 # SPEC-13: System Architecture
 
-**Status:** Revised v2
+**Status:** Revised v2.1 — §3.5/§3.6 FSMs amended per SPEC-21 §3.8 A5 (5 coordinator pull-mode states + 2 worker pull-mode states)
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol), SPEC-07 (Deployment), SPEC-08 (Test Strategy), SPEC-09 (Benchmarks)
+**Amends:** SPEC-21 §3.8 A5 (§3.5 Coordinator FSM gains `DispatchingFirst`, `AwaitingResults`, `GeneratingNext`, `SendingNoMoreWork`, `AwaitingFinalResults`; §3.6 Worker FSM gains `AwaitingChunkAfterResult`, `FinalReduction`; SPEC-21 R30, R32, R37d, R37e)
 **Gray zones resolved:** ---
 **Research consumed:** PESQ-010 (Coordinator-Worker Patterns), PESQ-012 (MapReduce/Dataflow/BSP Comparison), PESQ-013 (State Machines for Distributed Protocols), PESQ-023 (Decision Matrix: D1-D8), PESQ-024 (Architecture Recommendations)
 **Discussions consumed:** DISC-005 v2 (cross-boundary protocol, centralized merge), DISC-006 v2 (overhead anatomy, break-even), DISC-007 v2 (fault tolerance scope), DISC-008 v2 (shared-to-distributed transition)
@@ -375,6 +376,54 @@ pub enum CoordinatorAction {
 **R22.** The coordinator FSM MUST be enum-based (not typestate). Typestate encoding would make serialization, logging, and testing harder for no benefit at this scale (PESQ-013 L1). **(MUST)**
 
 **R23.** Every state transition MUST be logged at `INFO` level with the `from` and `to` states, the triggering event, and the round number (if applicable). This enables post-hoc debugging and is essential for the observability story (PESQ-013 L3). **(MUST)**
+
+**R23a. Coordinator FSM — Pull-Mode States (Amendment A5 — SPEC-21 §3.8 A5 / R30, R32, R37d).** When the streaming pipeline (SPEC-21 §3.3 R17) is active under `DispatchMode::Pull` (`GridConfig.dispatch_mode == DispatchMode::Pull`, SPEC-21 R34 / SPEC-07 R11), the coordinator FSM MUST gain the following five additional states:
+
+```rust
+/// Pull-mode coordinator states (gated on DispatchMode::Pull).
+/// These extend `CoordinatorState` (R19) when the streaming pipeline is active.
+DispatchingFirst,        // cold start: sending the first chunk to each worker
+AwaitingResults,         // waiting for `PartitionResult` from any worker
+GeneratingNext,          // calling `make_net_stream::next` then `strategy.allocate_batch`
+SendingNoMoreWork,       // generator stream exhausted: sending `NoMoreWork` to workers issuing `RequestWork`
+AwaitingFinalResults,    // awaiting all post-`NoMoreWork` results, then merge
+```
+
+**Pull-mode coordinator transitions:**
+
+| From | Event | To | Notes |
+|------|-------|----|-------|
+| `Init` | `ConfigLoaded` (with `dispatch_mode = Pull`) | `DispatchingFirst` | replaces `WaitingForWorkers → Partitioning → Dispatching` chain in pull mode |
+| `DispatchingFirst` | first chunk sent to each worker | `AwaitingResults` | — |
+| `AwaitingResults` | `RequestWork(worker_id)` event (stream not exhausted) | `GeneratingNext` | per SPEC-06 R3a |
+| `AwaitingResults` | `RequestWork(worker_id)` event (stream exhausted) | `SendingNoMoreWork` | — |
+| `GeneratingNext` | chunk-ready (after `strategy.allocate_batch`) | `AwaitingResults` | sends `AssignPartition` |
+| `SendingNoMoreWork` | all `NoMoreWork` acks received | `AwaitingFinalResults` | per SPEC-06 R3a `NoMoreWork` variant |
+| `AwaitingFinalResults` | all post-`NoMoreWork` results received | `Merging` | BSP barrier per SPEC-21 R37d |
+
+**R23b. Worker FSM — Pull-Mode States (Amendment A5).** The worker FSM MUST gain the following two additional states under `DispatchMode::Pull`:
+
+```rust
+/// Pull-mode worker states (gated on DispatchMode::Pull).
+/// These extend `WorkerState` (R24) when the streaming pipeline is active.
+AwaitingChunkAfterResult,    // entered after sending `PartitionResult`, awaiting `AssignPartition` or `NoMoreWork`
+FinalReduction,              // entered upon receiving `NoMoreWork`
+```
+
+**Pull-mode worker transitions:**
+
+| From | Event | To | Notes |
+|------|-------|----|-------|
+| `Reducing` (chunk) | `ReductionComplete(P')` | `AwaitingChunkAfterResult` | also emits `RequestWork { worker_id }` per SPEC-06 R3a |
+| `AwaitingChunkAfterResult` | `AssignPartition` | `Reducing` | next chunk |
+| `AwaitingChunkAfterResult` | `NoMoreWork` | `FinalReduction` | enters terminal reduction phase |
+| `FinalReduction` | reduction-done | `Returning` | sends `PartitionResult` (final) → `Done` |
+
+**R23c. Push-Mode FSMs UNCHANGED (Amendment A5 / SPEC-21 R37e).** When `dispatch_mode == DispatchMode::Push` (or `Auto` resolves to Push), the push-mode FSMs (R19/R21 coordinator transitions; R24/R25 worker transitions) are UNCHANGED. The pull-only states above are gated on `DispatchMode::Pull` in `GridConfig` (SPEC-07 R11 / SPEC-05 §4.1 / SPEC-21 R34). Workers MUST NOT add defensive `NoMoreWork` handling to the push-mode transition table; coordinators MUST NOT emit `NoMoreWork` in push mode. This guarantee is critical for backward compatibility — without it, every existing test scenario would need re-validation. **(MUST)**
+
+**R23d. BSP-Barrier Semantics under Pull Dispatch (Amendment A5 / SPEC-21 R37d).** Under pull dispatch, workers MAY emit `PartitionResult` individually as their chunks complete, but the coordinator MUST NOT begin `merge()` until `NoMoreWork` has been emitted to every worker AND all post-`NoMoreWork` final `PartitionResult` messages have been received (the `AwaitingFinalResults → Merging` transition in R23a). This reduces pull dispatch to a single logical BSP round regardless of wall-clock interleaving, preserving D6 (Protocol termination) and G1 across the pull/push mode split. **(MUST)**
+
+> **Amendment A5 (SPEC-21 §3.8 A5 / R30, R32, R37d, R37e):** Closes SC-001 part 3 and SC-015. The new states are pull-only and gated on `DispatchMode::Pull`. Without this amendment, R30-R32 prose narrative could not be decomposed into FSM-level tasks during Stage 1 (TASK-SPLITTER). Cross-references SPEC-07 R11 (CLI-to-config mapping for `dispatch_mode`), SPEC-05 §4.1 GridConfig (`dispatch_mode` field), SPEC-06 R3a (wire-level variants `RequestWork`/`NoMoreWork`).
 
 ### 3.6 Worker FSM
 

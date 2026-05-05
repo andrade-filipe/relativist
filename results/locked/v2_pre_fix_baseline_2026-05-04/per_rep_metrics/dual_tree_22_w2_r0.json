@@ -1,0 +1,120 @@
+{
+  "rounds": 1,
+  "total_interactions": 4194303,
+  "total_interactions_by_rule": [
+    4194303,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "local_interactions_per_round": [
+    0
+  ],
+  "border_interactions_per_round": [
+    4194303
+  ],
+  "border_redexes_per_round": [
+    1
+  ],
+  "agents_per_round": [
+    8388606
+  ],
+  "partition_time_per_round": [
+    {
+      "secs": 11,
+      "nanos": 443411667
+    }
+  ],
+  "compute_time_per_round": [],
+  "merge_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 262288932
+    }
+  ],
+  "border_reduce_time_per_round": [
+    {
+      "secs": 1,
+      "nanos": 60482863
+    }
+  ],
+  "index_rebuild_time_per_round": [],
+  "bytes_sent_per_round": [
+    145605025
+  ],
+  "bytes_received_per_round": [
+    145605070
+  ],
+  "network_send_time_per_round": [],
+  "network_recv_time_per_round": [],
+  "total_time": {
+    "secs": 16,
+    "nanos": 899466054
+  },
+  "converged": true,
+  "worker_stats_per_round": [
+    [
+      {
+        "worker_id": 0,
+        "agents_before": 4194303,
+        "agents_after": 4194303,
+        "local_redexes": 0,
+        "reduce_duration_secs": 6.97e-7,
+        "interactions_by_rule": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "has_border_activity": true,
+        "is_coordinator_self": false
+      },
+      {
+        "worker_id": 1,
+        "agents_before": 4194303,
+        "agents_after": 4194303,
+        "local_redexes": 0,
+        "reduce_duration_secs": 9.11e-7,
+        "interactions_by_rule": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "has_border_activity": true,
+        "is_coordinator_self": false
+      }
+    ]
+  ],
+  "coordinator_free_rounds": 0,
+  "delta_mode": false,
+  "delta_max_rounds_hit": null,
+  "workers_joined_per_round": [
+    0
+  ],
+  "workers_departed_per_round": [
+    0
+  ],
+  "effective_slots_per_round": [
+    2
+  ],
+  "partitions_redispatched_per_round": [
+    0
+  ],
+  "retained_initial_reclaims_per_round": [
+    0
+  ],
+  "retained_last_acked_reclaims_per_round": [
+    0
+  ],
+  "join_round_overhead_ms_per_round": [
+    0
+  ],
+  "join_window_time_per_round": []
+}

@@ -1,4 +1,8 @@
 services:
+  # ---------------------------------------------------------------------------
+  # Default profile — coordinator + worker (v1-style; backward-compatible)
+  # Usage:  docker compose up coordinator worker
+  # ---------------------------------------------------------------------------
   coordinator:
     build: .
     command:
@@ -8,6 +12,11 @@ services:
       - --input=/data/input.bin
       - --output=/data/output.bin
       - --metrics=/data/metrics.json
+      # Tier 3 flags wired for D-011 Phase F-2 docker TCP rodada (SPEC-21).
+      # Defaults match the v2 local rodada baseline; env-var override allows
+      # bench_docker_v2.sh and ad-hoc experiments to sweep different values.
+      - --chunk-size=${CHUNK_SIZE:-10000}
+      - --max-pending-lifetime=${MAX_PENDING_LIFETIME:-16}
     ports:
       - "9000:9000"
     volumes:
@@ -22,3 +31,79 @@ services:
       - coordinator
     deploy:
       replicas: ${NUM_WORKERS:-2}
+
+  # ---------------------------------------------------------------------------
+  # bench-tcp profile — STREAMING bench runner (chunk_size set explicitly).
+  # Exercises the streaming path (TASK-0604, SPEC-21 §3.8 A3, SPEC-09 R18a).
+  #
+  # Usage:  CHUNK_SIZE=100 docker compose --profile bench-tcp run --rm bench-tcp
+  #
+  # Env vars forwarded to CLI flags (set on host or in a .env file):
+  #   CHUNK_SIZE              → --chunk-size          (default: 100)
+  #   MAX_PENDING_LIFETIME    → --max-pending-lifetime (default: 16)
+  #   RECYCLE_POLICY          → --recycle-policy       (default: disable-under-delta)
+  #   REPRESENTATION          → --representation       (default: dense)
+  #   BENCH_SIZES             → --sizes                (default: 1000)
+  #   BENCH_WORKERS           → --workers              (default: 1,2)
+  #   BENCH_MODE              → --mode                 (default: tcp_localhost)
+  #
+  # QA-D011-004 (HIGH): the previous default `CHUNK_SIZE=10000` made the smoke
+  # take the streaming path implicitly. The `bench-tcp` service now explicitly
+  # opts into streaming via `CHUNK_SIZE=100` (small chunk to exercise
+  # multi-batch assembly). The eager (v1-equivalent) path is exercised by the
+  # `bench-tcp-eager` service below; CI runs BOTH so a regression in either
+  # path is caught.
+  #
+  # Note: the bench subcommand handles its own TCP coordinator/worker
+  # lifecycle internally in tcp_localhost mode — no separate coordinator or
+  # worker containers are needed for this profile.
+  # ---------------------------------------------------------------------------
+  bench-tcp:
+    build: .
+    profiles:
+      - bench-tcp
+    command:
+      - bench
+      - --benchmark=ep_annihilation
+      - --sizes=${BENCH_SIZES:-1000}
+      - --workers=${BENCH_WORKERS:-1,2}
+      - --mode=${BENCH_MODE:-tcp_localhost}
+      - --chunk-size=${CHUNK_SIZE:-100}
+      - --max-pending-lifetime=${MAX_PENDING_LIFETIME:-16}
+      - --recycle-policy=${RECYCLE_POLICY:-disable-under-delta}
+      - --representation=${REPRESENTATION:-dense}
+      - --csv-detail=/results/detail.csv
+      - --csv-summary=/results/summary.csv
+    volumes:
+      - ./data:/data
+      - ./results:/results
+
+  # ---------------------------------------------------------------------------
+  # bench-tcp-eager profile — EAGER bench runner (no --chunk-size flag).
+  #
+  # Exercises the v1-equivalent eager path (status-quo materialisation via
+  # `bench.make_net(size)`). Used by CI for paired smoke validation per
+  # QA-D011-004.
+  #
+  # Same env vars as `bench-tcp` EXCEPT `CHUNK_SIZE` is NOT set — the
+  # `--chunk-size` flag is omitted so `BenchmarkSuiteConfig.chunk_size = None`
+  # and the harness takes the eager branch in `build_input_net_from_suite`.
+  # ---------------------------------------------------------------------------
+  bench-tcp-eager:
+    build: .
+    profiles:
+      - bench-tcp-eager
+    command:
+      - bench
+      - --benchmark=ep_annihilation
+      - --sizes=${BENCH_SIZES:-1000}
+      - --workers=${BENCH_WORKERS:-1,2}
+      - --mode=${BENCH_MODE:-tcp_localhost}
+      - --max-pending-lifetime=${MAX_PENDING_LIFETIME:-16}
+      - --recycle-policy=${RECYCLE_POLICY:-disable-under-delta}
+      - --representation=${REPRESENTATION:-dense}
+      - --csv-detail=/results/detail.csv
+      - --csv-summary=/results/summary.csv
+    volumes:
+      - ./data:/data
+      - ./results:/results

@@ -40,6 +40,21 @@ flamegraph.svg
 perf.data
 perf.data.old
 
+# Ad-hoc / exploratory benchmark results (frozen baselines stay in results/locked/)
+results/smoke/
+results/*.bak
+results/*.before_*
+results/*.pre_*
+
+# Generic backup snapshots
+*.bak
+*.before_*
+*.pre_*
+
+# Python bytecode (scripts/ helpers)
+__pycache__/
+*.pyc
+
 # Temporary data files (test inputs/outputs)
 /data/
 /*.bin

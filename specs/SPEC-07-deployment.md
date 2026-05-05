@@ -1,8 +1,9 @@
 # SPEC-07: Deployment and Execution
 
-**Status:** Revised v3
+**Status:** Revised v3.1 — R11 amended per SPEC-21 §3.8 A3 (GridConfig gains `chunk_size`, `streaming_strategy`, `dispatch_mode`, `max_pending_lifetime`)
 **Depends on:** SPEC-00 (Glossary), SPEC-02 (Net Representation), SPEC-03 (Reduction Engine), SPEC-04 (Partitioning), SPEC-05 (Merge and Grid Cycle), SPEC-06 (Wire Protocol)
 **Extended by:** SPEC-10 (Security), SPEC-11 (Observability), SPEC-12 (User I/O), SPEC-13 (System Architecture)
+**Amends:** SPEC-21 §3.8 A3 (R11 — CLI-to-GridConfig mapping gains streaming pipeline fields per SPEC-21 R24, R25, R34, R37g)
 **Gray zones resolved:** ---
 **References consumed:** REF-001 (Lafont 1990), REF-002 (Lafont 1997), REF-003 (HVM2), REF-017 (Foster, Kesselman, Tuecke 2001 -- Grid Anatomy)
 **Discussions consumed:** DISC-007 v2 (fault tolerance -- out of scope justification), DISC-008 v2 (shared-to-distributed transition spectrum, operational dimensions)
@@ -94,10 +95,12 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 **R10.** Relativist's configuration MUST be derived entirely from CLI arguments. There is no configuration file (TOML/YAML) in v1 -- CLI is the sole source of configuration. **(MUST)**
 
 **R11.** CLI arguments MUST be mapped to the following internal configuration structures:
-- `GridConfig` (SPEC-05, Section 4.1): `num_workers`, `max_rounds`.
+- `GridConfig` (SPEC-05, Section 4.1): `num_workers`, `max_rounds`, **`chunk_size`** (SPEC-21 R24, default `10_000`), **`streaming_strategy`** (SPEC-21 R25, default `RoundRobin`), **`dispatch_mode`** (SPEC-21 R34, default `Auto`), **`max_pending_lifetime`** (SPEC-21 R37g, optional, default `16`).
 - `NodeConfig` (SPEC-06, Section 4.5): `role`, `bind` (as `SocketAddr`, parsed from `--bind`), `num_workers`, `max_payload_size`, timeouts.
 
 > **Supersession note (v3):** The v2 separate `host` and `port` fields in `NodeConfig` are superseded by a single `bind: SocketAddr` field, consistent with the `--bind` CLI flag (SPEC-13 R44).
+
+> **Amendment A3 (SPEC-21 §3.8 A3 / R24, R25, R34, R37g):** Closes SC-001 part 2. The four streaming-pipeline fields are additive — existing `GridConfig` fields and SPEC-05 R-N requirements are unchanged. The supporting enums `StreamingStrategyConfig` (R25 — variants `RoundRobin` (default), `Fennel` if implemented) and `DispatchMode` (R34 — variants `Push`, `Pull`, `Auto` (default)) are declared in SPEC-21 §4.x and re-exported from `src/config.rs`. The `chunk_size = 10_000` default is benchmark-TBD per SPEC-21 SC-024 ("MUST be re-evaluated and either confirmed or replaced before v2 release"); the same calibration disposition applies to `max_pending_lifetime = 16`. The canonical struct definition lives in SPEC-05 §4.1; this requirement (SPEC-07 R11) governs the CLI-to-config mapping surface.
 **(MUST)**
 
 **R12.** Sensible defaults MUST be provided for all optional parameters:

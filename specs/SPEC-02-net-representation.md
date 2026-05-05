@@ -1,7 +1,8 @@
 # SPEC-02: Net Representation
 
-**Status:** Revised v3
+**Status:** Revised v3.1 — R2, R10, R11, R12 amended per SPEC-22 §3.8 A2/A3/A4/A5
 **Depends on:** SPEC-00 (Glossary), SPEC-01 (Invariants)
+**Amends:** SPEC-22 §3.8 A2 (R2 — free-list reuse), SPEC-22 §3.8 A3 (R10 — next_id increment by f = k-r), SPEC-22 §3.8 A4 (R11 — next available ID subsumes free-list pop), SPEC-22 §3.8 A5 (R12 — remove_agent pushes free-list, purges freeport_redirects)
 **Gray zones resolved:** ---
 **References consumed:** REF-001, REF-002, REF-003, REF-013
 **Discussions consumed:** DISC-001 v2, DISC-004 v2
@@ -34,7 +35,9 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R1.** The `Symbol` type MUST be an enum with exactly 3 variants: `Con`, `Dup`, `Era`, corresponding to the 3 universal symbols of Lafont (REF-002, p.71-72). **(MUST)**
 
-**R2.** The `AgentId` type MUST be `u32`, monotonically increasing, never reused within an execution (cf. SPEC-01, I3). **(MUST)**
+**R2.** The `AgentId` type MUST be `u32`. IDs MUST be unique among live agents (cf. SPEC-01, I3'). IDs MAY be reused via the free-list mechanism (SPEC-22 R1-R10c), under the constraints that (a) the recycled slot is fully cleared (port slots `DISCONNECTED`, `agents[id] == None`, `freeport_redirects` entry purged) before reuse, and (b) the recycled ID is NOT a protected tombstone (R10c) at the moment of reuse. **(MUST)**
+
+> **Amendment A2 (SPEC-22 §3.8 A2):** The previous "monotonically increasing, never reused" clause is superseded by the I3' uniqueness condition with explicit clearing protocol. See SPEC-22 R1-R10c for the free-list mechanism.
 
 **R3.** The `PortId` type MUST be `u8` with values in the range `[0, 2]`: 0 for the principal port, 1 and 2 for auxiliary ports. **(MUST)**
 
@@ -55,13 +58,19 @@ Terms defined in SPEC-00 (Glossary) are used without redefinition. Terms introdu
 
 **R9.** The redex queue MUST be a `VecDeque<(AgentId, AgentId)>` updated incrementally: new redexes are inserted when a `connect` operation creates a connection between two principal ports. **(MUST)**
 
-**R10.** The field `next_id` MUST be strictly greater than any `AgentId` in use in the net (cf. SPEC-01, I3). After creating `k` agents, `next_id` MUST be incremented by `k`. Direct mutation of `agents` or `ports` bypasses invariant checks and may violate I1-I3. Callers MUST use `create_agent`, `connect`, `disconnect`, and `remove_agent` for all mutations. **(MUST)**
+**R10.** The field `next_id` MUST be strictly greater than any `AgentId` ever assigned in the net (live, in the free-list, or previously freed and re-assigned; cf. SPEC-01, I3'). After creating `k` agents in a single batch where `r` of those `k` come from the free-list and `f = k - r` are fresh allocations, `next_id` MUST be incremented by exactly `f` (the count of fresh, non-recycle allocations). When the free-list is empty, `r = 0` and the increment equals the original `k`. Direct mutation of `agents` or `ports` bypasses invariant checks and may violate I1-I3'. Callers MUST use `create_agent`, `connect`, `disconnect`, and `remove_agent` for all mutations. **(MUST)**
+
+> **Amendment A3 (SPEC-22 §3.8 A3):** The previous "strictly greater than any AgentId in use" and "increment by k" clauses are superseded by the fresh-vs-recycle decomposition. See SPEC-22 R3 (free-list pop does not increment next_id).
 
 ### 3.3 Operations
 
-**R11.** The `create_agent` operation MUST create a new agent with the next available ID, insert it into the agent arena (expanding if necessary), and return the assigned `AgentId`. Expected complexity: O(1) amortized. **(MUST)**
+**R11.** The `create_agent` operation MUST create a new agent with the next available ID — defined as `free_list.pop()` if the free-list is non-empty AND the popped ID is not a protected tombstone (R10b/R10c), otherwise `next_id` (with `next_id` incremented). MUST insert the agent into the arena (expanding if necessary, only on the fresh-allocation path) and return the assigned `AgentId`. Expected complexity: O(1) amortized. **(MUST)**
 
-**R12.** The `remove_agent` operation MUST mark the agent's slot as `None`, disconnect all its ports from the port array, and NOT reuse the ID. Expected complexity: O(1). **(MUST)**
+> **Amendment A4 (SPEC-22 §3.8 A4):** Clarification (not relaxation) — "next available ID" now explicitly subsumes the free-list pop path and the next_id path. Arena expansion happens ONLY on the fresh-allocation path; the free-list pop reuses an existing slot. Closes the R3-vs-R11 partial-contradiction flagged in the SPEC-22 Round 1 cross-spec audit.
+
+**R12.** The `remove_agent` operation MUST mark the agent's slot as `None`, disconnect all its ports from the port array, purge any `freeport_redirects` entry keyed by the agent's ID, and (if the ID is NOT a protected tombstone per R10c) push the ID onto `free_list` (SPEC-22 R2/R6). The ID MAY be reused on a subsequent `create_agent` call per A2/A4. Expected complexity: O(1). **(MUST)**
+
+> **Amendment A5 (SPEC-22 §3.8 A5):** The previous "NOT reuse the ID" clause is lifted. The `freeport_redirects` purge step (closes SC-001 second surface — stale redirect would reference a different agent after recycle) and the protected-tombstone exception (SPEC-22 R10c) are threaded in. See SPEC-22 R2 (push), R6 (no duplicates), R10c (protected tombstones).
 
 **R13.** The `connect(a: PortRef, b: PortRef)` operation MUST establish a bidirectional connection between two ports in the port array. If both ports are principal ports of agents (`AgentPort(_, 0)`), it MUST insert the pair into the redex queue. Expected complexity: O(1). **(MUST)**
 

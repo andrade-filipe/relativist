@@ -1,0 +1,26 @@
+[package]
+name = "relativist-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Distributed reduction of Interaction Combinators on Grid Computing — CLI binary"
+readme = "../README.md"
+
+[[bin]]
+name = "relativist"
+path = "src/main.rs"
+
+[dependencies]
+relativist-core = { path = "../relativist-core" }
+
+# CLI parsing (delegates to relativist-core types)
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = []
+tls = ["relativist-core/tls"]
+metrics = ["relativist-core/metrics"]
+otel = ["relativist-core/otel"]
+full = ["relativist-core/full"]
