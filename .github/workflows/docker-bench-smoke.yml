@@ -12,21 +12,18 @@ on:
     paths:
       - Dockerfile
       - docker-compose.yml
-      - relativist-core/src/protocol/**
-      - relativist-core/src/partition/compact.rs
-      - relativist-core/src/partition/**
       - relativist-core/**
       - relativist-cli/**
+      - .github/workflows/docker-bench-smoke.yml
   pull_request:
     branches: [main, v2-development]
     paths:
       - Dockerfile
       - docker-compose.yml
-      - relativist-core/src/protocol/**
-      - relativist-core/src/partition/compact.rs
-      - relativist-core/src/partition/**
       - relativist-core/**
       - relativist-cli/**
+      - .github/workflows/docker-bench-smoke.yml
+  workflow_dispatch:
 
 jobs:
   docker-bench-smoke:
