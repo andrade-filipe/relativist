@@ -167,14 +167,21 @@ mod tests {
 
     // TT2: Buffer sizes applied (R18, R19)
     //
-    // The kernel silently caps SO_SNDBUF/SO_RCVBUF at net.core.wmem_max /
-    // net.core.rmem_max (typically ~212 KiB on stock Linux, doubled by the
-    // kernel to ~425 KiB observable). Multi-tenant CI runners frequently
-    // run with stock limits, so we cannot strictly assert that a 1 MiB
-    // request was granted. Instead we capture the buffer size BEFORE
-    // tuning and assert that apply_tuning grew it (the tuning succeeded
-    // and was not a no-op). On admin-tuned hosts where wmem_max permits
-    // 1 MiB, the assertion still passes.
+    // What the test guarantees: `apply_tuning` calls setsockopt(SO_SNDBUF)
+    // and SO_RCVBUF) with the configured values. We cannot directly observe
+    // the syscall argument; we observe the side-effect (kernel-reported
+    // buffer size changes). The kernel itself may cap the value at
+    // net.core.{wmem,rmem}_max (host policy, typically ~212 KiB stock,
+    // doubled to ~425 KiB on readback) OR it may grow it from a lower
+    // default. Both directions are valid evidence the syscall fired.
+    //
+    // What the test does NOT verify:
+    //   - that the kernel granted the *exact* requested value (host-
+    //     policy-dependent; setsockopt is silently capped, and on Linux
+    //     calling setsockopt also disables auto-tuning so post may be
+    //     smaller than the auto-tuned pre)
+    //   - that 1 MiB is achievable on this host (requires admin tuning
+    //     of net.core.wmem_max / rmem_max beyond stock defaults)
     #[tokio::test]
     async fn test_buffer_sizes_applied() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -199,13 +206,13 @@ mod tests {
         let sndbuf = sock.send_buffer_size().unwrap();
         let rcvbuf = sock.recv_buffer_size().unwrap();
 
-        assert!(
-            sndbuf >= sndbuf_pre,
-            "sndbuf shrunk after apply_tuning: pre={sndbuf_pre} post={sndbuf}"
+        assert_ne!(
+            sndbuf, sndbuf_pre,
+            "apply_tuning was a no-op for SO_SNDBUF (pre==post=={sndbuf})"
         );
-        assert!(
-            rcvbuf >= rcvbuf_pre,
-            "rcvbuf shrunk after apply_tuning: pre={rcvbuf_pre} post={rcvbuf}"
+        assert_ne!(
+            rcvbuf, rcvbuf_pre,
+            "apply_tuning was a no-op for SO_RCVBUF (pre==post=={rcvbuf})"
         );
     }
 
