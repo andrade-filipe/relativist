@@ -1381,6 +1381,24 @@ pub async fn run_coordinator(
         }
         metrics.worker_stats_per_round.push(worker_stats.clone());
 
+        // TASK-0616 (D-011-FU-COMPMETRIC): aggregate per-worker compute time
+        // for the distributed (TCP) path. Path (a) — recommended: workers
+        // already report `WorkerRoundStats.reduce_duration_secs` (set in
+        // `protocol/worker.rs:256` straddling `reduce_all`); the coordinator
+        // sums across workers and pushes to `metrics.compute_time_per_round`.
+        //
+        // Aggregation rule: SUM (total CPU work across W workers). This
+        // mirrors the in-process path at `merge/grid.rs:103,154`, which
+        // pushes `t_compute.elapsed()` — the wall-clock of the SEQUENTIAL
+        // worker loop — equivalent to a sum since the loop runs workers
+        // serially. Maintaining this semantic across modes lets the bench
+        // harness compare in-process and distributed compute time directly.
+        // RF-05 closure.
+        let compute_time_secs: f64 = worker_stats.iter().map(|s| s.reduce_duration_secs).sum();
+        metrics
+            .compute_time_per_round
+            .push(Duration::from_secs_f64(compute_time_secs.max(0.0)));
+
         // PHASE 3: MERGE
         let t_merge = Instant::now();
         let merge_plan = crate::partition::PartitionPlan {
