@@ -1323,7 +1323,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "relativist-cli"
-version = "0.11.0"
+version = "0.20.0-pre"
 dependencies = [
  "clap",
  "relativist-core",
@@ -1331,7 +1331,7 @@ dependencies = [
 
 [[package]]
 name = "relativist-core"
-version = "0.11.0"
+version = "0.20.0-pre"
 dependencies = [
  "async-trait",
  "axum",
