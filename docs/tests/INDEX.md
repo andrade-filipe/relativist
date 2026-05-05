@@ -302,6 +302,32 @@ Total active TEST-SPEC files (SPEC-21 sub-section): **49** (35 plumbing: 8 Phase
 
 ---
 
+## D-012 Instrumentation Restore (active bundle, Stage 2 deliverable)
+
+Source: `docs/handoffs/2026-05-05-D012-instrumentation-restore-handoff.md` (4-task split, ~170 LoC production + ~210 LoC tests).
+Red-flag anchors: `docs/analysis/D011-final-baseline-analysis-2026-05-04.md` §3 RF-04 (network time), RF-05 (compute time), RF-07 (MIPS / total_interactions); plus a separate `cargo test --release` blocker logged in `docs/next-steps.md` 2026-05-05.
+
+### Plumbing / instrumentation TEST-SPECs (one per task)
+
+| File | Task | Subject | RF / blocker |
+|------|------|---------|--------------|
+| `TASK-0615-tests.md` | TASK-0615 | Restore `network_send/recv_time_per_round` push sites in TCP/transport I/O paths | RF-04 |
+| `TASK-0616-tests.md` | TASK-0616 | Aggregate per-worker compute time on the distributed (TCP) path; covers paths (a) worker-reports and (b) coordinator-residual | RF-05 |
+| `TASK-0617-tests.md` | TASK-0617 | Make `cargo test --release` compile (debug-only test mod gating + non-exhaustive match fix) | release-mode blocker (`docs/next-steps.md` 2026-05-05) |
+| `TASK-0618-tests.md` | TASK-0618 | Decide implement-or-drop for `mips_*` and `total_interactions` columns; covers paths (a) implement and (b) drop | RF-07 |
+
+### Coverage completeness — D-012
+
+- All 4 tasks in the bundle have a TEST-SPEC file (4/4).
+- All 3 red flags (RF-04 / RF-05 / RF-07) cited in the D-011 final baseline analysis are closed by a TEST-SPEC, plus the `cargo test --release` blocker.
+- TEST-SPEC-0616 and TEST-SPEC-0618 each cover BOTH possible implementation paths (worker-reports vs residual; implement vs drop) so neither developer choice goes uncovered.
+- Test-floor delta (cumulative, post-bundle): **+3 default** (one new IT-binary per metric task; TASK-0617 adds 0 new Rust tests). Zero-copy and streaming-no-recycle floors unchanged. Possibly **−≤12 release** as `net/debug.rs::tests` is correctly gated out.
+
+Total active TEST-SPEC files (D-012 sub-section): **4**.
+**Combined active TEST-SPEC files (SPEC-20 + SPEC-22 + SPEC-21 + D-012): 163.**
+
+---
+
 ## Archive
 
 `archive/` holds TEST-SPECs from previously shipped bundles (TEST-SPEC-0001..0030, 0383..0403). Do not edit.
