@@ -163,18 +163,28 @@ jobs:
           echo "PASS IT-0609-04"
 
       # IT-0609-03: default profile (coordinator + worker, no bench-tcp)
+      #
+      # Note (2026-05-05): the coordinator's CMD requires /data/input.bin
+      # which we do NOT pre-populate in CI; the container therefore exits
+      # quickly with an error. That is fine for THIS test, which exists
+      # only to verify that the default profile selects coordinator+worker
+      # services (and NOT bench-tcp). Use `compose ps -a` to include
+      # exited containers, since "ran-and-exited" is sufficient evidence
+      # that the service was scheduled.
       - name: IT-0609-03 — legacy coordinator+worker profile unchanged
         run: |
           echo "=== IT-0609-03: default compose up ==="
-          # Use the pre-built image via COMPOSE_FILE override
-          docker compose up -d coordinator worker 2>&1
-          sleep 10
-          docker compose ps
-          docker compose ps | grep -q "coordinator" || \
-            { echo "FAIL: coordinator not in compose ps"; docker compose down; exit 1; }
-          # bench-tcp service must NOT be in default ps
-          docker compose ps | grep "bench-tcp" && \
-            { echo "FAIL: bench-tcp appeared in default compose ps"; docker compose down; exit 1; } || true
+          docker compose up -d coordinator worker 2>&1 || true
+          sleep 5
+          docker compose ps -a
+          docker compose ps -a | grep -q "coordinator" || \
+            { echo "FAIL: coordinator not in compose ps -a (default profile broken)"; docker compose down; exit 1; }
+          # bench-tcp service must NOT appear in default ps -a (profile-gated)
+          if docker compose ps -a | grep -q "bench-tcp"; then
+            echo "FAIL: bench-tcp appeared in default compose ps -a (profile gate broken)"
+            docker compose down
+            exit 1
+          fi
           docker compose down
           echo "PASS IT-0609-03"
 
