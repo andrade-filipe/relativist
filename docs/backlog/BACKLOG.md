@@ -1,9 +1,10 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-04-25 (SPEC-22 Stage 1 TASK-SPLITTER landed: BACKLOG section + coverage matrix)
-**Total tasks:** 324 (158 done, 0 in progress, 165 todo, 1 obsoleted)
+**Last updated:** 2026-05-05 (D-012 Stage 1 TASK-SPLITTER landed: 4 instrumentation-restore tasks TASK-0615..0618)
+**Total tasks:** 328 (158 done, 0 in progress, 169 todo, 1 obsoleted)
 **SPEC-20 split:** 36 atomic tasks (TASK-0410..TASK-0455 with intentional gaps) covering R0a..R39, NF-001..NF-011 closures, and §3.8 amendments A1..A8. ~6,400 LoC production + ~3,200 LoC tests.
 **SPEC-22 split:** 36 new atomic tasks (TASK-0460..TASK-0500 with intentional gaps at 0470, 0479, 0485, 0494, 0499 — preserved for future expansion / spec polish) covering R1..R32 (incl. letter sub-clauses R6, R9a, R10a, R10b, R10c, R23, R27a, R30) and §3.8 amendments A1..A10 against 7 predecessor specs (SPEC-01, SPEC-02, SPEC-03, SPEC-04, SPEC-05, SPEC-18, SPEC-19). See SPEC-22 section below. Estimated total ~2,070 LoC production + ~1,830 LoC tests.
+**D-012 split:** 4 atomic tasks TASK-0615..0618 covering RF-04/05/07 from D011 final baseline analysis + cargo test --release blocker; ~170 LoC production + ~210 LoC tests. Independent ordering: TASK-0617 (release-tests, P0, ~10 LoC) ships first; TASK-0615 (network metric, P0) and TASK-0616 (compute metric, P0) parallelisable; TASK-0618 (MIPS path-a-or-b, P2) decides at DEV time.
 
 **Pipeline:** See `../WORKFLOWS.md` (§1 Development Pipeline) for the 6-stage SDD process.
 
@@ -702,6 +703,52 @@ Predecessor amendments first (Phase A: 0460 → 0461/0462 → 0463 → 0464; 046
 - Clippy + fmt clean both feature configs.
 - TASK-0493 SparseNet-import lint passes; TASK-0498 unsafe-free audit passes.
 - TASK-0500 v1-compatibility regression test passes (free-list-aware default `GridConfig` reproduces v2-baseline metrics on EP-Annihilation + DualTree + MixedNet benchmarks).
+
+## D-012: Instrumentation Restore (post-D011 follow-up — RF-04/05/07 + release-tests blocker)
+
+Bundle source: `docs/handoffs/2026-05-05-D012-instrumentation-restore-handoff.md` (READY TO DISPATCH 2026-05-05).
+Origin: `docs/analysis/D011-final-baseline-analysis-2026-05-04.md` §3 (Red Flags RF-04, RF-05, RF-07) + §7 (Concrete follow-ups). Surfaced during D-011 LOCK pass and recorded in `docs/next-steps.md` "New follow-up surfaced by post-mortem analysis" block.
+Scope: **strictly maintenance/instrumentation** — no spec changes, no behavior change to the production binary's correctness or wall-time. The four work items restore three CSV columns that are structurally zero on every v2 dataset and unblock the broken `cargo test --release` lane. Estimated total ~170 LoC production + ~210 LoC tests across 4 atomic tasks. Should fit a single SDD cycle. Zero regression against current floors (1784 default / 1828 zero-copy / 1775 streaming-no-recycle); v1 floor (690) inviolable.
+Independent ordering: TASK-0617 ships first (no deps, unblocks CI release lane). TASK-0615 + TASK-0616 are parallelisable (both extend protocol instrumentation). TASK-0618 decides path (a) implement vs path (b) drop at DEV time.
+
+| ID | Title | Priority | Status | Depends | Complexity | Closes RF |
+|----|-------|----------|--------|---------|------------|-----------|
+| TASK-0615 | D-011-FU-NETMETRIC — restore `network_send/recv_time_per_round` push sites in coordinator+worker I/O paths | P0 | TODO | none | M | RF-04 |
+| TASK-0616 | D-011-FU-COMPMETRIC — aggregate per-worker compute time into coordinator-side `GridMetrics.compute_time_per_round` (TCP path; path-(a) recommended) | P0 | TODO | none | M | RF-05 |
+| TASK-0617 | D-011-FU-RELEASE-TESTS — fix `cargo test --release` compilation (debug.rs gating + coordinator.rs match arm) | P0 | TODO | none, can ship first | S | (release-lane blocker — not from RF catalog; logged in next-steps.md 2026-05-05) |
+| TASK-0618 | D-011-FU-MIPS — decide implement (`total_interactions` end-to-end) vs drop (`mips_*` columns from CSV); rationale documented in commit body | P2 | TODO | none | S–M | RF-07 |
+
+### D-012 Coverage Matrix (Red Flags + handoff inventory → tasks)
+
+Every red flag from §3 of the analysis (RF-04, RF-05, RF-07) plus the release-tests blocker (logged separately) MUST appear in at least one task. Coverage check below.
+
+| Source | Subject | Owning Task |
+|--------|---------|-------------|
+| RF-04 (`docs/analysis/D011-final-baseline-analysis-2026-05-04.md` §3 lines 142–146) | `network_time_secs = 0.0` for every v2 round | TASK-0615 |
+| RF-05 (analysis §3 lines 148–154) | `compute_time_secs = 0.0` for every v2 row | TASK-0616 |
+| RF-07 (analysis §3 lines 174–179) | `mips_mean = 0.000` everywhere — symmetric on v1 + v2 | TASK-0618 |
+| `next-steps.md` 2026-05-05 / handoff §2 row 3 | `cargo test --release` does not compile at HEAD `b079cdc` (two pre-existing defects unrelated to D-011) | TASK-0617 |
+| Handoff §2 row 1 (D-011-FU-NETMETRIC, HIGH) | Maps 1:1 to RF-04 | TASK-0615 |
+| Handoff §2 row 2 (D-011-FU-COMPMETRIC, HIGH) | Maps 1:1 to RF-05 | TASK-0616 |
+| Handoff §2 row 3 (D-011-FU-RELEASE-TESTS, MEDIUM) | Maps 1:1 to release blocker | TASK-0617 |
+| Handoff §2 row 4 (D-011-FU-MIPS, LOW) | Maps 1:1 to RF-07 | TASK-0618 |
+
+**Coverage completeness check:** every RF in scope (RF-04, RF-05, RF-07) and every handoff §2 inventory row appears in at least one task. **PASS — no gaps.** RF-01, RF-02, RF-03, RF-06, RF-08, RF-09 from the analysis are out of scope per handoff §6 (RF-02 deferred to a separate one-off task or D-013; RF-01/03/06 are TCC framing concerns not DEV scope; RF-08/09 are positive findings — no remediation needed).
+
+### D-012 DAG (high-level)
+
+All 4 tasks are independent (no inter-task dependencies). TASK-0617 is recommended to ship first because it unblocks the CI release lane and lets TASK-0615/0616 exercise `cargo test --release` for invariant-free regression. TASK-0618 path-(a) authors should coordinate with TASK-0616 author to consolidate the `PartitionResult` payload extension into a single wire-format change rather than two separate ones.
+
+### D-012 Bundle gates
+
+- All 4 tasks shipped: status DONE.
+- `cargo test --workspace` ≥ 1786 default (1784 baseline + TASK-0615 witness + TASK-0616 witness; TASK-0618 adds +1 either way; TASK-0617 contributes 0 or net-negative to default — release count is separately tracked).
+- `cargo test --release` compiles and runs to completion (TASK-0617 gate). Exact post-fix release count documented in commit body and added as a new floor row to `next-steps.md` / `CLAUDE.md`.
+- `cargo test --features zero-copy` ≥ 1828 (unchanged); `cargo test --features streaming-no-recycle` ≥ 1775 (unchanged); v1 floor 690 inviolable.
+- Clippy + fmt clean across all feature configs (debug AND release for TASK-0617).
+- A TCP-mode benchmark produces `rounds.csv` with `network_time_secs > 0` (TASK-0615) and `compute_time_secs > 0` (TASK-0616) on every non-trivial round.
+- `summary.csv::mips_mean > 0` (TASK-0618 path a) OR `summary.csv` headers do not contain `mips_mean` / `total_interactions` (TASK-0618 path b).
+- Wall-clock ratio v2-post / v1 unchanged outside ±5% on the TASK-0614 verification slot (`ep_con 5M w=2 local`); current ratio 1.11×, ceiling 1.16× post-D-012.
 
 ## SPEC-21 Streaming Generation (ROADMAP 2.30 — chunked pipeline + pull dispatch)
 
