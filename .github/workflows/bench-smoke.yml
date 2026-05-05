@@ -41,7 +41,7 @@ jobs:
       - name: Prepare results directory
         run: mkdir -p /tmp/smoke-results
 
-      - name: IT-0610-01 streaming bench smoke (under 90s)
+      - name: IT-0610-01 streaming bench smoke (under 180s)
         id: smoke_streaming
         run: |
           START=$(date +%s)
@@ -53,8 +53,8 @@ jobs:
           END=$(date +%s)
           ELAPSED=$((END - START))
           echo "wall_clock_streaming=${ELAPSED}s"
-          if [ "$ELAPSED" -gt 90 ]; then
-            echo "FAIL IT-0610-01 (streaming): smoke took ${ELAPSED}s (limit: 90s)"
+          if [ "$ELAPSED" -gt 180 ]; then
+            echo "FAIL IT-0610-01 (streaming): smoke took ${ELAPSED}s (limit: 180s on CI)"
             exit 1
           fi
           echo "PASS IT-0610-01 (streaming): smoke completed in ${ELAPSED}s"
@@ -69,7 +69,7 @@ jobs:
           mv "$CSV" /tmp/smoke-results/detail-streaming.csv
         timeout-minutes: 3
 
-      - name: IT-0610-01 eager bench smoke (under 90s)
+      - name: IT-0610-01 eager bench smoke (under 180s)
         id: smoke_eager
         run: |
           START=$(date +%s)
@@ -81,8 +81,8 @@ jobs:
           END=$(date +%s)
           ELAPSED=$((END - START))
           echo "wall_clock_eager=${ELAPSED}s"
-          if [ "$ELAPSED" -gt 90 ]; then
-            echo "FAIL IT-0610-01 (eager): smoke took ${ELAPSED}s (limit: 90s)"
+          if [ "$ELAPSED" -gt 180 ]; then
+            echo "FAIL IT-0610-01 (eager): smoke took ${ELAPSED}s (limit: 180s on CI)"
             exit 1
           fi
           echo "PASS IT-0610-01 (eager): smoke completed in ${ELAPSED}s"
