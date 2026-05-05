@@ -34,7 +34,7 @@ The partition perf regression flagged in the v2_tcp_baseline rodada is **CLOSED 
 
 ### Active Bundle — Tier 3 (Memory Efficiency) — D-013 NEXT (D-009..D-012 CLOSED)
 
-**Authoritative plan:** `docs/plans/2026-04-24-tier-4-master-plan.md` §3.
+**Authoritative plan:** `docs/plans/archive/2026-04-24-tier-4-master-plan.md` §3 (archived 2026-05-05; the active queue tracking now lives in this `next-steps.md` file).
 
 ### D-013: SPEC-21 / SPEC-22 hardening follow-ups (was D-011 NEXT before BLOCKER 2026-05-04 redirect) — NEXT
 
