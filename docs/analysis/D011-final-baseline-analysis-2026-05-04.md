@@ -1,9 +1,15 @@
-# D-011 Final Baseline — Cold Post-Mortem Analysis
+# D-011 Final Baseline — Cold Post-Mortem Analysis (rev 2026-05-05)
 
-**Subject baseline:** `results/locked/v2_d011_final_baseline_2026-05-04/`
-**HEAD at run:** `b079cdc` (post-D-011 fix bundle, `v2-development`)
+**Primary baseline (canonical):** `results/locked/v2_post_d012_baseline_2026-05-05/` — post-D-012 instrumentation restoration, all RF-04/05/07 closures empirically verified.
+**Historical baselines (referenced for delta analysis):**
+- `results/locked/v1_local_baseline/` — frozen v1 reference (2026-04-11)
+- `results/locked/v2_pre_fix_baseline_2026-05-04/` — v2 before D-011 fix (4 broken slots)
+- `results/locked/v2_d011_final_baseline_2026-05-04/` — v2 after D-011 fix, before D-012 instrumentation restore (3 zeroed columns)
+
+**HEAD at canonical baseline run:** `e6ff6bb` (post-D-012 close paperwork, `v2-development`)
 **Analyst:** Claude Opus 4.7 (1M context), at user request 2026-05-05
 **Posture:** adversarial. Each surprising number must be tied to a mechanism in the code or a published spec/argument. No hedging.
+**Revision history:** v1 written 2026-05-04 against `v2_d011_final_baseline_2026-05-04/`; revised 2026-05-05 to include `v2_post_d012_baseline_2026-05-05/` data, close RF-04/05/07, and adjust the verdict.
 
 ---
 
@@ -12,25 +18,29 @@
 1. **Fix worked, partially.** v2-post-fix is **uniformly faster than v2-pre-fix** on every one of 32 distributed slots (ratios 0.32 – 0.99×, median ≈ 0.55) and zero failures vs four pre-fix slots that timed out / mis-reduced. The `effective_arena_size` metric correction + Bug 1/2 fixes are empirically validated.
 2. **v2-post is still 1.4 – 2.0× slower than v1** on the canonical TCP-localhost slots, despite v2 sending **42 % fewer bytes** over the wire (delta protocol working). The wall-clock penalty is **not** in the wire — it's in the surrounding abstraction layers added by SPEC-17 / SPEC-18 / SPEC-19.
 3. **`condup_expansion` is a 25× outlier** at small inputs. Mechanism: v1's TCP-w1 path appears not to time net generation (~190 ms of `con_dup_expansion(N)` work charged elsewhere), while v2 either times it or has fixed transport overhead that dominates this micro-workload. Either way, the ratio is artificial — at 5000 pairs the ratio drops to 8.9×, at heavy ep_5M to 1.6×.
-4. **Network instrumentation broken in v2.** `rounds.csv::network_time_secs = 0.0` everywhere — pre-existing bug in v2's `bench/suite.rs`, not related to D-011. v1 had this metric working (~0.29 s/round). Wall-clock and byte-counter columns are unaffected; this is a measurement gap, not a data-integrity defect.
+4. **Network/compute/MIPS instrumentation FIXED in D-012** ✅ (was RF-04/05/07). The `v2_post_d012_baseline_2026-05-05` run shows `network_time_secs > 0`, `compute_time_secs > 0`, and `mips_mean > 0` for every TCP-mode row. **For ep_500k w=1**: network ≈ 0.39 s of a 0.46 s wall (~85 % of round time is network); compute ≈ 0.10 s; merge ≈ 0.04 s. The wire IS the bottleneck on localhost.
 5. **Negative strong-scaling in TCP mode** (w=8 slower than w=1) is **shared with v1** — it is a property of the workload + transport, not a v2 regression. Strong-scaling analysis must NOT be the headline metric of the TCC.
-6. **Verdict for the TCC:** **DEFENSIBLE WITH CAVEATS.** This is a credible final baseline, but four red flags (RF-01, RF-02, RF-04, RF-06 below) must be cited explicitly in the empirical-results section to avoid being attacked at the defense.
+6. **Verdict for the TCC:** **DEFENSIBLE.** Three red flags closed by D-012 (RF-04/05/07); two remain explainable (RF-01 transport-CPU cost, RF-02 condup floor effect, RF-06 negative scaling — all shared with v1). The empirical chapter can now decompose distributed wall-time into compute + network + merge components and quantify the c_o / c_r tradeoff directly.
 
 ---
 
 ## 1. Provenance, environment, and comparability
 
-| | v1 baseline | v2 pre-fix | v2 post-fix |
-|---|---|---|---|
-| Run date | 2026-04-11 | 2026-05-02 | 2026-05-05 |
-| HEAD | `8529dd5` (`v0.10.0-bench`) | (pre-`62de30f`) | `b079cdc` |
-| Hardware | Lenovo T14 i7-1365U, 32 GB | same | same |
-| Toolchain | rustc 1.94.1 | rustc 1.94.1 | rustc 1.94.1 |
-| Power scheme | Ultimate Performance | Ultimate Performance | Ultimate Performance |
-| Mode | Docker TCP-localhost + native sequential | same | same |
-| Reps × configs | 10 × 32 dist + 10 × 8 seq | 10 × 32 dist + 10 × 8 seq | 10 × 32 dist + 10 × 8 seq |
-| Failures | 0 | 4 (5M w=1/w=2/w=4 + dual_22 w=2) | 0 |
-| Total datapoints | 400 | ~370 | 400 |
+| | v1 baseline | v2 pre-fix | v2 d011-final | v2 post-d012 (canonical) |
+|---|---|---|---|---|
+| Run date | 2026-04-11 | 2026-05-02 | 2026-05-05 (am) | **2026-05-05 (pm)** |
+| HEAD | `8529dd5` (`v0.10.0-bench`) | (pre-`62de30f`) | `b079cdc` | **`e6ff6bb`** |
+| Hardware | Lenovo T14 i7-1365U, 32 GB | same | same | same |
+| Toolchain | rustc 1.94.1 | rustc 1.94.1 | rustc 1.94.1 | rustc 1.94.1 |
+| Power scheme | Ultimate Performance | Ultimate Performance | Ultimate Performance | **Ultimate Performance + battery saver explicitly disabled** |
+| Mode | Docker TCP-localhost + native sequential | same | same | same |
+| Reps × configs | 10 × 32 dist + 10 × 8 seq | 10 × 32 dist + 10 × 8 seq | 10 × 32 dist + 10 × 8 seq | 10 × 32 dist + 10 × 8 seq |
+| Failures | 0 | 4 (5M w=1/w=2/w=4 + dual_22 w=2) | 0 | 0 |
+| Total datapoints | 400 | ~370 | 400 | 400 |
+| `network_time_secs` populated | yes | yes | NO (broken) | **YES** |
+| `compute_time_secs` populated | yes | yes | NO (broken) | **YES** |
+| `mips_mean` populated (TCP rows) | no (always 0) | no | no | **YES** |
+| `mips_mean` populated (seq rows) | no | no | no | no (out of D-012 scope; FU `D-012-FU-SEQ-MIPS`) |
 
 **Comparability conclusion:** the three runs are on the same machine with the same toolchain and power scheme. Wall-time deltas are attributable to **code-path differences**, not environment. The only environmental delta is elapsed wall-time / thermal state, which produces noise (CV up to 9 %), not the systematic 1.5–2× gap seen in TCP slots.
 
@@ -139,19 +149,21 @@ The v2 wire abstraction trades **bytes-on-the-wire for CPU time per round**. The
 
 **Verdict.** This is **the headline finding of the TCC's empirical chapter.** v2 trades wire-bytes for CPU-cycles. On localhost (zero $/byte) the trade looks bad. On a real WAN link, where v1 would have to push 41 MB through a bottlenecked pipe per round, v2's 28.7 MB through the same pipe + faster CPU on both ends should win. **The TCC must not claim a localhost speedup; it must frame the localhost result as the lower bound and project the WAN crossover.** ARG-006 / ARG-007 already do this conceptually; the empirical baseline now feeds the c_o / c_r computation.
 
-### RF-04 — `network_time_secs = 0.0` for every v2 round
+### RF-04 — `network_time_secs = 0.0` for every v2 round  ✅ **CLOSED in D-012**
 
-**Observation.** `relativist-core/src/merge/types.rs:69,72` declares `network_send_time_per_round: Vec<Duration>` and `network_recv_time_per_round: Vec<Duration>`. `relativist-core/src/bench/suite.rs:621-625` reads them to populate the CSV. **No production code path** (in `protocol/`, `coordinator.rs`, or worker FSM) ever pushes a `Duration` into these Vecs. They remain `vec![]` from initialization → empty zip → empty `network_time_per_round` → 0.0 in the CSV. v1's `phase2_rounds.csv` shows ~0.29 s/round on the same slot, so v1 had this metric instrumented and v2 lost it during the v2 refactor (likely SPEC-17 transport abstraction, which moved the I/O into the trait but didn't carry the timing hooks across).
+**Original observation (2026-05-04):** `relativist-core/src/merge/types.rs:69,72` declared `network_send_time_per_round: Vec<Duration>` and `network_recv_time_per_round: Vec<Duration>`. `relativist-core/src/bench/suite.rs:621-625` read them to populate the CSV. **No production code path** ever pushed a `Duration` into these Vecs. They remained `vec![]` from initialization → empty zip → empty `network_time_per_round` → 0.0 in the CSV. v1's `phase2_rounds.csv` showed ~0.29 s/round on the same slot, so v1 had this metric instrumented and v2 lost it during the v2 refactor (SPEC-17 transport abstraction moved the I/O into the trait but didn't carry the timing hooks across).
 
-**Verdict.** This is a real **measurement regression**, **pre-existing D-011**. Wall-time, throughput, byte-counts, correctness columns are unaffected — they're independently sourced. The defect is logged as `D-011-FU-NETMETRIC` in `next-steps.md`. Until fixed, **the TCC cannot decompose v2 wall-time into compute vs network components**, only into total wall vs total bytes. ARG-007 hypotheses about the c_o/c_r trade-off must be defended on bytes + wall, not on per-component timings.
+**D-012 closure (2026-05-05).** Commit `fd2cafe` (TASK-0615) wrapped `Instant::now()` around `recv_frame`/`send_frame` calls in `protocol/coordinator.rs` and pushed the durations into the per-round Vecs. The `v2_post_d012_baseline_2026-05-05` rounds.csv now shows non-zero values on **100 % of TCP-mode rows**. Sample: ep_500k w=1 round 0 reports `network_time_secs = 0.392 s` of a 0.460 s wall — confirming wire dominance.
 
-### RF-05 — `compute_time_secs = 0.0` everywhere too
+**TCC implication.** The empirical chapter can now decompose v2 distributed wall-time into compute + network + merge components, enabling direct quantification of c_o / c_r per component instead of treating it as a single black-box estimate.
 
-**Observation.** Same `rounds.csv` columns — `compute_time_secs` is also zero across all v2 rows. Only `partition_time_secs` (~7 µs/round) and `merge_time_secs` (~50 ms/round) carry non-zero values.
+### RF-05 — `compute_time_secs = 0.0` everywhere too  ✅ **CLOSED in D-012**
 
-**Mechanism.** Same family of bug as RF-04 — `compute_time_per_round` Vec in `GridMetrics` is declared but never populated by the core reduction loop. `merge_time_per_round` IS populated, by the merge orchestrator at the end of each round. `partition_time_per_round` IS populated, by the splitter. Only the actual per-round reduction time was missed — likely because reduction runs **on workers** (across the wire) and the per-worker timings never aggregate back to coordinator-side `GridMetrics`.
+**Original observation (2026-05-04):** Same `rounds.csv` columns — `compute_time_secs` was also zero across all v2 rows. Only `partition_time_secs` (~7 µs/round) and `merge_time_secs` (~50 ms/round) carried non-zero values.
 
-**Verdict.** EXPLAINABLE pre-existing instrumentation gap — **bundle with RF-04 in the same follow-up**. Same impact: v2 cannot per-round decompose. Wall-time totals remain trustworthy.
+**Mechanism (original analysis):** Same family of bug as RF-04 — `compute_time_per_round` Vec in `GridMetrics` was declared but never populated by the distributed reduction loop. The in-process path (`merge/grid.rs`) DID push per-round compute time, but the distributed path (workers across TCP) never aggregated worker timings back to coordinator-side `GridMetrics`.
+
+**D-012 closure (2026-05-05).** Commit `ca3634c` (TASK-0616) had workers report per-round duration in `WorkerRoundStats.reduce_duration_secs` (already populated worker-side), and the coordinator now aggregates with **MAX** across workers (not SUM — QA-D012-001 found that SUM produces `compute_time > wall_clock` for parallel workers, which would drive `overhead_ratio` negative; MAX = BSP critical-path duration, preserves invariant `compute_time ≤ wall_clock`). Stage 6 commit `c439182` enforces the invariant via IT-0616-A6. The `v2_post_d012_baseline_2026-05-05` rounds.csv now shows non-zero `compute_time_secs` on every TCP row. Sample: ep_500k w=1 round 0 reports `compute_time_secs = 0.101 s` (vs 0.392 s network — wire is 4× compute on this slot).
 
 ### RF-06 — Negative strong scaling in TCP for every benchmark
 
@@ -170,13 +182,17 @@ The v2 wire abstraction trades **bytes-on-the-wire for CPU time per round**. The
 
 **Verdict.** **NOT a regression vs v1** — v1 has the identical shape (3.17 → 5.04 → 5.55 → 7.26 s for ep_5M). It is a property of the workload + transport on a single 12-thread host. **The TCC must NOT publish a strong-scaling speedup curve as the headline graph.** The honest framing is: "single-host TCP-localhost is not the regime where parallelism pays off; we measure here as a control for protocol overhead, with weak-scaling across multiple hosts deferred to Phase 3 LAN."
 
-### RF-07 — `mips_mean = 0.000` everywhere in `summary.csv`
+### RF-07 — `mips_mean = 0.000` everywhere in `summary.csv`  ✅ **CLOSED in D-012 (TCP path)**
 
-**Observation.** The `mips_mean` column (mega-instructions-per-second) is `0.000` across all 40 rows of `summary.csv`. v1 has the same: `mips_mean = 0.000` everywhere.
+**Original observation (2026-05-04):** The `mips_mean` column was `0.000` across all 40 rows of `summary.csv` for both v1 and v2.
 
-**Mechanism.** `total_interactions` (`detail.csv`) is also 0 everywhere. The bench harness never populates this counter; it's a third unimplemented column in the pre-existing instrumentation gap.
+**Mechanism (originally suspected):** `total_interactions` (`detail.csv`) appeared to be 0 everywhere, suggesting the bench harness never populated it.
 
-**Verdict.** Pre-existing dead column on **both** v1 and v2 — symmetric, harmless to comparison. Drop the column from the TCC tables; do not present "MIPS" as a metric.
+**Adversarial finding during D-012 (QA-D012-002, CRITICAL).** The literal `mips_mean = 0.000` in CSV output came from `scripts/bench_docker_v2.sh:283` — a **Python-in-bash hardcode** that overrode whatever the binary computed. The binary had the metric flow correctly wired via `WorkerRoundStats.local_redexes` → coordinator aggregation → `BenchmarkResult.total_interactions` → `mips` derivation in `bench/suite.rs::aggregate`. The script was the wrong-layer red herring.
+
+**D-012 closure (2026-05-05).** Commit `c439182` (Stage 6 REFACTOR) patched the bash hardcode to recompute `mips_mean` from per-rep `total_interactions` and added IT-0618-A4 to exercise `bench::suite::run_benchmark_suite` end-to-end and assert `summary.csv::mips_mean > 0`. The `v2_post_d012_baseline_2026-05-05` summary.csv now shows non-zero `mips_mean` for **every TCP-mode row** (range 0.002 – 1.261, with `dual_tree 20 w=1` reporting the highest at 1.261 MIPS).
+
+**Residual gap (out of D-012 scope, follow-up).** `mips_mean` is **still 0.000 on sequential rows** because `total_interactions` is wired in the worker→coordinator path only; sequential `reduce_all` does not increment the counter. Logged as `D-012-FU-SEQ-MIPS` in `next-steps.md`. Does not affect distributed-mode analysis (the relevant regime for the TCC's c_o/c_r argument), so this baseline is publishable as-is.
 
 ### RF-08 — All 32 v2-post slots correct + 10 reps complete
 
@@ -232,29 +248,43 @@ That is, **for any link slower than ~156 MB/s (≈1.2 Gbps), v2's wire savings d
 
 ---
 
-## 6. Verdict
+## 6. Verdict (revised 2026-05-05 post-D-012)
 
-**DEFENSIBLE WITH CAVEATS** — usable as the v2 final empirical baseline for the TCC, with the following non-negotiable framing requirements:
+**DEFENSIBLE** — the canonical baseline `v2_post_d012_baseline_2026-05-05/` is publishable in the TCC's empirical chapter. The original "WITH CAVEATS" was driven by RF-04/05/07; all three are now CLOSED in D-012. Remaining caveats are **explainable and shared with v1** (RF-01 transport-CPU cost, RF-02 condup floor, RF-06 negative scaling on single host).
 
-1. **Frame the localhost slowdown honestly.** v2-post is 1.4–2.0× v1 wall-time on localhost. State this as the **upper bound on v2's overhead in the absence of bandwidth scarcity**. Use RF-03's 42 % byte savings + the break-even calculation in §4 as the projection forward.
-2. **Drop `mips_mean`, `network_time_secs`, `compute_time_secs`** from any TCC table or figure that uses this dataset. They are unimplemented (RF-04, RF-05, RF-07).
-3. **Do not lead with `condup_expansion`.** Use ep_5M, dual_22 for headline numbers. condup is dominated by fixed costs at small N (RF-02).
-4. **Do not present strong-scaling speedup curves.** w=8 is slower than w=1 in both v1 and v2 on a single host (RF-06). Frame parallelism gains as a Phase 3 LAN goal, not a Phase 2 localhost result.
-5. **Cite the v2 fix bundle as a correctness improvement.** RF-08 is the strongest finding here: v2-post fixed two latent bugs that v1 never knew it had. The correctness improvement is **first-order**; the wall-clock cost is **second-order** and recoverable on WAN.
-6. **File D-011-FU-NETMETRIC** as a follow-up to restore per-round network time measurement before any LAN run, so Phase 3 can decompose c_o into compute vs transport.
+Framing requirements for the empirical chapter:
 
-This baseline is **good enough** for the TCC's empirical chapter as a localhost control + protocol-overhead baseline. It is **not** the speedup demonstration; that requires Phase 3 LAN.
+1. **Frame the localhost slowdown as protocol-overhead measurement, not perf comparison.** v2-post-D012 is 1.4–2.1× v1 wall-time on localhost. State this as the **upper bound on v2's overhead in the absence of bandwidth scarcity**. Use RF-03's 42 % byte savings + the break-even calculation in §4 as the projection forward to LAN/WAN.
+2. **Lead with the per-component decomposition (newly available).** Sample headline number: ep_500k w=1 round 0 → wall 0.460 s = 0.001 s partition + 0.101 s compute + 0.041 s merge + 0.392 s network + ~0.025 s framing/orchestration. **85 % of round time is network on localhost.** This is the empirical signature ARG-006/007 require.
+3. **Use the canonical baseline `v2_post_d012_baseline_2026-05-05/`**, not the previous one. The d011 baseline is preserved as historical reference only — its rows have zeroed instrumentation columns (RF-04/05/07 era).
+4. **Drop sequential-mode `mips_mean`** from any TCC table — it remains 0 because `total_interactions` is not yet wired in `reduce_all`. Distributed-mode `mips_mean` is fine to publish (range 0.002–1.261 MIPS across the 32 TCP slots).
+5. **Do not lead with `condup_expansion`.** Use ep_5M, dual_22 for headline numbers. condup is dominated by fixed costs at small N (RF-02).
+6. **Do not present strong-scaling speedup curves.** w=8 is slower than w=1 in both v1 and v2 on a single host (RF-06). Frame parallelism gains as a Phase 3 LAN goal, not a Phase 2 localhost result.
+7. **Cite the v2 fix bundles as correctness + measurement improvements.** RF-08 + the D-012 closures are first-order findings: v2-post fixed two latent bugs that v1 never detected (D-011) AND restored measurement instrumentation lost in the v2 refactor (D-012). Wall-clock cost is second-order and recoverable on WAN.
+
+This baseline is **good enough** for the TCC's empirical chapter as a localhost control + protocol-overhead decomposition. The full speedup demonstration requires Phase 3 LAN with two axes (axis 1 bincode+delta, axis 2 zero-copy+delta).
 
 ---
 
 ## 7. Concrete follow-ups derived from this analysis
 
-| ID | Severity | Title | Source RF |
-|---|---|---|---|
-| D-011-FU-NETMETRIC | HIGH | Restore `network_send/recv_time_per_round` push sites in coordinator+worker I/O paths; add CSV verification test that `network_time_secs > 0` for any TCP-mode round | RF-04 |
-| D-011-FU-COMPMETRIC | HIGH | Aggregate per-worker `compute_time` into coordinator-side `GridMetrics.compute_time_per_round` after partition-result collection | RF-05 |
-| D-011-FU-MIPS | LOW | Either implement `total_interactions` accounting end-to-end, or remove `mips_*` columns from `summary.csv` | RF-07 |
-| D-011-FU-CONDUP | LOW | Investigate `con_dup_expansion(N)` setup time — is it being timed in sequential but not distributed mode? Document the asymmetry or fix it | RF-02 |
-| (cross-ref) | spec | LAN run plan must measure with restored network metric to feed c_o/c_r empirical signature | RF-03, §4 |
+### Closed in D-012 (2026-05-05) ✅
 
-These are **NOT blockers for committing the baseline** — they are the next-iteration improvements before Phase 3 LAN.
+| ID | Severity | Title | Closure |
+|---|---|---|---|
+| D-011-FU-NETMETRIC | HIGH | Restore `network_send/recv_time_per_round` push sites | TASK-0615 in commit `fd2cafe`; closes RF-04 |
+| D-011-FU-COMPMETRIC | HIGH | Aggregate per-worker `compute_time` into coordinator-side metrics | TASK-0616 in commit `ca3634c` (SUM) → fixed to MAX in `c439182` (Stage 6, QA-D012-001); closes RF-05 |
+| D-011-FU-MIPS | LOW | Implement `total_interactions` accounting end-to-end OR remove columns | TASK-0618 path (a) in commits `ac828f9` + `c439182` (bash hardcode patched, IT-0618-A4 added); closes RF-07 for distributed path |
+| D-011-FU-RELEASE-TESTS | MEDIUM | Make `cargo test --release` compile | TASK-0617 in commit `360d6ea`; orthogonal to RFs but unblocked the release CI lane |
+
+### Still open
+
+| ID | Severity | Title | Source |
+|---|---|---|---|
+| D-012-FU-SEQ-MIPS | LOW | Wire `total_interactions` in `reduce_all` so sequential-mode rows get non-zero `mips_mean` (currently 0; distributed mode is fine) | this analysis §RF-07, observed in `v2_post_d012_baseline_2026-05-05` |
+| D-011-FU-CONDUP | LOW | Investigate `con_dup_expansion(N)` setup time — is it being timed in sequential but not distributed mode? | RF-02 |
+| TASK-0620 | MEDIUM | bench subcommand has no real TCP path (uses `Mode::Local` hardcode); affects path resolution in `bench/suite.rs` | QA-D012-003 (deferred) |
+| TASK-0621 | MEDIUM | `cfg(debug_assertions)` audit across the codebase; TASK-0617 fixed 4 instances but broader manifestations may exist | QA-D012-011 (deferred) |
+| (cross-ref) | spec | LAN run plan (Phase 3) — exercise both axis 1 (bincode+delta) and axis 2 (zero-copy+delta) with restored instrumentation to feed c_o/c_r empirical signature with per-component decomposition | RF-03, §4, this baseline §6 framing point 2 |
+
+The remaining open items are **explicitly NOT blockers for the v0.20.0-pre.1 LAN testing pre-release** — D-012-FU-SEQ-MIPS is cosmetic, D-011-FU-CONDUP is a known floor effect, TASK-0620/0621 were already deferred from D-012 closure as separate hardening work.

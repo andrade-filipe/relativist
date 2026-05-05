@@ -1,0 +1,118 @@
+{
+  "rounds": 1,
+  "total_interactions": 5000,
+  "total_interactions_by_rule": [
+    0,
+    5000,
+    0,
+    0,
+    0,
+    0
+  ],
+  "local_interactions_per_round": [
+    5000
+  ],
+  "border_interactions_per_round": [
+    0
+  ],
+  "border_redexes_per_round": [
+    0
+  ],
+  "agents_per_round": [
+    10000
+  ],
+  "partition_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 9619
+    }
+  ],
+  "compute_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 426558
+    }
+  ],
+  "merge_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 385400
+    }
+  ],
+  "border_reduce_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 481
+    }
+  ],
+  "index_rebuild_time_per_round": [],
+  "bytes_sent_per_round": [
+    204209
+  ],
+  "bytes_received_per_round": [
+    389581
+  ],
+  "network_send_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 1736976
+    }
+  ],
+  "network_recv_time_per_round": [
+    {
+      "secs": 0,
+      "nanos": 56800853
+    }
+  ],
+  "total_time": {
+    "secs": 0,
+    "nanos": 59430268
+  },
+  "converged": true,
+  "worker_stats_per_round": [
+    [
+      {
+        "worker_id": 0,
+        "agents_before": 10000,
+        "agents_after": 20000,
+        "local_redexes": 5000,
+        "reduce_duration_secs": 0.000426558,
+        "interactions_by_rule": [
+          0,
+          5000,
+          0,
+          0,
+          0,
+          0
+        ],
+        "has_border_activity": false,
+        "is_coordinator_self": false
+      }
+    ]
+  ],
+  "coordinator_free_rounds": 0,
+  "delta_mode": false,
+  "delta_max_rounds_hit": null,
+  "workers_joined_per_round": [
+    0
+  ],
+  "workers_departed_per_round": [
+    0
+  ],
+  "effective_slots_per_round": [
+    1
+  ],
+  "partitions_redispatched_per_round": [
+    0
+  ],
+  "retained_initial_reclaims_per_round": [
+    0
+  ],
+  "retained_last_acked_reclaims_per_round": [
+    0
+  ],
+  "join_round_overhead_ms_per_round": [
+    0
+  ],
+  "join_window_time_per_round": []
+}
