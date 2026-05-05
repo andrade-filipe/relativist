@@ -146,6 +146,20 @@ jobs:
       - name: Build image for compose
         run: docker build -t relativist:compose-smoke .
 
+      # Pre-generate /data/input.bin via the built image. Required by
+      # IT-0609-03 (default-profile coordinator+worker) and IT-0609-05
+      # (coordinator-only healthcheck) which start the `coordinator`
+      # service whose CMD includes `--input=/data/input.bin`. Without
+      # this, the coordinator container exits immediately with a
+      # "file not found" error and downstream `docker inspect` /
+      # `compose ps` checks fail.
+      - name: Pre-generate /data/input.bin for coordinator-mounted services
+        run: |
+          mkdir -p ./data
+          docker run --rm -v "$(pwd)/data:/data" relativist:compose-smoke \
+            generate ep-annihilation -n 10 -o /data/input.bin
+          ls -la ./data/input.bin
+
       - name: IT-0609-04 — docs/DOCKER.md exists and documents hybrid coordinator
         run: |
           echo "=== IT-0609-04: file existence + keyword check ==="
