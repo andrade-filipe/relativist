@@ -9,6 +9,7 @@
 //! - `arithmetic`: Arithmetic operation combinators (`build_add`, `build_mul`, `build_exp`)
 
 pub mod arithmetic;
+pub mod biguint_readback;
 pub mod church;
 pub mod codec_church;
 pub mod codec_lambda;
@@ -21,6 +22,7 @@ pub use arithmetic::{
     build_add, build_exp, build_mul, build_sum_of_squares, compute_arithmetic,
     decode_nat_or_shared, discover_root,
 };
+pub use biguint_readback::decode_biguint;
 pub use church::{decode_nat, encode_church_into, encode_nat, MAX_CHURCH_NAT};
 pub use codec_church::{ChurchArithmeticCodec, ChurchOp};
 pub use codec_lambda::{LambdaCodec, Term};
