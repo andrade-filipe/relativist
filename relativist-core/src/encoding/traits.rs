@@ -57,7 +57,15 @@ pub enum EncodeError {
 /// SPEC-27 R4.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
-    #[error("net is not in normal form (has {redexes} redexes)")]
+    /// The net presented to `Decoder::decode` is not in Normal Form.
+    ///
+    /// Per SPEC-27 v3 R4 (closure of Round 1 SC-005), `redexes` MUST report the
+    /// count of **valid** active pairs after stale-entry pruning per SPEC-01 I4
+    /// — NOT `net.redex_queue.len()`. The redex queue may carry stale entries
+    /// from cross-partition merges (SPEC-05); decoders MUST use the canonical
+    /// `count_valid_active_pairs` helper (in `crate::reduction`) to populate
+    /// this field, not the raw queue length.
+    #[error("net is not in normal form (has {redexes} valid active pair(s))")]
     NotNormalForm { redexes: usize },
     #[error("unrecognized net structure: {0}")]
     UnrecognizedStructure(String),
