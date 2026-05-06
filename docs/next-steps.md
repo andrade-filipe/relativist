@@ -6,6 +6,27 @@
 
 **Maintained by:** sdd-pipeline agent (see `docs/WORKFLOWS.md`)
 
+### 🟡 D-014 Stress Curve Campaign — DEV STAGE COMPLETE; AWAITING OPERATOR RUN 2026-05-06
+
+Bundle Stage 3 (DEV) closed by the developer agent in 8 commits on
+`feature/stress-and-encoder`. TASK-0700..0707 shipped: `MemoryProbe`,
+`StopRule`, `StressCurveDescriptor`, +4 CSV columns,
+`scripts/stress_curve.sh`, `scripts/plot_stress_curve.py`, methodology
+docs, 6 dedicated integration tests. TASK-0708 is a sentinel
+(`results/locked/v2_stress_curve_TEMPLATE/SENTINEL.md`) — the
+operator runs the overnight ~7-8h campaign manually per
+`docs/benchmarks/campaigns/stress-curve.md`.
+
+**Floors after this stage** (Windows host; Linux floor adds the 2
+cfg(unix) tests in TASK-0707): default 1816 / zero-copy 1860 /
+streaming-no-recycle 1807 / release 1758. v1 floor 690 inviolable.
+All cargo gates clean.
+
+**Next pipeline action:** Stage 4 REVIEWER over the 8 commits, then
+Stage 5 QA, then Stage 6 REFACTOR if needed, then operator runs the
+campaign per the SENTINEL.md instructions, then this entry moves to
+`docs/progress.md`.
+
 ### ✅ D-012 Instrumentation Restore — CLOSED + EMPIRICALLY VALIDATED 2026-05-05
 
 Bundle CLOSED. Full 6-stage SDD cycle landed in 7 commits (`56aad38..c439182`) on `v2-development`. Restored 3 instrumentation channels surfaced as RF-04, RF-05, RF-07 in the D-011 cold post-mortem + repaired the release-mode test build. Full narrative + path decisions in `docs/progress.md` 2026-05-05 entry.

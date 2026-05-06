@@ -20,6 +20,20 @@ Active queue tracked in `docs/next-steps.md`. Highlights of work
 that landed on `v2-development` after `v0.20.0-pre.1` will be summarised
 here as bundles close.
 
+### Added (D-014, infrastructure for the stress-curve campaign)
+
+- D-014 stress-curve campaign infrastructure: `MemoryProbe`
+  (TASK-0700), `StopRule` (TASK-0701), `StressCurveDescriptor`
+  (TASK-0702), 4-column CSV schema extension (TASK-0703), bash
+  orchestrator `scripts/stress_curve.sh` (TASK-0704), Python plot
+  generator `scripts/plot_stress_curve.py` (TASK-0705), methodology
+  page `docs/benchmarks/campaigns/stress-curve.md` (TASK-0706),
+  6 dedicated integration tests (TASK-0707).
+- The campaign dataset itself (locked directory under
+  `results/locked/v2_stress_curve_<DATE>/`) lands when TASK-0708 is
+  executed by the operator (overnight, ~7-8h; sentinel at
+  `results/locked/v2_stress_curve_TEMPLATE/SENTINEL.md`).
+
 ---
 
 ## [v0.20.0-pre.1] — 2026-05-05 — first v2 pre-release for LAN testing

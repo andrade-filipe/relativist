@@ -18,15 +18,15 @@ The full inventory of D-005..D-012 atomic tasks (TASK-0001..TASK-0618 with inten
 
 | ID | Title | Priority | Status | Depends | Complexity | Bundle |
 |----|-------|----------|--------|---------|------------|--------|
-| TASK-0700 | Cross-platform `MemoryProbe` (current + peak + RAM fraction) | P0 | TODO | none | S–M (~180 LoC) | D-014 |
-| TASK-0701 | `StopRule` (wall-time / RAM / OOM sequence aborter) | P0 | TODO | TASK-0700 | S–M (~170 LoC) | D-014 |
-| TASK-0702 | `stress-curve` campaign descriptor in `bench/suite.rs` | P0 | TODO | TASK-0700, TASK-0701 | S–M (~170 LoC) | D-014 |
-| TASK-0703 | CSV schema extension (`vmrss_*`, `stop_reason`, `cv_above_gate`) | P1 | TODO | TASK-0700, TASK-0701 | S (~60 LoC) | D-014 |
-| TASK-0704 | `scripts/stress_curve.sh` Phase 1 + Phase 2 orchestrator | P0 | TODO | TASK-0700..0703 | M (~230 LoC) | D-014 |
-| TASK-0705 | `scripts/plot_stress_curve.py` (9 PDFs + summary) | P1 | TODO | TASK-0703 | M (~230 LoC) | D-014 |
-| TASK-0706 | `docs/benchmarks/campaigns/stress-curve.md` methodology page | P1 | TODO | TASK-0700..0705 | S–M (~250 lines md, 0 LoC) | D-014 |
-| TASK-0707 | 6 integration tests for stress_curve_*.rs | P0 | TODO | TASK-0700..0703 | M (~200 LoC) | D-014 |
-| TASK-0708 | Full campaign overnight + lock dir + INDEX/ROADMAP/CHANGELOG updates | P0 | TODO | TASK-0700..0707 | L (0 LoC; 7-8h wall) | D-014 |
+| TASK-0700 | Cross-platform `MemoryProbe` (current + peak + RAM fraction) | P0 | DONE (DEV) | none | S–M (~180 LoC) | D-014 |
+| TASK-0701 | `StopRule` (wall-time / RAM / OOM sequence aborter) | P0 | DONE (DEV) | TASK-0700 | S–M (~170 LoC) | D-014 |
+| TASK-0702 | `stress-curve` campaign descriptor in `bench/suite.rs` | P0 | DONE (DEV) | TASK-0700, TASK-0701 | S–M (~170 LoC) | D-014 |
+| TASK-0703 | CSV schema extension (`vmrss_*`, `stop_reason`, `cv_above_gate`) | P1 | DONE (DEV) | TASK-0700, TASK-0701 | S (~60 LoC) | D-014 |
+| TASK-0704 | `scripts/stress_curve.sh` Phase 1 + Phase 2 orchestrator | P0 | DONE (DEV) | TASK-0700..0703 | M (~230 LoC) | D-014 |
+| TASK-0705 | `scripts/plot_stress_curve.py` (9 PDFs + summary) | P1 | DONE (DEV) | TASK-0703 | M (~230 LoC) | D-014 |
+| TASK-0706 | `docs/benchmarks/campaigns/stress-curve.md` methodology page | P1 | DONE (DEV) | TASK-0700..0705 | S–M (~250 lines md, 0 LoC) | D-014 |
+| TASK-0707 | 6 integration tests for stress_curve_*.rs | P0 | DONE (DEV) | TASK-0700..0703 | M (~200 LoC) | D-014 |
+| TASK-0708 | Full campaign overnight + lock dir + INDEX/ROADMAP/CHANGELOG updates | P0 | SENTINEL (awaiting operator overnight run) | TASK-0700..0707 | L (0 LoC; 7-8h wall) | D-014 |
 
 ### SPEC-27 Encoder/Decoder API + HornerCodec (Topic 2)
 

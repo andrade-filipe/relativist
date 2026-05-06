@@ -84,6 +84,8 @@ SparseNet (`HashMap`-backed alternative representation, D-009) covers the "save 
 
 **v2 change (PENDING):** Replace barrier-synchronized BSP with asynchronous streaming — workers use `reduce_n(budget)` returning partial results; coordinator performs incremental merge as results arrive. **High complexity** (new `PartialPartitionResult` protocol message; ARG-001 P3 reformulation under weaker synchronization). Not shipped; on long-range research roadmap. NOTE: D-010 SPEC-21 shipped streaming **net generation** (different concept), not streaming reduction.
 
+**Wall characterised by D-014 stress-curve campaign (PENDING run):** the campaign infrastructure (TASK-0700..0707) ships in this branch; the actual overnight run (TASK-0708) produces `results/locked/v2_stress_curve_<DATE>/` with the empirical characterisation per `(workload, env, W)` — the N at which each sequence aborts plus the failure mode (`StopReason::WallTimeExceeded` / `MemoryExceeded` / `Oom`). See `docs/benchmarks/campaigns/stress-curve.md` for methodology. Once the run lands, this paragraph will be amended with the observed `N_max ± noise` per cell.
+
 ### 2.17 Streaming Arithmetic Encoding
 Pending. Streaming variants of Church arithmetic (`add(S(x), y) = S(add(x, y))` releases incrementally). Low-Medium complexity; benefit requires §2.16 to be useful in distributed mode.
 
