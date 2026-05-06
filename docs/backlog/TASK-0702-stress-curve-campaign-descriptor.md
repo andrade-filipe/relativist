@@ -20,7 +20,9 @@ The descriptor exposes:
 - The `StopRule` defaults per env (5 min in-process, 7m30s docker, 80% RAM gate).
 - An entry-point function the script (TASK-0704) invokes per `(workload, env, W)` triple.
 
-This task does NOT execute reps — the script orchestrates child processes. This task wires the descriptor into the existing `bench` CLI so `relativist-bench --campaign stress-curve --workload ep_annihilation --env in_process --workers 2` produces a single `(workload, W)` sequence's worth of CSV rows.
+This task does NOT execute reps — the script orchestrates child processes. This task wires the descriptor into the existing `bench` CLI so `relativist bench --campaign stress-curve --workload ep_annihilation --env in_process --workers 2` produces a single `(workload, W)` sequence's worth of CSV rows.
+
+> **CLI crate location resolved (2026-05-06).** The workspace has exactly two member crates: `relativist-core` (library) and `relativist-cli` (binary named `relativist`, path `src/main.rs`). There is **no** `relativist-bench` binary crate (the splitter's hint #2 was speculative; verified via `cargo metadata` against `Cargo.toml` workspace members). The `bench` subcommand is dispatched in `relativist-cli/src/main.rs:63` via `Command::Bench(args) => commands::run_bench_command(args)`, where `commands::run_bench_command` lives in `relativist-core/src/commands.rs:288` and consumes `BenchArgs` defined in `relativist-core/src/config.rs:571`. Therefore: add `--campaign` to `BenchArgs` and the dispatch branch to `run_bench_command`; no change to `relativist-cli/src/main.rs`. The `--workload`, `--env`, `--workers` knobs already partially exist (`workers` is `Vec<u32>` at line 581-582; `mode: String` at 585-586 currently encodes `local` vs `tcp` and may be reused as the `env` axis — verify before adding a parallel `env` flag).
 
 ## Files in scope (file:line pointers)
 
@@ -28,7 +30,9 @@ This task does NOT execute reps — the script orchestrates child processes. Thi
 |------|--------|
 | `relativist-core/src/bench/suite.rs` | **MODIFY.** Add `pub struct StressCurveDescriptor { ... }` + `impl StressCurveDescriptor` with `n_seq() -> &'static [usize]`, `default_stop_rule(env: Env) -> StopRule`, and `run_one_sequence(workload, env, w) -> SequenceOutcome`. ~80 LoC. |
 | `relativist-core/src/bench/mod.rs` | **MODIFY (if `suite` re-exports a public surface).** Re-export `StressCurveDescriptor` if other modules need it. ~1 line. |
-| `relativist-bench/src/main.rs` (or whichever crate exposes the bench CLI) | **MODIFY.** Add `--campaign stress-curve` arg + dispatch into `StressCurveDescriptor::run_one_sequence`. ~30 LoC. (Verify the actual CLI crate path; the workspace structure already has `relativist-bench` as a separate binary crate per CLAUDE.md `bench/` reference.) |
+| `relativist-core/src/config.rs` (`BenchArgs` struct, line 571) | **MODIFY.** Add `--campaign Option<CampaignKind>`, `--workload Option<StressWorkload>`, `--env Option<Env>` clap args. Reuse existing `--workers Vec<u32>` (line 581) — no new flag needed for that axis. ~25 LoC. |
+| `relativist-core/src/commands.rs` (`run_bench_command`, line 288) | **MODIFY.** Add the `if args.campaign == Some(CampaignKind::StressCurve)` dispatch branch that calls `StressCurveDescriptor::run_one_sequence(workload, env, w)`; preserves existing path when `--campaign` absent. ~15 LoC. |
+| `relativist-cli/src/main.rs` | **NO CHANGE NEEDED** — existing `Command::Bench(args) => commands::run_bench_command(args)` at line 63 already routes correctly. |
 | `relativist-core/tests/d014_stress_curve_descriptor.rs` | **CREATE.** Smoke integration test invoking `run_one_sequence` with a tiny `n_seq` override (`[1_000, 10_000]`) and `wall_budget = 30s`, verifying `SequenceOutcome.completed_reps.len() == 2` and `stop_reason == None`. ~60 LoC. |
 
 ## Files explicitly OUT of scope
