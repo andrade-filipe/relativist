@@ -94,6 +94,7 @@ Organized in 7 categories in [`pesquisa/`](pesquisa/). See [`pesquisa/INDICE.md`
 | [analysis/D011-final-baseline-analysis-2026-05-04.md](analysis/D011-final-baseline-analysis-2026-05-04.md) | Cold post-mortem analysis: 9 red flags + verdict + per-component decomposition |
 | `results/locked/v2_post_d012_baseline_2026-05-05/` | **Canonical v2 baseline** — 32 distributed slots all_correct=true, mips/network/compute populated |
 | `results/locked/v1_local_baseline/` | v1 frozen baseline (Phase 1 + Phase 2, 4600 reps, 0 failures) |
+| [benchmarks/campaigns/stress-curve.md](benchmarks/campaigns/stress-curve.md) | **Stress Curve (v2)** — methodology for N up to 10⁹ campaign; locked dir produced by TASK-0708 |
 
 ## Internal (Historical / archived)
 

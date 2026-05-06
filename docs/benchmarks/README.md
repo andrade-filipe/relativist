@@ -15,6 +15,7 @@ Esta pasta documenta a suite de benchmarks do Relativist e as campanhas cientifi
 | [campaigns/v1-local-baseline.md](campaigns/v1-local-baseline.md) | Tutorial: reproduzir a baseline congelada |
 | [campaigns/v1-stress.md](campaigns/v1-stress.md) | Tutorial: rodar a campanha de stress (sizes maiores) |
 | [campaigns/church-sum-of-squares.md](campaigns/church-sum-of-squares.md) | Demo aritmetica `Σ i²` de ponta a ponta |
+| [campaigns/stress-curve.md](campaigns/stress-curve.md) | D-014 stress-curve campaign — N up to 10⁹ via `MemoryProbe` + `StopRule` |
 
 ## `bench` — Suite de Benchmarks
 
