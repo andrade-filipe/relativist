@@ -33,11 +33,7 @@ pub enum OracleError {
 
     /// `coeffs[idx] > max` — the indexed coefficient exceeds the public cap.
     #[error("coefficient at index {idx} = {value} exceeds cap (max {max})")]
-    CoefficientOverflow {
-        idx: usize,
-        value: u64,
-        max: u64,
-    },
+    CoefficientOverflow { idx: usize, value: u64, max: u64 },
 
     /// `x > max` — the evaluation point exceeds the public cap.
     #[error("x = {value} exceeds cap (max {max})")]
@@ -108,7 +104,10 @@ mod tests {
         assert_eq!(horner_serial(&[42], 0).unwrap(), BigUint::from(42u64));
         assert_eq!(horner_serial(&[42], 7).unwrap(), BigUint::from(42u64));
         assert_eq!(horner_serial(&[0], 99).unwrap(), BigUint::from(0u64));
-        assert_eq!(horner_serial(&[10_000], 0).unwrap(), BigUint::from(10_000u64));
+        assert_eq!(
+            horner_serial(&[10_000], 0).unwrap(),
+            BigUint::from(10_000u64)
+        );
     }
 
     // UT-0713-02: canonical Horner case from the explainer doc, R11' ordering.
@@ -202,10 +201,7 @@ mod tests {
         assert_eq!(horner_serial(&[], 99), Err(OracleError::EmptyCoeffs));
 
         // Empty wins over x overflow (validation order).
-        assert_eq!(
-            horner_serial(&[], 999_999),
-            Err(OracleError::EmptyCoeffs)
-        );
+        assert_eq!(horner_serial(&[], 999_999), Err(OracleError::EmptyCoeffs));
     }
 
     // UT-0713-07: coefficient overflow.

@@ -87,8 +87,15 @@ pub fn discover_root(net: &mut Net) -> bool {
 /// wire of the addition (the place to connect to the surrounding context, e.g.
 /// `FreePort(0)` at the top level or the operand slot of an enclosing operation).
 ///
-/// Used both by `build_add` (as a thin wrapper) and by composite builders
-/// such as `build_sum_of_squares` (SPEC-09 R17d).
+/// Used both by `build_add` (as a thin wrapper), by composite builders such as
+/// `build_sum_of_squares` (SPEC-09 R17d), and by `HornerCodec` (SPEC-27 v3
+/// R10'/R13' — the encoder calls this helper inside the Horner recurrence,
+/// reusing the same sub-net rather than allocating a fresh `Net`).
+///
+/// Privacy: kept `pub(crate)` per SPEC-27 v3 R13a' obligation 3 — SPEC-14's
+/// public R3 export list is unchanged. If a future codec is implemented in a
+/// separate crate, SPEC-14 will be amended (separate task) to expose this
+/// helper publicly.
 pub(crate) fn wire_add_into(net: &mut Net, m_port: PortRef, n_port: PortRef) -> AgentId {
     // Build the add combinator:
     // add = lambda m. lambda n. lambda f. lambda x. m f (n f x)
@@ -221,6 +228,13 @@ pub fn build_add(a: u64, b: u64) -> Net {
 ///
 /// Returns the outermost application CON agent. `AgentPort(result, 1)` is the
 /// result wire where the multiplied value will appear after reduction.
+///
+/// Used by `build_mul` (as a thin wrapper) and by `HornerCodec`
+/// (SPEC-27 v3 R10'/R13' — the encoder multiplies the running accumulator by
+/// `Church(x)` at every iteration of the Horner loop).
+///
+/// Privacy: kept `pub(crate)` per SPEC-27 v3 R13a' obligation 3 — SPEC-14's
+/// public R3 export list is unchanged.
 pub(crate) fn wire_mul_into(net: &mut Net, m_port: PortRef, n_port: PortRef) -> AgentId {
     // Build mul combinator: lambda m. lambda n. lambda f. m (n f)
     let lam_m = net.create_agent(Symbol::Con);
@@ -745,6 +759,122 @@ mod tests {
     fn test_wire_mul_into_port_based_preserves_build_mul() {
         assert_eq!(reduce_and_decode(build_mul(3, 3)), Some(9));
         assert_eq!(reduce_and_decode(build_mul(10, 10)), Some(100));
+    }
+
+    // --- SPEC-27 v3 R13a': direct obligation validation for wire_*_into ---
+    //
+    // These tests exercise the R13a' obligation set on the existing helpers
+    // without going through the build_add / build_mul wrappers (Caminho A,
+    // Phase 3a promotion-and-validation per Round 2 SC-013):
+    //   1. T1-T7 invariant preservation across helper calls.
+    //   2. Reduction equivalence to Church(m+n) / Church(m*n).
+    //   3. Privacy — pub(crate) only, NOT exported.
+    // Privacy obligation 3 is tested via compile_fail doc-tests (see helper
+    // rustdoc) and inspection of the public re-export list in encoding/mod.rs.
+
+    // Helper: reduce + decode a wire_*_into composition rooted at `result_id`.
+    fn wire_helper_decode(mut net: Net, result_id: AgentId) -> Option<u64> {
+        // Wire the helper's result port (p1) to FreePort(0) so the post-reduction
+        // discover_root pass can find it; this matches the build_add / build_mul
+        // wiring convention.
+        net.connect(PortRef::AgentPort(result_id, 1), PortRef::FreePort(0));
+        net.root = None;
+        reduce_and_decode(net)
+    }
+
+    // UT-0711-01: T1-T7 preservation across wire_add_into.
+    //
+    // We assert validate_encoded_net AFTER the helper call (when at least one
+    // redex exists from the application principal-to-principal wiring); a
+    // pre-call assertion would fail E2 because two Church sub-nets are in
+    // Normal Form (no redexes). Structural integrity (T1) is what matters.
+    #[test]
+    fn wire_add_into_preserves_t1_t7_for_distinct_subnets() {
+        let mut net = Net::new();
+        let m_id = encode_church_into(&mut net, 7);
+        let n_id = encode_church_into(&mut net, 9);
+
+        let _result_id = wire_add_into(
+            &mut net,
+            PortRef::AgentPort(m_id, 0),
+            PortRef::AgentPort(n_id, 0),
+        );
+
+        // Post-call: net satisfies T1-T7 (at least one redex from the
+        // application; structural symmetry maintained by `connect`).
+        crate::encoding::traits::validate_encoded_net(&net)
+            .expect("post-call net must satisfy T1-T7 (R13a' obligation 1)");
+    }
+
+    // UT-0711-02: wire_add_into reduces to Church(m + n) for 5 pairs.
+    #[test]
+    fn wire_add_into_reduces_to_church_sum_for_5_pairs() {
+        for (m, n, expected) in [
+            (0u64, 0u64, 0u64),
+            (1, 1, 2),
+            (7, 9, 16),
+            (0, 5, 5),
+            (5, 0, 5),
+        ] {
+            let mut net = Net::new();
+            let m_id = encode_church_into(&mut net, m);
+            let n_id = encode_church_into(&mut net, n);
+            let result_id = wire_add_into(
+                &mut net,
+                PortRef::AgentPort(m_id, 0),
+                PortRef::AgentPort(n_id, 0),
+            );
+            let value = wire_helper_decode(net, result_id);
+            assert_eq!(
+                value,
+                Some(expected),
+                "wire_add_into({m}, {n}) reduced to {value:?}, expected Church({expected})"
+            );
+        }
+    }
+
+    // UT-0711-03: T1-T7 preservation across wire_mul_into.
+    #[test]
+    fn wire_mul_into_preserves_t1_t7_for_distinct_subnets() {
+        let mut net = Net::new();
+        let m_id = encode_church_into(&mut net, 3);
+        let n_id = encode_church_into(&mut net, 4);
+
+        let _result_id = wire_mul_into(
+            &mut net,
+            PortRef::AgentPort(m_id, 0),
+            PortRef::AgentPort(n_id, 0),
+        );
+
+        crate::encoding::traits::validate_encoded_net(&net)
+            .expect("post-call net must satisfy T1-T7 (R13a' obligation 1)");
+    }
+
+    // UT-0711-04: wire_mul_into reduces to Church(m * n) for 5 pairs.
+    #[test]
+    fn wire_mul_into_reduces_to_church_product_for_5_pairs() {
+        for (m, n, expected) in [
+            (0u64, 0u64, 0u64),
+            (1, 1, 1),
+            (3, 4, 12),
+            (0, 7, 0),
+            (7, 0, 0),
+        ] {
+            let mut net = Net::new();
+            let m_id = encode_church_into(&mut net, m);
+            let n_id = encode_church_into(&mut net, n);
+            let result_id = wire_mul_into(
+                &mut net,
+                PortRef::AgentPort(m_id, 0),
+                PortRef::AgentPort(n_id, 0),
+            );
+            let value = wire_helper_decode(net, result_id);
+            assert_eq!(
+                value,
+                Some(expected),
+                "wire_mul_into({m}, {n}) reduced to {value:?}, expected Church({expected})"
+            );
+        }
     }
 
     // Composition smoke: two wire_add_into applications chained together so
