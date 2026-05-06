@@ -111,6 +111,15 @@ tokio-test = "0.4"
 # HTTP testing (SPEC-11 R21 — metrics endpoint tests)
 tower = "0.5"
 
+# D-014 stress-curve campaign (TASK-0703 / TASK-0704 / TASK-0707) —
+# CSV roundtrip parsing, tempdirs for orchestrator smokes, libc for
+# SIGINT in resume-invariant test.
+csv = "1"
+tempfile = "3"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 [features]
 default = []
 tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"]

@@ -271,6 +271,29 @@ pub struct BenchmarkResult {
     pub speedup: f64,
     pub efficiency: f64,
     pub overhead_ratio: f64,
+
+    // -----------------------------------------------------------------------
+    // D-014 stress-curve fields (TASK-0703). Append-only at the end of the
+    // row; existing pre-D-014 readers (D-010/D-011/D-012) ignore trailing
+    // columns by csv crate convention.
+    // -----------------------------------------------------------------------
+    /// `vmrss_peak_mb` — `MemoryProbe::peak_bytes() / (1024 * 1024)` sampled
+    /// at end-of-rep. Default `0.0` for non-D-014 rows.
+    #[serde(default)]
+    pub vmrss_peak_mb: f64,
+    /// `vmrss_current_end_mb` — `MemoryProbe::current_bytes() / (1024 * 1024)`
+    /// at end-of-rep. Default `0.0`.
+    #[serde(default)]
+    pub vmrss_current_end_mb: f64,
+    /// `stop_reason` — `None` (renders as `""`) for normal reps; `Some(_)`
+    /// for sentinel rows after a `StopRule::check` fires. Carries the
+    /// variant name as a string for stable CSV serialization.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// `cv_above_gate` — `(stddev/mean) > 0.05` flag computed by the
+    /// post-rep aggregator. Default `false`.
+    #[serde(default)]
+    pub cv_above_gate: bool,
 }
 
 /// Interactions broken down by rule type (SPEC-09 R19).
@@ -836,6 +859,12 @@ mod tests {
             speedup: 1.0,
             efficiency: 1.0,
             overhead_ratio: 0.0,
+            // D-014 stress-curve fields (TASK-0703); zero defaults preserve
+            // pre-D-014 invariants on existing rodadas.
+            vmrss_peak_mb: 0.0,
+            vmrss_current_end_mb: 0.0,
+            stop_reason: None,
+            cv_above_gate: false,
         }
     }
 

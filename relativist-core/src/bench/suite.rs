@@ -442,6 +442,12 @@ fn measure_sequential(
         speedup: 1.0,
         efficiency: 1.0,
         overhead_ratio: 0.0,
+        // D-014 stress-curve fields (TASK-0703); populated by the
+        // descriptor / orchestrator path, zero on the legacy matrix path.
+        vmrss_peak_mb: 0.0,
+        vmrss_current_end_mb: 0.0,
+        stop_reason: None,
+        cv_above_gate: false,
     };
 
     (result, net_clone)
@@ -640,6 +646,11 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         speedup,
         efficiency,
         overhead_ratio,
+        // D-014 stress-curve fields (TASK-0703); zero on legacy paths.
+        vmrss_peak_mb: 0.0,
+        vmrss_current_end_mb: 0.0,
+        stop_reason: None,
+        cv_above_gate: false,
     }
 }
 
