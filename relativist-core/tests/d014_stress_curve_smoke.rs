@@ -102,7 +102,7 @@ fn script_smoke_runs_and_produces_artifacts() {
         .filter(|e| {
             e.path()
                 .extension()
-                .map_or(false, |x| x.eq_ignore_ascii_case("pdf"))
+                .is_some_and(|x| x.eq_ignore_ascii_case("pdf"))
         })
         .collect();
     assert!(
