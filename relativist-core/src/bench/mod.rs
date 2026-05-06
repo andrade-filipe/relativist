@@ -10,6 +10,7 @@ pub mod isomorphism;
 pub mod memory;
 pub mod memory_probe;
 pub mod stats;
+pub mod stop_rule;
 pub mod streaming;
 pub mod suite;
 pub mod validate;
