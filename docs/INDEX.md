@@ -1,6 +1,6 @@
 # Documentation Index
 
-> **542 documents** organized by purpose. This index helps navigate the project's documentation.
+> Live navigation. Per-bundle artefacts (qa, reviews, spec-reviews, plans, handoffs, backlog tasks, test-specs) for closed bundles live under each directory's `archive/` subfolder. This index points only to **active** documents.
 
 ---
 
@@ -87,13 +87,27 @@ Organized in 7 categories in [`pesquisa/`](pesquisa/). See [`pesquisa/INDICE.md`
 | [ROADMAP.md](ROADMAP.md) | v2+ roadmap (theoretical descriptions) |
 | [next-steps.md](next-steps.md) | **Active planning, pipeline state & deferred work** |
 
-## Internal (Historical)
+## Benchmark Results (post-D-012)
 
-These directories contain detailed records of the development process:
+| Document | Description |
+|----------|-------------|
+| [analysis/D011-final-baseline-analysis-2026-05-04.md](analysis/D011-final-baseline-analysis-2026-05-04.md) | Cold post-mortem analysis: 9 red flags + verdict + per-component decomposition |
+| `results/locked/v2_post_d012_baseline_2026-05-05/` | **Canonical v2 baseline** — 32 distributed slots all_correct=true, mips/network/compute populated |
+| `results/locked/v1_local_baseline/` | v1 frozen baseline (Phase 1 + Phase 2, 4600 reps, 0 failures) |
 
-| Directory | Files | Description |
-|-----------|-------|-------------|
-| [backlog/](backlog/) | 207 | Task definitions across 11 implementation phases |
-| [reviews/](reviews/) | 60 | Code review documents per task |
-| [spec-reviews/](spec-reviews/) | 45 | Adversarial spec review rounds (critic + defender + impact) |
-| [tests/](tests/) | 154 | Pre-implementation test specifications |
+## Internal (Historical / archived)
+
+Per-bundle records (D-005..D-012) live under archive subfolders. Browse by directory:
+
+| Directory | Active count | Archive | What lives there |
+|-----------|--------------|---------|-------------------|
+| [backlog/](backlog/) | 0 active TASKs | [archive/](backlog/archive/) (425 files) | Atomic task definitions per bundle |
+| [tests/](tests/) | 0 active TEST-SPECs | [archive/](tests/archive/) (332 files) | Pre-implementation test specifications |
+| [qa/](qa/) | 0 active | [archive/](qa/archive/) (16 files) | Adversarial QA bug reports per bundle |
+| [reviews/](reviews/) | 0 active | [archive/](reviews/archive/) (85 files) | Code review reports per bundle |
+| [spec-reviews/](spec-reviews/) | 0 active | [archive/](spec-reviews/archive/) (69 files) | Adversarial spec review rounds (critic + defender) |
+| [plans/](plans/) | 0 active | [archive/](plans/archive/) (6 files) | Per-bundle implementation plans |
+| [handoffs/](handoffs/) | 0 active | [archive/](handoffs/archive/) (5 files) | Per-bundle dispatch handoffs |
+| [briefings/](briefings/) | 0 active | [archive/](briefings/archive/) (7 files) | Per-bundle research briefings |
+
+When the next bundle (D-013+) opens, the relevant TASK / TEST-SPEC / QA / REVIEW files will appear in the active directories until the bundle closes, at which point they move to archive/. The `BACKLOG.md` and `tests/INDEX.md` still live in the active root.
