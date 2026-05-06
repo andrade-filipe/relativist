@@ -292,6 +292,52 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
     use crate::bench::suite::run_benchmark_suite;
     use crate::bench::{BenchmarkId, BenchmarkSuiteConfig, Mode};
 
+    // -----------------------------------------------------------------------
+    // D-014 Stress-curve dispatch (TASK-0702)
+    // -----------------------------------------------------------------------
+    // When `--campaign stress-curve` is set, route to the descriptor
+    // path; the existing matrix-runner code below is untouched.
+    if let Some(crate::config::CampaignKind::StressCurve) = args.campaign {
+        let workload = args
+            .workload
+            .ok_or_else(|| {
+                RelativistError::Config("--campaign stress-curve requires --workload".to_string())
+            })?
+            .into_workload();
+        let env = args
+            .env
+            .ok_or_else(|| {
+                RelativistError::Config("--campaign stress-curve requires --env".to_string())
+            })?
+            .into_env();
+        // Reuse the existing `--workers Vec<u32>` flag's first value.
+        let workers = args.workers.first().copied().unwrap_or(1) as usize;
+        let reps = args.reps.max(1) as usize;
+        let n_seq_owned = args.n_seq.clone();
+
+        let outcome = crate::bench::suite::StressCurveDescriptor::run_one_sequence(
+            workload,
+            env,
+            workers,
+            reps,
+            n_seq_owned.as_deref(),
+            None,
+        )
+        .map_err(|e| RelativistError::Config(format!("stress-curve campaign: {}", e)))?;
+
+        // Stdout-friendly summary (CSV is produced by the bash orchestrator
+        // through per-rep child invocations; this dispatch path is
+        // primarily for the integration test smoke and the script's
+        // single-N invocations).
+        println!(
+            "stress-curve outcome: completed_reps={} stop_reason={:?} last_attempted_n={:?}",
+            outcome.completed_reps.len(),
+            outcome.stop_reason,
+            outcome.last_attempted_n,
+        );
+        return Ok(());
+    }
+
     // Parse mode
     let mode = match args.mode.as_str() {
         "sequential" => Mode::Sequential,

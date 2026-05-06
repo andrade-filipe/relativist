@@ -668,6 +668,85 @@ pub struct BenchArgs {
     /// whose generator supports the sparse path (TASK-0606).
     #[arg(long, value_enum, default_value_t = crate::bench::NetRepresentation::Dense)]
     pub representation: crate::bench::NetRepresentation,
+
+    // -----------------------------------------------------------------------
+    // D-014 Stress-Curve campaign flags (TASK-0702)
+    // -----------------------------------------------------------------------
+    /// D-014 — select a named campaign descriptor instead of the default
+    /// matrix runner. When set, `--workload`, `--env`, `--workers`, `--reps`,
+    /// `--n-seq` are consumed by the descriptor. Default: none (existing
+    /// matrix path runs as before).
+    #[arg(long, value_enum)]
+    pub campaign: Option<CampaignKind>,
+
+    /// D-014 stress-curve workload selector. Required when
+    /// `--campaign stress-curve` is set; ignored otherwise.
+    #[arg(long, value_enum)]
+    pub workload: Option<StressWorkloadArg>,
+
+    /// D-014 stress-curve environment. Required when
+    /// `--campaign stress-curve` is set; ignored otherwise.
+    /// `in-process` runs reps in the current process; `docker-tcp` is
+    /// rejected at the in-Rust path (the bash orchestrator drives it).
+    #[arg(long, value_enum)]
+    pub env: Option<StressEnvArg>,
+
+    /// D-014 stress-curve N override (comma-separated). When omitted, the
+    /// canonical 11-point sweep is used. Required by the bash orchestrator
+    /// (TASK-0704) which feeds one N per child invocation.
+    #[arg(long, value_delimiter = ',')]
+    pub n_seq: Option<Vec<usize>>,
+
+    /// D-014 stress-curve repetition count per N. Default: 1.
+    #[arg(long, default_value_t = 1)]
+    pub reps: u32,
+}
+
+/// D-014 campaign-kind enumeration for the `--campaign` flag (TASK-0702).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum CampaignKind {
+    /// D-014 stress-curve campaign — `MemoryProbe` + `StopRule` driven
+    /// per-rep child process loop with the canonical N sweep.
+    StressCurve,
+}
+
+/// D-014 stress-curve workload value-enum mirror of
+/// [`crate::bench::suite::StressWorkload`] for clap parsing (TASK-0702).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum StressWorkloadArg {
+    EpAnnihilation,
+    DualTree,
+    CondupExpansion,
+}
+
+impl StressWorkloadArg {
+    pub fn into_workload(self) -> crate::bench::suite::StressWorkload {
+        match self {
+            Self::EpAnnihilation => crate::bench::suite::StressWorkload::EpAnnihilation,
+            Self::DualTree => crate::bench::suite::StressWorkload::DualTree,
+            Self::CondupExpansion => crate::bench::suite::StressWorkload::CondupExpansion,
+        }
+    }
+}
+
+/// D-014 stress-curve env value-enum mirror of
+/// [`crate::bench::suite::Env`] for clap parsing (TASK-0702).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum StressEnvArg {
+    InProcess,
+    DockerTcp,
+}
+
+impl StressEnvArg {
+    pub fn into_env(self) -> crate::bench::suite::Env {
+        match self {
+            Self::InProcess => crate::bench::suite::Env::InProcess,
+            Self::DockerTcp => crate::bench::suite::Env::DockerTcp,
+        }
+    }
 }
 
 impl BenchArgs {
