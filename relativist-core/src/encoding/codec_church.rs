@@ -1,11 +1,28 @@
 //! ChurchArithmeticCodec — implements the Codec trait for Church numerals.
 //!
 //! Wraps the existing `build_add`, `build_mul`, `build_exp`, `build_sum_of_squares`
-//! encoders (SPEC-14) and the `decode_nat_or_shared` decoder. Zero changes to
-//! the existing public API of `arithmetic.rs` / `church.rs` (SPEC-27 R7).
+//! encoders (SPEC-14) and the `decode_nat_or_shared` decoder. SPEC-27 v3 R7 was
+//! softened in Round 2 (SC-003) to require only that **SPEC-14 R3 public function
+//! signatures** stay unchanged; this codec adds a JSON-dispatch surface (R8) on
+//! top of those primitives without touching their export list.
 //!
 //! The registry (Phase 4) instantiates four codecs, one per operation:
-//! `church_add`, `church_mul`, `church_exp`, `church_sum_of_squares` (SPEC-27 R19).
+//! `church_add`, `church_mul`, `church_exp`, `church_sum_of_squares` (SPEC-27
+//! v3 R19; the v3 default registry adds `horner` and drops `lambda`, see
+//! TASK-0716).
+//!
+//! R8 operand semantics (SPEC-27 v3, closure of SC-003):
+//!
+//! - `op = "add"` / `op = "mul"`: `a` and `b` are the two operands; codec
+//!   invokes `build_add(a, b)` / `build_mul(a, b)` (SPEC-14 R15-R16).
+//! - `op = "exp"`: `a` is the **base**, `b` is the **exponent**, matching
+//!   SPEC-14 R17 ordering `build_exp(base, exp) -> Net` so the result is
+//!   `a^b` (NOT `b^a`).
+//! - `op = "sum_of_squares"`: `a` is the upper bound `n`; `b` is ignored
+//!   (MAY be omitted; defensive parsing accepts a stray `b` without effect).
+//!
+//! All 690 v1 floor tests (R9) MUST continue to pass after this codec is
+//! audited; CI enforces the floor via `cargo test`.
 
 use serde::{Deserialize, Serialize};
 
@@ -160,6 +177,7 @@ impl Codec for ChurchArithmeticCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::arithmetic::decode_nat_or_shared;
     use crate::encoding::traits::validate_encoded_net;
     use crate::reduction::reduce_all;
 
@@ -243,5 +261,154 @@ mod tests {
     fn church_codec_object_safe() {
         let boxed: Box<dyn Codec> = Box::new(ChurchArithmeticCodec::add());
         assert_eq!(boxed.name(), "church_add");
+    }
+
+    // --- TASK-0710 / SPEC-27 v3 R8 operand-semantics audit (SC-003 closure) ---
+
+    // UT-0710-01: add round-trip 3 + 5 = 8.
+    #[test]
+    fn church_codec_add_a_plus_b() {
+        let codec = ChurchArithmeticCodec::new(ChurchOp::Add);
+        let mut net = codec.encode(br#"{"op":"add","a":3,"b":5}"#).unwrap();
+        reduce_all(&mut net);
+        let out = codec.decode(&net).unwrap();
+        assert_eq!(out["result"].as_u64().unwrap(), 8);
+
+        // Edge cases EC-1 / EC-2.
+        for (a, b, expected) in [(0u64, 0u64, 0u64), (1, 0, 1)] {
+            let json = format!(r#"{{"op":"add","a":{a},"b":{b}}}"#);
+            let mut n = codec.encode(json.as_bytes()).unwrap();
+            reduce_all(&mut n);
+            let out = codec.decode(&n).unwrap();
+            assert_eq!(out["result"].as_u64().unwrap(), expected, "add({a}, {b})");
+        }
+    }
+
+    // UT-0710-02: SPEC-27 v3 R8 — `exp` operand mapping pinned: a is base,
+    // b is exponent. Catches operand-swap regressions (SC-003).
+    //
+    // Note on decode: `build_exp` produces a net whose Normal Form contains
+    // DUP cycles for `exp >= 2` (a known SPEC-14 limitation — see
+    // `decode_nat_or_shared` and the existing `default_registry_church_codecs_round_trip`
+    // test which encodes-only for `exp`). So we verify operand mapping
+    // through structural channels:
+    //   1. `b == 0` short-circuits to `Church(1)` for any `a` (build_exp special case),
+    //      producing a decodable Church(1) — confirms `b` is the exponent slot.
+    //   2. `a == 1` for any `b` reduces to `Church(1)` (1^n = 1) — decodable;
+    //      confirms `a` is the base slot.
+    //   3. The encoder accepts `exp` JSON with both fields present and produces
+    //      a validatable net for the canonical 2^3 case.
+    #[test]
+    fn church_codec_exp_a_is_base_b_is_exponent() {
+        let codec = ChurchArithmeticCodec::new(ChurchOp::Exp);
+
+        // EC-2 / R8 anchor: b=0 (exponent zero) -> Church(1) regardless of a;
+        // confirms `b` occupies the exponent slot.
+        for a in [1u64, 2, 5, 10] {
+            let json = format!(r#"{{"op":"exp","a":{a},"b":0}}"#);
+            let mut n = codec.encode(json.as_bytes()).unwrap();
+            reduce_all(&mut n);
+            assert_eq!(
+                decode_nat_or_shared(&n),
+                Some(1),
+                "exp({a}, 0) MUST equal 1 (anchor: b is exponent slot)"
+            );
+        }
+
+        // EC-3 / R8 anchor: a=1 (base one) -> Church(1) regardless of b;
+        // confirms `a` occupies the base slot.
+        for b in [0u64, 1, 5, 10] {
+            let json = format!(r#"{{"op":"exp","a":1,"b":{b}}}"#);
+            let mut n = codec.encode(json.as_bytes()).unwrap();
+            reduce_all(&mut n);
+            assert_eq!(
+                decode_nat_or_shared(&n),
+                Some(1),
+                "exp(1, {b}) MUST equal 1 (anchor: a is base slot)"
+            );
+        }
+
+        // Canonical 2^3 case: encoder produces a validatable, non-trivial net
+        // (decode is a known SPEC-14 limitation for exp >= 2).
+        let net = codec.encode(br#"{"op":"exp","a":2,"b":3}"#).unwrap();
+        validate_encoded_net(&net).expect("exp(2,3) net must satisfy T1-T7");
+    }
+
+    // UT-0710-03: SPEC-27 v3 R8 — sum_of_squares uses `a` as `n`; `b` MAY
+    // be omitted entirely from the JSON.
+    #[test]
+    fn church_codec_sum_of_squares_uses_a_only() {
+        let codec = ChurchArithmeticCodec::new(ChurchOp::SumOfSquares);
+
+        // 1^2 + 2^2 + 3^2 = 14.
+        let mut net = codec.encode(br#"{"op":"sum_of_squares","a":3}"#).unwrap();
+        reduce_all(&mut net);
+        let out = codec.decode(&net).unwrap();
+        assert_eq!(out["result"].as_u64().unwrap(), 14);
+
+        // EC-1: a=0 → empty sum.
+        let mut n = codec.encode(br#"{"op":"sum_of_squares","a":0}"#).unwrap();
+        reduce_all(&mut n);
+        assert_eq!(codec.decode(&n).unwrap()["result"].as_u64().unwrap(), 0);
+
+        // EC-2: a=1 → 1.
+        let mut n = codec.encode(br#"{"op":"sum_of_squares","a":1}"#).unwrap();
+        reduce_all(&mut n);
+        assert_eq!(codec.decode(&n).unwrap()["result"].as_u64().unwrap(), 1);
+
+        // EC-3: a=5 → 1+4+9+16+25 = 55.
+        let mut n = codec.encode(br#"{"op":"sum_of_squares","a":5}"#).unwrap();
+        reduce_all(&mut n);
+        assert_eq!(codec.decode(&n).unwrap()["result"].as_u64().unwrap(), 55);
+    }
+
+    // UT-0710-04: defensive — stray `b` in sum_of_squares JSON MUST be
+    // silently ignored (R8 wording: "b is ignored").
+    #[test]
+    fn church_codec_sum_of_squares_b_ignored_when_present() {
+        let codec = ChurchArithmeticCodec::new(ChurchOp::SumOfSquares);
+
+        let mut with_b = codec
+            .encode(br#"{"op":"sum_of_squares","a":3,"b":99}"#)
+            .unwrap();
+        let mut without_b = codec.encode(br#"{"op":"sum_of_squares","a":3}"#).unwrap();
+        reduce_all(&mut with_b);
+        reduce_all(&mut without_b);
+        let r1 = codec.decode(&with_b).unwrap();
+        let r2 = codec.decode(&without_b).unwrap();
+        assert_eq!(r1["result"], r2["result"]);
+        assert_eq!(r1["result"].as_u64().unwrap(), 14);
+
+        // EC-2: stray b = u64::MAX SHOULD NOT cause overflow (b is unused).
+        let mut huge_b = codec
+            .encode(br#"{"op":"sum_of_squares","a":3,"b":18446744073709551615}"#)
+            .unwrap();
+        reduce_all(&mut huge_b);
+        assert_eq!(
+            codec.decode(&huge_b).unwrap()["result"].as_u64().unwrap(),
+            14
+        );
+    }
+
+    // UT-0710-05: mul round-trip 4 × 7 = 28; completes the T3 quad.
+    #[test]
+    fn church_codec_mul_a_times_b() {
+        let codec = ChurchArithmeticCodec::new(ChurchOp::Mul);
+
+        let mut net = codec.encode(br#"{"op":"mul","a":4,"b":7}"#).unwrap();
+        reduce_all(&mut net);
+        assert_eq!(codec.decode(&net).unwrap()["result"].as_u64().unwrap(), 28);
+
+        // EC-1/2/3: zero-product, identity, commutativity.
+        for (a, b, expected) in [(0u64, 7u64, 0u64), (1, 99, 99), (99, 0, 0)] {
+            let json = format!(r#"{{"op":"mul","a":{a},"b":{b}}}"#);
+            let mut n = codec.encode(json.as_bytes()).unwrap();
+            reduce_all(&mut n);
+            assert_eq!(
+                codec.decode(&n).unwrap()["result"].as_u64().unwrap(),
+                expected,
+                "mul({a}, {b})"
+            );
+        }
     }
 }
