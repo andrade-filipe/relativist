@@ -1,8 +1,8 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-05-05 (post-cleanup: all closed-bundle TASKs archived; active queue is empty).
+**Last updated:** 2026-05-06 (D-014 Stress Curve Campaign opened; 9 tasks active TASK-0700..0708).
 
-**Status:** ZERO active TASKs. The full inventory of D-005..D-012 atomic tasks (TASK-0001..TASK-0618 with intentional gaps) is preserved at `archive/`. The next bundle (D-013) will repopulate this file once `task-splitter` runs against the inventory in `docs/next-steps.md`.
+**Status:** 9 active TASKs in bundle D-014 (Stress Curve Campaign). The full inventory of D-005..D-012 atomic tasks (TASK-0001..TASK-0618 with intentional gaps) is preserved at `archive/`. Numbering gap 0619-0699 reserved for any intermediate bundles between D-012 and D-014; this bundle starts at TASK-0700 by user directive.
 
 **Pipeline:** See `../WORKFLOWS.md` (§1 Development Pipeline) for the 6-stage SDD process.
 
@@ -12,9 +12,26 @@
 
 | ID | Title | Priority | Status | Depends | Complexity | Bundle |
 |----|-------|----------|--------|---------|------------|--------|
-| _(none)_ | | | | | | |
+| TASK-0700 | Cross-platform `MemoryProbe` (current + peak + RAM fraction) | P0 | TODO | none | S–M (~180 LoC) | D-014 |
+| TASK-0701 | `StopRule` (wall-time / RAM / OOM sequence aborter) | P0 | TODO | TASK-0700 | S–M (~170 LoC) | D-014 |
+| TASK-0702 | `stress-curve` campaign descriptor in `bench/suite.rs` | P0 | TODO | TASK-0700, TASK-0701 | S–M (~170 LoC) | D-014 |
+| TASK-0703 | CSV schema extension (`vmrss_*`, `stop_reason`, `cv_above_gate`) | P1 | TODO | TASK-0700, TASK-0701 | S (~60 LoC) | D-014 |
+| TASK-0704 | `scripts/stress_curve.sh` Phase 1 + Phase 2 orchestrator | P0 | TODO | TASK-0700..0703 | M (~230 LoC) | D-014 |
+| TASK-0705 | `scripts/plot_stress_curve.py` (9 PDFs + summary) | P1 | TODO | TASK-0703 | M (~230 LoC) | D-014 |
+| TASK-0706 | `docs/benchmarks/campaigns/stress-curve.md` methodology page | P1 | TODO | TASK-0700..0705 | S–M (~250 lines md, 0 LoC) | D-014 |
+| TASK-0707 | 6 integration tests for stress_curve_*.rs | P0 | TODO | TASK-0700..0703 | M (~200 LoC) | D-014 |
+| TASK-0708 | Full campaign overnight + lock dir + INDEX/ROADMAP/CHANGELOG updates | P0 | TODO | TASK-0700..0707 | L (0 LoC; 7-8h wall) | D-014 |
 
-When a new bundle (D-013+) opens, `task-splitter` populates this section with atomic tasks (~<200 LoC each); when the bundle closes those entries move to `archive/`.
+**Suggested execution order** (DAG topological sort):
+1. TASK-0700 (foundational; no deps)
+2. TASK-0701 (consumes TASK-0700)
+3. TASK-0702 + TASK-0703 (parallel; both consume TASK-0700+0701)
+4. TASK-0707 (integration tests; needs TASK-0700..0703)
+5. TASK-0704 + TASK-0705 (parallel; TASK-0704 needs TASK-0700..0703; TASK-0705 needs TASK-0703)
+6. TASK-0706 (docs; needs TASK-0700..0705)
+7. TASK-0708 (campaign run; needs everything green)
+
+When the bundle closes, TASK files move to `archive/` and this section clears per the existing housekeeping pattern.
 
 ---
 
