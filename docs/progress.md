@@ -2,7 +2,7 @@
 
 > **CRITICAL LLM INSTRUCTION:** This file is for **PAST/COMPLETED work only**. Active work, current pipeline state, and future milestones live exclusively in `next-steps.md`. Per-bundle deep narratives have been moved to `docs/{qa,reviews,spec-reviews,plans,handoffs,briefings}/archive/` and to per-bundle commits — this file is a **navigable index**, not the full text.
 
-**Last updated:** 2026-05-05 (v0.20.0-pre release published; v2-development merged into main; CI green for the first time since 2026-04-27).
+**Last updated:** 2026-05-06 (SPEC-27 v3 Round 2 spec-critic closed; task-splitter Stage 1 produced 11 atomic tasks TASK-0709..0719 for Topic 2 Encoder/HornerCodec bundle).
 
 ---
 
@@ -75,6 +75,10 @@ Phase A: 8 spec amendments A1..A8 across 7 predecessor specs. Phase F: 9 product
 ### D-012 Instrumentation Restore (CLOSED 2026-05-05)
 
 Driven by D-011 cold post-mortem (`docs/analysis/D011-final-baseline-analysis-2026-05-04.md`) which catalogued 9 red flags. Three (RF-04 `network_time_secs = 0`, RF-05 `compute_time_secs = 0`, RF-07 `mips_mean = 0`) plus a `cargo test --release` blocker grouped into a single instrumentation-restore bundle. 4 atomic tasks (TASK-0615..0618). Stage 5 QA verdict **REJECT** found 2 CRITICAL: **QA-D012-001** SUM aggregation makes `compute_time > wall_clock` for parallel workers (drives `overhead_ratio` negative); **QA-D012-002** literal `mips_mean = 0.000` lived in `scripts/bench_docker_v2.sh:283` Python-in-bash hardcode — TASK-0618 witness was attached to the wrong layer entirely. Stage 6 REFACTOR `c439182`: SUM → MAX (BSP critical-path), bash hardcode patched, IT-0618-A4 added for end-to-end CSV witness. Tests **1798 default / 1842 zero-copy / 1789 streaming-no-recycle / 1740 release** (release was broken pre-D-012). Per-bundle artefacts in `docs/{reviews,qa}/archive/REVIEW+QA-D012-instrumentation-restore-2026-05-05.md`.
+
+### SPEC-27 v3 Stage 1 Splitting (2026-05-06) — Topic 2 Encoder/HornerCodec
+
+ESPECIALISTA EM SPECS closed Round 2 of the SPEC-27 spec-critic on 2026-05-06, producing **Revised v3** (`specs/SPEC-27-encoder-decoder-api.md`) that addresses all 13 Round 1 issues (closure log: `docs/spec-reviews/SPEC-27-v2-round2-response.md`). Headline closures: SC-013 resolved via Caminho A — new R13a' specifies `wire_add_into`/`wire_mul_into` PortRef helpers that **already exist as `pub(crate)` in `arithmetic.rs`** (Q5 finding), so Phase 3a is *promotion-and-validation*, not new construction; SC-005 ties `NotNormalForm.redexes` to SPEC-01 I4 valid-pair semantics; SC-007 broadens `horner_serial` to `Result<BigUint, OracleError>` matching encoder bounds; SC-008 swaps clap `aliases(...)` for `conflicts_with` on `--encoder`/`--codec`; SC-006 widens T9 polynomial to 25 coefficients (≈1.11×10²⁴ > u64::MAX) and adds T9b boundary case; SC-009 re-anchors R13' rationale to G1 + P1 + P3 + P4 (was "P3 alone"); §6 Phase 3 split into 3a/3b/3c per <200 LoC SDD ceiling. Pipeline advanced to Stage 1 (task-splitter): 11 atomic TASKs created (TASK-0709..0719) covering R1-R28 + R13a' end-to-end. Expected total ~1,300 LoC across the bundle (well under SPEC-27 §6 envelope of ~900-1000 LoC because audit/promotion tasks ship ~30-80 LoC each, not the full Phase budget). Bundle progresses next to Stage 2 (test-generator) per SDD pipeline. Frozen baseline test floors unchanged at this stage (doc-only). Backlog: `docs/backlog/BACKLOG.md` "SPEC-27 Encoder/Decoder API + HornerCodec (Topic 2)" section.
 
 ### v0.20.0-pre release (PUBLISHED 2026-05-05) — `v0.20.0-pre`
 
