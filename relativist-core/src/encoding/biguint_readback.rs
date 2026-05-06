@@ -22,7 +22,7 @@
 use num_bigint::BigUint;
 
 use crate::encoding::traits::DecodeError;
-use crate::net::{Net, PortRef, Symbol, DISCONNECTED};
+use crate::net::{AgentId, Net, PortRef, Symbol, DISCONNECTED};
 use crate::reduction::count_valid_active_pairs;
 
 /// Decode a Church numeral IC net in Normal Form to its `BigUint` value.
@@ -128,12 +128,49 @@ pub fn decode_biguint(net: &Net) -> Result<BigUint, DecodeError> {
     // application. R14' Independence clause: this is structurally identical
     // to `decode_nat` but uses a `BigUint` accumulator and is a separate
     // code path (no delegation).
+    //
+    // Iterated DUP boundaries (from chained mul reductions in HornerCodec
+    // and similar codecs) are handled by `count_chain_through_dups`, which
+    // walks DUPs as multiplicative fan-out following Mackie/Pinto-style
+    // shared-chain readback semantics. The simple linear case (no DUPs)
+    // and the single-DUP case (one terminal mul boundary) both fall out of
+    // the same recursion.
+    count_chain_through_dups(net, PortRef::AgentPort(lam_x, 2), lam_x, 0)
+}
+
+/// Recursive Church-numeral chain readback that handles iterated DUP
+/// boundaries.
+///
+/// Walks `current` toward the `x` variable binding (`AgentPort(lam_x, 1)`),
+/// counting CON applications along the way and crossing DUP nodes by
+/// summing chain counts of the two principals' destinations.
+///
+/// Returns the BigUint count on success, or `DecodeError::UnrecognizedStructure`
+/// if the topology deviates from a Church-numeral frame (e.g., DUP cycle,
+/// non-CON/non-DUP nodes in unexpected positions).
+///
+/// `depth` guards against accidental infinite recursion (DUP cycles from
+/// non-Lafont reductions). The cap is conservative — depth corresponds to
+/// the height of the DUP tree, which is at most `coeffs.len()` for
+/// HornerCodec inputs.
+fn count_chain_through_dups(
+    net: &Net,
+    current: PortRef,
+    lam_x: AgentId,
+    depth: usize,
+) -> Result<BigUint, DecodeError> {
+    if depth > 64 {
+        return Err(DecodeError::UnrecognizedStructure(
+            "decode depth exceeded — possible DUP cycle".into(),
+        ));
+    }
+
     let mut count: BigUint = BigUint::from(0u64);
     let one: BigUint = BigUint::from(1u64);
-    let mut current = PortRef::AgentPort(lam_x, 2);
+    let mut here = current;
 
     loop {
-        let target = net.get_target(current);
+        let target = net.get_target(here);
         if target == DISCONNECTED {
             return Err(DecodeError::UnrecognizedStructure(
                 "application chain broken".into(),
@@ -141,8 +178,7 @@ pub fn decode_biguint(net: &Net) -> Result<BigUint, DecodeError> {
         }
         match target {
             PortRef::AgentPort(id, port) if id == lam_x && port == 1 => {
-                // Reached x variable binding — end of chain.
-                break;
+                return Ok(count);
             }
             PortRef::AgentPort(app_id, 1) => {
                 let agent = net.get_agent(app_id).ok_or_else(|| {
@@ -154,7 +190,41 @@ pub fn decode_biguint(net: &Net) -> Result<BigUint, DecodeError> {
                     ));
                 }
                 count += &one;
-                current = PortRef::AgentPort(app_id, 2);
+                here = PortRef::AgentPort(app_id, 2);
+            }
+            // DUP boundary: enter the DUP via principal port. Each DUP
+            // duplicates the applications below it, so we sum the counts
+            // reachable through both auxiliary ports' principal-port
+            // destinations.
+            PortRef::AgentPort(dup_id, 0) => {
+                let agent = net
+                    .get_agent(dup_id)
+                    .ok_or_else(|| DecodeError::UnrecognizedStructure("dup missing".into()))?;
+                if agent.symbol != Symbol::Dup {
+                    return Err(DecodeError::UnrecognizedStructure(
+                        "expected DUP at principal".into(),
+                    ));
+                }
+                let p1_dest = net.get_target(PortRef::AgentPort(dup_id, 1));
+                let p2_dest = net.get_target(PortRef::AgentPort(dup_id, 2));
+                let left = chain_from_dup_branch(net, p1_dest, lam_x, depth + 1)?;
+                let right = chain_from_dup_branch(net, p2_dest, lam_x, depth + 1)?;
+                return Ok(count + left + right);
+            }
+            // DUP entered through an auxiliary port (we approached a DUP's
+            // p1 or p2 from outside): walk through to its principal-port
+            // destination, treating the DUP as a transparent share.
+            PortRef::AgentPort(dup_id, p) if p == 1 || p == 2 => {
+                let agent = net
+                    .get_agent(dup_id)
+                    .ok_or_else(|| DecodeError::UnrecognizedStructure("dup missing".into()))?;
+                if agent.symbol == Symbol::Dup {
+                    here = PortRef::AgentPort(dup_id, 0);
+                    continue;
+                }
+                return Err(DecodeError::UnrecognizedStructure(
+                    "non-CON/non-DUP in chain".into(),
+                ));
             }
             _ => {
                 return Err(DecodeError::UnrecognizedStructure(
@@ -163,8 +233,83 @@ pub fn decode_biguint(net: &Net) -> Result<BigUint, DecodeError> {
             }
         }
     }
+}
 
-    Ok(count)
+/// Resolve a chain count starting from a DUP auxiliary-port destination.
+///
+/// The destination might be:
+///   - the `x` variable binding (`AgentPort(lam_x, 1)`) → contributes 0,
+///   - the result port of a CON application (`AgentPort(_, 1)`) → walk it
+///     as a chain via `count_chain_through_dups`,
+///   - another DUP entered via principal port → recurse.
+fn chain_from_dup_branch(
+    net: &Net,
+    dest: PortRef,
+    lam_x: AgentId,
+    depth: usize,
+) -> Result<BigUint, DecodeError> {
+    if depth > 64 {
+        return Err(DecodeError::UnrecognizedStructure(
+            "decode depth exceeded — possible DUP cycle".into(),
+        ));
+    }
+    if dest == PortRef::AgentPort(lam_x, 1) {
+        return Ok(BigUint::from(0u64));
+    }
+    if dest == DISCONNECTED {
+        return Err(DecodeError::UnrecognizedStructure(
+            "DUP branch disconnected".into(),
+        ));
+    }
+    match dest {
+        PortRef::AgentPort(id, _port) => {
+            let agent = net
+                .get_agent(id)
+                .ok_or_else(|| DecodeError::UnrecognizedStructure("branch dest missing".into()))?;
+            // Walk the chain that leads from this destination toward lam_x.p1.
+            // We pretend we just arrived at the source-side of `dest` and
+            // need to follow forward — but `count_chain_through_dups` walks
+            // by calling `get_target(here)` so we need to give it a port whose
+            // target IS `dest`. Trick: we synthesize a "virtual" walk by
+            // immediately entering the matched node.
+            // Simpler: re-use the same loop logic by classifying `dest`.
+            match (agent.symbol, dest) {
+                (Symbol::Con, PortRef::AgentPort(app_id, 1)) => {
+                    // We've arrived at the result port of a CON app; count 1
+                    // and continue from p2.
+                    let one = BigUint::from(1u64);
+                    let sub = count_chain_through_dups(
+                        net,
+                        PortRef::AgentPort(app_id, 2),
+                        lam_x,
+                        depth + 1,
+                    )?;
+                    Ok(one + sub)
+                }
+                (Symbol::Dup, PortRef::AgentPort(dup_id, 0)) => {
+                    // Entered another DUP at principal: recurse via both branches.
+                    let p1 = net.get_target(PortRef::AgentPort(dup_id, 1));
+                    let p2 = net.get_target(PortRef::AgentPort(dup_id, 2));
+                    let left = chain_from_dup_branch(net, p1, lam_x, depth + 1)?;
+                    let right = chain_from_dup_branch(net, p2, lam_x, depth + 1)?;
+                    Ok(left + right)
+                }
+                (Symbol::Dup, PortRef::AgentPort(dup_id, p)) if p == 1 || p == 2 => {
+                    // DUP aux-port destination: follow through to the DUP's
+                    // principal-port destination.
+                    let prin_dest = net.get_target(PortRef::AgentPort(dup_id, 0));
+                    chain_from_dup_branch(net, prin_dest, lam_x, depth + 1)
+                }
+                _ => Err(DecodeError::UnrecognizedStructure(format!(
+                    "unrecognized DUP-branch destination at agent {id} symbol {:?} port {dest:?}",
+                    agent.symbol
+                ))),
+            }
+        }
+        _ => Err(DecodeError::UnrecognizedStructure(
+            "DUP branch terminal not an AgentPort".into(),
+        )),
+    }
 }
 
 #[cfg(test)]
