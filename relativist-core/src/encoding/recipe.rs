@@ -357,32 +357,35 @@ mod tests {
         requires_full_trait(&enc);
     }
 
-    // UT-0719-02 (R25 audit): HornerCodec does NOT implement RecipeEncoder.
-    // Compile-time check: `dyn RecipeEncoder` cannot be obtained from a
-    // `HornerCodec`. This is the structural witness that R25's fallback
-    // applies (centralized partition via SPEC-04 R25 default).
+    // UT-0719-02 (R25 audit) / TASK-0721 MF-001 fix: HornerCodec does NOT
+    // implement RecipeEncoder. Replaces the previous string-based probe
+    // (which would have silently passed even after `impl RecipeEncoder for
+    // HornerCodec` was added) with a compile-time negative trait bound via
+    // `static_assertions::assert_not_impl_all!`. If anybody adds the impl
+    // in the future, this module fails to compile, surfacing the change
+    // loudly rather than missing it.
     //
-    // We assert this via a helper that requires `RecipeEncoder` as a
-    // trait bound — and we DO NOT call it on `HornerCodec`. The fact
-    // that the surrounding test compiles (and that no `impl
-    // RecipeEncoder for HornerCodec` exists) is the structural witness;
-    // we add a runtime sentinel so the test is observable.
+    // Q4 in SPEC-27 v3 §8: Horner is sequential by construction;
+    // recipe-based decomposition is future work, §5.2 PolynomialMultiEvalCodec.
+    static_assertions::assert_not_impl_all!(
+        crate::encoding::HornerCodec: RecipeEncoder
+    );
+
     #[test]
     fn horner_codec_is_not_recipe_encoder() {
-        // HornerCodec implements Encoder + Codec but NOT RecipeEncoder
-        // (Q4 in SPEC-27 v3 §8: Horner is sequential by construction;
-        // recipe-based decomposition is future work, §5.2
-        // PolynomialMultiEvalCodec).
-        //
-        // The runtime sentinel is the boolean output of a constexpr-
-        // style helper; the compile-time witness is that there is no
-        // `impl RecipeEncoder for HornerCodec` block in the codebase.
-        fn is_recipe_encoder<T: 'static>() -> bool {
-            // We can't conditionally call trait methods on T without a
-            // bound; instead we rely on a compile-time guard. The
-            // function is a no-op witness.
-            std::any::type_name::<T>().contains("HornerCodec")
-        }
-        assert!(is_recipe_encoder::<crate::encoding::HornerCodec>());
+        // Runtime sentinel companion to the compile-time
+        // `static_assertions::assert_not_impl_all!` above. The structural
+        // witness is the compile-time bound; this test exists for
+        // discoverability when grepping for `RecipeEncoder for HornerCodec`.
+        // If the static_assertion is ever loosened, this test still serves
+        // as a documentation breadcrumb.
+        fn requires_recipe_encoder<T: RecipeEncoder>(_: T) {}
+        // Intentionally NOT called — the compile-time `assert_not_impl_all`
+        // above is what enforces the negative bound. If we tried to call
+        // `requires_recipe_encoder(HornerCodec::new())` here, the file
+        // would fail to compile when (and only when) `impl RecipeEncoder
+        // for HornerCodec` exists. The static_assertions macro flips that
+        // contract: compilation fails when the impl exists, succeeds otherwise.
+        let _phantom: fn(MinimalRecipeEncoder) = requires_recipe_encoder;
     }
 }

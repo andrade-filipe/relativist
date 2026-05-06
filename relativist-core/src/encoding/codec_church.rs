@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use super::arithmetic::{
     build_add, build_exp, build_mul, build_sum_of_squares, decode_nat_or_shared,
 };
+use super::church::MAX_CHURCH_NAT;
 use super::traits::{Codec, DecodeError, Decoder, EncodeError, Encoder};
 use crate::net::Net;
 
@@ -143,6 +144,28 @@ impl Encoder for ChurchArithmeticCodec {
                     op_str,
                     self.op.codec_name()
                 )));
+            }
+        }
+
+        // TASK-0721 BUG-003: validate operand bounds against `MAX_CHURCH_NAT`
+        // BEFORE delegating to `build_*` (which call `encode_church_into`,
+        // which `assert!`s a higher cap and process-aborts on violation).
+        // Mirrors HornerCodec's R12' validation. SC-013 single-source-of-truth.
+        if params.a > MAX_CHURCH_NAT {
+            return Err(EncodeError::InvalidInput(format!(
+                "a = {} exceeds cap (max {MAX_CHURCH_NAT})",
+                params.a
+            )));
+        }
+        // For sum_of_squares `b` is ignored entirely (R8); skip the bound
+        // check there so a stray `b` does not synthesize a fake error.
+        if !matches!(self.op, ChurchOp::SumOfSquares) {
+            if let Some(b) = params.b {
+                if b > MAX_CHURCH_NAT {
+                    return Err(EncodeError::InvalidInput(format!(
+                        "b = {b} exceeds cap (max {MAX_CHURCH_NAT})"
+                    )));
+                }
             }
         }
 
@@ -388,6 +411,73 @@ mod tests {
             codec.decode(&huge_b).unwrap()["result"].as_u64().unwrap(),
             14
         );
+    }
+
+    // TASK-0721 BUG-003: ChurchArithmeticCodec::encode MUST reject inputs
+    // where `a` or `b` exceeds `MAX_CHURCH_NAT` with `EncodeError::InvalidInput`,
+    // NOT panic via the inner `assert!` in `encode_church_into`. Mirrors
+    // HornerCodec's R12' bound validation.
+    #[test]
+    fn church_codec_rejects_a_above_max_church_nat() {
+        let codec = ChurchArithmeticCodec::add();
+        let json = format!(r#"{{"op":"add","a":{},"b":1}}"#, MAX_CHURCH_NAT + 1);
+        let err = codec.encode(json.as_bytes()).unwrap_err();
+        match err {
+            EncodeError::InvalidInput(msg) => {
+                assert!(
+                    msg.contains(&format!("a = {}", MAX_CHURCH_NAT + 1))
+                        && msg.contains("exceeds cap"),
+                    "expected oversize-a InvalidInput, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn church_codec_rejects_b_above_max_church_nat() {
+        let codec = ChurchArithmeticCodec::mul();
+        let json = format!(r#"{{"op":"mul","a":2,"b":{}}}"#, MAX_CHURCH_NAT + 1);
+        let err = codec.encode(json.as_bytes()).unwrap_err();
+        assert!(
+            matches!(&err, EncodeError::InvalidInput(msg) if msg.contains(&format!("b = {}", MAX_CHURCH_NAT + 1))),
+            "expected oversize-b InvalidInput, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn church_codec_accepts_boundary_max_church_nat() {
+        // Boundary: a == MAX_CHURCH_NAT must be accepted (cap is inclusive).
+        // We don't decode here — `church_add(MAX_CHURCH_NAT, 0)` is a huge
+        // net and the goal is just to verify the validator does NOT reject.
+        let codec = ChurchArithmeticCodec::add();
+        let json = format!(r#"{{"op":"add","a":{MAX_CHURCH_NAT},"b":0}}"#);
+        let net = codec.encode(json.as_bytes());
+        assert!(net.is_ok(), "boundary a=MAX_CHURCH_NAT must be accepted");
+    }
+
+    #[test]
+    fn church_codec_sum_of_squares_ignores_oversize_b() {
+        // sum_of_squares ignores `b` entirely (R8); a stray oversize `b`
+        // MUST NOT synthesize a fake bound error.
+        let codec = ChurchArithmeticCodec::sum_of_squares();
+        let json = format!(
+            r#"{{"op":"sum_of_squares","a":3,"b":{}}}"#,
+            MAX_CHURCH_NAT + 1_000_000
+        );
+        let net = codec.encode(json.as_bytes());
+        assert!(net.is_ok(), "sum_of_squares MUST ignore stray b");
+    }
+
+    #[test]
+    fn church_codec_oversize_a_does_not_panic_under_unwind_test() {
+        // Defense-in-depth: verify the cap ACTUALLY prevents reaching the
+        // inner `encode_church_into` assert. Construct an adversarial
+        // crafted JSON and ensure encode returns Err, never panics.
+        let codec = ChurchArithmeticCodec::add();
+        let payload = format!(r#"{{"op":"add","a":{},"b":1}}"#, u64::MAX);
+        let result = codec.encode(payload.as_bytes());
+        assert!(matches!(result, Err(EncodeError::InvalidInput(_))));
     }
 
     // UT-0710-05: mul round-trip 4 × 7 = 28; completes the T3 quad.

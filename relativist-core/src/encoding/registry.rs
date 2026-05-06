@@ -10,7 +10,10 @@ use std::collections::HashMap;
 
 use super::codec_church::{ChurchArithmeticCodec, ChurchOp};
 use super::horner::HornerCodec;
-use super::traits::{validate_encoded_net, Codec, DecodeError, EncodeError};
+use super::traits::{
+    validate_encoded_net, validate_encoded_net_allowing_normal_form, Codec, DecodeError,
+    EncodeError,
+};
 use crate::net::Net;
 
 /// Registry of codecs keyed by their `name()` (SPEC-27 R17).
@@ -65,12 +68,23 @@ impl EncoderRegistry {
     }
 
     /// Encode + validate (SPEC-27 R18, R5/R6). Returns the encoded `Net` on success.
+    ///
+    /// TASK-0721 BUG-002 (Path A): when the codec opts in via
+    /// [`Codec::accepts_normal_form_input`] for the given input bytes, the E2
+    /// (≥1 redex) check is bypassed so codecs that legitimately emit
+    /// Normal-Form nets (e.g., `HornerCodec` on a constant polynomial) are
+    /// accepted by the registry. E1 (T1 linearity) is always enforced.
     pub fn encode_and_validate(&self, name: &str, input: &[u8]) -> Result<Net, RegistryError> {
         let codec = self
             .get(name)
             .ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
+        let allow_nf = codec.accepts_normal_form_input(input);
         let net = codec.encode(input)?;
-        validate_encoded_net(&net)?;
+        if allow_nf {
+            validate_encoded_net_allowing_normal_form(&net)?;
+        } else {
+            validate_encoded_net(&net)?;
+        }
         Ok(net)
     }
 

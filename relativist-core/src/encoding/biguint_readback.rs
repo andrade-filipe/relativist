@@ -1,9 +1,22 @@
 //! BigUint readback for Church numeral nets (SPEC-27 v3 R14', R16b').
 //!
-//! Mirrors SPEC-14 §4.4 `decode_nat` topology and traversal exactly,
+//! Mostly mirrors the SPEC-14 §4.4 `decode_nat` topology and traversal,
 //! replacing the `count: u64` accumulator with `count: BigUint`. Used by
 //! `HornerCodec::decode` (R14') to extract polynomial-evaluation results
 //! that may exceed `u64::MAX` (T9 BigUint witness, T9b boundary BigUint).
+//!
+//! **Topology relationship to `decode_nat`** (TASK-0721 SF-002): the core
+//! `lambda_f → lambda_x → application chain → lam_x.p1` walk mirrors
+//! `decode_nat` step-for-step. To extend the readable subset to
+//! single-iteration Horner outputs, this module adds the recursive helpers
+//! `count_chain_through_dups` and `chain_from_dup_branch`, which traverse
+//! DUP boundaries that `decode_nat` does not handle. This is therefore a
+//! topology **extension**, not a verbatim mirror — the cross-check
+//! property R16b' / T12 still holds for inputs whose NF is the canonical
+//! Church-numeral chain (no DUPs); for nets with DUP-share frames, the
+//! readbacks may diverge (decode_nat returns `None`; decode_biguint may
+//! succeed). Future Mackie/Pinto-style readback (SPEC-27 §5.1 Future
+//! Work) would close this gap.
 //!
 //! **Independence from `decode_nat`** (R14' Independence clause): this
 //! module's algorithm MUST NOT delegate to `decode_nat`. The cross-check

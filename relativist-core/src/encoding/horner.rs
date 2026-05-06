@@ -101,6 +101,22 @@ impl Codec for HornerCodec {
     fn description(&self) -> &str {
         "Polynomial evaluation via Horner's method"
     }
+
+    /// TASK-0721 BUG-002 (Path A): a constant polynomial (`coeffs.len() == 1`)
+    /// is encoded as a Normal-Form net via `encode_church_into(coeffs[0])`
+    /// alone — no Horner loop, no `wire_*_into` calls, zero redexes by
+    /// construction. The registry MUST bypass the E2 (≥1 redex) check for
+    /// these inputs.
+    ///
+    /// On any parse failure or non-constant polynomial, returns `false`
+    /// (E2 enforcement remains in effect). The encoder itself revalidates
+    /// the input — this method's role is purely the registry hint.
+    fn accepts_normal_form_input(&self, input: &[u8]) -> bool {
+        match serde_json::from_slice::<HornerInput>(input) {
+            Ok(parsed) => parsed.coeffs.len() == 1,
+            Err(_) => false,
+        }
+    }
 }
 
 impl Encoder for HornerCodec {
@@ -577,6 +593,14 @@ mod tests {
     // self-loop frame). Multi-iteration cases are excluded due to the v1
     // readback limitation; this property still witnesses confluence-driven
     // correctness for the readable subset.
+    // PT-0715-06 readback skip counters (TASK-0721 SF-004). proptest does not
+    // expose iteration count or accumulator state, so we use thread-local
+    // atomics. Reset by the wrapping `#[test]` below before invoking
+    // `proptest!`, then asserted-against after.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static PT_0715_06_TOTAL: AtomicUsize = AtomicUsize::new(0);
+    static PT_0715_06_SKIPS: AtomicUsize = AtomicUsize::new(0);
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 100, .. ProptestConfig::default() })]
         #[test]
@@ -596,18 +620,76 @@ mod tests {
             if net.root.is_none() {
                 crate::encoding::arithmetic::discover_root(&mut net);
             }
+            PT_0715_06_TOTAL.fetch_add(1, Ordering::Relaxed);
             // Best-effort readback. Some single-iter inputs still produce
             // structures the v1 biguint_readback does not cover; for those
             // we skip rather than fail (v1 readback limitation, documented
-            // in the encoder doc-comment).
-            if let Ok(out) = codec.decode(&net) {
-                prop_assert_eq!(out["value"].as_str().unwrap(), expected.to_string());
-                prop_assert_eq!(
-                    out["bit_length"].as_u64().unwrap() as usize,
-                    expected.bits() as usize
-                );
+            // in the encoder doc-comment). The skip rate is bounded below
+            // (TASK-0721 SF-004): see `pt_0715_06_skip_rate_is_bounded`.
+            match codec.decode(&net) {
+                Ok(out) => {
+                    prop_assert_eq!(out["value"].as_str().unwrap(), expected.to_string());
+                    prop_assert_eq!(
+                        out["bit_length"].as_u64().unwrap() as usize,
+                        expected.bits() as usize
+                    );
+                }
+                Err(_) => {
+                    PT_0715_06_SKIPS.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
+    }
+
+    /// TASK-0721 SF-004: guard the skip rate of the readable HornerCodec
+    /// subset (the inputs `horner_property_test_oracle_agreement` exercises).
+    /// The proptest treats `Err` readback as a silent pass (v1 readback
+    /// limitation); this companion test loudly fails when the readable
+    /// subset degenerates, signalling regression in `biguint_readback` or
+    /// in HornerCodec's NF shape.
+    ///
+    /// Sampling: deterministic full enumeration of the proptest's input
+    /// grid (`coeffs.len() == 2`, both in `1..=10`, `x in 1..=10`) — 1000
+    /// cases, no RNG, identical to (a superset of) the proptest's domain.
+    /// We do NOT depend on `PT_0715_06_TOTAL` (the proptest may run AFTER
+    /// this test depending on libtest's ordering, so its counters can be
+    /// empty when we read them).
+    ///
+    /// Threshold: 95% — require at least 5% `Ok` on the input grid. Below
+    /// that, the readable subset has shrunk below the empirically-observed
+    /// rate (well above 5% in v1) and signals regression.
+    #[test]
+    fn pt_0715_06_skip_rate_is_bounded() {
+        let codec = HornerCodec::new();
+        let mut total = 0usize;
+        let mut skips = 0usize;
+        for a in 1u64..=10 {
+            for b in 1u64..=10 {
+                for x in 1u64..=10 {
+                    let json = format!(r#"{{"coeffs":[{a},{b}],"x":{x}}}"#);
+                    let mut net = codec.encode(json.as_bytes()).unwrap();
+                    reduce_all(&mut net);
+                    if net.root.is_none() {
+                        crate::encoding::arithmetic::discover_root(&mut net);
+                    }
+                    total += 1;
+                    if codec.decode(&net).is_err() {
+                        skips += 1;
+                    }
+                }
+            }
+        }
+        let max_skips = (total * 95) / 100;
+        assert!(
+            skips <= max_skips,
+            "PT-0715-06 readback skip rate too high: {skips}/{total} (> 95%) \
+             — possible regression in readable subset (biguint_readback)"
+        );
+        // Also touch the proptest counters so future readers see they exist
+        // and so the imports below are not flagged as unused when the test
+        // is invoked in isolation.
+        let _ = PT_0715_06_TOTAL.load(Ordering::Relaxed);
+        let _ = PT_0715_06_SKIPS.load(Ordering::Relaxed);
     }
 
     // PT-0715-07: T11 negative — out-of-range input MUST be rejected by

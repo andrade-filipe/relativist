@@ -84,6 +84,8 @@ feature flag before merge — the review host could not run cargo.
 ## Must-Fix Issues
 
 ### MF-001 — `is_recipe_encoder` test is misleading (does NOT check the trait)
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — replaced with `static_assertions::assert_not_impl_all!(crate::encoding::HornerCodec: RecipeEncoder)` (Option A). Compile-time bound; the recipe test module fails to compile if anyone adds `impl RecipeEncoder for HornerCodec` in any compilation unit.
+
 
 **Category:** Code Quality (clean code: meaningful names; SOLID DIP)
 **Principle/Spec:** SPEC-27 v3 R25 audit; CLAUDE.md "Meaningful names"
@@ -174,6 +176,8 @@ The `#[allow(dead_code)]` is no longer needed.
 Verify with `cargo build --release` to confirm no warning surfaces.
 
 ### SF-002 — `biguint_readback` module-level rustdoc overstates "exact mirroring"
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — module rustdoc now states "Mostly mirrors the SPEC-14 §4.4 `decode_nat` topology" and explicitly calls out the recursive helpers `count_chain_through_dups`/`chain_from_dup_branch` as a topology extension (single-iteration Horner readback). Cross-link to SPEC-27 §5.1 Future Work added.
+
 
 **Category:** Code Quality (helpful comments — what + why)
 **File:** `relativist-core/src/encoding/biguint_readback.rs:3-6`
@@ -226,6 +230,8 @@ if depth > MAX_READBACK_DEPTH {
 cap with full context. CLAUDE.md "no magic numbers" is the relevant rule.
 
 ### SF-004 — `pipeline()` test helper silently skips proptest cases on Err
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — proptest body now increments thread-local `PT_0715_06_TOTAL` / `PT_0715_06_SKIPS` atomic counters; companion test `pt_0715_06_skip_rate_is_bounded` enumerates the proptest's input domain (`a, b, x in 1..=10`, 1000 cases) deterministically and asserts skip rate ≤ 95%. Independent of test ordering — the deterministic enumeration is a superset of the proptest's distribution.
+
 
 **Category:** Code Quality (clear control flow; honest test semantics)
 **File:** `relativist-core/src/encoding/horner.rs:603-610` (PT-0715-06)

@@ -37,6 +37,24 @@ pub trait Decoder: Send + Sync {
 pub trait Codec: Encoder + Decoder {
     /// Short description of what this codec encodes/decodes.
     fn description(&self) -> &str;
+
+    /// Whether the encoded net for `input` is already in Normal Form by
+    /// construction (TASK-0721 BUG-002, Path A).
+    ///
+    /// Defaults to `false`. Codecs that emit redex-free nets for some inputs
+    /// (e.g., `HornerCodec` on a constant polynomial — `coeffs.len() == 1`)
+    /// MUST override this to return `true` for those inputs so the registry
+    /// can bypass the E2 (≥1 redex) post-encode check in
+    /// [`validate_encoded_net`]. The default `false` keeps E2 enforcement on
+    /// for all existing codecs, preserving safety where redexes are required.
+    ///
+    /// The registry calls this method **before** `encode`, so implementations
+    /// MUST classify on the raw `input` bytes alone and MUST NOT mutate
+    /// state. A `false` return is always safe; a `true` return is a contract
+    /// that the encoder will produce a Normal-Form net for that input.
+    fn accepts_normal_form_input(&self, _input: &[u8]) -> bool {
+        false
+    }
 }
 
 /// Errors raised by `Encoder::encode()` and the encode-contract validator.
@@ -90,6 +108,20 @@ pub enum DecodeError {
 /// concern wire and symbol well-formedness, which are guaranteed by the type
 /// system (`Symbol` is a `#[repr(u8)]` enum, wires are `PortRef`).
 pub fn validate_encoded_net(net: &Net) -> Result<(), EncodeError> {
+    validate_encoded_net_inner(net, false)
+}
+
+/// Variant of [`validate_encoded_net`] that allows the caller (typically the
+/// registry's `encode_and_validate` path, TASK-0721 BUG-002) to skip the E2
+/// (≥1 redex) check when the codec has declared the input produces a
+/// Normal-Form net by construction (see [`Codec::accepts_normal_form_input`]).
+///
+/// The E1 (T1 linearity) checks are always run.
+pub fn validate_encoded_net_allowing_normal_form(net: &Net) -> Result<(), EncodeError> {
+    validate_encoded_net_inner(net, true)
+}
+
+fn validate_encoded_net_inner(net: &Net, allow_normal_form: bool) -> Result<(), EncodeError> {
     for slot in net.agents.iter() {
         let Some(agent) = slot else { continue };
         for p in 0u8..3 {
@@ -121,7 +153,7 @@ pub fn validate_encoded_net(net: &Net) -> Result<(), EncodeError> {
         }
     }
 
-    if net.is_reduced() {
+    if !allow_normal_form && net.is_reduced() {
         return Err(EncodeError::InvalidNet(
             "E2: net has no redexes (nothing to reduce)".to_string(),
         ));

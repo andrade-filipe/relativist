@@ -39,6 +39,70 @@ use relativist_core::merge::{run_grid, GridConfig};
 use relativist_core::partition::ContiguousIdStrategy;
 use relativist_core::reduction::reduce_all;
 
+// TASK-0721 BUG-004: structural witness vocabulary. Used by
+// `horner_distributed_g1_in_process_structural_isomorphism` to compare
+// `Result<serde_json::Value, String>` results pair-wise without depending on
+// agent-ID-leaky debug output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StructuralOutcome {
+    /// Both decoded successfully and produced the same `value` / `bit_length`.
+    Decoded { value: String, bit_length: u64 },
+    /// Decode failed; the same DecodeError variant family was emitted.
+    /// `family_tag` identifies the variant (e.g., "DecodeFailed",
+    /// "UnrecognizedStructure", "NotNormalForm") — agent-ID-bearing
+    /// payloads are intentionally elided.
+    DecodeFailed { family_tag: String },
+    /// Encode itself failed before reduction. We compare raw error text
+    /// only because encode is deterministic from input bytes (no agent-IDs).
+    EncodeFailed { msg: String },
+}
+
+/// Classify a `seq_decoded` / `inproc_decoded` result into its structural
+/// witness. Two results that yield equal `StructuralOutcome` agree under G1
+/// modulo the agent-ID renaming inherent to partition+merge. The witness
+/// deliberately drops free-form error payloads (which carry agent IDs in
+/// the `chain_from_dup_branch` and `discover_root` ambiguity messages) to
+/// avoid spurious mismatches on a non-G1-violating input.
+fn classify(result: &Result<serde_json::Value, String>) -> StructuralOutcome {
+    match result {
+        Ok(v) => {
+            let value = v
+                .get("value")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let bit_length = v.get("bit_length").and_then(|x| x.as_u64()).unwrap_or(0);
+            StructuralOutcome::Decoded { value, bit_length }
+        }
+        Err(msg) => {
+            // The wrapper functions below format errors as `"encode: {e:?}"`
+            // for encode-side failures and `"decode: {e:?}"` for decode-side
+            // failures. Strip the prefix to identify the source layer.
+            if let Some(rest) = msg.strip_prefix("encode: ") {
+                StructuralOutcome::EncodeFailed {
+                    msg: rest.to_string(),
+                }
+            } else if let Some(rest) = msg.strip_prefix("decode: ") {
+                // Extract just the variant name (e.g., "UnrecognizedStructure(...)").
+                // Variant names are deterministic; their inner String payloads
+                // may contain agent IDs that diverge between seq and inproc
+                // even on an isomorphic NF.
+                let family_tag = rest
+                    .split_once('(')
+                    .map(|(name, _)| name)
+                    .unwrap_or(rest)
+                    .trim()
+                    .to_string();
+                StructuralOutcome::DecodeFailed { family_tag }
+            } else {
+                StructuralOutcome::EncodeFailed {
+                    msg: msg.to_string(),
+                }
+            }
+        }
+    }
+}
+
 /// Sequential baseline: encode → reduce_all → decode.
 fn seq_decoded(input: &[u8]) -> Result<serde_json::Value, String> {
     let codec = HornerCodec::new();
@@ -125,15 +189,23 @@ fn horner_distributed_g1_in_process_structural_isomorphism() {
 
     for (label, input) in cases {
         let seq = seq_decoded(input);
+        let seq_witness = classify(&seq);
         for &w in &[2u32, 4, 8] {
             let inproc = inproc_decoded(input, w);
-            // Compare via debug formatting since DecodeError lacks
-            // PartialEq. Both Result branches must agree: same value, or
-            // same error variant + payload.
+            let inproc_witness = classify(&inproc);
+            // TASK-0721 BUG-004: structural witness comparison. Replaces
+            // the previous `format!("{:?}")` debug-string equality which
+            // included agent-IDs embedded in `chain_from_dup_branch`
+            // error payloads — those IDs legitimately differ across
+            // sequential and distributed reductions (partition + merge
+            // re-IDs agents per SPEC-04 R12), so the debug-string check
+            // could fail spuriously on a non-G1-violating input. The
+            // witness compares decoded values exactly, and falls back
+            // to comparing the DecodeError variant family (eliding
+            // ID-bearing strings) when both legs fail.
             assert_eq!(
-                format!("{seq:?}"),
-                format!("{inproc:?}"),
-                "G1 violation [{label}] W={w}"
+                seq_witness, inproc_witness,
+                "G1 violation [{label}] W={w}: seq={seq:?} inproc={inproc:?}"
             );
         }
     }

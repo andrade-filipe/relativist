@@ -722,6 +722,21 @@ fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistEr
         mips
     );
 
+    // SPEC-27 v3 R23 pipeline (TASK-0721 BUG-001): codecs that compose Church
+    // arithmetic via `wire_*_into` (HornerCodec, build_add/build_mul/...) emit
+    // nets with `root = None` — the result wire is connected to `FreePort(0)`
+    // and the post-reduction root must be discovered before decoding. The unit
+    // tests `seq_decoded` / `inproc_decoded` (tests/horner_distributed_g1.rs)
+    // already do this; the CLI path must mirror that contract.
+    if net.root.is_none() {
+        let recovered = crate::encoding::discover_root(&mut net);
+        tracing::debug!(
+            recovered_root = recovered,
+            agents = net.count_live_agents(),
+            "post-reduce root discovery"
+        );
+    }
+
     let json_out = registry.decode(name, &net)?;
     let pretty = serde_json::to_string_pretty(&json_out)
         .map_err(|e| RelativistError::Encoding(format!("serialize result: {}", e)))?;

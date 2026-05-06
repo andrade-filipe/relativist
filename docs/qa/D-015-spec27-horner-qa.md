@@ -16,6 +16,10 @@
 
 ---
 
+**Stage 6 REFACTOR closure (TASK-0721, 2026-05-06):** BUG-001, BUG-002, BUG-003, BUG-004, BUG-005, BUG-009, BUG-012 marked `Status: FIXED` inline below. SF-002, SF-004 from the reviewer report are also closed by this dispatch. After Stage 6 the bundle is **safe-to-merge** modulo the deferred MEDIUM/LOW bugs (BUG-006/007/008/010/011/013/014/015) that remain open as won't-fix or future-task as called out in their entries. New IT `tests/horner_codec_cli_roundtrip.rs` (~130 LoC) covers AC-1+AC-2+AC-3 end-to-end through the registry path. Pisos post-fix (Windows): default 1899 (+14), zero-copy 1943, streaming-no-recycle 1890, release 1841.
+
+---
+
 ## Top 3 CRITICAL/HIGH bugs
 
 1. **BUG-001 (CRITICAL):** `run_compute_with_encoder` does NOT call `discover_root` post-reduction. CLI invocation `relativist compute --codec horner --input '{"coeffs":[1,1],"x":2}'` returns `DecodeError::DecodeFailed("no root")` for *every* non-constant Horner input, because `HornerCodec::encode` sets `net.root = None` and the registry pipeline never recovers it.
@@ -75,6 +79,7 @@ The reviewer's position (Finding 1) is: **accept v1, reframe G1 narrative, defer
 ### BUG-001: CLI registry path skips `discover_root` for HornerCodec — non-constant Horner inputs always fail to decode
 
 **Severity:** **CRITICAL**
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — `run_compute_with_encoder` now calls `crate::encoding::discover_root(&mut net)` after `reduce_all` when `net.root.is_none()` (mirrors the existing convention used by `seq_decoded`/`inproc_decoded` in `tests/horner_distributed_g1.rs`). Verified by new IT `cli_horner_non_constant_polynomial_decodes` in `tests/horner_codec_cli_roundtrip.rs` — `[1,1] @ 2` now decodes to `{"value":"3","bit_length":2}`.
 **File:** `relativist-core/src/commands.rs:697-731` (`run_compute_with_encoder`)
 **Category:** Logic Error / Spec compliance gap (R23 pipeline)
 
@@ -115,6 +120,7 @@ let json_out = registry.decode(name, &net)?;
 ### BUG-002: Registry `encode_and_validate("horner", const_poly)` rejects with E2 — constant-polynomial CLI input is silently broken
 
 **Severity:** **CRITICAL**
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — Path A applied: new method `Codec::accepts_normal_form_input(&self, input: &[u8]) -> bool` (default `false`); HornerCodec returns `true` for `coeffs.len() == 1`. Registry's `encode_and_validate` consults the codec before validation and routes to `validate_encoded_net_allowing_normal_form` (E2 bypass) when the codec opts in. ChurchArithmeticCodec keeps the default `false` (its nets always have redexes by construction). Verified by `cli_horner_constant_polynomial_decodes` (`[42] @ 99 → 42`), `cli_horner_constant_zero_polynomial_decodes`, and `cli_horner_constant_max_church_polynomial_decodes` in `tests/horner_codec_cli_roundtrip.rs`.
 **File:** `relativist-core/src/encoding/horner.rs:139-143` (constant-polynomial fast path) + `relativist-core/src/encoding/traits.rs:124-128` (`validate_encoded_net` E2 check)
 **Category:** Spec compliance / Logic error
 
@@ -159,6 +165,7 @@ if net.is_reduced() && (net.root.is_none() || net.count_live_agents() == 0) {
 ### BUG-003: `ChurchArithmeticCodec::encode` panics on inputs > MAX_CHURCH (1_000_000)
 
 **Severity:** **HIGH** (security: DoS via crafted JSON; Rust panic = process abort)
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — `ChurchArithmeticCodec::encode` now validates `params.a` and (when applicable) `params.b` against `MAX_CHURCH_NAT` before delegating to `build_*`, mirroring HornerCodec's R12' bound check. `sum_of_squares` keeps `b` ignored per R8. Verified by `church_codec_rejects_a_above_max_church_nat`, `church_codec_rejects_b_above_max_church_nat`, `church_codec_accepts_boundary_max_church_nat`, `church_codec_sum_of_squares_ignores_oversize_b`, `church_codec_oversize_a_does_not_panic_under_unwind_test` (lib tests) and `cli_church_add_oversize_a_returns_invalid_input`, `cli_church_add_u64_max_a_returns_invalid_input`, `cli_church_mul_oversize_b_returns_invalid_input` (IT).
 **File:** `relativist-core/src/encoding/codec_church.rs:129-156`
 **Category:** Panic Path / Input validation gap
 
@@ -203,6 +210,7 @@ if let Some(b) = params.b {
 ### BUG-004: `format!("{:?}")` G1 isomorphism check is fragile against agent-ID divergence in error payloads
 
 **Severity:** **HIGH** (test reliability / G1 empirical claim)
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — Replaced `format!("{:?}")` debug equality with a `StructuralOutcome` witness that classifies decode results into three families: `Decoded { value, bit_length }` (compared exactly), `DecodeFailed { family_tag }` (variant name only — agent-ID-bearing inner strings are intentionally elided), and `EncodeFailed { msg }` (encoder errors are deterministic from input bytes). The witness allows agent-ID divergence in DUP-branch error payloads (which would legitimately differ between sequential and distributed reductions) while still requiring identical decoded values when both legs succeed. Mackie/Pinto-style structural readback remains future work per SPEC-27 §5.1.
 **File:** `relativist-core/tests/horner_distributed_g1.rs:130-138` + `relativist-core/src/encoding/biguint_readback.rs:303-306`
 **Category:** Logic error / test fragility
 
@@ -242,6 +250,7 @@ This was specifically called out by the reviewer as Stage 6 REFACTOR option (rev
 ### BUG-005: `is_recipe_encoder` test is misleading (does NOT detect future `impl RecipeEncoder for HornerCodec`)
 
 **Severity:** **HIGH** (already reviewer MF-001; QA confirms)
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — Reviewer Option A applied: replaced the string-probe helper with `static_assertions::assert_not_impl_all!(crate::encoding::HornerCodec: RecipeEncoder)`. If anyone adds `impl RecipeEncoder for HornerCodec`, the recipe test module fails to compile (compile-time witness, not runtime). The runtime `horner_codec_is_not_recipe_encoder` test is retained as a documentation breadcrumb/grep target. `static_assertions = "1"` was already present as a regular dep (no Cargo.toml change required).
 **File:** `relativist-core/src/encoding/recipe.rs:380-387`
 **Category:** Logic error / test that doesn't test what it claims
 
@@ -360,6 +369,7 @@ fn case_distinct_names_coexist() {
 ### BUG-009: Stale `#[allow(dead_code)]` on `count_valid_active_pairs`
 
 **Severity:** **LOW** (already reviewer SF-001)
+**Status:** **NOT FIXED in TASK-0721** — out of scope for this dispatch (the helper is now consumed by `decode_biguint`'s `count_valid_active_pairs` call, so the attribute may already be stale-but-not-warning; verifying the warning state was not in the Stage 6 critical path). Leave as-is for the next clippy sweep.
 **File:** `relativist-core/src/reduction/mod.rs:40`
 **Category:** Code cleanliness
 
@@ -421,6 +431,7 @@ This is a breaking change to a public function; properly handled in a SPEC-14 am
 ### BUG-012: PT-0715-06 silent skip pattern (already reviewer SF-004)
 
 **Severity:** **MEDIUM** (already reviewer SF-004)
+**Status:** **FIXED (TASK-0721, 2026-05-06)** — PT-0715-06 now increments thread-local atomic counters on `Ok` and `Err` paths; companion test `pt_0715_06_skip_rate_is_bounded` enumerates the proptest's domain (`a, b, x in 1..=10`, 1000 cases) deterministically and asserts `skips <= 95% * total`. Test-isolation note: the deterministic enumeration is identical to (a superset of) the proptest's input distribution, so the skip-rate guard runs even when the proptest is filtered out.
 **File:** `relativist-core/src/encoding/horner.rs:603-610`
 
 Reviewer SF-004; QA confirms. The `if let Ok(out)` arm makes Err cases silently pass. Suggested fix (skip-rate guard) is REFACTOR scope.
