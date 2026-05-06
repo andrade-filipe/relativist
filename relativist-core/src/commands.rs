@@ -315,6 +315,24 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         let reps = args.reps.max(1) as usize;
         let n_seq_owned = args.n_seq.clone();
 
+        // TASK-0720 BUG-003 (Fix-B): when `reps > 1`, the in-process
+        // `run_one_sequence` does NOT reset `MemoryProbe::peak_bytes` (VmHWM)
+        // between reps. Reps 2..N inherit rep 1's high-water-mark. The bash
+        // orchestrator works around this by fork-execing a fresh child per
+        // rep; in-process Rust callers see a monotonic peak. Document the
+        // limitation loudly so a Rust user does not silently consume bad
+        // numbers from rep 2 onward. See `docs/benchmarks/campaigns/stress-curve.md`
+        // ("Known limitations" section).
+        if reps > 1 {
+            tracing::warn!(
+                reps = reps,
+                "VmHWM not reset between reps in the in-process Rust path; \
+                 rep 1's peak is inherited by reps 2..N (bash orchestrator \
+                 fork-execs a fresh child per rep to bypass this). See \
+                 docs/benchmarks/campaigns/stress-curve.md."
+            );
+        }
+
         let outcome = crate::bench::suite::StressCurveDescriptor::run_one_sequence(
             workload,
             env,
@@ -325,15 +343,110 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         )
         .map_err(|e| RelativistError::Config(format!("stress-curve campaign: {}", e)))?;
 
-        // Stdout-friendly summary (CSV is produced by the bash orchestrator
-        // through per-rep child invocations; this dispatch path is
-        // primarily for the integration test smoke and the script's
-        // single-N invocations).
-        println!(
-            "stress-curve outcome: completed_reps={} stop_reason={:?} last_attempted_n={:?}",
-            outcome.completed_reps.len(),
-            outcome.stop_reason,
-            outcome.last_attempted_n,
+        // TASK-0720 BUG-001 fix: the `--campaign stress-curve` dispatch path
+        // is what the bash orchestrator (`scripts/stress_curve.sh`) captures
+        // via stdout redirection into the per-rep CSV. Pre-fix this path
+        // emitted only a `println!` debug summary, producing a 7-8 hour
+        // overnight run with zero CSV rows. Now we synthesise a per-N
+        // `BenchmarkResult` populated from the descriptor's `RepResult` data
+        // and route it through the canonical `write_csv_detail` writer (so
+        // every column the plotter expects is present and formatted
+        // identically to legacy bench rows).
+        //
+        // The summary line now goes to `tracing::info!` (stderr by default
+        // under the project's tracing-subscriber config) — the operator can
+        // still see it on the console, but it does NOT contaminate stdout.
+        let workload_id = match workload {
+            crate::bench::suite::StressWorkload::EpAnnihilation => {
+                crate::bench::BenchmarkId::EPAnnihilation
+            }
+            crate::bench::suite::StressWorkload::DualTree => crate::bench::BenchmarkId::DualTree,
+            crate::bench::suite::StressWorkload::CondupExpansion => {
+                crate::bench::BenchmarkId::ConDupExpansion
+            }
+        };
+        let mode = match env {
+            crate::bench::suite::Env::InProcess => {
+                if workers <= 1 {
+                    crate::bench::Mode::Sequential
+                } else {
+                    crate::bench::Mode::Local
+                }
+            }
+            crate::bench::suite::Env::DockerTcp => crate::bench::Mode::TcpLocalhost,
+        };
+
+        let mut rows: Vec<crate::bench::BenchmarkResult> =
+            Vec::with_capacity(outcome.completed_reps.len());
+        for (idx, rep) in outcome.completed_reps.iter().enumerate() {
+            let wall = rep.wall.as_secs_f64();
+            // Convert the StopReason variant to the column's stable string
+            // form used by the bash orchestrator and the plotter.
+            let stop_reason = if Some(rep.n) == outcome.last_attempted_n {
+                outcome.stop_reason.map(|r| match r {
+                    crate::bench::stop_rule::StopReason::WallTimeExceeded => {
+                        "WallTimeExceeded".to_string()
+                    }
+                    crate::bench::stop_rule::StopReason::MemoryExceeded => {
+                        "MemoryExceeded".to_string()
+                    }
+                    crate::bench::stop_rule::StopReason::Oom => "Oom".to_string(),
+                })
+            } else {
+                None
+            };
+            rows.push(crate::bench::BenchmarkResult {
+                benchmark: workload_id,
+                input_size: rep.n.try_into().unwrap_or(u32::MAX),
+                mode,
+                workers: workers as u32,
+                repetition: idx as u32,
+                correct: matches!(rep.child_exit, crate::bench::stop_rule::ChildExit::Ok),
+                wall_clock_secs: wall,
+                total_interactions: 0,
+                mips: 0.0,
+                interactions_by_rule: crate::bench::InteractionsByRule::default(),
+                rounds: 0,
+                border_redexes_per_round: vec![],
+                border_ratio_per_round: vec![],
+                peak_memory_bytes: rep.vmrss_peak_bytes,
+                peak_memory_during_construction: 0,
+                peak_memory_during_reduction: rep.vmrss_peak_bytes,
+                agent_count_at_construction_complete: 0,
+                live_agent_count_watermark: 0,
+                representation: crate::bench::NetRepresentation::Dense,
+                chunk_size: None,
+                recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
+                agents_per_round: vec![],
+                bytes_sent: 0,
+                bytes_received: 0,
+                bytes_sent_per_round: vec![],
+                bytes_received_per_round: vec![],
+                partition_time_per_round: vec![],
+                compute_time_per_round: vec![],
+                merge_time_per_round: vec![],
+                network_time_per_round: vec![],
+                worker_stats: vec![],
+                speedup: 1.0,
+                efficiency: 1.0,
+                overhead_ratio: 0.0,
+                vmrss_peak_mb: rep.vmrss_peak_bytes as f64 / (1024.0 * 1024.0),
+                vmrss_current_end_mb: rep.vmrss_peak_bytes as f64 / (1024.0 * 1024.0),
+                stop_reason,
+            });
+        }
+
+        // Emit the CSV (header + rows) on stdout — this is what the bash
+        // orchestrator captures via `>>"$RAW_CSV"`.
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        write_csv_detail(&mut handle, &rows)?;
+
+        tracing::info!(
+            completed_reps = outcome.completed_reps.len(),
+            ?outcome.stop_reason,
+            ?outcome.last_attempted_n,
+            "stress-curve outcome"
         );
         return Ok(());
     }

@@ -48,20 +48,24 @@ fn plot_script_produces_pdfs_from_synthetic_csv() {
     let out_dir = tmp.path().join("figures");
     std::fs::create_dir_all(&out_dir).expect("mkdir figures");
 
+    // TASK-0720 BUG-002 (Path A): writer schema is canonical; plotter
+    // consumes the same column names. cv_above_gate dropped per BUG-006.
+    // Schema: benchmark, input_size, mode, workers, repetition,
+    //   wall_clock_secs, mips, vmrss_peak_mb, vmrss_current_end_mb, stop_reason
     let csv_text = "\
-workload,env,workers,n,rep,wall_seconds,mips,vmrss_peak_mb,vmrss_current_end_mb,stop_reason,cv_above_gate
-ep_annihilation,in_process,1,1000,1,0.10,9.5,12.3,10.5,,false
-ep_annihilation,in_process,1,1000,2,0.11,9.0,12.4,10.6,,false
-ep_annihilation,in_process,1,1000,3,0.10,9.5,12.5,10.5,,false
-ep_annihilation,in_process,1,10000,1,0.50,18.0,45.6,40.2,,false
-ep_annihilation,in_process,1,10000,2,0.52,17.5,45.7,40.3,,false
-ep_annihilation,in_process,1,10000,3,0.51,17.7,45.8,40.4,,false
-ep_annihilation,in_process,2,1000,1,0.08,11.5,15.0,12.8,,false
-ep_annihilation,in_process,2,1000,2,0.08,11.6,15.1,12.9,,false
-ep_annihilation,in_process,2,1000,3,0.08,11.5,15.2,13.0,,false
-ep_annihilation,in_process,2,10000,1,0.30,28.0,52.0,45.0,,false
-ep_annihilation,in_process,2,10000,2,0.31,27.7,52.1,45.1,,false
-ep_annihilation,in_process,2,10000,3,0.30,28.0,52.2,45.2,,false
+benchmark,input_size,mode,workers,repetition,wall_clock_secs,mips,vmrss_peak_mb,vmrss_current_end_mb,stop_reason
+ep_annihilation,1000,sequential,1,1,0.10,9.5,12.3,10.5,
+ep_annihilation,1000,sequential,1,2,0.11,9.0,12.4,10.6,
+ep_annihilation,1000,sequential,1,3,0.10,9.5,12.5,10.5,
+ep_annihilation,10000,sequential,1,1,0.50,18.0,45.6,40.2,
+ep_annihilation,10000,sequential,1,2,0.52,17.5,45.7,40.3,
+ep_annihilation,10000,sequential,1,3,0.51,17.7,45.8,40.4,
+ep_annihilation,1000,local,2,1,0.08,11.5,15.0,12.8,
+ep_annihilation,1000,local,2,2,0.08,11.6,15.1,12.9,
+ep_annihilation,1000,local,2,3,0.08,11.5,15.2,13.0,
+ep_annihilation,10000,local,2,1,0.30,28.0,52.0,45.0,
+ep_annihilation,10000,local,2,2,0.31,27.7,52.1,45.1,
+ep_annihilation,10000,local,2,3,0.30,28.0,52.2,45.2,
 ";
     std::fs::write(&csv_path, csv_text).expect("write synthetic csv");
 

@@ -29,6 +29,10 @@
 
 This is unusually high for a Stage 5 QA pass. The single dominant defect (BUG-001 / MF-001 confirmed) cascades into multiple downstream gaps, but several independent defects exist (priority drift on memory + wall, `--n-seq` empty input, OOM-code coverage gaps, smoke-test self-skip masking, sentinel UX trap, Windows path divergence). The infrastructure is well-tested at the unit level — the integration seams between bash/Rust/Python are where the bugs cluster.
 
+---
+
+**Stage 6 REFACTOR closure (TASK-0720, 2026-05-06):** BUG-001, BUG-002, BUG-003 (Fix-B), BUG-004, BUG-005, BUG-006 marked `Status: FIXED` inline below. The remaining HIGH/MEDIUM/LOW bugs (BUG-007..BUG-020) were explicitly out of scope per the TASK-0720 file and are deferred to a follow-up TASK or "won't-fix" disposition during merge review. New IT `tests/d014_writer_to_plot_roundtrip.rs` (~150 LoC) covers AC-1+AC-2 end-to-end (Rust binary stdout → plot script → real PDF). Pisos post-fix (Windows): default 1900 (+15 vs baseline 1885), zero-copy 1944, streaming-no-recycle 1891, release 1842. After Stage 6 the bundle is **safe-to-merge** subject to the operator running TASK-0708's overnight campaign.
+
 ## Test coverage
 
 ADEQUATE for individual components (StopRule, MemoryProbe, CSV roundtrip), GAPS at the integration boundary:
@@ -54,6 +58,7 @@ ADEQUATE for individual components (StopRule, MemoryProbe, CSV roundtrip), GAPS 
 ### BUG-001 — Stress-curve campaign produces garbage CSV (MF-001 EXPLOIT confirmed)
 
 - **Severity:** CRITICAL
+- **Status:** **FIXED (TASK-0720, 2026-05-06)** — `commands.rs::run_bench_command` stress-curve dispatch now synthesises a `BenchmarkResult` per rep from the descriptor's `RepResult` data and emits it through the canonical `bench::csv::write_csv_detail` writer to stdout. The summary line moved to `tracing::info!` (stderr) so it doesn't contaminate the captured stdout. The bash orchestrator strips the duplicate header line on subsequent invocations to keep the aggregated CSV well-formed. Verified by new IT `tests/d014_writer_to_plot_roundtrip.rs` (writer-to-plot end-to-end) and existing IT `d014_stress_curve_smoke.rs`.
 - **File:** `relativist-core/src/commands.rs:332-338` + `scripts/stress_curve.sh:171-186`
 - **Category:** Logic Error (silent failure under nominal usage)
 
@@ -105,6 +110,7 @@ Add a `--csv-out <path>` flag to the `bench --campaign stress-curve` path; the d
 ### BUG-002 — CSV column-name divergence between writer and plot script
 
 - **Severity:** CRITICAL
+- **Status:** **FIXED (TASK-0720, 2026-05-06; Path A)** — writer is canonical. `plot_stress_curve.py` REQUIRED_COLUMNS now reads `benchmark, input_size, mode, workers, repetition, wall_clock_secs, mips, vmrss_peak_mb, vmrss_current_end_mb, stop_reason` (matching the Rust writer schema). Legacy column names (`workload`, `env`, `n`, `rep`, `wall_seconds`) are accepted as fallbacks via a `RENAME_FALLBACKS` rename map for forward-compat with any pre-TASK-0720 CSVs. `cv_above_gate` dropped per BUG-006.
 - **File:** `relativist-core/src/bench/csv.rs:87-94` vs `scripts/plot_stress_curve.py:34-46`
 - **Category:** Schema/Contract Mismatch
 
@@ -138,6 +144,8 @@ The IT-0705-01 plot smoke test passes because it FEEDS A SYNTHETIC CSV with the 
 ---
 
 ### BUG-003 — `MemoryProbe::peak_bytes` is per-process monotonic; reps 2..N see rep 1's VmHWM
+**Status:** **FIXED (TASK-0720, 2026-05-06; Fix-B — escape hatch)** — limitation explicitly documented in `docs/benchmarks/campaigns/stress-curve.md` §9 item 8. The dispatch path emits a `tracing::warn!` when called with `reps > 1` so a Rust user sees the limitation loudly in stderr. The bash orchestrator (the canonical campaign path) bypasses the limitation by fork-execing a fresh child per rep — that path is unchanged. Fix-A (in-process VmHWM reset via `prctl(PR_SET_MM, PR_SET_MM_HWM_RESET, ...)` on Linux + `EmptyWorkingSet` on Windows) is deferred to a future task.
+
 
 - **Severity:** CRITICAL
 - **File:** `relativist-core/src/bench/suite.rs:1143-1208`
@@ -172,6 +180,8 @@ let outcome = StressCurveDescriptor::run_one_sequence(
 ---
 
 ### BUG-004 — Bash trap on SIGINT exits the parent but does NOT kill the in-flight child rep
+**Status:** **FIXED (TASK-0720, 2026-05-06)** — `scripts/stress_curve.sh` now installs an `INT TERM` trap that forwards the signal to the in-flight rep child via `$REP_PID` (set after each `&` spawn; cleared after `wait`). Trap waits up to 10 s for graceful shutdown then escalates to `SIGKILL`. Exit code on user-initiated abort is 130 (POSIX 128 + SIGINT, replacing the previous non-standard 10). PID-bearing lockfile at `$OUTPUT_DIR/.lock`: prevents concurrent invocations; refuses if a live PID owns the lock; claims with a warning when the PID is stale. `kill -9` of the orchestrator itself bypasses the trap entirely (documented in `docs/benchmarks/campaigns/stress-curve.md` §9 item 9).
+
 
 - **Severity:** CRITICAL
 - **File:** `scripts/stress_curve.sh:71-77`
@@ -297,6 +307,7 @@ ChildExit::Killed { signal } if OOM_SIGNALS.contains(&signal) => {
 ### BUG-006 — Smoke "self-skip" mechanism masks BUG-001 by accepting placeholder PDFs
 
 - **Severity:** HIGH
+- **Status:** **FIXED (TASK-0720, 2026-05-06; corresponds to TASK-0720's BUG-005)** — `scripts/stress_curve.sh` now hard-fails BEFORE running any reps in non-smoke mode if `python3 + matplotlib + pandas + numpy` are not all available (exit 1 with explicit remediation message). The placeholder PDF fallback (line ~234) remains in place ONLY for `--smoke` mode where it is the documented escape hatch on minimal CI hosts. Smoke-mode placeholders therefore CAN'T leak into a 7-8 hour overnight campaign any more. The new IT `tests/d014_writer_to_plot_roundtrip.rs` independently asserts every PDF starts with `%PDF-` magic and is `> 100 bytes` (rejecting the 145-byte placeholder stub).
 - **File:** `scripts/stress_curve.sh:231-253` + `relativist-core/tests/d014_stress_curve_smoke.rs:108-111`
 - **Category:** Test-coverage gap (anti-pattern)
 
@@ -584,6 +595,7 @@ The priority `Oom > Memory > Wall` (line 7-8) is documented and tested (UT-0701-
 ### BUG-016 — `cv_above_gate` is hardcoded `false` at all writer sites; never set to `true` anywhere
 
 - **Severity:** MEDIUM
+- **Status:** **FIXED (TASK-0720, 2026-05-06; corresponds to TASK-0720's BUG-006)** — column dropped from the writer schema (`relativist-core/src/bench/csv.rs::write_csv_detail`), the `BenchmarkResult` struct (`relativist-core/src/bench/mod.rs`), and the plotter (`scripts/plot_stress_curve.py`). CV is now owned by the bash orchestrator across the 5 reps per `(workload, W, N)` tuple — that decision is documented in `docs/benchmarks/campaigns/stress-curve.md` §9 item 3. The schema is leaner (32 cols instead of 33); existing roundtrip tests (`d014_csv_schema_roundtrip.rs`, `spec09_bench_construction_memory_probe.rs`) updated to assert the absence of the column.
 - **File:** `relativist-core/src/bench/suite.rs:450, 653` + `mod.rs:867`
 - **Category:** Dead column / Documentation drift
 

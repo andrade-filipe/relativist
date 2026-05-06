@@ -68,15 +68,73 @@ if [[ -z "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="$REPO_DIR/results/locked/v2_stress_curve_$(date -I)"
 fi
 
+mkdir -p "$OUTPUT_DIR/raw"
+
+# TASK-0720 BUG-004: SIGINT/SIGTERM trap MUST forward the signal to the
+# in-flight child rep so it cleans up before parent exits; without this,
+# the child keeps running after Ctrl+C and may corrupt CSV mid-write.
+# We track the most recent rep child via $REP_PID (set inside the loop).
+# Also: take a PID-bearing lockfile at $OUTPUT_DIR/.lock so concurrent
+# `--resume` invocations don't double-write the same CSV; a stale lock
+# from a crashed previous run is detected via `kill -0 $stale_pid` and
+# refused (operator must remove it manually).
+LOCKFILE="$OUTPUT_DIR/.lock"
+REP_PID=""
+
+acquire_lock() {
+    if [[ -f "$LOCKFILE" ]]; then
+        local stale_pid
+        stale_pid="$(cat "$LOCKFILE" 2>/dev/null || echo)"
+        if [[ -n "$stale_pid" ]] && kill -0 "$stale_pid" 2>/dev/null; then
+            echo "ERROR: another stress_curve.sh instance is already running (pid $stale_pid; lockfile $LOCKFILE)" >&2
+            exit 1
+        fi
+        echo "WARN: stale lockfile at $LOCKFILE (pid $stale_pid not alive); claiming it" >&2
+    fi
+    echo "$$" >"$LOCKFILE"
+}
+
+release_lock() {
+    if [[ -f "$LOCKFILE" ]]; then
+        local owner
+        owner="$(cat "$LOCKFILE" 2>/dev/null || echo)"
+        if [[ "$owner" == "$$" ]]; then
+            rm -f "$LOCKFILE"
+        fi
+    fi
+}
+
+acquire_lock
+
 ON_INTERRUPT=0
 on_interrupt() {
     ON_INTERRUPT=1
+    if [[ -n "$REP_PID" ]] && kill -0 "$REP_PID" 2>/dev/null; then
+        echo "INTERRUPT received; sending SIGTERM to child pid $REP_PID" >&2
+        kill -SIGTERM "$REP_PID" 2>/dev/null || true
+        # Best-effort wait for child to exit (max ~10 s); fall back to
+        # SIGKILL if the child ignores SIGTERM.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$REP_PID" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$REP_PID" 2>/dev/null; then
+            echo "WARN: child pid $REP_PID still alive after SIGTERM; sending SIGKILL" >&2
+            kill -SIGKILL "$REP_PID" 2>/dev/null || true
+            wait "$REP_PID" 2>/dev/null || true
+        else
+            wait "$REP_PID" 2>/dev/null || true
+        fi
+    fi
     echo "INTERRUPT received; partial output preserved at $OUTPUT_DIR" >&2
-    exit 10
+    release_lock
+    # 130 = 128 + SIGINT (per POSIX convention). The previous code used
+    # exit 10; we follow the standard SIGINT exit code so callers can
+    # detect "user-initiated abort" via the canonical channel.
+    exit 130
 }
 trap on_interrupt INT TERM
-
-mkdir -p "$OUTPUT_DIR/raw"
+trap release_lock EXIT
 
 RAW_CSV="$OUTPUT_DIR/raw/in_process.csv"
 DOCKER_CSV="$OUTPUT_DIR/raw/docker_tcp.csv"
@@ -104,6 +162,24 @@ if [[ $SMOKE -eq 0 ]]; then
             echo "ERROR: docker compose not available; pass --no-docker or install Docker Desktop" >&2
             exit 3
         fi
+    fi
+    # TASK-0720 BUG-005: in full (non-smoke) mode, abort BEFORE running
+    # any reps if `python3 + matplotlib + pandas + numpy` are missing.
+    # The smoke-mode placeholder PDF fallback (line ~234) exists ONLY for
+    # `--smoke`; full-mode runs MUST produce real PDFs from real CSV
+    # data, so missing the plotter stack is a hard failure (would
+    # otherwise burn 7-8 hours producing data nobody can plot).
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ERROR: python3 not in PATH; full-mode campaign requires matplotlib/pandas/numpy. \
+Use --smoke for a placeholder run, or install python3 + the dependencies in scripts/requirements-stress-curve.txt." >&2
+        exit 1
+    fi
+    if ! python3 -c "import matplotlib, pandas, numpy" 2>/dev/null; then
+        echo "ERROR: python3 lacks matplotlib + pandas + numpy; \
+full-mode campaign requires the full plotter stack to succeed end-to-end. \
+Use --smoke for a placeholder fallback, or install via: \
+pip install -r scripts/requirements-stress-curve.txt" >&2
+        exit 1
     fi
 fi
 
@@ -169,22 +245,39 @@ for WL in "${WL_ARR[@]}"; do
                 if [[ -n "${DONE[$key]:-}" ]]; then continue; fi
 
                 STDERR_LOG="$OUTPUT_DIR/raw/${WL}_${WK}_${N}_${REP}.stderr"
-                # The relativist binary's --campaign stress-curve currently
-                # prints a stdout summary; CSV emission per-rep is a follow-up.
-                # For TASK-0704's smoke we capture stdout into the raw CSV
-                # AS A SENTINEL until per-rep CSV append lands. The campaign
-                # harness in TASK-0708 will replace this with a proper
-                # CSV-append flag.
+                # TASK-0720 BUG-001: the Rust dispatch path emits a real
+                # CSV (header + per-rep rows) on stdout via `write_csv_detail`.
+                # For the second invocation onward, we strip the duplicate
+                # header line so the aggregated CSV has exactly one header.
                 set +e
-                "$RELATIVIST_BIN" bench \
-                    --campaign stress-curve \
-                    --workload "$WL" \
-                    --env in-process \
-                    --workers "$WK" \
-                    --reps "$REP" \
-                    --n-seq "$N" \
-                    >>"$RAW_CSV" 2>"$STDERR_LOG"
+                if [[ $HEADER_WRITTEN -eq 0 ]]; then
+                    # First write: keep the header.
+                    "$RELATIVIST_BIN" bench \
+                        --campaign stress-curve \
+                        --workload "$WL" \
+                        --env in-process \
+                        --workers "$WK" \
+                        --reps "$REP" \
+                        --n-seq "$N" \
+                        >>"$RAW_CSV" 2>"$STDERR_LOG" &
+                else
+                    # Strip the leading header line on subsequent invocations
+                    # to keep the aggregated CSV well-formed.
+                    "$RELATIVIST_BIN" bench \
+                        --campaign stress-curve \
+                        --workload "$WL" \
+                        --env in-process \
+                        --workers "$WK" \
+                        --reps "$REP" \
+                        --n-seq "$N" \
+                        2>"$STDERR_LOG" \
+                        | tail -n +2 >>"$RAW_CSV" &
+                fi
+                REP_PID=$!
+                wait "$REP_PID"
                 EC=$?
+                REP_PID=""
+                HEADER_WRITTEN=1
                 set -e
 
                 if [[ $EC -ne 0 ]]; then

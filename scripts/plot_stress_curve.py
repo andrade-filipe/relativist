@@ -31,22 +31,37 @@ from pathlib import Path
 
 # Required CSV columns the script reads by name. Order does NOT matter
 # (we look up by name). Missing → exit 1.
+#
+# TASK-0720 BUG-002 (Path A): the Rust writer is canonical; this list
+# matches `relativist-core/src/bench/csv.rs::write_csv_detail` schema.
+# The legacy column names (workload, env, n, rep, wall_seconds) are
+# accepted as fallbacks via `RENAME_FALLBACKS` for forward-compat with
+# any pre-TASK-0720 CSVs that might still be in tree.
+# TASK-0720 BUG-006: cv_above_gate dropped (CV is owned by the bash
+# orchestrator across the 5 child results per (workload, W, N) tuple).
 REQUIRED_COLUMNS = [
-    "workload",
-    "env",
+    "benchmark",
+    "input_size",
+    "mode",
     "workers",
-    "n",
-    "rep",
-    "wall_seconds",
+    "repetition",
+    "wall_clock_secs",
     "mips",
     "vmrss_peak_mb",
     "vmrss_current_end_mb",
     "stop_reason",
-    "cv_above_gate",
 ]
 
-# Optional columns we may also try to read; tolerated if absent.
-OPTIONAL_COLUMNS = ["benchmark", "input_size"]
+# Legacy → canonical column-name fallbacks (TASK-0720 BUG-002, Path A).
+# If the canonical column is missing but the legacy alias is present, we
+# rename the legacy column in place.
+RENAME_FALLBACKS = {
+    "workload": "benchmark",
+    "env": "mode",
+    "n": "input_size",
+    "rep": "repetition",
+    "wall_seconds": "wall_clock_secs",
+}
 
 # 4 colourblind-safe colours from matplotlib `tab10` (indices 0,2,4,6).
 WORKER_COLORS = {1: "#1f77b4", 2: "#2ca02c", 4: "#9467bd", 8: "#8c564b"}
@@ -75,6 +90,15 @@ def load_aggregated(path: Path):
     if df.empty:
         print(f"ERROR: CSV {path} is empty (header only)", file=sys.stderr)
         sys.exit(2)
+    # TASK-0720 BUG-002 Path A: rename legacy columns to canonical names
+    # if the canonical is missing but the legacy alias is present.
+    rename_map = {
+        legacy: canonical
+        for legacy, canonical in RENAME_FALLBACKS.items()
+        if canonical not in df.columns and legacy in df.columns
+    }
+    if rename_map:
+        df = df.rename(columns=rename_map)
     for col in REQUIRED_COLUMNS:
         if col not in df.columns:
             print(
@@ -108,20 +132,23 @@ def plot_metric(
     import matplotlib.pyplot as plt
     import numpy as np
 
-    sub = df[df["workload"] == workload]
+    # TASK-0720 BUG-002 Path A: column names are canonical (writer schema).
+    # `workload` → `benchmark`; `env` → `mode`; `n` → `input_size`.
+    # cv_above_gate (BUG-006) dropped — no per-row CV flag in the per-rep
+    # CSV any more; the bash orchestrator owns CV across the 5 reps.
+    sub = df[df["benchmark"] == workload]
     if sub.empty:
         return
     fig, ax = plt.subplots(figsize=(column_width_in, 2.5), dpi=dpi)
-    for env, group_env in sub.groupby("env"):
+    for env, group_env in sub.groupby("mode"):
         ls = ENV_LINESTYLE.get(env, "-")
         for w, group_w in group_env.groupby("workers"):
             color = WORKER_COLORS.get(int(w), "#666666")
             marker = WORKER_MARKERS.get(int(w), "x")
-            grouped = group_w.groupby("n")[metric]
+            grouped = group_w.groupby("input_size")[metric]
             xs = sorted(grouped.groups.keys())
             ys_geo = []
             ys_std = []
-            cv_flagged = False
             for x in xs:
                 vals = grouped.get_group(x).values
                 vals_pos = vals[vals > 0]
@@ -132,10 +159,7 @@ def plot_metric(
                 # Geometric mean for log-axis data.
                 ys_geo.append(float(np.exp(np.log(vals_pos).mean())))
                 ys_std.append(float(np.std(vals_pos)))
-                cv_flag_col = group_w[group_w["n"] == x]["cv_above_gate"]
-                if cv_flag_col.any():
-                    cv_flagged = True
-            label = f"{env} W={w}{'*' if cv_flagged else ''}"
+            label = f"{env} W={w}"
             ax.errorbar(
                 xs,
                 ys_geo,
@@ -155,19 +179,22 @@ def plot_metric(
 
 
 def plot_summary(df, out_path: Path, column_width_in: float, dpi: int):
-    """Bar chart: N_max per (workload, env, W) coloured by stop_reason."""
+    """Bar chart: N_max per (benchmark, mode, W) coloured by stop_reason.
+
+    TASK-0720 BUG-002 Path A: column names are canonical (writer schema).
+    """
     import matplotlib.pyplot as plt
 
     if df.empty:
         return
-    grouped = df.groupby(["workload", "env", "workers"])
+    grouped = df.groupby(["benchmark", "mode", "workers"])
     labels = []
     values = []
     colors = []
     for (wl, env, w), sub in grouped:
-        n_max = int(sub["n"].max())
+        n_max = int(sub["input_size"].max())
         # Stop reason on the row with the largest N (the trip row, if any).
-        max_row = sub.loc[sub["n"].idxmax()]
+        max_row = sub.loc[sub["input_size"].idxmax()]
         sr = max_row.get("stop_reason", "")
         if isinstance(sr, float):  # NaN for blank
             sr = ""
@@ -202,7 +229,7 @@ def main():
 
     if args.workloads:
         wl_filter = [w.strip() for w in args.workloads.split(",") if w.strip()]
-        df = df[df["workload"].isin(wl_filter)]
+        df = df[df["benchmark"].isin(wl_filter)]
         if df.empty:
             print(
                 f"ERROR: no rows after workload filter {wl_filter}",
@@ -210,9 +237,10 @@ def main():
             )
             sys.exit(2)
 
-    workloads = sorted(df["workload"].dropna().unique().tolist())
+    workloads = sorted(df["benchmark"].dropna().unique().tolist())
     metrics = [
-        ("wall_seconds", "wall time (s)", "walltime"),
+        # TASK-0720 BUG-002 Path A: column names are canonical (writer schema).
+        ("wall_clock_secs", "wall time (s)", "walltime"),
         ("mips", "MIPS", "mips"),
         ("vmrss_peak_mb", "VmRSS peak (MiB)", "vmrss"),
     ]

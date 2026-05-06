@@ -447,7 +447,6 @@ fn measure_sequential(
         vmrss_peak_mb: 0.0,
         vmrss_current_end_mb: 0.0,
         stop_reason: None,
-        cv_above_gate: false,
     };
 
     (result, net_clone)
@@ -647,10 +646,10 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         efficiency,
         overhead_ratio,
         // D-014 stress-curve fields (TASK-0703); zero on legacy paths.
+        // cv_above_gate dropped by TASK-0720 BUG-006.
         vmrss_peak_mb: 0.0,
         vmrss_current_end_mb: 0.0,
         stop_reason: None,
-        cv_above_gate: false,
     }
 }
 

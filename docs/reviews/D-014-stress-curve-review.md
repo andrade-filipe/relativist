@@ -81,6 +81,7 @@ the per-task <200 LoC budget given the additive nature.
 
 ### MF-001 — `--campaign stress-curve` emits `println!` summary, not a CSV row
 
+**Status:** **FIXED (TASK-0720, 2026-05-06)** — the dispatch path now synthesises a `BenchmarkResult` per rep from the descriptor's `RepResult` data and emits it through the canonical `bench::csv::write_csv_detail` writer to stdout. The summary line moved to `tracing::info!` (stderr by default under the project's tracing-subscriber config). The bash orchestrator strips duplicate header lines on subsequent invocations to keep the aggregated CSV well-formed. Verified by new IT `tests/d014_writer_to_plot_roundtrip.rs` (writer-to-plot end-to-end).
 **Category:** Code Quality / Spec Compliance / Architecture
 **Severity:** MAJOR
 **Files:** `relativist-core/src/commands.rs:332-337`,

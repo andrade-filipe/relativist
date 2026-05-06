@@ -211,8 +211,14 @@ input that work is needed.
 2. The `docker_tcp` env has higher network overhead than the
    `in_process` baseline; comparisons across envs are speedup
    ratios, not raw wall-time differences.
-3. `cv_above_gate=true` rows mark statistical instability (CV > 0.05)
-   that the operator must inspect before publishing a derived figure.
+3. CV (coefficient of variation, `stddev/mean`) above 0.05 marks
+   statistical instability that the operator must inspect before
+   publishing a derived figure. CV is computed by the bash orchestrator
+   across the 5 reps per `(workload, W, N)` tuple — the per-rep CSV
+   row schema does NOT carry a per-row CV flag any more (TASK-0720
+   BUG-006: `cv_above_gate` was always emitted as `false` because the
+   in-process runner sees `reps=1` per child invocation; the column
+   was dead and is now removed from the writer + plotter schemas).
 4. The campaign reuses the existing `BenchmarkSuite` runner per rep;
    per-rep cold-cache effects are NOT controlled (each child process
    inherits the page cache state of the parent shell).
@@ -225,6 +231,33 @@ input that work is needed.
    sets a lower bound on observed parallel-speedup; this campaign
    does not change that ratio, only characterises where it stops
    producing useful data.
+8. **In-process Rust path memory probe contamination** (TASK-0720
+   BUG-003, Fix-B): a Rust caller invoking
+   `StressCurveDescriptor::run_one_sequence(_, _, _, reps=N>1, _, _)`
+   sees `vmrss_peak_bytes` (= `MemoryProbe::peak_bytes() = VmHWM`)
+   monotonically inherited across reps. Rep 1's high-water mark is
+   visible to reps 2..N because the probe is constructed once per
+   sequence and `VmHWM` is monotonic non-decreasing within a process
+   on Linux. The bash orchestrator (`scripts/stress_curve.sh`) bypasses
+   this by fork-execing a fresh child per rep — the canonical
+   campaign path is the bash orchestrator, NOT the in-process Rust
+   API. The dispatch code emits a `tracing::warn!` when called with
+   `reps > 1` so a Rust user sees the limitation loudly. A future
+   task may add `prctl(PR_SET_MM, PR_SET_MM_HWM_RESET, ...)` (Linux)
+   or `EmptyWorkingSet` (Windows) to reset the watermark in-process;
+   v1 of the campaign does not.
+9. **SIGINT semantics in the bash orchestrator** (TASK-0720 BUG-004):
+   the orchestrator installs a trap on `INT TERM` that forwards the
+   signal to the in-flight rep child (tracked via `$REP_PID`),
+   waits up to 10 s for graceful shutdown, then escalates to
+   `SIGKILL` if needed. Exit code on user-initiated abort is **130**
+   (POSIX 128 + SIGINT convention; previously 10). A PID-bearing
+   lockfile at `$OUTPUT_DIR/.lock` prevents concurrent invocations:
+   `--resume` against a directory whose lock is held by a live PID
+   refuses to start; a stale lock (process not alive) is claimed
+   with a warning. `kill -9` of the orchestrator itself bypasses the
+   trap entirely and may leave a stale lock + a dangling rep child;
+   the operator must clean both up by hand.
 
 ## 10. Cross-references
 

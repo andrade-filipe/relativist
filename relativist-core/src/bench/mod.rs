@@ -290,10 +290,12 @@ pub struct BenchmarkResult {
     /// variant name as a string for stable CSV serialization.
     #[serde(default)]
     pub stop_reason: Option<String>,
-    /// `cv_above_gate` — `(stddev/mean) > 0.05` flag computed by the
-    /// post-rep aggregator. Default `false`.
-    #[serde(default)]
-    pub cv_above_gate: bool,
+    // TASK-0720 BUG-006: `cv_above_gate` removed — the column was always
+    // emitted as `false` because the bench harness does not compute CV
+    // across reps for stress-curve sequences (each child gets reps=1).
+    // CV is now owned by the bash orchestrator across the 5 child results
+    // per (workload, W, N) tuple; the column is not part of the per-rep
+    // schema any more.
 }
 
 /// Interactions broken down by rule type (SPEC-09 R19).
@@ -860,11 +862,11 @@ mod tests {
             efficiency: 1.0,
             overhead_ratio: 0.0,
             // D-014 stress-curve fields (TASK-0703); zero defaults preserve
-            // pre-D-014 invariants on existing rodadas.
+            // pre-D-014 invariants on existing rodadas. cv_above_gate dropped
+            // by TASK-0720 BUG-006 — CV is now owned by the bash orchestrator.
             vmrss_peak_mb: 0.0,
             vmrss_current_end_mb: 0.0,
             stop_reason: None,
-            cv_above_gate: false,
         }
     }
 
