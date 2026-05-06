@@ -68,7 +68,10 @@ pub enum Command {
     /// Generate shell completion scripts (SPEC-15 R20).
     Completions(CompletionsArgs),
 
-    /// List or inspect registered encoders (SPEC-27 R22).
+    /// List or inspect registered encoders (SPEC-27 v3 R22). Alias:
+    /// `codecs` — for terminological symmetry with the `--codec` flag
+    /// of the `compute` subcommand (R21 dual-form).
+    #[command(alias = "codecs")]
     Encoders(EncodersArgs),
 }
 
@@ -1336,6 +1339,42 @@ mod tests {
     fn test_parse_encoders_no_action_fails() {
         let res = Cli::try_parse_from(["relativist", "encoders"]);
         assert!(res.is_err());
+    }
+
+    // --- TASK-0718 / SPEC-27 v3 R22 (codecs list alias) ---
+
+    // UT-0718-01 / T21 alias: `codecs list` parses as the same Encoders
+    // variant (single handler).
+    #[test]
+    fn cli_codecs_list_alias_parses_as_encoders_list() {
+        let cli = Cli::try_parse_from(["relativist", "codecs", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Encoders(EncodersArgs {
+                action: EncodersAction::List,
+            })
+        ));
+    }
+
+    // UT-0718-02: `encoders list` and `codecs list` both produce the same
+    // command tree.
+    #[test]
+    fn cli_encoders_and_codecs_list_command_equivalent() {
+        let cli_e = Cli::try_parse_from(["relativist", "encoders", "list"]).unwrap();
+        let cli_c = Cli::try_parse_from(["relativist", "codecs", "list"]).unwrap();
+        // Both parse to the same Encoders variant.
+        assert!(matches!(
+            cli_e.command,
+            Command::Encoders(EncodersArgs {
+                action: EncodersAction::List
+            })
+        ));
+        assert!(matches!(
+            cli_c.command,
+            Command::Encoders(EncodersArgs {
+                action: EncodersAction::List
+            })
+        ));
     }
 
     // QA: --encoder without --input parses (clap doesn't enforce the reverse

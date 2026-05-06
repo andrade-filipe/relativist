@@ -730,17 +730,36 @@ fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistEr
     Ok(())
 }
 
-/// SPEC-27 R22: list registered encoders with descriptions.
+/// Render the `encoders list` output to a `String` (testable variant).
+///
+/// SPEC-27 v3 R22 — formatted as:
+///
+/// ```text
+/// Available encoders:
+///   <name padded to column>  <description>
+///   ...
+/// ```
+///
+/// The `list()` order matches `EncoderRegistry::list` (alphabetical on name).
+fn format_encoders_list() -> String {
+    let r = crate::encoding::default_registry();
+    let pairs = r.list();
+    let max_name = pairs.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let mut out = String::from("Available encoders:\n");
+    for (name, desc) in pairs {
+        out.push_str(&format!("  {:<width$}  {}\n", name, desc, width = max_name));
+    }
+    out
+}
+
+/// SPEC-27 v3 R22: list registered encoders with descriptions.
+///
+/// The `codecs` subcommand is a clap alias for `encoders` (R22 MAY) — both
+/// dispatch through this handler.
 pub fn run_encoders_command(args: EncodersArgs) -> Result<(), RelativistError> {
     match args.action {
         EncodersAction::List => {
-            let r = crate::encoding::default_registry();
-            let pairs = r.list();
-            let max_name = pairs.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
-            println!("Available encoders:");
-            for (name, desc) in pairs {
-                println!("  {:<width$}  {}", name, desc, width = max_name);
-            }
+            print!("{}", format_encoders_list());
         }
     }
     Ok(())
@@ -1272,5 +1291,66 @@ mod tests {
             action: EncodersAction::List,
         };
         assert!(run_encoders_command(args).is_ok());
+    }
+
+    // --- TASK-0718 / SPEC-27 v3 R22 ---
+
+    // UT-0718-03 / T21: rendered output contains the 5 v3 codecs in
+    // canonical R19 order; first line is "Available encoders:".
+    #[test]
+    fn cli_encoders_list_outputs_5_v3_codecs() {
+        let out = format_encoders_list();
+        assert!(out.starts_with("Available encoders:"));
+
+        // Canonical R19 order is alphabetical on name (matches
+        // `EncoderRegistry::list`).
+        let expected_order = [
+            "church_add",
+            "church_exp",
+            "church_mul",
+            "church_sum_of_squares",
+            "horner",
+        ];
+        let mut last_pos = 0usize;
+        for name in &expected_order {
+            let pos = out
+                .find(name)
+                .unwrap_or_else(|| panic!("missing codec in output: {name}\n{out}"));
+            assert!(pos >= last_pos, "codec {name} appears out of R19 order");
+            last_pos = pos;
+        }
+
+        // Exactly 5 lines following the header (one per codec).
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines.len(),
+            6,
+            "expected 1 header + 5 codecs, got {lines:?}"
+        );
+    }
+
+    // UT-0718-04 / T16-derived: lambda is NOT in the default output.
+    #[test]
+    fn cli_encoders_list_excludes_lambda() {
+        let out = format_encoders_list();
+        assert!(
+            !out.contains("lambda"),
+            "default output must not list lambda: {out}"
+        );
+    }
+
+    // UT-0718-05 / R22: output includes a horner line whose description
+    // matches HornerCodec::description().
+    #[test]
+    fn cli_encoders_list_includes_horner_and_description() {
+        let out = format_encoders_list();
+        let horner_line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("horner"))
+            .expect("horner line missing in encoders list");
+        assert!(
+            horner_line.contains("Polynomial evaluation via Horner's method"),
+            "horner description mismatch: {horner_line}"
+        );
     }
 }
