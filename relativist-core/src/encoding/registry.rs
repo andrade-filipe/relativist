@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use super::codec_church::{ChurchArithmeticCodec, ChurchOp};
-use super::codec_lambda::LambdaCodec;
+use super::horner::HornerCodec;
 use super::traits::{validate_encoded_net, Codec, DecodeError, EncodeError};
 use crate::net::Net;
 
@@ -88,7 +88,15 @@ impl Default for EncoderRegistry {
     }
 }
 
-/// Returns a registry pre-populated with the 5 built-in codecs (SPEC-27 R19).
+/// Returns a registry pre-populated with the 5 built-in codecs (SPEC-27 v3 R19).
+///
+/// v3 swap: `lambda` is dropped (now §5.1 Future Work — `LambdaCodec` is
+/// retained in `encoding::codec_lambda` and is constructable via user-side
+/// opt-in registration); `horner` joins the default registry as the v1
+/// codec illustrating ARG-001 G1 (Fundamental Property) empirically.
+///
+/// Order matches R19 bullet ordering for stable `encoders list`
+/// (TASK-0718) output.
 pub fn default_registry() -> EncoderRegistry {
     let mut r = EncoderRegistry::new();
     // unwrap is safe: each codec has a unique name and the registry starts empty.
@@ -100,14 +108,15 @@ pub fn default_registry() -> EncoderRegistry {
         .expect("church_exp registers");
     r.register(Box::new(ChurchArithmeticCodec::new(ChurchOp::SumOfSquares)))
         .expect("church_sum_of_squares registers");
-    r.register(Box::new(LambdaCodec::new()))
-        .expect("lambda registers");
+    r.register(Box::new(HornerCodec::new()))
+        .expect("horner registers");
     r
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::codec_lambda::LambdaCodec;
     use crate::reduction::reduce_all;
 
     // --- Registry struct + ops (TEST-SPEC-0336) ---
@@ -199,10 +208,14 @@ mod tests {
         assert_eq!(r.list().len(), 5);
     }
 
+    // SPEC-27 v3 R19 (post-swap): default registry contains the 5 v1
+    // codecs in canonical order. `lambda` is no longer registered (now
+    // §5.1 Future Work); `horner` joins as the v1 G1 demo codec.
     #[test]
     fn default_registry_names_match_spec() {
         let r = default_registry();
         let names: Vec<&str> = r.list().iter().map(|(n, _)| *n).collect();
+        // `list()` is sorted alphabetically (see EncoderRegistry::list).
         assert_eq!(
             names,
             vec![
@@ -210,7 +223,7 @@ mod tests {
                 "church_exp",
                 "church_mul",
                 "church_sum_of_squares",
-                "lambda",
+                "horner",
             ]
         );
     }
@@ -243,16 +256,17 @@ mod tests {
             .expect("church_exp encodes");
     }
 
+    // Post-v3 swap: `lambda` is no longer in the default registry (TASK-0716).
     #[test]
-    fn default_registry_lambda_round_trips_identity() {
+    fn default_registry_excludes_lambda_post_v3() {
         let r = default_registry();
-        let net = r
-            .encode_and_validate("lambda", r#"{"term":"(λx. x) (λy. y)"}"#.as_bytes())
-            .unwrap();
-        let mut n = net;
-        reduce_all(&mut n);
-        let out = r.decode("lambda", &n).unwrap();
-        assert!(out["term"].as_str().unwrap().contains("λ"));
+        assert!(
+            r.get("lambda").is_none(),
+            "lambda MUST NOT be in v3 default registry"
+        );
+        // LambdaCodec is still constructable for opt-in user registration
+        // (the type and module remain in the codebase per §5.1 Future Work).
+        let _opt_in: Box<dyn Codec> = Box::new(LambdaCodec::new());
     }
 
     #[test]
@@ -266,11 +280,14 @@ mod tests {
     // --- QA adversarial (Stage 5) ---
 
     // Encoder produces a net with no redex — validate_encoded_net (E2) MUST reject it
-    // and encode_and_validate MUST surface the error.
+    // and encode_and_validate MUST surface the error. Uses `lambda` via
+    // an opt-in registration (LambdaCodec stays in the codebase).
     #[test]
     fn encode_and_validate_rejects_net_with_no_redex() {
+        let mut r = default_registry();
+        r.register(Box::new(LambdaCodec::new()))
+            .expect("opt-in lambda registration");
         // λx. x — single CON with self-loop, no redex (E2 fails).
-        let r = default_registry();
         let err = r
             .encode_and_validate("lambda", r#"{"term":"λx. x"}"#.as_bytes())
             .unwrap_err();
@@ -280,13 +297,13 @@ mod tests {
         }
     }
 
-    // Codec lookup is case-sensitive — "Lambda" != "lambda".
+    // Codec lookup is case-sensitive — "Horner" != "horner".
     #[test]
     fn registry_lookup_is_case_sensitive() {
         let r = default_registry();
-        assert!(r.get("lambda").is_some());
-        assert!(r.get("Lambda").is_none());
-        assert!(r.get("LAMBDA").is_none());
+        assert!(r.get("horner").is_some());
+        assert!(r.get("Horner").is_none());
+        assert!(r.get("HORNER").is_none());
     }
 
     // After a failed register (collision), original codec remains intact and usable.
@@ -309,7 +326,7 @@ mod tests {
     #[test]
     fn empty_input_handled_gracefully() {
         let r = default_registry();
-        let err = r.encode_and_validate("lambda", b"").unwrap_err();
+        let err = r.encode_and_validate("horner", b"").unwrap_err();
         assert!(matches!(
             err,
             RegistryError::Encode(EncodeError::InvalidInput(_))
@@ -332,5 +349,86 @@ mod tests {
     fn default_impl_equivalent_to_new() {
         let r = EncoderRegistry::default();
         assert!(r.list().is_empty());
+    }
+
+    // --- TASK-0716 / SPEC-27 v3 R19, R20 ---
+
+    // UT-0716-01 / T14: post-v3 default registry has exactly 5 codecs in
+    // canonical R19 order.
+    #[test]
+    fn default_registry_contains_5_v3_codecs() {
+        let r = default_registry();
+        let entries = r.list();
+        assert_eq!(entries.len(), 5);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec![
+                "church_add",
+                "church_exp",
+                "church_mul",
+                "church_sum_of_squares",
+                "horner",
+            ]
+        );
+        // Each entry has a non-empty description.
+        for (n, d) in &entries {
+            assert!(!d.is_empty(), "{n} has empty description");
+        }
+    }
+
+    // UT-0716-02 / T16: lambda is no longer in the v3 default registry.
+    // (Already covered by `default_registry_excludes_lambda_post_v3` above;
+    // this test repeats the assertion in the canonical TASK-0716 location
+    // for traceability.)
+    #[test]
+    fn default_registry_excludes_lambda() {
+        let r = default_registry();
+        assert!(r.get("lambda").is_none());
+        // No "lambda" anywhere in the list.
+        let names: Vec<&str> = r.list().iter().map(|(n, _)| *n).collect();
+        assert!(!names.contains(&"lambda"));
+    }
+
+    // UT-0716-03 / T16: unknown codec name returns None; case-sensitive.
+    #[test]
+    fn default_registry_unknown_returns_none() {
+        let r = default_registry();
+        assert!(r.get("nonexistent").is_none());
+        assert!(r.get("HORNER").is_none()); // case-sensitive per R17
+        assert!(r.get("").is_none());
+    }
+
+    // UT-0716-04 / T15: re-registering an existing codec name returns
+    // DuplicateName, regardless of which codec name.
+    #[test]
+    fn register_horner_twice_returns_duplicate_name_error() {
+        let mut r = default_registry();
+        let result = r.register(Box::new(HornerCodec::new()));
+        match result {
+            Err(RegistryError::DuplicateName(name)) => assert_eq!(name, "horner"),
+            other => panic!("expected DuplicateName(\"horner\"), got {other:?}"),
+        }
+
+        // EC-2: church_add also yields DuplicateName.
+        let result_church = r.register(Box::new(ChurchArithmeticCodec::new(ChurchOp::Add)));
+        match result_church {
+            Err(RegistryError::DuplicateName(name)) => assert_eq!(name, "church_add"),
+            other => panic!("expected DuplicateName(\"church_add\"), got {other:?}"),
+        }
+    }
+
+    // UT-0716-05 / R22: horner description matches the spec example.
+    #[test]
+    fn default_registry_horner_description_matches_r22() {
+        let r = default_registry();
+        let entry = r.get("horner").expect("horner must be registered post-v3");
+        let desc = entry.description();
+        assert_eq!(desc, "Polynomial evaluation via Horner's method");
+        // EC-2: must NOT mention "lambda" or "Mackie" (codec contamination).
+        assert!(!desc.to_lowercase().contains("lambda"));
+        assert!(!desc.contains("Mackie"));
+        // EC-3: single-line for `encoders list` formatting.
+        assert!(!desc.contains('\n'));
     }
 }
