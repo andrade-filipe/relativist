@@ -87,6 +87,17 @@ opentelemetry_sdk = { version = "0.28", optional = true }
 # `std` is required for the validation infrastructure to work with std types.
 rkyv = { version = "0.8", optional = true, default-features = false, features = ["bytecheck", "alloc", "std"] }
 
+# D-014 stress-curve memory probe (TASK-0700) — Windows host backend.
+# `Win32_System_ProcessStatus`: GetProcessMemoryInfo + PROCESS_MEMORY_COUNTERS
+# `Win32_System_SystemInformation`: GlobalMemoryStatusEx + MEMORYSTATUSEX
+# `Win32_System_Threading`: GetCurrentProcess (pseudo-handle)
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Property-based testing (PESQ-023 D6, SPEC-13 R13)
 proptest = "1"

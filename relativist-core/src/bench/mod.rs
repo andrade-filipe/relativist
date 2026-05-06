@@ -8,6 +8,7 @@ pub mod benchmarks;
 pub mod csv;
 pub mod isomorphism;
 pub mod memory;
+pub mod memory_probe;
 pub mod stats;
 pub mod streaming;
 pub mod suite;
