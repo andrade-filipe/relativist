@@ -552,22 +552,35 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
 }
 
 /// Execute compute mode: encode arithmetic, reduce, decode result
-/// (SPEC-14 R22-R25; SPEC-27 R21, R23).
+/// (SPEC-14 R22-R25; SPEC-27 v3 R21, R23).
 ///
 /// Two paths:
-/// - **Registry (SPEC-27 R21, R23):** when `--encoder` is set, runs the
-///   `encode → validate → reduce_all → decode → print JSON` pipeline.
+/// - **Registry (SPEC-27 v3 R21, R23):** when `--encoder` OR `--codec` is
+///   set (mutually exclusive at the clap layer via `conflicts_with`),
+///   runs the `encode → validate → reduce_all → decode → print JSON`
+///   pipeline. The two flags are coalesced via
+///   `args.encoder.or(args.codec)`.
 /// - **Legacy (SPEC-14):** positional `<op> <a> <b>` Church arithmetic.
 pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), RelativistError> {
     use crate::config::ArithmeticOp;
     use crate::encoding::{build_add, build_exp, build_mul, decode_nat, discover_root};
 
-    // SPEC-27 R21, R23: registry path.
-    if let Some(name) = args.encoder.as_deref() {
+    // SPEC-27 v3 R21, R23: registry path. `--encoder` and `--codec` are
+    // mutually exclusive at the clap layer; coalesce here into one name.
+    let codec_name = args.encoder.as_deref().or(args.codec.as_deref());
+    if let Some(name) = codec_name {
         let input = args.input.as_ref().ok_or_else(|| {
-            RelativistError::Config("--input is required when --encoder is set".to_string())
+            RelativistError::Config("--input is required when --encoder/--codec is set".to_string())
         })?;
         return run_compute_with_encoder(name, input.as_bytes());
+    }
+
+    // SPEC-27 v3 R21: orphan `--input` without --encoder/--codec is a
+    // configuration error.
+    if args.input.is_some() {
+        return Err(RelativistError::Config(
+            "--input requires --encoder or --codec".to_string(),
+        ));
     }
 
     // Legacy SPEC-14 path: positional operation/a/b are required.
@@ -1184,6 +1197,7 @@ mod tests {
             a: None,
             b: None,
             encoder: None,
+            codec: None,
             input: None,
             workers: None,
             output: None,
@@ -1199,11 +1213,20 @@ mod tests {
         assert!(matches!(err, RelativistError::Config(_)));
     }
 
-    // SPEC-27 R21: --encoder set but --input missing → Config error.
+    // SPEC-27 v3 R21: --encoder/--codec set but --input missing → Config error.
     #[test]
     fn run_compute_encoder_without_input_errors() {
         let mut args = empty_compute_args();
-        args.encoder = Some("lambda".to_string());
+        args.encoder = Some("horner".to_string());
+        let err = run_compute_command(args).unwrap_err();
+        match err {
+            RelativistError::Config(msg) => assert!(msg.contains("--input")),
+            other => panic!("expected Config, got {:?}", other),
+        }
+
+        // Same path through --codec.
+        let mut args = empty_compute_args();
+        args.codec = Some("horner".to_string());
         let err = run_compute_command(args).unwrap_err();
         match err {
             RelativistError::Config(msg) => assert!(msg.contains("--input")),
@@ -1232,11 +1255,13 @@ mod tests {
         }
     }
 
-    // SPEC-27 R23: invalid JSON for a real encoder → Encoding error
-    // (propagated from the codec via RegistryError::Encode).
+    // SPEC-27 v3 R23: invalid JSON for a real encoder → Encoding error
+    // (propagated from the codec via RegistryError::Encode). Uses
+    // `horner` since `lambda` is no longer in the v3 default registry
+    // (TASK-0716).
     #[test]
     fn run_compute_with_encoder_invalid_input_errors() {
-        let err = run_compute_with_encoder("lambda", b"{not json}").unwrap_err();
+        let err = run_compute_with_encoder("horner", b"{not json}").unwrap_err();
         assert!(matches!(err, RelativistError::Encoding(_)));
     }
 

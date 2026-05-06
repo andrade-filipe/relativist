@@ -520,17 +520,25 @@ pub enum ArithmeticOp {
     Exp,
 }
 
-/// Arguments for the `compute` subcommand (SPEC-14 R22-R25, SPEC-27 R21).
+/// Arguments for the `compute` subcommand (SPEC-14 R22-R25, SPEC-27 v3 R21).
 ///
-/// Two mutually-exclusive invocation modes:
+/// Three mutually-exclusive invocation modes:
 /// - **Legacy:** positional `<op> <a> <b>` (Church arithmetic, SPEC-14).
-/// - **Registry:** `--encoder <name> --input <json>` (SPEC-27 R21).
+/// - **Registry via --encoder:** `--encoder <name> --input <json>`
+///   (SPEC-27 v3 R21).
+/// - **Registry via --codec:** `--codec <name> --input <json>`
+///   (alternate spelling — same registry entry; SPEC-27 v3 R21 dual-form).
 ///
-/// Exactly one mode must be used; this is enforced at runtime in
-/// `run_compute_command`.
+/// `--encoder` and `--codec` are MUTUALLY EXCLUSIVE via clap's
+/// `conflicts_with` (NOT `aliases(...)` — the alias pattern silently
+/// keeps the last value, which Round 1 SC-008 rejected). Both flags
+/// appear separately in `--help`. The application logic coalesces the
+/// two `Option<String>` fields into a single codec name via
+/// `args.encoder.or(args.codec)`.
 #[derive(clap::Args, Debug)]
 pub struct ComputeArgs {
-    /// Arithmetic operation (legacy SPEC-14 path). Required when --encoder is omitted.
+    /// Arithmetic operation (legacy SPEC-14 path). Required when
+    /// --encoder/--codec is omitted.
     #[arg(value_enum)]
     pub operation: Option<ArithmeticOp>,
 
@@ -540,12 +548,19 @@ pub struct ComputeArgs {
     /// Second operand (legacy SPEC-14 path).
     pub b: Option<u64>,
 
-    /// Encoder name from the registry (e.g., "lambda", "church_add"). SPEC-27 R21.
-    #[arg(long)]
+    /// Encoder name from the registry (e.g., "horner", "church_add").
+    /// SPEC-27 v3 R21. Mutually exclusive with --codec.
+    #[arg(long, value_name = "NAME", conflicts_with = "codec")]
     pub encoder: Option<String>,
 
-    /// Encoder input as a JSON string. Required when --encoder is set. SPEC-27 R21.
-    #[arg(long, requires = "encoder")]
+    /// Alternate spelling of --encoder; same registry entry, mutually
+    /// exclusive. SPEC-27 v3 R21 dual-form (closure of SC-008).
+    #[arg(long, value_name = "NAME", conflicts_with = "encoder")]
+    pub codec: Option<String>,
+
+    /// Encoder input as a JSON string. Required when --encoder/--codec
+    /// is set. SPEC-27 v3 R21.
+    #[arg(long)]
     pub input: Option<String>,
 
     /// Number of workers for distributed reduction (must be >= 1 if specified).
@@ -1286,11 +1301,22 @@ mod tests {
         }
     }
 
-    // SPEC-27 R21: --input without --encoder rejected by clap (requires).
+    // SPEC-27 v3 R21: `--input` without `--encoder`/`--codec` parses
+    // successfully (the v3 dual-form flag dropped clap's `requires =
+    // "encoder"` because either of two flags can satisfy the dependency).
+    // Runtime dispatch in `run_compute_command` is responsible for
+    // rejecting the orphan `--input` case.
     #[test]
-    fn test_parse_compute_input_without_encoder_rejected() {
-        let res = Cli::try_parse_from(["relativist", "compute", "--input", "{}"]);
-        assert!(res.is_err());
+    fn test_parse_compute_input_without_encoder_parses_runtime_rejects() {
+        let cli = Cli::try_parse_from(["relativist", "compute", "--input", "{}"]).unwrap();
+        match cli.command {
+            Command::Compute(args) => {
+                assert!(args.encoder.is_none());
+                assert!(args.codec.is_none());
+                assert_eq!(args.input.as_deref(), Some("{}"));
+            }
+            _ => panic!("expected Compute"),
+        }
     }
 
     // SPEC-27 R22: encoders list parses.
@@ -1345,6 +1371,174 @@ mod tests {
     fn test_no_subcommand_fails() {
         let result = Cli::try_parse_from(["relativist"]);
         assert!(result.is_err());
+    }
+
+    // --- TASK-0717 / SPEC-27 v3 R21 (dual-form flag with conflicts_with) ---
+
+    // UT-0717-01 / T17: legacy positional `compute add 3 5` parses with
+    // encoder/codec/input all None.
+    #[test]
+    fn cli_legacy_positional_compute_add_3_5_unchanged() {
+        let cli = Cli::parse_from(["relativist", "compute", "add", "3", "5"]);
+        match cli.command {
+            Command::Compute(args) => {
+                assert!(matches!(args.operation, Some(ArithmeticOp::Add)));
+                assert_eq!(args.a, Some(3));
+                assert_eq!(args.b, Some(5));
+                assert!(args.encoder.is_none());
+                assert!(args.codec.is_none());
+                assert!(args.input.is_none());
+            }
+            _ => panic!("expected Compute"),
+        }
+    }
+
+    // UT-0717-02 / T18: --encoder horner --input <json> parses, encoder
+    // populated, codec none.
+    #[test]
+    fn cli_encoder_flag_horner_input_json() {
+        let cli = Cli::parse_from([
+            "relativist",
+            "compute",
+            "--encoder",
+            "horner",
+            "--input",
+            r#"{"coeffs":[3,2,5,1],"x":2}"#,
+        ]);
+        match cli.command {
+            Command::Compute(args) => {
+                assert_eq!(args.encoder.as_deref(), Some("horner"));
+                assert!(args.codec.is_none());
+                assert_eq!(args.input.as_deref(), Some(r#"{"coeffs":[3,2,5,1],"x":2}"#));
+            }
+            _ => panic!("expected Compute"),
+        }
+    }
+
+    // UT-0717-03 / T19: --codec horner --input <json> parses identically
+    // to --encoder. Coalescing via `args.encoder.or(args.codec)` yields
+    // the same effective name.
+    #[test]
+    fn cli_codec_flag_horner_input_json_identical_to_encoder() {
+        let cli_a = Cli::parse_from([
+            "relativist",
+            "compute",
+            "--encoder",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,1],"x":3}"#,
+        ]);
+        let cli_b = Cli::parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,1],"x":3}"#,
+        ]);
+
+        let coalesced = |c: Cli| match c.command {
+            Command::Compute(args) => args.encoder.or(args.codec),
+            _ => panic!("expected Compute"),
+        };
+        assert_eq!(coalesced(cli_a), Some("horner".to_string()));
+        assert_eq!(coalesced(cli_b), Some("horner".to_string()));
+    }
+
+    // UT-0717-04 / T20 (SC-008): --encoder + --codec => clap conflict
+    // error with ErrorKind::ArgumentConflict; error message mentions
+    // both flag names. Programmatic check (NOT integer exit code).
+    #[test]
+    fn cli_encoder_codec_both_set_returns_conflict_error() {
+        let result = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--encoder",
+            "horner",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1],"x":0}"#,
+        ]);
+        let err = result.expect_err("clap MUST reject conflicting --encoder + --codec");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--encoder"),
+            "error must mention --encoder"
+        );
+        assert!(rendered.contains("--codec"), "error must mention --codec");
+
+        // EC-1: reverse order — same conflict.
+        let result_rev = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--encoder",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1],"x":0}"#,
+        ]);
+        let err_rev = result_rev.expect_err("reverse-order conflict");
+        assert_eq!(err_rev.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        // EC-2: different values still conflict (mutex on flag names).
+        let result_diff = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--encoder",
+            "horner",
+            "--codec",
+            "church_add",
+        ]);
+        let err_diff = result_diff.expect_err("different-values conflict");
+        assert_eq!(err_diff.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    // UT-0717-05: --codec set without --input parses, runtime rejects
+    // with Config error mentioning --input.
+    //
+    // (Runtime side covered in commands.rs `run_compute_encoder_without_input_errors`.)
+    #[test]
+    fn cli_codec_set_input_missing_parses_at_clap_layer() {
+        let cli = Cli::try_parse_from(["relativist", "compute", "--codec", "horner"]).unwrap();
+        match cli.command {
+            Command::Compute(args) => {
+                assert_eq!(args.codec.as_deref(), Some("horner"));
+                assert!(args.encoder.is_none());
+                assert!(args.input.is_none());
+            }
+            _ => panic!("expected Compute"),
+        }
+    }
+
+    // UT-0717-06 / R21 dual-form: both --encoder and --codec MUST appear
+    // separately in `compute --help` (NOT as a single flag with aliases).
+    #[test]
+    fn clap_help_lists_encoder_and_codec_separately() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help_text = cmd
+            .find_subcommand_mut("compute")
+            .expect("compute subcommand exists")
+            .render_help()
+            .to_string();
+
+        assert!(help_text.contains("--encoder"), "--encoder MUST be in help");
+        assert!(help_text.contains("--codec"), "--codec MUST be in help");
+
+        // Each appears at least once on its own line.
+        let encoder_lines = help_text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("--encoder"))
+            .count();
+        let codec_lines = help_text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("--codec"))
+            .count();
+        assert!(encoder_lines >= 1, "--encoder line missing");
+        assert!(codec_lines >= 1, "--codec line missing");
     }
 
     // === Test helpers ===
