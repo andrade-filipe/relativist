@@ -945,7 +945,12 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             );
             let seq_net = seq_reference_net.unwrap();
 
-            println!("  {} — {}", bench_id, bench.describe(size));
+            tracing::info!(
+                bench = ?bench_id,
+                size = size,
+                description = %bench.describe(size),
+                "running benchmark"
+            );
 
             // Add sequential results to output
             all_results.extend(seq_results.iter().cloned());
