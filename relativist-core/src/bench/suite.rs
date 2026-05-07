@@ -1193,12 +1193,21 @@ impl StressCurveDescriptor {
             let suite_outcome = run_benchmark_suite(&cfg);
             let wall = start.elapsed();
 
-            let (vmrss_peak_bytes, child_exit) = match suite_outcome {
-                Ok(_) => {
+            // TASK-0722 BUG-B: capture the real per-rep `BenchmarkResult`
+            // rows the suite produced. The `--campaign stress-curve`
+            // dispatch in `commands.rs` emits these directly via
+            // `write_csv_detail` — pre-fix it synthesised zero-rows from
+            // scratch, throwing away interactions/MIPS/agent counts.
+            let (vmrss_peak_bytes, child_exit, bench_results) = match suite_outcome {
+                Ok(suite) => {
                     let peak = probe.peak_bytes().unwrap_or(0);
-                    (peak, crate::bench::stop_rule::ChildExit::Ok)
+                    (peak, crate::bench::stop_rule::ChildExit::Ok, suite.results)
                 }
-                Err(_) => (0, crate::bench::stop_rule::ChildExit::NonZero { code: 1 }),
+                Err(_) => (
+                    0,
+                    crate::bench::stop_rule::ChildExit::NonZero { code: 1 },
+                    Vec::new(),
+                ),
             };
 
             let frac = probe.as_fraction_of_total(vmrss_peak_bytes);
@@ -1208,6 +1217,7 @@ impl StressCurveDescriptor {
                 vmrss_peak_bytes,
                 vmrss_peak_fraction_of_total: frac,
                 child_exit,
+                bench_results,
             }
         });
 

@@ -37,7 +37,25 @@ pub enum ChildExit {
 }
 
 /// Empirical observations from a finished rep, fed into [`StopRule::check`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `bench_results` carries the per-repetition `BenchmarkResult` rows
+/// produced by [`run_benchmark_suite`] for this `n`. It is populated only
+/// by the in-process `StressCurveDescriptor::run_one_sequence` path
+/// (TASK-0722 BUG-B): all other call sites — including the unit tests in
+/// this module — leave the vector empty. The field is `#[serde(skip)]`
+/// because [`BenchmarkResult`] is `Serialize`-only (no `Deserialize`,
+/// no `PartialEq`); skipping it preserves the field-level cmp/round-trip
+/// behaviour expected by existing fixtures while letting the runtime
+/// dispatch path carry full per-rep telemetry in-memory.
+///
+/// `RepResult` no longer derives `Deserialize` / `PartialEq` after the
+/// new field landed (no external consumer uses either — confirmed by a
+/// repo-wide audit). Field-level comparisons in the unit tests below
+/// continue to work unchanged.
+///
+/// [`run_benchmark_suite`]: crate::bench::suite::run_benchmark_suite
+/// [`BenchmarkResult`]: crate::bench::BenchmarkResult
+#[derive(Debug, Clone, Serialize)]
 pub struct RepResult {
     pub n: usize,
     pub wall: Duration,
@@ -47,12 +65,20 @@ pub struct RepResult {
     /// caller is responsible.
     pub vmrss_peak_fraction_of_total: f64,
     pub child_exit: ChildExit,
+    /// Real per-rep `BenchmarkResult` rows captured from
+    /// `run_benchmark_suite`. Empty for non-stress-curve callers.
+    /// (TASK-0722 BUG-B fix.)
+    #[serde(skip)]
+    pub bench_results: Vec<super::BenchmarkResult>,
 }
 
 /// Aggregated outcome of [`StopRule::run_sequence`]. `stop_reason == None`
 /// means the sequence ran to completion; otherwise it carries the reason
 /// the sequence aborted, and `last_attempted_n` points at the offending N.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Deserialize` / `PartialEq` were dropped together with [`RepResult`]'s
+/// (TASK-0722 BUG-B); the only consumers compare individual fields.
+#[derive(Debug, Clone, Serialize)]
 pub struct SequenceOutcome {
     pub completed_reps: Vec<RepResult>,
     pub stop_reason: Option<StopReason>,
@@ -173,6 +199,7 @@ mod tests {
             vmrss_peak_bytes,
             vmrss_peak_fraction_of_total: vmrss_peak_fraction,
             child_exit,
+            bench_results: Vec::new(),
         }
     }
 

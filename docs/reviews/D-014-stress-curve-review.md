@@ -580,3 +580,29 @@ is needed regardless.
 ---
 
 **End of review.**
+
+---
+
+## Follow-up note (TASK-0722, 2026-05-06)
+
+The TG-001 IT introduced in TASK-0720 Stage 6 REFACTOR
+(`tests/d014_writer_to_plot_roundtrip.rs`) validated only **schema
+match** between writer and plotter, not **data integrity** of the
+emitted rows. As a result, the dispatch path's hardcoded-zeros bug
+(BUG-B in TASK-0722, see `docs/qa/D-014-stress-curve-qa.md` post-Stage-6
+section) survived Stage 6 closure undetected: the IT verified that
+`benchmark`, `input_size`, etc. columns existed and that the CSV had at
+least one data row, but did not assert that any counter was non-zero.
+
+The new IT `tests/d014_smoke_data_integrity.rs` (TASK-0722 AC-3) closes
+this gap: it parses the CSV with the `csv` crate and asserts
+`total_interactions > 0`, `mips > 0`,
+`agent_count_at_construction_complete > 0`, and `correct == true` for
+`ep_annihilation N=1000 W=2`. This pattern — pin **schema** in one IT
+and **data invariants** in a second — is the reviewer-recommended
+template for any future stdout-captured CSV pipeline.
+
+A separate pre-existing `println!` at `bench/suite.rs:948` (D-009 era,
+BUG-A in TASK-0722) was outside the original review scope but
+contributed to the same operator-smoke failure mode (banner on line 1
+preempting the real CSV header). It is now `tracing::info!`.

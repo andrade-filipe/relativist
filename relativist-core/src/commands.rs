@@ -343,97 +343,50 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
         )
         .map_err(|e| RelativistError::Config(format!("stress-curve campaign: {}", e)))?;
 
-        // TASK-0720 BUG-001 fix: the `--campaign stress-curve` dispatch path
-        // is what the bash orchestrator (`scripts/stress_curve.sh`) captures
-        // via stdout redirection into the per-rep CSV. Pre-fix this path
-        // emitted only a `println!` debug summary, producing a 7-8 hour
-        // overnight run with zero CSV rows. Now we synthesise a per-N
-        // `BenchmarkResult` populated from the descriptor's `RepResult` data
-        // and route it through the canonical `write_csv_detail` writer (so
-        // every column the plotter expects is present and formatted
-        // identically to legacy bench rows).
+        // TASK-0722 BUG-B fix: the `--campaign stress-curve` dispatch path
+        // emits the REAL per-rep `BenchmarkResult` rows produced by the
+        // underlying `run_benchmark_suite` invocation, via the canonical
+        // `write_csv_detail` writer. TASK-0720's interim implementation
+        // (Stage 6 REFACTOR) synthesised rows with hardcoded zeros for
+        // every counter (interactions, MIPS, rounds, agent counts, bytes,
+        // per-rule breakdowns), invalidating every sanity check downstream.
         //
-        // The summary line now goes to `tracing::info!` (stderr by default
-        // under the project's tracing-subscriber config) — the operator can
-        // still see it on the console, but it does NOT contaminate stdout.
-        let workload_id = match workload {
-            crate::bench::suite::StressWorkload::EpAnnihilation => {
-                crate::bench::BenchmarkId::EPAnnihilation
+        // Telemetry plumbing: `RepResult.bench_results` (BUG-B step 1)
+        // carries the suite output up out of `run_one_sequence` (BUG-B
+        // step 2); we annotate the LAST emitted row of the LAST rep with
+        // the StopRule's `stop_reason` (when any) so the plot script and
+        // the bash orchestrator can recover the campaign's halting cause.
+        //
+        // The closing summary line goes to `tracing::info!` (stderr by
+        // default under the project's tracing-subscriber config) — the
+        // operator can still see it on the console, but it does NOT
+        // contaminate stdout.
+        let mut rows: Vec<crate::bench::BenchmarkResult> = Vec::new();
+        for rep in outcome.completed_reps.iter() {
+            for bench_result in rep.bench_results.iter() {
+                rows.push(bench_result.clone());
             }
-            crate::bench::suite::StressWorkload::DualTree => crate::bench::BenchmarkId::DualTree,
-            crate::bench::suite::StressWorkload::CondupExpansion => {
-                crate::bench::BenchmarkId::ConDupExpansion
-            }
-        };
-        let mode = match env {
-            crate::bench::suite::Env::InProcess => {
-                if workers <= 1 {
-                    crate::bench::Mode::Sequential
-                } else {
-                    crate::bench::Mode::Local
+        }
+
+        // Annotate the final row of the last rep with the sequence-level
+        // stop_reason (if any). This row is the right anchor because:
+        //   (a) `outcome.last_attempted_n` corresponds to the rep that
+        //       triggered the stop (per `StopRule::run_sequence` contract);
+        //   (b) all rows for that rep share the same N — taking the last
+        //       gives the highest `repetition` index inside that N.
+        if let (Some(last_n), Some(reason)) = (outcome.last_attempted_n, outcome.stop_reason) {
+            let reason_str = match reason {
+                crate::bench::stop_rule::StopReason::WallTimeExceeded => "WallTimeExceeded",
+                crate::bench::stop_rule::StopReason::MemoryExceeded => "MemoryExceeded",
+                crate::bench::stop_rule::StopReason::Oom => "Oom",
+            };
+            // Walk in reverse to find the last row for `last_n`.
+            for row in rows.iter_mut().rev() {
+                if row.input_size as usize == last_n {
+                    row.stop_reason = Some(reason_str.to_string());
+                    break;
                 }
             }
-            crate::bench::suite::Env::DockerTcp => crate::bench::Mode::TcpLocalhost,
-        };
-
-        let mut rows: Vec<crate::bench::BenchmarkResult> =
-            Vec::with_capacity(outcome.completed_reps.len());
-        for (idx, rep) in outcome.completed_reps.iter().enumerate() {
-            let wall = rep.wall.as_secs_f64();
-            // Convert the StopReason variant to the column's stable string
-            // form used by the bash orchestrator and the plotter.
-            let stop_reason = if Some(rep.n) == outcome.last_attempted_n {
-                outcome.stop_reason.map(|r| match r {
-                    crate::bench::stop_rule::StopReason::WallTimeExceeded => {
-                        "WallTimeExceeded".to_string()
-                    }
-                    crate::bench::stop_rule::StopReason::MemoryExceeded => {
-                        "MemoryExceeded".to_string()
-                    }
-                    crate::bench::stop_rule::StopReason::Oom => "Oom".to_string(),
-                })
-            } else {
-                None
-            };
-            rows.push(crate::bench::BenchmarkResult {
-                benchmark: workload_id,
-                input_size: rep.n.try_into().unwrap_or(u32::MAX),
-                mode,
-                workers: workers as u32,
-                repetition: idx as u32,
-                correct: matches!(rep.child_exit, crate::bench::stop_rule::ChildExit::Ok),
-                wall_clock_secs: wall,
-                total_interactions: 0,
-                mips: 0.0,
-                interactions_by_rule: crate::bench::InteractionsByRule::default(),
-                rounds: 0,
-                border_redexes_per_round: vec![],
-                border_ratio_per_round: vec![],
-                peak_memory_bytes: rep.vmrss_peak_bytes,
-                peak_memory_during_construction: 0,
-                peak_memory_during_reduction: rep.vmrss_peak_bytes,
-                agent_count_at_construction_complete: 0,
-                live_agent_count_watermark: 0,
-                representation: crate::bench::NetRepresentation::Dense,
-                chunk_size: None,
-                recycle_policy: crate::bench::RecyclePolicy::DisableUnderDelta,
-                agents_per_round: vec![],
-                bytes_sent: 0,
-                bytes_received: 0,
-                bytes_sent_per_round: vec![],
-                bytes_received_per_round: vec![],
-                partition_time_per_round: vec![],
-                compute_time_per_round: vec![],
-                merge_time_per_round: vec![],
-                network_time_per_round: vec![],
-                worker_stats: vec![],
-                speedup: 1.0,
-                efficiency: 1.0,
-                overhead_ratio: 0.0,
-                vmrss_peak_mb: rep.vmrss_peak_bytes as f64 / (1024.0 * 1024.0),
-                vmrss_current_end_mb: rep.vmrss_peak_bytes as f64 / (1024.0 * 1024.0),
-                stop_reason,
-            });
         }
 
         // Emit the CSV (header + rows) on stdout — this is what the bash

@@ -23,5 +23,8 @@ pub fn rep(
         vmrss_peak_bytes,
         vmrss_peak_fraction_of_total: vmrss_peak_fraction,
         child_exit,
+        // TASK-0722 BUG-B: stop-rule helpers don't run a real benchmark
+        // suite — leave the per-rep telemetry empty.
+        bench_results: Vec::new(),
     }
 }

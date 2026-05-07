@@ -33,6 +33,32 @@ This is unusually high for a Stage 5 QA pass. The single dominant defect (BUG-00
 
 **Stage 6 REFACTOR closure (TASK-0720, 2026-05-06):** BUG-001, BUG-002, BUG-003 (Fix-B), BUG-004, BUG-005, BUG-006 marked `Status: FIXED` inline below. The remaining HIGH/MEDIUM/LOW bugs (BUG-007..BUG-020) were explicitly out of scope per the TASK-0720 file and are deferred to a follow-up TASK or "won't-fix" disposition during merge review. New IT `tests/d014_writer_to_plot_roundtrip.rs` (~150 LoC) covers AC-1+AC-2 end-to-end (Rust binary stdout → plot script → real PDF). Pisos post-fix (Windows): default 1900 (+15 vs baseline 1885), zero-copy 1944, streaming-no-recycle 1891, release 1842. After Stage 6 the bundle is **safe-to-merge** subject to the operator running TASK-0708's overnight campaign.
 
+---
+
+**Post-Stage-6 operator-smoke discoveries (TASK-0722, 2026-05-06):** the operator ran `scripts/stress_curve.sh --smoke` for the first time after TASK-0720 closure and surfaced two bugs the Stage 5 QA + Stage 6 REFACTOR did not catch. Both are now `Status: FIXED via TASK-0722`.
+
+### BUG-A — Orphan `println!` contaminating stdout in `bench/suite.rs:948`
+
+- **Severity:** HIGH (Stage-5 attack-vector miss; pre-existing D-009-era code outside the TASK-0700..0708 audit scope).
+- **Symptom:** every per-rep CSV captured by `scripts/stress_curve.sh` has a workload-banner line on line 1 (`  ep_annihilation — 1000 ERA-ERA pairs (void annihilation)`); the real CSV header sits on line 2; the plot-script aggregator reports `required column 'benchmark' missing`.
+- **Why missed:** the QA Stage 5 attack vectors targeted new code introduced by TASK-0700..0708. `bench/suite.rs::run_benchmark_suite` (D-009 era) was unchanged in D-014 and therefore outside the audit scope. The audit explicitly framed `StopRule::check` NaN/INFINITY, bash interrupt handling, OOM-exit-code coverage — none of which surface a stdout-banner contamination.
+- **Fix:** replace `println!("  {} — {}", bench_id, bench.describe(size));` with a `tracing::info!(bench, size, description, "running benchmark")` invocation (CLAUDE.md "no `println!` in production" rule).
+- **Status:** **FIXED via TASK-0722**, commit `2162a9f`.
+
+### BUG-B — Dispatch synthesises hardcoded zeros instead of using real `BenchmarkResult` data
+
+- **Severity:** CRITICAL (TASK-0720 BUG-001 fix was incomplete — wired up CSV emission but threw away every counter).
+- **Symptom:** every CSV row produced by `--campaign stress-curve` had `total_interactions=0`, `mips=0`, `rounds=0`, `agent_count_at_construction_complete=0`, all `bytes_*=0`, and an all-zero `interactions_by_rule`. The bench was actually executed (non-zero `wall_clock_secs` confirmed it), but the data was discarded; `commands.rs:398-436` synthesised a fresh `BenchmarkResult` per `RepResult` with hardcoded zeros for every counter. Every sanity check downstream from `docs/benchmarks/campaigns/stress-curve.md` §8 (mips plateau, log-log slope, speedup) read columns that were uniformly zero.
+- **Why missed:** the TG-001 IT `tests/d014_writer_to_plot_roundtrip.rs` only validated (a) the writer-to-plotter SCHEMA match and (b) "non-empty CSV". It did NOT assert that any counter was populated. The plot script was updated to consume the writer schema in TASK-0720 Path A, so column names lined up; the plot just plotted zeros, but the plotter did not fail on zero data.
+- **Fix (TASK-0722, three-step plumbing):**
+  1. Add `pub bench_results: Vec<BenchmarkResult>` to `RepResult` (with `#[serde(skip)]` since `BenchmarkResult` is `Serialize`-only). Drop `Deserialize` and `PartialEq` from `RepResult` / `SequenceOutcome` (no external consumer used either — repo-wide audit confirmed).
+  2. In `StressCurveDescriptor::run_one_sequence`, capture `suite.results` from the `Ok(suite)` arm of `run_benchmark_suite` into the new field. The `Err(_)` arm leaves it empty, mirroring the existing `child_exit: NonZero { code: 1 }` mapping.
+  3. In the `--campaign stress-curve` dispatch in `commands.rs`, iterate `outcome.completed_reps[*].bench_results` and clone those rows directly into the writer; annotate the LAST emitted row of the LAST rep (matching `outcome.last_attempted_n`) with `outcome.stop_reason` when present.
+- **New IT:** `tests/d014_smoke_data_integrity.rs` spawns the release binary and asserts `total_interactions > 0`, `mips > 0`, `agent_count_at_construction_complete > 0`, `correct == true` for `ep_annihilation N=1000 W=2`, plus the AC-1 invariant that line 1 is the canonical CSV header.
+- **Status:** **FIXED via TASK-0722**, commits `2162a9f` (BUG-A) + the BUG-B fix commit recorded in the TASK-0722 closure notes.
+
+**Pisos post-TASK-0722 (Windows):** default 1901 (+1 from new IT), zero-copy 1945, streaming-no-recycle 1892, release 1843. clippy + fmt clean.
+
 ## Test coverage
 
 ADEQUATE for individual components (StopRule, MemoryProbe, CSV roundtrip), GAPS at the integration boundary:
