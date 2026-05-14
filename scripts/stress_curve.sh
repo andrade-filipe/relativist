@@ -250,6 +250,12 @@ for WL in "${WL_ARR[@]}"; do
                 # For the second invocation onward, we strip the duplicate
                 # header line so the aggregated CSV has exactly one header.
                 set +e
+                # BUG-FIX 2026-05-14: the outer `for REP in $(seq 1 "$REPS")`
+                # already iterates `$REPS` times; passing `--reps "$REP"` made
+                # each child run 1, 2, 3, ... reps internally — ~3.3× inflation
+                # at REPS=5 (1+2+3+4+5 = 15 vs intended 5). The child is now
+                # invoked with `--reps 1` so the bash loop is the sole driver
+                # of repetition counts.
                 if [[ $HEADER_WRITTEN -eq 0 ]]; then
                     # First write: keep the header.
                     "$RELATIVIST_BIN" bench \
@@ -257,7 +263,7 @@ for WL in "${WL_ARR[@]}"; do
                         --workload "$WL" \
                         --env in-process \
                         --workers "$WK" \
-                        --reps "$REP" \
+                        --reps 1 \
                         --n-seq "$N" \
                         >>"$RAW_CSV" 2>"$STDERR_LOG" &
                 else
@@ -268,7 +274,7 @@ for WL in "${WL_ARR[@]}"; do
                         --workload "$WL" \
                         --env in-process \
                         --workers "$WK" \
-                        --reps "$REP" \
+                        --reps 1 \
                         --n-seq "$N" \
                         2>"$STDERR_LOG" \
                         | tail -n +2 >>"$RAW_CSV" &
