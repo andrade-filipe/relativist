@@ -201,6 +201,26 @@ fi
 # `StressCurveDescriptor::n_seq()`). Smoke mode overrides this with SMOKE_NS.
 N_SEQ=(10000 31623 100000 316228 1000000 3162278 10000000 31622776 100000000 316227766 1000000000)
 
+# BUG-FIX 2026-05-14 (Option C): the unbounded 10⁹ tail of `N_SEQ` is OOM-risky
+# on commodity hosts (alloc ~68 GB at N=10⁹) and stresses code paths still in
+# triage from the 2026-05-14 run. `STRESS_CURVE_N_MAX` lets the operator cap
+# the sweep without editing this script; default is 10⁷ (matches the 7-point
+# Option C campaign). To restore the full 11-point sweep:
+#   STRESS_CURVE_N_MAX=1000000000 scripts/stress_curve.sh ...
+STRESS_CURVE_N_MAX="${STRESS_CURVE_N_MAX:-10000000}"
+FILTERED_N_SEQ=()
+for _n in "${N_SEQ[@]}"; do
+    if [[ "$_n" -le "$STRESS_CURVE_N_MAX" ]]; then
+        FILTERED_N_SEQ+=("$_n")
+    fi
+done
+if [[ ${#FILTERED_N_SEQ[@]} -eq 0 ]]; then
+    echo "ERROR: STRESS_CURVE_N_MAX=$STRESS_CURVE_N_MAX excludes every point in N_SEQ" >&2
+    exit 1
+fi
+N_SEQ=("${FILTERED_N_SEQ[@]}")
+unset FILTERED_N_SEQ _n
+
 # --- Phase 1: in-process ---
 echo "=== Phase 1: in-process arm ==="
 echo "  workloads: $WORKLOADS"
