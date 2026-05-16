@@ -8,7 +8,9 @@ pub mod benchmarks;
 pub mod csv;
 pub mod isomorphism;
 pub mod memory;
+pub mod memory_probe;
 pub mod stats;
+pub mod stop_rule;
 pub mod streaming;
 pub mod suite;
 pub mod validate;
@@ -269,6 +271,31 @@ pub struct BenchmarkResult {
     pub speedup: f64,
     pub efficiency: f64,
     pub overhead_ratio: f64,
+
+    // -----------------------------------------------------------------------
+    // D-014 stress-curve fields (TASK-0703). Append-only at the end of the
+    // row; existing pre-D-014 readers (D-010/D-011/D-012) ignore trailing
+    // columns by csv crate convention.
+    // -----------------------------------------------------------------------
+    /// `vmrss_peak_mb` — `MemoryProbe::peak_bytes() / (1024 * 1024)` sampled
+    /// at end-of-rep. Default `0.0` for non-D-014 rows.
+    #[serde(default)]
+    pub vmrss_peak_mb: f64,
+    /// `vmrss_current_end_mb` — `MemoryProbe::current_bytes() / (1024 * 1024)`
+    /// at end-of-rep. Default `0.0`.
+    #[serde(default)]
+    pub vmrss_current_end_mb: f64,
+    /// `stop_reason` — `None` (renders as `""`) for normal reps; `Some(_)`
+    /// for sentinel rows after a `StopRule::check` fires. Carries the
+    /// variant name as a string for stable CSV serialization.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    // TASK-0720 BUG-006: `cv_above_gate` removed — the column was always
+    // emitted as `false` because the bench harness does not compute CV
+    // across reps for stress-curve sequences (each child gets reps=1).
+    // CV is now owned by the bash orchestrator across the 5 child results
+    // per (workload, W, N) tuple; the column is not part of the per-rep
+    // schema any more.
 }
 
 /// Interactions broken down by rule type (SPEC-09 R19).
@@ -834,6 +861,12 @@ mod tests {
             speedup: 1.0,
             efficiency: 1.0,
             overhead_ratio: 0.0,
+            // D-014 stress-curve fields (TASK-0703); zero defaults preserve
+            // pre-D-014 invariants on existing rodadas. cv_above_gate dropped
+            // by TASK-0720 BUG-006 — CV is now owned by the bash orchestrator.
+            vmrss_peak_mb: 0.0,
+            vmrss_current_end_mb: 0.0,
+            stop_reason: None,
         }
     }
 

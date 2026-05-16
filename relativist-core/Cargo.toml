@@ -59,6 +59,11 @@ rayon = "1"
 # Random number generation (SPEC-13 R11, SPEC-10 R9)
 rand = "0.8"
 
+# Arbitrary-precision unsigned integers (SPEC-27 v3 §2 BigUint definition).
+# Used by `horner_oracle::horner_serial` and `biguint_readback::decode_biguint`
+# to avoid overflow when polynomial evaluations exceed `u64::MAX`.
+num-bigint = "0.4"
+
 # Compile-time type assertions (SPEC-22 §4.4 Send+Sync — TASK-0488)
 static_assertions = "1"
 
@@ -87,6 +92,17 @@ opentelemetry_sdk = { version = "0.28", optional = true }
 # `std` is required for the validation infrastructure to work with std types.
 rkyv = { version = "0.8", optional = true, default-features = false, features = ["bytecheck", "alloc", "std"] }
 
+# D-014 stress-curve memory probe (TASK-0700) — Windows host backend.
+# `Win32_System_ProcessStatus`: GetProcessMemoryInfo + PROCESS_MEMORY_COUNTERS
+# `Win32_System_SystemInformation`: GlobalMemoryStatusEx + MEMORYSTATUSEX
+# `Win32_System_Threading`: GetCurrentProcess (pseudo-handle)
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Property-based testing (PESQ-023 D6, SPEC-13 R13)
 proptest = "1"
@@ -99,6 +115,15 @@ tokio-test = "0.4"
 
 # HTTP testing (SPEC-11 R21 — metrics endpoint tests)
 tower = "0.5"
+
+# D-014 stress-curve campaign (TASK-0703 / TASK-0704 / TASK-0707) —
+# CSV roundtrip parsing, tempdirs for orchestrator smokes, libc for
+# SIGINT in resume-invariant test.
+csv = "1"
+tempfile = "3"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [features]
 default = []

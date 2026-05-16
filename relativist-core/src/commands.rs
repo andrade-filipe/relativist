@@ -292,6 +292,118 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
     use crate::bench::suite::run_benchmark_suite;
     use crate::bench::{BenchmarkId, BenchmarkSuiteConfig, Mode};
 
+    // -----------------------------------------------------------------------
+    // D-014 Stress-curve dispatch (TASK-0702)
+    // -----------------------------------------------------------------------
+    // When `--campaign stress-curve` is set, route to the descriptor
+    // path; the existing matrix-runner code below is untouched.
+    if let Some(crate::config::CampaignKind::StressCurve) = args.campaign {
+        let workload = args
+            .workload
+            .ok_or_else(|| {
+                RelativistError::Config("--campaign stress-curve requires --workload".to_string())
+            })?
+            .into_workload();
+        let env = args
+            .env
+            .ok_or_else(|| {
+                RelativistError::Config("--campaign stress-curve requires --env".to_string())
+            })?
+            .into_env();
+        // Reuse the existing `--workers Vec<u32>` flag's first value.
+        let workers = args.workers.first().copied().unwrap_or(1) as usize;
+        let reps = args.reps.max(1) as usize;
+        let n_seq_owned = args.n_seq.clone();
+
+        // TASK-0720 BUG-003 (Fix-B): when `reps > 1`, the in-process
+        // `run_one_sequence` does NOT reset `MemoryProbe::peak_bytes` (VmHWM)
+        // between reps. Reps 2..N inherit rep 1's high-water-mark. The bash
+        // orchestrator works around this by fork-execing a fresh child per
+        // rep; in-process Rust callers see a monotonic peak. Document the
+        // limitation loudly so a Rust user does not silently consume bad
+        // numbers from rep 2 onward. See `docs/benchmarks/campaigns/stress-curve.md`
+        // ("Known limitations" section).
+        if reps > 1 {
+            tracing::warn!(
+                reps = reps,
+                "VmHWM not reset between reps in the in-process Rust path; \
+                 rep 1's peak is inherited by reps 2..N (bash orchestrator \
+                 fork-execs a fresh child per rep to bypass this). See \
+                 docs/benchmarks/campaigns/stress-curve.md."
+            );
+        }
+
+        let outcome = crate::bench::suite::StressCurveDescriptor::run_one_sequence(
+            workload,
+            env,
+            workers,
+            reps,
+            n_seq_owned.as_deref(),
+            None,
+        )
+        .map_err(|e| RelativistError::Config(format!("stress-curve campaign: {}", e)))?;
+
+        // TASK-0722 BUG-B fix: the `--campaign stress-curve` dispatch path
+        // emits the REAL per-rep `BenchmarkResult` rows produced by the
+        // underlying `run_benchmark_suite` invocation, via the canonical
+        // `write_csv_detail` writer. TASK-0720's interim implementation
+        // (Stage 6 REFACTOR) synthesised rows with hardcoded zeros for
+        // every counter (interactions, MIPS, rounds, agent counts, bytes,
+        // per-rule breakdowns), invalidating every sanity check downstream.
+        //
+        // Telemetry plumbing: `RepResult.bench_results` (BUG-B step 1)
+        // carries the suite output up out of `run_one_sequence` (BUG-B
+        // step 2); we annotate the LAST emitted row of the LAST rep with
+        // the StopRule's `stop_reason` (when any) so the plot script and
+        // the bash orchestrator can recover the campaign's halting cause.
+        //
+        // The closing summary line goes to `tracing::info!` (stderr by
+        // default under the project's tracing-subscriber config) — the
+        // operator can still see it on the console, but it does NOT
+        // contaminate stdout.
+        let mut rows: Vec<crate::bench::BenchmarkResult> = Vec::new();
+        for rep in outcome.completed_reps.iter() {
+            for bench_result in rep.bench_results.iter() {
+                rows.push(bench_result.clone());
+            }
+        }
+
+        // Annotate the final row of the last rep with the sequence-level
+        // stop_reason (if any). This row is the right anchor because:
+        //   (a) `outcome.last_attempted_n` corresponds to the rep that
+        //       triggered the stop (per `StopRule::run_sequence` contract);
+        //   (b) all rows for that rep share the same N — taking the last
+        //       gives the highest `repetition` index inside that N.
+        if let (Some(last_n), Some(reason)) = (outcome.last_attempted_n, outcome.stop_reason) {
+            let reason_str = match reason {
+                crate::bench::stop_rule::StopReason::WallTimeExceeded => "WallTimeExceeded",
+                crate::bench::stop_rule::StopReason::MemoryExceeded => "MemoryExceeded",
+                crate::bench::stop_rule::StopReason::Oom => "Oom",
+            };
+            // Walk in reverse to find the last row for `last_n`.
+            for row in rows.iter_mut().rev() {
+                if row.input_size as usize == last_n {
+                    row.stop_reason = Some(reason_str.to_string());
+                    break;
+                }
+            }
+        }
+
+        // Emit the CSV (header + rows) on stdout — this is what the bash
+        // orchestrator captures via `>>"$RAW_CSV"`.
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        write_csv_detail(&mut handle, &rows)?;
+
+        tracing::info!(
+            completed_reps = outcome.completed_reps.len(),
+            ?outcome.stop_reason,
+            ?outcome.last_attempted_n,
+            "stress-curve outcome"
+        );
+        return Ok(());
+    }
+
     // Parse mode
     let mode = match args.mode.as_str() {
         "sequential" => Mode::Sequential,
@@ -506,22 +618,35 @@ pub fn run_bench_command(args: BenchArgs) -> Result<(), RelativistError> {
 }
 
 /// Execute compute mode: encode arithmetic, reduce, decode result
-/// (SPEC-14 R22-R25; SPEC-27 R21, R23).
+/// (SPEC-14 R22-R25; SPEC-27 v3 R21, R23).
 ///
 /// Two paths:
-/// - **Registry (SPEC-27 R21, R23):** when `--encoder` is set, runs the
-///   `encode → validate → reduce_all → decode → print JSON` pipeline.
+/// - **Registry (SPEC-27 v3 R21, R23):** when `--encoder` OR `--codec` is
+///   set (mutually exclusive at the clap layer via `conflicts_with`),
+///   runs the `encode → validate → reduce_all → decode → print JSON`
+///   pipeline. The two flags are coalesced via
+///   `args.encoder.or(args.codec)`.
 /// - **Legacy (SPEC-14):** positional `<op> <a> <b>` Church arithmetic.
 pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), RelativistError> {
     use crate::config::ArithmeticOp;
     use crate::encoding::{build_add, build_exp, build_mul, decode_nat, discover_root};
 
-    // SPEC-27 R21, R23: registry path.
-    if let Some(name) = args.encoder.as_deref() {
+    // SPEC-27 v3 R21, R23: registry path. `--encoder` and `--codec` are
+    // mutually exclusive at the clap layer; coalesce here into one name.
+    let codec_name = args.encoder.as_deref().or(args.codec.as_deref());
+    if let Some(name) = codec_name {
         let input = args.input.as_ref().ok_or_else(|| {
-            RelativistError::Config("--input is required when --encoder is set".to_string())
+            RelativistError::Config("--input is required when --encoder/--codec is set".to_string())
         })?;
         return run_compute_with_encoder(name, input.as_bytes());
+    }
+
+    // SPEC-27 v3 R21: orphan `--input` without --encoder/--codec is a
+    // configuration error.
+    if args.input.is_some() {
+        return Err(RelativistError::Config(
+            "--input requires --encoder or --codec".to_string(),
+        ));
     }
 
     // Legacy SPEC-14 path: positional operation/a/b are required.
@@ -663,6 +788,21 @@ fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistEr
         mips
     );
 
+    // SPEC-27 v3 R23 pipeline (TASK-0721 BUG-001): codecs that compose Church
+    // arithmetic via `wire_*_into` (HornerCodec, build_add/build_mul/...) emit
+    // nets with `root = None` — the result wire is connected to `FreePort(0)`
+    // and the post-reduction root must be discovered before decoding. The unit
+    // tests `seq_decoded` / `inproc_decoded` (tests/horner_distributed_g1.rs)
+    // already do this; the CLI path must mirror that contract.
+    if net.root.is_none() {
+        let recovered = crate::encoding::discover_root(&mut net);
+        tracing::debug!(
+            recovered_root = recovered,
+            agents = net.count_live_agents(),
+            "post-reduce root discovery"
+        );
+    }
+
     let json_out = registry.decode(name, &net)?;
     let pretty = serde_json::to_string_pretty(&json_out)
         .map_err(|e| RelativistError::Encoding(format!("serialize result: {}", e)))?;
@@ -671,17 +811,36 @@ fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistEr
     Ok(())
 }
 
-/// SPEC-27 R22: list registered encoders with descriptions.
+/// Render the `encoders list` output to a `String` (testable variant).
+///
+/// SPEC-27 v3 R22 — formatted as:
+///
+/// ```text
+/// Available encoders:
+///   <name padded to column>  <description>
+///   ...
+/// ```
+///
+/// The `list()` order matches `EncoderRegistry::list` (alphabetical on name).
+fn format_encoders_list() -> String {
+    let r = crate::encoding::default_registry();
+    let pairs = r.list();
+    let max_name = pairs.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let mut out = String::from("Available encoders:\n");
+    for (name, desc) in pairs {
+        out.push_str(&format!("  {:<width$}  {}\n", name, desc, width = max_name));
+    }
+    out
+}
+
+/// SPEC-27 v3 R22: list registered encoders with descriptions.
+///
+/// The `codecs` subcommand is a clap alias for `encoders` (R22 MAY) — both
+/// dispatch through this handler.
 pub fn run_encoders_command(args: EncodersArgs) -> Result<(), RelativistError> {
     match args.action {
         EncodersAction::List => {
-            let r = crate::encoding::default_registry();
-            let pairs = r.list();
-            let max_name = pairs.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
-            println!("Available encoders:");
-            for (name, desc) in pairs {
-                println!("  {:<width$}  {}", name, desc, width = max_name);
-            }
+            print!("{}", format_encoders_list());
         }
     }
     Ok(())
@@ -1138,6 +1297,7 @@ mod tests {
             a: None,
             b: None,
             encoder: None,
+            codec: None,
             input: None,
             workers: None,
             output: None,
@@ -1153,11 +1313,20 @@ mod tests {
         assert!(matches!(err, RelativistError::Config(_)));
     }
 
-    // SPEC-27 R21: --encoder set but --input missing → Config error.
+    // SPEC-27 v3 R21: --encoder/--codec set but --input missing → Config error.
     #[test]
     fn run_compute_encoder_without_input_errors() {
         let mut args = empty_compute_args();
-        args.encoder = Some("lambda".to_string());
+        args.encoder = Some("horner".to_string());
+        let err = run_compute_command(args).unwrap_err();
+        match err {
+            RelativistError::Config(msg) => assert!(msg.contains("--input")),
+            other => panic!("expected Config, got {:?}", other),
+        }
+
+        // Same path through --codec.
+        let mut args = empty_compute_args();
+        args.codec = Some("horner".to_string());
         let err = run_compute_command(args).unwrap_err();
         match err {
             RelativistError::Config(msg) => assert!(msg.contains("--input")),
@@ -1186,11 +1355,13 @@ mod tests {
         }
     }
 
-    // SPEC-27 R23: invalid JSON for a real encoder → Encoding error
-    // (propagated from the codec via RegistryError::Encode).
+    // SPEC-27 v3 R23: invalid JSON for a real encoder → Encoding error
+    // (propagated from the codec via RegistryError::Encode). Uses
+    // `horner` since `lambda` is no longer in the v3 default registry
+    // (TASK-0716).
     #[test]
     fn run_compute_with_encoder_invalid_input_errors() {
-        let err = run_compute_with_encoder("lambda", b"{not json}").unwrap_err();
+        let err = run_compute_with_encoder("horner", b"{not json}").unwrap_err();
         assert!(matches!(err, RelativistError::Encoding(_)));
     }
 
@@ -1201,5 +1372,66 @@ mod tests {
             action: EncodersAction::List,
         };
         assert!(run_encoders_command(args).is_ok());
+    }
+
+    // --- TASK-0718 / SPEC-27 v3 R22 ---
+
+    // UT-0718-03 / T21: rendered output contains the 5 v3 codecs in
+    // canonical R19 order; first line is "Available encoders:".
+    #[test]
+    fn cli_encoders_list_outputs_5_v3_codecs() {
+        let out = format_encoders_list();
+        assert!(out.starts_with("Available encoders:"));
+
+        // Canonical R19 order is alphabetical on name (matches
+        // `EncoderRegistry::list`).
+        let expected_order = [
+            "church_add",
+            "church_exp",
+            "church_mul",
+            "church_sum_of_squares",
+            "horner",
+        ];
+        let mut last_pos = 0usize;
+        for name in &expected_order {
+            let pos = out
+                .find(name)
+                .unwrap_or_else(|| panic!("missing codec in output: {name}\n{out}"));
+            assert!(pos >= last_pos, "codec {name} appears out of R19 order");
+            last_pos = pos;
+        }
+
+        // Exactly 5 lines following the header (one per codec).
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines.len(),
+            6,
+            "expected 1 header + 5 codecs, got {lines:?}"
+        );
+    }
+
+    // UT-0718-04 / T16-derived: lambda is NOT in the default output.
+    #[test]
+    fn cli_encoders_list_excludes_lambda() {
+        let out = format_encoders_list();
+        assert!(
+            !out.contains("lambda"),
+            "default output must not list lambda: {out}"
+        );
+    }
+
+    // UT-0718-05 / R22: output includes a horner line whose description
+    // matches HornerCodec::description().
+    #[test]
+    fn cli_encoders_list_includes_horner_and_description() {
+        let out = format_encoders_list();
+        let horner_line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("horner"))
+            .expect("horner line missing in encoders list");
+        assert!(
+            horner_line.contains("Polynomial evaluation via Horner's method"),
+            "horner description mismatch: {horner_line}"
+        );
     }
 }

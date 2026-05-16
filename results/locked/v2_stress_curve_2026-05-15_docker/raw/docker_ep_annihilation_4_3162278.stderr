@@ -1,0 +1,19 @@
+ Container relativist-bench-tcp-run-9a1435b12fbd Creating 
+ Container relativist-bench-tcp-run-9a1435b12fbd Created 
+=== Relativist Benchmark Suite ===
+Benchmarks:  ep_annihilation
+Mode:        tcp_localhost
+Workers:     [4]
+Warmup:      2
+Repetitions: 5
+
+  ep_annihilation — 3162278 ERA-ERA pairs (void annihilation)
+=== Results ===
+Benchmark                   Size Workers    Time(s)     MIPS  Speedup Efficiency
+--------------------------------------------------------------------------------
+ep_annihilation 3162278       0   0.077009     41.2   1.0000     1.0000
+ep_annihilation 3162278       4   4.261575      0.7   0.0181     0.0045
+
+Total datapoints: 10  |  All correct: true
+Detail CSV written to: /results/detail.csv
+Summary CSV written to: /results/summary.csv

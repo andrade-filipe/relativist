@@ -331,4 +331,61 @@ mod tests {
         let net = enc.encode(br#"{"size":4}"#).expect("encode");
         crate::encoding::traits::validate_encoded_net(&net).expect("validate");
     }
+
+    // --- TASK-0719 / SPEC-27 v3 R24-R28 audit ---
+
+    // UT-0719-01 (R24 audit): RecipeEncoder trait signature matches
+    // SPEC-27 v3 §3.7. Compile-time check: a function bounded on the
+    // trait must be able to accept `MinimalRecipeEncoder`, exercising
+    // every required associated type and method shape.
+    //
+    // Per recipe.rs module-level rustdoc, R26/R27/R28 (refactor SPEC-25
+    // generators, AssignRecipe encoder_name field, worker registry
+    // dispatch) are deferred to the SPEC-25 (M7) milestone — they are
+    // explicitly out-of-scope for SPEC-27 v3 v1 per "Phase 6 mínimo".
+    // This task therefore covers R24 (trait shape) and R25 (fallback
+    // path; exercised by the integration test below).
+    #[test]
+    fn recipe_encoder_trait_signature_audit() {
+        fn requires_full_trait<E>(_e: &E)
+        where
+            E: RecipeEncoder + Send + Sync,
+            E::Recipe: Serialize + DeserializeOwned + Send + Sync,
+        {
+        }
+        let enc = MinimalRecipeEncoder::new();
+        requires_full_trait(&enc);
+    }
+
+    // UT-0719-02 (R25 audit) / TASK-0721 MF-001 fix: HornerCodec does NOT
+    // implement RecipeEncoder. Replaces the previous string-based probe
+    // (which would have silently passed even after `impl RecipeEncoder for
+    // HornerCodec` was added) with a compile-time negative trait bound via
+    // `static_assertions::assert_not_impl_all!`. If anybody adds the impl
+    // in the future, this module fails to compile, surfacing the change
+    // loudly rather than missing it.
+    //
+    // Q4 in SPEC-27 v3 §8: Horner is sequential by construction;
+    // recipe-based decomposition is future work, §5.2 PolynomialMultiEvalCodec.
+    static_assertions::assert_not_impl_all!(
+        crate::encoding::HornerCodec: RecipeEncoder
+    );
+
+    #[test]
+    fn horner_codec_is_not_recipe_encoder() {
+        // Runtime sentinel companion to the compile-time
+        // `static_assertions::assert_not_impl_all!` above. The structural
+        // witness is the compile-time bound; this test exists for
+        // discoverability when grepping for `RecipeEncoder for HornerCodec`.
+        // If the static_assertion is ever loosened, this test still serves
+        // as a documentation breadcrumb.
+        fn requires_recipe_encoder<T: RecipeEncoder>(_: T) {}
+        // Intentionally NOT called — the compile-time `assert_not_impl_all`
+        // above is what enforces the negative bound. If we tried to call
+        // `requires_recipe_encoder(HornerCodec::new())` here, the file
+        // would fail to compile when (and only when) `impl RecipeEncoder
+        // for HornerCodec` exists. The static_assertions macro flips that
+        // contract: compilation fails when the impl exists, succeeds otherwise.
+        let _phantom: fn(MinimalRecipeEncoder) = requires_recipe_encoder;
+    }
 }

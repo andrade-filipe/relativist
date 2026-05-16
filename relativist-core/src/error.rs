@@ -331,6 +331,34 @@ pub enum WorkerError {
     IdRangeExhausted { request_id: u32 },
 }
 
+/// Errors from the D-014 stress-curve campaign harness.
+///
+/// `BenchError` covers the cross-platform [`MemoryProbe`](crate::bench::memory_probe::MemoryProbe)
+/// (TASK-0700) and the [`StopRule`](crate::bench::stop_rule::StopRule) sequence
+/// aborter (TASK-0701), plus orchestration paths that the
+/// [`StressCurveDescriptor`](crate::bench::suite::StressCurveDescriptor)
+/// (TASK-0702) does not handle in-Rust (e.g., the Docker TCP env which is
+/// shell-driven). Distinct from `MergeError` / `GridError` so the bench
+/// harness can map cleanly to a single CSV column.
+#[derive(Debug, Error)]
+pub enum BenchError {
+    /// Cross-platform memory probe failure (TASK-0700).
+    /// Carries a free-form message describing the platform-specific cause
+    /// (`"macos unsupported"`, `"GlobalMemoryStatusEx failed"`,
+    /// `"read /proc/self/status: <io error>"`, …).
+    #[error("memory probe error: {0}")]
+    MemoryProbe(String),
+
+    /// Operation not supported in the current orchestration mode
+    /// (e.g., DockerTcp env requested from the in-Rust descriptor path).
+    #[error("unsupported bench operation: {0}")]
+    Unsupported(String),
+
+    /// I/O error encountered by the bench harness.
+    #[error("bench I/O error: {0}")]
+    Io(String),
+}
+
 /// Errors from grid configuration (SPEC-20 §3.4 R33a).
 #[derive(Debug, Error)]
 pub enum ConfigError {

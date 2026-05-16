@@ -55,12 +55,20 @@ pub fn init_tracing(config: &ObservabilityConfig) {
         "defaults"
     };
 
+    // BUG-FIX 2026-05-14: route all tracing output to stderr so it does
+    // not contaminate stdout-bound consumers (CSV pipelines, plotters,
+    // `--output -` style writers). The fmt layer defaults to stdout,
+    // which silently corrupted `raw/in_process.csv` in the 2026-05-14
+    // stress-curve run (147 WARN lines interleaved with data rows).
+    // stderr is the correct destination for diagnostics on every
+    // platform we support (Linux, Docker, Windows + Git Bash).
     match config.log_format {
         LogFormat::Text => {
             tracing_subscriber::registry()
                 .with(filter)
                 .with(
                     tracing_subscriber::fmt::layer()
+                        .with_writer(std::io::stderr)
                         .with_target(true)
                         .with_thread_ids(true)
                         .with_file(false)
@@ -74,6 +82,7 @@ pub fn init_tracing(config: &ObservabilityConfig) {
                 .with(
                     tracing_subscriber::fmt::layer()
                         .json()
+                        .with_writer(std::io::stderr)
                         .with_target(true)
                         .with_thread_ids(true)
                         .with_file(false)

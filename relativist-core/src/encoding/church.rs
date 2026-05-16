@@ -9,8 +9,24 @@
 
 use crate::net::{AgentId, Net, PortRef, Symbol, DISCONNECTED};
 
-/// Maximum supported Church numeral value (SPEC-14 R4).
+/// Maximum supported Church numeral value (SPEC-14 R4 — internal cap on
+/// `encode_nat` / `encode_church_into`).
 const MAX_CHURCH: u64 = 1_000_000;
+
+/// Public cap on Church numeral inputs accepted by user-facing codecs (SPEC-27
+/// v3 R12'/R16a' single source of truth).
+///
+/// HornerCodec (`encoding::horner`) and the Horner oracle
+/// (`encoding::horner_oracle`) both source the cap from this constant — they
+/// MUST NOT hard-code `10_000`. If SPEC-14 R4 / R4b ever raise the user-facing
+/// cap, this constant changes in one place and both encoder + oracle inherit
+/// the new bound.
+///
+/// Distinct from the internal `MAX_CHURCH` (1_000_000), which bounds raw
+/// `encode_nat` calls. `MAX_CHURCH_NAT` is the conservative public bound that
+/// codecs enforce *before* delegating to `encode_church_into`, matching the
+/// SPEC-14 §3.1 R4 limit documented for user-supplied numerals.
+pub const MAX_CHURCH_NAT: u64 = 10_000;
 
 /// Encode a natural number as a Church numeral IC net (SPEC-14 R4).
 ///

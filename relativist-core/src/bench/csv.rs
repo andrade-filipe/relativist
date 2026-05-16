@@ -90,7 +90,8 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
          con_con,dup_dup,era_era,con_dup,con_era,dup_era,\
          peak_memory_during_construction,peak_memory_during_reduction,\
          agent_count_at_construction_complete,live_agent_count_watermark,\
-         representation,chunk_size,recycle_policy"
+         representation,chunk_size,recycle_policy,\
+         vmrss_peak_mb,vmrss_current_end_mb,stop_reason"
     )?;
 
     for r in results {
@@ -98,7 +99,8 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
             writer,
             "{},{},{},{},{},{},{:.6},{},{:.3},{},{:.4},{:.4},{:.4},{},{},{},\
              {},{},{},{},{},{},\
-             {},{},{},{},{},{},{}",
+             {},{},{},{},{},{},{},\
+             {:.6},{:.6},{}",
             r.benchmark,
             r.input_size,
             r.mode,
@@ -129,6 +131,12 @@ pub fn write_csv_detail<W: Write>(writer: &mut W, results: &[BenchmarkResult]) -
             r.representation,
             render_chunk_size_cell(r.chunk_size),
             render_recycle_policy_cell(r.recycle_policy),
+            // D-014 stress-curve columns (TASK-0703); cv_above_gate dropped by
+            // TASK-0720 BUG-006 (CV is owned by the bash orchestrator across
+            // the 5 child results, not the per-rep child output).
+            r.vmrss_peak_mb,
+            r.vmrss_current_end_mb,
+            r.stop_reason.as_deref().unwrap_or(""),
         )?;
     }
     Ok(())
@@ -390,6 +398,9 @@ mod tests {
             speedup: 1.0,
             efficiency: 1.0,
             overhead_ratio: 0.0,
+            vmrss_peak_mb: 0.0,
+            vmrss_current_end_mb: 0.0,
+            stop_reason: None,
         }
     }
 
@@ -401,10 +412,12 @@ mod tests {
         assert!(csv.starts_with("benchmark,input_size,mode,workers"));
     }
 
-    /// MF-002 / QA-D011-006 — `detail.csv` schema MUST be exactly 29 columns
-    /// in the SPEC-09 R39a-mandated order. Any drift here breaks the
-    /// downstream Python tooling that joins on (benchmark, size,
-    /// representation, chunk_size, workers, mode).
+    /// MF-002 / QA-D011-006 (extended D-014 / TASK-0703; updated by TASK-0720
+    /// BUG-006) — `detail.csv` schema MUST be exactly 32 columns: SPEC-09
+    /// R39a 29 columns + 3 D-014 stress-curve columns (cv_above_gate dropped
+    /// per TASK-0720 BUG-006; CV is now owned by the bash orchestrator).
+    /// Any drift here breaks the downstream Python tooling that joins on
+    /// (benchmark, size, representation, chunk_size, workers, mode).
     #[test]
     fn detail_csv_header_locks_29_columns_spec_09_r39a() {
         let mut buf = Vec::new();
@@ -415,12 +428,14 @@ mod tests {
         let columns: Vec<&str> = header.split(',').collect();
         assert_eq!(
             columns.len(),
-            29,
-            "MF-002: SPEC-09 R39a mandates exactly 29 columns; got {}",
+            32,
+            "TASK-0720 BUG-006: SPEC-09 R39a 29 columns + 3 D-014 stress-curve columns; got {}",
             columns.len()
         );
 
-        // Verbatim column-name order — the v1 22 + 7 Tier 3 (R18a-R18g).
+        // Verbatim column-name order — the v1 22 + 7 Tier 3 (R18a-R18g)
+        // + 3 D-014 stress-curve columns appended at the end (TASK-0703,
+        // minus cv_above_gate per TASK-0720 BUG-006).
         let expected: Vec<&str> = vec![
             "benchmark",
             "input_size",
@@ -451,10 +466,15 @@ mod tests {
             "representation",
             "chunk_size",
             "recycle_policy",
+            // D-014 stress-curve columns (TASK-0703); cv_above_gate removed
+            // by TASK-0720 BUG-006.
+            "vmrss_peak_mb",
+            "vmrss_current_end_mb",
+            "stop_reason",
         ];
         assert_eq!(
             columns, expected,
-            "MF-002: detail.csv columns MUST match SPEC-09 R39a verbatim order"
+            "TASK-0703 + TASK-0720 BUG-006: detail.csv columns MUST match the 32-column schema verbatim"
         );
     }
 
@@ -479,9 +499,13 @@ mod tests {
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 2, "header + 1 row");
         let cells: Vec<&str> = lines[1].split(',').collect();
-        assert_eq!(cells.len(), 29, "row must have exactly 29 cells");
+        assert_eq!(
+            cells.len(),
+            32,
+            "row must have exactly 32 cells (29 SPEC-09 + 3 D-014 stress-curve, cv_above_gate dropped)"
+        );
 
-        // Last 7 cells (R18a..R18g):
+        // Cells 22..28 — Tier 3 (R18a..R18g):
         assert_eq!(
             cells[22], "",
             "peak_memory_during_construction = 0 must render blank, not '0'"
@@ -492,6 +516,13 @@ mod tests {
         assert_eq!(cells[26], "sparse", "representation (lowercase)");
         assert_eq!(cells[27], "100", "chunk_size = Some(100)");
         assert_eq!(cells[28], "border-clean", "recycle_policy (kebab-case)");
+
+        // Cells 29..31 — D-014 stress-curve (TASK-0703); zero defaults on
+        // a sample result that did not opt into the campaign.
+        // cv_above_gate (former cell 32) dropped by TASK-0720 BUG-006.
+        assert_eq!(cells[29], "0.000000", "vmrss_peak_mb default = 0.0");
+        assert_eq!(cells[30], "0.000000", "vmrss_current_end_mb default = 0.0");
+        assert_eq!(cells[31], "", "stop_reason = None must render blank");
     }
 
     /// MF-002 — `chunk_size = None` renders as the empty string in the

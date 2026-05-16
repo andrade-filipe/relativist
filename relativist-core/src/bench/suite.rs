@@ -442,6 +442,11 @@ fn measure_sequential(
         speedup: 1.0,
         efficiency: 1.0,
         overhead_ratio: 0.0,
+        // D-014 stress-curve fields (TASK-0703); populated by the
+        // descriptor / orchestrator path, zero on the legacy matrix path.
+        vmrss_peak_mb: 0.0,
+        vmrss_current_end_mb: 0.0,
+        stop_reason: None,
     };
 
     (result, net_clone)
@@ -640,6 +645,11 @@ fn measure_grid(params: &GridMeasureParams<'_>) -> BenchmarkResult {
         speedup,
         efficiency,
         overhead_ratio,
+        // D-014 stress-curve fields (TASK-0703); zero on legacy paths.
+        // cv_above_gate dropped by TASK-0720 BUG-006.
+        vmrss_peak_mb: 0.0,
+        vmrss_current_end_mb: 0.0,
+        stop_reason: None,
     }
 }
 
@@ -935,7 +945,12 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
             );
             let seq_net = seq_reference_net.unwrap();
 
-            println!("  {} — {}", bench_id, bench.describe(size));
+            tracing::info!(
+                bench = ?bench_id,
+                size = size,
+                description = %bench.describe(size),
+                "running benchmark"
+            );
 
             // Add sequential results to output
             all_results.extend(seq_results.iter().cloned());
@@ -1015,6 +1030,199 @@ pub fn run_benchmark_suite(config: &BenchmarkSuiteConfig) -> Result<SuiteResult,
         all_correct,
         sparse_construction_rows,
     })
+}
+
+// ---------------------------------------------------------------------------
+// D-014 Stress Curve campaign descriptor (TASK-0702)
+// ---------------------------------------------------------------------------
+
+/// Environment for a stress-curve sequence (TASK-0702).
+///
+/// `InProcess` drives reps directly through [`run_benchmark_suite`] in the
+/// current process; `DockerTcp` is shell-driven (TASK-0704 orchestrator),
+/// so the in-Rust [`StressCurveDescriptor::run_one_sequence`] returns
+/// `BenchError::Unsupported` for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Env {
+    InProcess,
+    DockerTcp,
+}
+
+/// Workload selector for the stress-curve campaign (TASK-0702).
+///
+/// Maps onto the existing [`BenchmarkId`] generators; the dedicated enum
+/// pins the campaign to its three workloads (no churn on later
+/// `BenchmarkId` additions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StressWorkload {
+    EpAnnihilation,
+    DualTree,
+    CondupExpansion,
+}
+
+impl StressWorkload {
+    /// Map onto the corresponding [`BenchmarkId`] generator.
+    pub fn benchmark_id(self) -> BenchmarkId {
+        match self {
+            Self::EpAnnihilation => BenchmarkId::EPAnnihilation,
+            Self::DualTree => BenchmarkId::DualTree,
+            Self::CondupExpansion => BenchmarkId::ConDupExpansion,
+        }
+    }
+}
+
+/// Canonical N sweep for the stress-curve campaign (×√10 from 10⁴ to 10⁹).
+/// Matches design doc §4.4 verbatim.
+const STRESS_CURVE_N_SEQ: &[usize] = &[
+    10_000,
+    31_623,
+    100_000,
+    316_228,
+    1_000_000,
+    3_162_278,
+    10_000_000,
+    31_622_776,
+    100_000_000,
+    316_227_766,
+    1_000_000_000,
+];
+
+/// Stress-curve campaign descriptor (TASK-0702). Zero-state namespace
+/// type; all methods are associated functions.
+pub struct StressCurveDescriptor;
+
+impl StressCurveDescriptor {
+    /// The campaign's canonical 11-point N sweep (×√10 from 10⁴ to 10⁹).
+    pub fn n_seq() -> &'static [usize] {
+        STRESS_CURVE_N_SEQ
+    }
+
+    /// Per-env stop rule defaults: 5 min in-process, 7m30s docker; both
+    /// share the 80% RAM gate.
+    pub fn default_stop_rule(env: Env) -> crate::bench::stop_rule::StopRule {
+        let wall = match env {
+            Env::InProcess => std::time::Duration::from_secs(300),
+            Env::DockerTcp => std::time::Duration::from_secs(450),
+        };
+        crate::bench::stop_rule::StopRule {
+            wall_budget: wall,
+            memory_fraction_max: 0.80,
+        }
+    }
+
+    /// Drive a single `(workload, env, W)` sequence in-process. Reps are
+    /// run sequentially; after each rep the [`StopRule`] is consulted and
+    /// the sequence aborts on the first `Some(reason)`.
+    ///
+    /// `n_seq_override == None` selects the canonical 11-point sweep.
+    /// `stop_rule_override == None` selects the per-env defaults.
+    /// `reps` is the number of measurement repetitions per N (warmup is
+    /// not exposed at this level — driven by the underlying suite config).
+    ///
+    /// # Errors
+    ///
+    /// - `Env::DockerTcp` — returns `BenchError::Unsupported` (the Docker
+    ///   path is shell-driven; descriptor only emits the matrix).
+    /// - `MemoryProbe::new` failure — propagated as `BenchError::MemoryProbe`
+    ///   (e.g., macOS host).
+    /// - Any underlying `run_benchmark_suite` failure surfaces as
+    ///   `BenchError::Io` carrying the diagnostic string.
+    ///
+    /// [`StopRule`]: crate::bench::stop_rule::StopRule
+    pub fn run_one_sequence(
+        workload: StressWorkload,
+        env: Env,
+        workers: usize,
+        reps: usize,
+        n_seq_override: Option<&[usize]>,
+        stop_rule_override: Option<crate::bench::stop_rule::StopRule>,
+    ) -> Result<crate::bench::stop_rule::SequenceOutcome, crate::error::BenchError> {
+        if env == Env::DockerTcp {
+            return Err(crate::error::BenchError::Unsupported(
+                "docker_tcp orchestration is shell-driven; descriptor only emits the matrix"
+                    .to_string(),
+            ));
+        }
+
+        let probe = crate::bench::memory_probe::MemoryProbe::new()?;
+        let stop_rule = stop_rule_override.unwrap_or_else(|| Self::default_stop_rule(env));
+        let n_seq: &[usize] = n_seq_override.unwrap_or(STRESS_CURVE_N_SEQ);
+
+        let bench_id = workload.benchmark_id();
+        let workers_u32 = workers.max(1) as u32;
+        let mode = if workers_u32 == 1 {
+            Mode::Sequential
+        } else {
+            Mode::Local
+        };
+        let reps_u32 = reps.max(1) as u32;
+
+        // Convert each N (usize) to the suite's u32 size axis, time the
+        // resulting `run_benchmark_suite` invocation, observe the post-rep
+        // memory probe, and build a RepResult per N. The rep is one full
+        // run of `reps` measurement repetitions through the suite — the
+        // outer N loop is what `StopRule` aborts on.
+        let outcome = stop_rule.run_sequence(n_seq, |n| {
+            let size: u32 = n.try_into().unwrap_or(u32::MAX);
+            let cfg = BenchmarkSuiteConfig {
+                benchmarks: vec![bench_id],
+                sizes: Some(vec![size]),
+                workers: vec![workers_u32],
+                mode,
+                warmup_runs: 0,
+                repetitions: reps_u32,
+                csv_detail_path: None,
+                csv_rounds_path: None,
+                csv_summary_path: None,
+                max_rounds: None,
+                strict_bsp: false,
+                skip_g1: false,
+                chunk_size: None,
+                max_pending_lifetime: 16,
+                recycle_policy: BenchRecyclePolicy::DisableUnderDelta,
+                representation: NetRepresentation::Dense,
+                sparse_construction_memory_csv_path: None,
+            };
+
+            let start = Instant::now();
+            // Failure inside `run_benchmark_suite` is mapped onto
+            // `ChildExit::NonZero { code: 1 }` so the StopRule can still
+            // observe the rep and the campaign can record the partial
+            // failure. A zero-second wall + zero-byte vmrss signal that
+            // the run did not produce real measurements.
+            let suite_outcome = run_benchmark_suite(&cfg);
+            let wall = start.elapsed();
+
+            // TASK-0722 BUG-B: capture the real per-rep `BenchmarkResult`
+            // rows the suite produced. The `--campaign stress-curve`
+            // dispatch in `commands.rs` emits these directly via
+            // `write_csv_detail` — pre-fix it synthesised zero-rows from
+            // scratch, throwing away interactions/MIPS/agent counts.
+            let (vmrss_peak_bytes, child_exit, bench_results) = match suite_outcome {
+                Ok(suite) => {
+                    let peak = probe.peak_bytes().unwrap_or(0);
+                    (peak, crate::bench::stop_rule::ChildExit::Ok, suite.results)
+                }
+                Err(_) => (
+                    0,
+                    crate::bench::stop_rule::ChildExit::NonZero { code: 1 },
+                    Vec::new(),
+                ),
+            };
+
+            let frac = probe.as_fraction_of_total(vmrss_peak_bytes);
+            crate::bench::stop_rule::RepResult {
+                n,
+                wall,
+                vmrss_peak_bytes,
+                vmrss_peak_fraction_of_total: frac,
+                child_exit,
+                bench_results,
+            }
+        });
+
+        Ok(outcome)
+    }
 }
 
 #[cfg(test)]

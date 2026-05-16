@@ -99,11 +99,13 @@ fn it_0605_05_csv_emits_peak_memory_during_construction_column() {
     let header = lines.next().expect("CSV must have a header line");
 
     let columns: Vec<&str> = header.split(',').collect();
-    // SPEC-09 R39a (D-011 MF-002): exactly 29 columns.
+    // SPEC-09 R39a (D-011 MF-002): 29 columns (22 v1 + 7 R18a-R18g).
+    // D-014 / TASK-0703: +3 stress-curve columns appended at the end =
+    // 32 columns total. (cv_above_gate dropped per TASK-0720 BUG-006.)
     assert_eq!(
         columns.len(),
-        29,
-        "IT-0605-05: header MUST be 22 (v1) + 7 (R18a-R18g) = 29 columns; got {}",
+        32,
+        "IT-0605-05: header MUST be 22 (v1) + 7 (R18a-R18g) + 3 (D-014) = 32 columns; got {}",
         columns.len()
     );
 
@@ -129,10 +131,12 @@ fn it_0605_05_csv_emits_peak_memory_during_construction_column() {
             continue;
         }
         let cells: Vec<&str> = trimmed.split(',').collect();
+        // D-014 / TASK-0703: 3 stress-curve columns appended → 32 cells.
+        // (cv_above_gate dropped per TASK-0720 BUG-006.)
         assert_eq!(
             cells.len(),
-            29,
-            "IT-0605-05: every row MUST have 29 cells; got {} for line: {line}",
+            32,
+            "IT-0605-05: every row MUST have 32 cells (29 SPEC-09 + 3 D-014); got {} for line: {line}",
             cells.len()
         );
         let peak_cell = cells[22];
