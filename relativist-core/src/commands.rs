@@ -653,7 +653,20 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
         } else {
             None
         };
-        return run_compute_with_encoder(name, input.as_bytes(), encode_only_out);
+        // D-017 / BUG-D017-001: when `--output` is set WITHOUT `--encode-only`,
+        // also persist the reduced net (symmetry with the legacy positional
+        // path which calls `save_net_to_file` on `--output`).
+        let output_after_reduce = if args.encode_only {
+            None
+        } else {
+            args.output.as_deref()
+        };
+        return run_compute_with_encoder(
+            name,
+            input.as_bytes(),
+            encode_only_out,
+            output_after_reduce,
+        );
     }
 
     // SPEC-27 v3 R21: orphan `--input` without --encoder/--codec is a
@@ -792,10 +805,17 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
 /// un-reduced net to `path` via `io::binary::save_bin`. The `reduce_all`
 /// and decode stages are skipped; the produced `.bin` is the input format
 /// the coordinator subcommand consumes via `--input`.
+///
+/// **D-017 / BUG-D017-001 fix:** when `output_after_reduce` is `Some(path)`
+/// (i.e., caller supplied `--output` WITHOUT `--encode-only`), the reduced
+/// net is also persisted via `io::binary::save_bin` after decode. This
+/// mirrors the symmetric contract of the legacy `compute` path
+/// (`save_net_to_file`) so operators don't see a silent drop of `--output`.
 fn run_compute_with_encoder(
     name: &str,
     input: &[u8],
     encode_only_output: Option<&std::path::Path>,
+    output_after_reduce: Option<&std::path::Path>,
 ) -> Result<(), RelativistError> {
     let registry = crate::encoding::default_registry();
 
@@ -855,6 +875,19 @@ fn run_compute_with_encoder(
     let pretty = serde_json::to_string_pretty(&json_out)
         .map_err(|e| RelativistError::Encoding(format!("serialize result: {}", e)))?;
     println!("Result:      {}", pretty);
+
+    // D-017 / BUG-D017-001 fix: persist the reduced net to `--output` to
+    // mirror the legacy `compute` path. Prior to this fix the registry path
+    // silently dropped `--output` unless `--encode-only` was set, which
+    // surprised operators who paired `--output` with the reduce+decode flow.
+    if let Some(path) = output_after_reduce {
+        crate::io::binary::save_bin(&net, path)?;
+        println!(
+            "Saved:       {} agents (reduced) -> {}",
+            net.count_live_agents(),
+            path.display()
+        );
+    }
 
     Ok(())
 }
@@ -1444,7 +1477,7 @@ mod tests {
     // SPEC-27 R21: unknown encoder bubbles up as Encoding error.
     #[test]
     fn run_compute_unknown_encoder_errors() {
-        let err = run_compute_with_encoder("nope_does_not_exist", b"{}", None).unwrap_err();
+        let err = run_compute_with_encoder("nope_does_not_exist", b"{}", None, None).unwrap_err();
         match err {
             RelativistError::Encoding(msg) => assert!(msg.contains("not found")),
             other => panic!("expected Encoding, got {:?}", other),
@@ -1457,7 +1490,7 @@ mod tests {
     // (TASK-0716).
     #[test]
     fn run_compute_with_encoder_invalid_input_errors() {
-        let err = run_compute_with_encoder("horner", b"{not json}", None).unwrap_err();
+        let err = run_compute_with_encoder("horner", b"{not json}", None, None).unwrap_err();
         assert!(matches!(err, RelativistError::Encoding(_)));
     }
 
