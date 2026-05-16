@@ -211,50 +211,86 @@ introduzida no fix de BUG-003 do D-015 QA pass (2026-05-06).
 
 ---
 
-## Limitações conhecidas (escopo SPEC-27 v3 "v1 codec")
+## Envelope leitor (pós D-016 — TASK-0723 + TASK-0724)
 
-O HornerCodec atual aceita encoder de qualquer polinômio, **mas o decoder
-falha para coeficientes c₁ ≥ 2 ou grau ≥ 2**, com o erro:
+D-016 estendeu `biguint_readback` para cobrir o readable subset do
+HornerCodec usado nesses demos:
 
+- **Single-iteration polinômios** (`coeffs.len() == 2`) com qualquer
+  cofactor `c₁ ≥ 1` em `0..=MAX_CHURCH_NAT` (TASK-0723).
+- **Degree-2 polinômios** (`coeffs.len() == 3`) com coeficiente líder
+  `c₂ ∈ {1}` e coeficiente do meio `c₁ ≥ 1` (TASK-0724 — readable subset).
+
+Casos previamente bloqueados que agora decodificam corretamente:
+
+| Demo | Input | Esperado | Status |
+|---|---|---|---|
+| Demo 8 | `{"coeffs":[3,5],"x":4}` | 23 | ✅ |
+| Demo 9 | `{"coeffs":[1,1,1],"x":2}` | 7 | ✅ |
+| Demo 10 | `{"coeffs":[1,0,1],"x":3}` | 10 | ✅ |
+
+```bash
+$ target/release/relativist compute --codec horner --input '{"coeffs":[3,5],"x":4}'
+Result:      {
+  "bit_length": 5,
+  "value": "23"
+}
+
+$ target/release/relativist compute --codec horner --input '{"coeffs":[1,1,1],"x":2}'
+Result:      {
+  "bit_length": 3,
+  "value": "7"
+}
+
+$ target/release/relativist compute --codec horner --input '{"coeffs":[1,0,1],"x":3}'
+Result:      {
+  "bit_length": 4,
+  "value": "10"
+}
 ```
-error: encoding error: unrecognized net structure: non-CON in app chain
-```
 
-Casos confirmados que **não funcionam** (decode-side):
-- `{"coeffs":[3,5],"x":4}` — coef de x = 5 (não-1) ❌
-- `{"coeffs":[1,1,1],"x":2}` — grau 2 ❌
-- `{"coeffs":[1,0,1],"x":3}` — grau 2 ❌
+## Limitações remanescentes (escopo Mackie/Pinto futuro)
 
-A **redução em si executa corretamente** (encoder gera o net, reduce_all
-faz as interações). O bug está em `relativist-core/src/encoding/biguint_readback.rs`:
-a leitura recursiva da árvore DUP gerada pela multiplicação Church não
-trata o caso `c_i ≠ 1` (Church combinator chain) nem grau ≥ 2 (composição
-de Horner aninhada).
+`biguint_readback` v1 usa um algoritmo de **cycle counting** sobre a
+árvore DUP da multiplicação. Esse algoritmo é exato para o subset
+listado acima mas **sub-estima o multiplicador para grau ≥ 3**: a
+estrutura aninhada cresce exponencialmente em `x` mas o contador linear
+de ciclos não acompanha. Os seguintes casos retornam valores
+incorretos via decoder mas a redução em si está correta (a oracle
+`horner_serial` confirma o valor esperado):
 
-**Working set atual:** constantes (qualquer valor ≤ MAX_CHURCH_NAT) +
-polinômios da forma `c + x` (coeficiente de x sendo 1, c sendo qualquer
-constante ≤ MAX_CHURCH_NAT - 1).
+- `{"coeffs":[3,2,5,1],"x":2}` — grau 3 (esperado 35, decoder retorna 23) ❌
+- `{"coeffs":[1,0,0,0,0,1],"x":10}` — grau 5 esparso (esperado 100001) ❌
+- `{"coeffs":[1,1,1,1,1],"x":2}` — grau 4 (esperado 31, decoder retorna 15) ❌
+- `{"coeffs":[1; 25],"x":10}` — T9 BigUint witness ❌
 
-**Future work:** estender `biguint_readback` para grau arbitrário (~100-200
-LoC + tests). Tracking em backlog para D-016 ou bundle seguinte.
+**Future work (SPEC-27 §5.1):** Mackie/Pinto shared-form readback
+fecha esse gap. Tracking no roadmap como item v2.1+.
 
 ---
 
 ## Reprodutibilidade
 
-Todos os 7 demos podem ser re-executados com:
+Todos os demos (incluindo os 3 novos unlocked por D-016) podem ser
+re-executados com o script one-shot:
 
 ```bash
 cd codigo/relativist
-cargo build --release --bin relativist     # se necessário
+cargo build --release --bin relativist
+bash scripts/horner_demo.sh
+```
+
+Ou individualmente:
+
+```bash
 target/release/relativist[.exe] compute --codec horner --input '<JSON>' [--workers N]
 ```
 
 Hash do binário usado nesta demonstração e do código que o gerou:
 
 ```
-git rev-parse HEAD     # d35a784 (merge de feature/stress-and-encoder em main)
-git tag --points-at HEAD   # v0.20.0
+git rev-parse HEAD     # post-D-016 closing commit
+git tag --points-at HEAD   # post-D-016 tag (e.g., v0.21.0)
 ```
 
 ---
