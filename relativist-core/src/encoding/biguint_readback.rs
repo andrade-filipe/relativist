@@ -33,6 +33,25 @@
 //! add scaffold per iteration); the explicit guard tolerates depth ≥ 128
 //! to cover PT-0724-07 (depth-63 stress with `coeffs.len() == 64`).
 //!
+//! **Readable subset envelope (D-016 BUG-001 + BUG-002 post-fix).** The
+//! v1 cycle-counting walker is EXACT only inside the following bounds:
+//!
+//! - Single-iteration polynomials (`coeffs.len() == 2`) with
+//!   `c_1 in 0..=1025` and any `c_0`, `x in 0..=MAX_CHURCH_NAT`.
+//!   The upper bound on `c_1` is set by the inner mul scaffold's
+//!   DUP-chain depth — at `c_1 == 1026` the exit chain crosses a DUP
+//!   boundary that the walker cannot resolve (see `read_chain_terminal`
+//!   below).
+//! - Degree-2 polynomials (`coeffs.len() == 3`) with leading
+//!   coefficient `c_2 == 1` and `c_1 >= 0`.
+//!
+//! Inputs outside this envelope (degree >= 3, OR degree-2 with c_2 >= 2,
+//! OR `[1; N>=3]` repeated-unit patterns, OR single-iter with
+//! `c_1 >= 1026`) MUST return `Err(DecodeError::UnrecognizedStructure)`
+//! instead of `Ok(under-counted)`. The envelope guard lives at the head
+//! of `read_mult_subnet`; the complementary `c_1 >= 1026` boundary is
+//! trapped by `read_chain_terminal`'s nested-mul-boundary detection.
+//!
 //! WAN-scale Mackie/Pinto readback (SPEC-27 §5.1 Future Work) would
 //! replace this recursive readback when bound by network latency, but is
 //! not required for HornerCodec correctness.
@@ -526,11 +545,51 @@ fn read_mult_subnet(
     chain_visited: &ChainVisited,
     depth: usize,
 ) -> Result<(BigUint, BigUint), DecodeError> {
+    // D-016 BUG-001 guard: the v1 cycle-counting walker is EXACT only for
+    // a narrow structural envelope of the HornerCodec output:
+    //
+    //   - single-iteration (`coeffs.len() == 2`, any c_1 within the chain
+    //     reach — empirically c_1 <= 1025, bounded by the inner mul
+    //     scaffold's DUP-chain depth); OR
+    //   - degree-2 (`coeffs.len() == 3`) with leading coefficient c_2 == 1.
+    //
+    // Outside this envelope (degree >= 3, OR degree-2 with c_2 >= 2, OR
+    // `[1; N>=3]` repeated-unit patterns), the walker silently under-counts
+    // the multiplier and returns `Ok(wrong)` instead of `Err`. The
+    // discriminator is the count of transparent DUPs crossed on the
+    // inbound chain BEFORE hitting the multiplication boundary:
+    //
+    //   inbound DUPs == 1  -> single-iter (within envelope)
+    //   inbound DUPs == 2  -> degree-2 with c_2 == 1 (within envelope)
+    //   inbound DUPs >= 3  -> degree-2 c_2 >= 2, degree >= 3, or
+    //                         `[1; N>=3]` chain — OUTSIDE envelope, must Err
+    //
+    // The boundary 2 matches the encoder's NF shape: each Horner iteration
+    // contributes one DUP scaffold on the multiplicand chain side, so an
+    // inbound chain that has crossed >= 3 DUPs implies the readback would
+    // need to handle >= 3 nested mul scaffolds — beyond the v1 envelope.
+    // The full envelope (degree >= 3 / leading coefficient >= 2) requires
+    // the Mackie/Pinto shared-form readback deferred to SPEC-27 §5.1.
+    //
+    // The `read_chain_terminal` guard at line ~454 already catches the
+    // c_1 >= 1026 single-iter case (DUP cycle on the exit chain); this
+    // guard catches the complementary structural cases that previously
+    // returned silently-wrong values (degree-2 with c_2 >= 2, degree >= 3,
+    // [1;N>=3] patterns). Together the two guards close the silent-wrong
+    // surface of `HornerCodec::decode`.
+    if chain_visited.dups.len() > 2 {
+        return Err(DecodeError::UnrecognizedStructure(format!(
+            "read_mult_subnet: inbound chain crossed {} DUPs (>2) — \
+             input is outside the v1 readback envelope \
+             (degree>=3, degree-2 with c_2>=2, or [1;N>=3] pattern); \
+             SPEC-27 §5.1 Mackie/Pinto Future Work covers this",
+            chain_visited.dups.len()
+        )));
+    }
+
     let mut visited_dups: HashSet<AgentId> = HashSet::new();
     let mut exit: BigUint = BigUint::from(0u64);
     let mut multiplier: BigUint = BigUint::from(1u64);
-    let mut exit_branches: usize = 0;
-    let mut max_nested_depth: usize = 0;
     walk_mult_tree(
         net,
         dup_id,
@@ -539,20 +598,24 @@ fn read_mult_subnet(
         &mut visited_dups,
         &mut multiplier,
         &mut exit,
-        &mut exit_branches,
-        &mut max_nested_depth,
         depth,
     )?;
-    let _ = (exit_branches, max_nested_depth);
     Ok((multiplier, exit))
 }
 
-/// Recursively walk the DUP tree rooted at `dup_id`. Each cycling
-/// branch contributes +1 to the multiplier; each exit-chain or
-/// XVariable branch contributes (its chain count, or 0) to the exit
-/// SUM; each nested DUP principal branch is recursed into.
-/// Iterative DUP-tree walker (avoids stack overflow on linear chains
-/// of `coeffs[1] = MAX_CHURCH_NAT` length per UT-0723-07).
+/// Iterative DUP-tree walker rooted at `dup_id`. Each cycling branch
+/// contributes +1 to the multiplier; each exit-chain or XVariable branch
+/// contributes (its chain count, or 0) to the exit SUM; each nested DUP
+/// principal branch is pushed onto the work-stack for the next iteration.
+///
+/// Uses an explicit `Vec`-backed work-stack instead of recursion so that
+/// long multiplicand chains (`coeffs[1] = MAX_CHURCH_NAT` per UT-0723-07)
+/// do not exhaust the OS thread stack on Windows (default 1 MiB).
+// D-016 SF-001: trimmed from 10 -> 8 args by dropping dead
+// `exit_branches` / `max_nested_depth` counters. Still one over clippy's
+// default 7 — the remaining mutables are `visited_dups` / `multiplier` /
+// `exit`, each a genuine accumulator state and grouping them into a
+// struct would only shift complexity. Keep the suppression.
 #[allow(clippy::too_many_arguments)]
 fn walk_mult_tree(
     net: &Net,
@@ -562,15 +625,12 @@ fn walk_mult_tree(
     visited_dups: &mut HashSet<AgentId>,
     multiplier: &mut BigUint,
     exit: &mut BigUint,
-    exit_branches: &mut usize,
-    max_nested_depth: &mut usize,
     initial_depth: usize,
 ) -> Result<(), DecodeError> {
     let mut stack: Vec<(AgentId, usize)> = Vec::new();
     stack.push((dup_id, initial_depth));
 
     while let Some((dup_id, nested_depth)) = stack.pop() {
-        *max_nested_depth = (*max_nested_depth).max(nested_depth);
         if nested_depth > READBACK_MAX_DEPTH {
             return Err(DecodeError::UnrecognizedStructure(
                 "walk_mult_tree: max recursion depth exceeded".into(),
@@ -600,10 +660,22 @@ fn walk_mult_tree(
                     *multiplier += 1u64;
                 }
                 DupBranch::ExitChainAt { entry_port } => {
+                    // SF-002 / D-016 BUG-001: reset state intentionally —
+                    // beyond this point we are entering a new chain. Carrying
+                    // the enclosing chain's `ChainVisited` would let
+                    // `read_chain_terminal`'s cycle classifier mistake genuine
+                    // exit-chain DUPs for inherited transparent crossings, and
+                    // letting the walker silently traverse a nested mul
+                    // boundary as if it were a plain Church chain is exactly
+                    // the undercount that produced the silent-wrong values
+                    // pre-D-016 (e.g. `[5,5,5]@2 -> 27` vs correct 35). The
+                    // `read_mult_subnet` envelope guard above bounds the
+                    // pre-call topology so the reset is safe; the guard at
+                    // `read_chain_terminal:454-468` traps nested mul
+                    // boundaries that survive into the exit chain.
                     let fresh = ChainVisited::default();
                     let sub = read_chain_terminal(net, entry_port, lam_x, &fresh, 0)?;
                     *exit += sub;
-                    *exit_branches += 1;
                 }
                 DupBranch::NestedDupPrincipal(next) => {
                     stack.push((next, nested_depth + 1));
@@ -1001,6 +1073,110 @@ mod tests {
                 String::from_utf8_lossy(json),
                 actual,
                 expected
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // D-016 BUG fixes — boundary + envelope regression tests
+    // -------------------------------------------------------------------
+
+    /// Same as `pipeline` but returns the decoder's `Result` instead of
+    /// panicking on Err. Used by the envelope-boundary regression tests
+    /// that assert specific `Err` variants for inputs OUTSIDE the v1
+    /// readable subset (D-016 BUG-001 + BUG-002).
+    fn pipeline_result(json: &[u8]) -> Result<BigUint, DecodeError> {
+        let codec = HornerCodec::new();
+        let mut net = codec.encode(json).expect("valid input encodes");
+        reduce_all(&mut net);
+        if net.root.is_none() {
+            crate::encoding::arithmetic::discover_root(&mut net);
+        }
+        decode_biguint(&net)
+    }
+
+    // UT-0723-08 / TG-001: single-iteration c_1 upper-bound regression test.
+    //
+    // Empirically (bisect 2026-05-16) the v1 walker's exact envelope on
+    // single-iter inputs extends to `c_1 == 1025` and the FIRST failing
+    // value is `c_1 == 1026`. The threshold is bounded by the inner mul
+    // scaffold's DUP-chain depth and is independent of `c_0` and `x`.
+    // The pre-D-016 doc claimed `c_1 in 0..=MAX_CHURCH_NAT = 10_000`
+    // which was false — `read_chain_terminal` traps c_1 >= 1026 with
+    // "nested mul boundary on exit chain". Lock the empirical boundary
+    // so a future regression in either direction (envelope shrinks OR
+    // bug becomes silent-wrong instead of Err) is caught.
+    #[test]
+    fn decode_biguint_handles_actual_c1_upper_bound() {
+        const C1_UPPER: u64 = 1025;
+
+        // Boundary value: exactly representable. Independent of c_0 and x.
+        for c0 in [0u64, 5, 100] {
+            for x in [1u64, 2, 5, 100] {
+                let json = format!(r#"{{"coeffs":[{c0},{C1_UPPER}],"x":{x}}}"#);
+                let expected = horner_serial(&[c0, C1_UPPER], x).unwrap();
+                let actual = pipeline(json.as_bytes());
+                assert_eq!(
+                    actual, expected,
+                    "c1==C1_UPPER must be in envelope: c0={c0} x={x}"
+                );
+            }
+        }
+
+        // First failing value: MUST error, not silently return wrong.
+        for c0 in [0u64, 5, 100] {
+            for x in [1u64, 2, 5, 100] {
+                let json = format!(r#"{{"coeffs":[{c0},{}],"x":{x}}}"#, C1_UPPER + 1);
+                let result = pipeline_result(json.as_bytes());
+                assert!(
+                    matches!(result, Err(DecodeError::UnrecognizedStructure(_))),
+                    "c1==C1_UPPER+1 must Err, got {result:?} (c0={c0} x={x})"
+                );
+            }
+        }
+    }
+
+    // UT-0724-EC-002: degree-2 with leading coefficient c_2 >= 2 lies
+    // OUTSIDE the v1 envelope (cycle-counting walker under-estimates the
+    // multiplier). Pre-D-016 the decoder returned `Ok(under-counted)`
+    // silently; post-D-016 BUG-001 fix it MUST return Err.
+    #[test]
+    fn decode_biguint_rejects_degree_2_c2_ge_2() {
+        let cases: &[&[u8]] = &[
+            br#"{"coeffs":[5,5,5],"x":2}"#, // pre-fix returned Ok("27"), correct 35
+            br#"{"coeffs":[3,3,3],"x":2}"#, // pre-fix returned Ok("17"), correct 21
+            br#"{"coeffs":[2,2,2],"x":2}"#, // pre-fix returned Ok("12"), correct 14
+            br#"{"coeffs":[5,2,3],"x":2}"#, // pre-fix returned Ok("17"), correct 21
+        ];
+        for json in cases {
+            let result = pipeline_result(json);
+            assert!(
+                matches!(result, Err(DecodeError::UnrecognizedStructure(_))),
+                "{}: expected UnrecognizedStructure, got {result:?}",
+                String::from_utf8_lossy(json)
+            );
+        }
+    }
+
+    // UT-0724-EC-003: `[1; N]` with N >= 3 lies OUTSIDE the v1 envelope
+    // (the repeated-unit pattern collapses through nested DUP scaffolds
+    // that the cycle-counter under-counts). Pre-D-016 the decoder
+    // returned numerically-wrong values; post-D-016 BUG-001 fix it MUST
+    // return Err.
+    #[test]
+    fn decode_biguint_rejects_repeated_unit_chain_n_ge_3() {
+        let cases: &[&[u8]] = &[
+            br#"{"coeffs":[1,1,1,1,1],"x":2}"#, // pre-fix Ok("15"), correct 31
+            br#"{"coeffs":[1,1,1,1,1,1],"x":2}"#, // pre-fix wrong, correct 63
+            br#"{"coeffs":[3,2,5,1],"x":2}"#,   // degree-3, pre-fix Ok("23"), correct 35
+            br#"{"coeffs":[10,20,30,40],"x":3}"#, // degree-3, pre-fix Ok("292"), correct 1420
+        ];
+        for json in cases {
+            let result = pipeline_result(json);
+            assert!(
+                matches!(result, Err(DecodeError::UnrecognizedStructure(_))),
+                "{}: expected UnrecognizedStructure, got {result:?}",
+                String::from_utf8_lossy(json)
             );
         }
     }
