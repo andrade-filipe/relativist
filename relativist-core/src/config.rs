@@ -578,6 +578,13 @@ pub struct ComputeArgs {
     /// Path to write metrics JSON.
     #[arg(short = 'm', long)]
     pub metrics: Option<PathBuf>,
+
+    /// D-017 / TASK-0728: stop after encode; write the un-reduced net to
+    /// `--output`. Requires `--output`. Compatible with `--encoder` /
+    /// `--codec`; the runtime dispatcher rejects it when combined with the
+    /// legacy positional `compute <op> <a> <b>` path (no encoder to invoke).
+    #[arg(long, requires = "output")]
+    pub encode_only: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -2314,6 +2321,104 @@ mod tests {
                 assert!(cfg.transport.use_zero_copy);
             }
             _ => panic!("expected Worker"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // TASK-0728 / D-017: compute --encode-only CLI parser tests.
+    // (Acceptance criteria AC1, AC5 — parser-side.)
+    // ------------------------------------------------------------------
+
+    // UT-0728-01: `--encode-only` without `--output` fails clap parsing
+    // (clap `requires = "output"` on the field).
+    #[test]
+    fn encode_only_requires_output_flag() {
+        let res = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,2,3],"x":10}"#,
+            "--encode-only",
+        ]);
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--output") || msg.to_lowercase().contains("output"),
+            "missing-output error must mention --output, got: {msg}"
+        );
+    }
+
+    // UT-0728-02: `--encode-only --output x.bin` parses successfully; field set.
+    #[test]
+    fn encode_only_with_output_parses_successfully() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,2,3],"x":10}"#,
+            "--encode-only",
+            "--output",
+            "/tmp/out.bin",
+        ])
+        .expect("parse must succeed");
+        match cli.command {
+            Command::Compute(args) => {
+                assert!(args.encode_only, "encode_only must be true");
+                assert_eq!(
+                    args.output.as_deref(),
+                    Some(std::path::Path::new("/tmp/out.bin"))
+                );
+                assert_eq!(args.codec.as_deref(), Some("horner"));
+            }
+            other => panic!("expected Compute, got {other:?}"),
+        }
+    }
+
+    // UT-0728-03: without `--encode-only`, the bool defaults to false
+    // (backward compatibility — existing `--output` semantics untouched).
+    #[test]
+    fn encode_only_default_is_false_when_omitted() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,2,3],"x":10}"#,
+            "--output",
+            "/tmp/reduced.bin",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Compute(args) => assert!(!args.encode_only),
+            _ => unreachable!(),
+        }
+    }
+
+    // UT-0728-04: clap `requires` is one-directional; omitting BOTH
+    // `--encode-only` AND `--output` is legal (legacy mode).
+    #[test]
+    fn encode_only_does_not_require_output_when_absent_from_args() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,2,3],"x":10}"#,
+        ])
+        .expect("parse must succeed");
+        match cli.command {
+            Command::Compute(args) => {
+                assert!(!args.encode_only);
+                assert!(args.output.is_none());
+            }
+            _ => unreachable!(),
         }
     }
 }

@@ -638,7 +638,22 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
         let input = args.input.as_ref().ok_or_else(|| {
             RelativistError::Config("--input is required when --encoder/--codec is set".to_string())
         })?;
-        return run_compute_with_encoder(name, input.as_bytes());
+        // TASK-0728 / D-017: when `--encode-only` is set, short-circuit after
+        // `encode_and_validate` and write the un-reduced net to `--output`.
+        let encode_only_out = if args.encode_only {
+            Some(args.output.as_deref().ok_or_else(|| {
+                // clap `requires = "output"` should already prevent this; the
+                // defensive runtime check keeps the contract intact when the
+                // command is constructed in code (integration tests).
+                RelativistError::Config(
+                    "--encode-only requires --output (path to write the un-reduced net)"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+        return run_compute_with_encoder(name, input.as_bytes(), encode_only_out);
     }
 
     // SPEC-27 v3 R21: orphan `--input` without --encoder/--codec is a
@@ -646,6 +661,17 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
     if args.input.is_some() {
         return Err(RelativistError::Config(
             "--input requires --encoder or --codec".to_string(),
+        ));
+    }
+
+    // TASK-0728 / D-017 AC3: `--encode-only` requires `--encoder` / `--codec`.
+    // Legacy positional `compute add 3 5 --encode-only` has no encoder to
+    // dispatch — reject early with a clear Config error (not a panic).
+    if args.encode_only {
+        return Err(RelativistError::Config(
+            "--encode-only requires --encoder or --codec (the legacy positional \
+             `compute <op> <a> <b>` path has no encoder to dispatch)"
+                .to_string(),
         ));
     }
 
@@ -760,7 +786,17 @@ pub fn run_compute_command(args: crate::config::ComputeArgs) -> Result<(), Relat
 /// SPEC-27 R21, R23: registry-driven compute path.
 ///
 /// Pipeline: `encode → validate (E1+E2) → reduce_all → decode → print JSON`.
-fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistError> {
+///
+/// **TASK-0728 / D-017:** when `encode_only_output` is `Some(path)`, the
+/// pipeline short-circuits after `encode_and_validate` and writes the
+/// un-reduced net to `path` via `io::binary::save_bin`. The `reduce_all`
+/// and decode stages are skipped; the produced `.bin` is the input format
+/// the coordinator subcommand consumes via `--input`.
+fn run_compute_with_encoder(
+    name: &str,
+    input: &[u8],
+    encode_only_output: Option<&std::path::Path>,
+) -> Result<(), RelativistError> {
     let registry = crate::encoding::default_registry();
 
     println!("=== Relativist Compute (encoder: {}) ===", name);
@@ -772,6 +808,18 @@ fn run_compute_with_encoder(name: &str, input: &[u8]) -> Result<(), RelativistEr
         "Encoding:    {} agents, {} redexes",
         initial_agents, initial_redexes
     );
+
+    // TASK-0728 / D-017 short-circuit: skip reduce_all + decode and persist
+    // the un-reduced net for downstream coordinator consumption.
+    if let Some(path) = encode_only_output {
+        crate::io::binary::save_bin(&net, path)?;
+        println!(
+            "Encoded:     {} agents -> {}",
+            net.count_live_agents(),
+            path.display()
+        );
+        return Ok(());
+    }
 
     let start = std::time::Instant::now();
     let stats = reduce_all(&mut net);
@@ -1302,6 +1350,7 @@ mod tests {
             workers: None,
             output: None,
             metrics: None,
+            encode_only: false,
         }
     }
 
@@ -1348,7 +1397,7 @@ mod tests {
     // SPEC-27 R21: unknown encoder bubbles up as Encoding error.
     #[test]
     fn run_compute_unknown_encoder_errors() {
-        let err = run_compute_with_encoder("nope_does_not_exist", b"{}").unwrap_err();
+        let err = run_compute_with_encoder("nope_does_not_exist", b"{}", None).unwrap_err();
         match err {
             RelativistError::Encoding(msg) => assert!(msg.contains("not found")),
             other => panic!("expected Encoding, got {:?}", other),
@@ -1361,7 +1410,7 @@ mod tests {
     // (TASK-0716).
     #[test]
     fn run_compute_with_encoder_invalid_input_errors() {
-        let err = run_compute_with_encoder("horner", b"{not json}").unwrap_err();
+        let err = run_compute_with_encoder("horner", b"{not json}", None).unwrap_err();
         assert!(matches!(err, RelativistError::Encoding(_)));
     }
 
