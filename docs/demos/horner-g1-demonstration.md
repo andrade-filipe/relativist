@@ -211,15 +211,24 @@ introduzida no fix de BUG-003 do D-015 QA pass (2026-05-06).
 
 ---
 
-## Envelope leitor (pós D-016 — TASK-0723 + TASK-0724)
+## Envelope leitor (pós D-016 — TASK-0723 + TASK-0724 + BUG-001/002 fix)
 
 D-016 estendeu `biguint_readback` para cobrir o readable subset do
 HornerCodec usado nesses demos:
 
-- **Single-iteration polinômios** (`coeffs.len() == 2`) com qualquer
-  cofactor `c₁ ≥ 1` em `0..=MAX_CHURCH_NAT` (TASK-0723).
+- **Single-iteration polinômios** (`coeffs.len() == 2`) com cofactor
+  `c₁ ∈ 0..=1025` e qualquer `c₀`, `x ∈ 0..=MAX_CHURCH_NAT` (TASK-0723).
+  O limite superior `c₁ = 1025` foi descoberto empiricamente via bisect
+  (2026-05-16, D-016 BUG-002 fix) — o limite anterior anunciado
+  (`MAX_CHURCH_NAT = 10_000`) era falso; acima de `c₁ = 1025` o decoder
+  retorna `Err(UnrecognizedStructure: read_chain_terminal: nested mul
+  boundary on exit chain)`. Regressão em
+  `decode_biguint_handles_actual_c1_upper_bound` (UT-0723-08).
 - **Degree-2 polinômios** (`coeffs.len() == 3`) com coeficiente líder
-  `c₂ ∈ {1}` e coeficiente do meio `c₁ ≥ 1` (TASK-0724 — readable subset).
+  `c₂ == 1` e coeficiente do meio `c₁ ≥ 0` (TASK-0724 — readable subset).
+  Inputs com `c₂ ≥ 2` retornam `Err(UnrecognizedStructure:
+  read_mult_subnet: inbound chain crossed N DUPs (>2))` em vez de
+  retornar `Ok` com valor numericamente errado (pré-D-016 BUG-001).
 
 Casos previamente bloqueados que agora decodificam corretamente:
 
@@ -253,19 +262,26 @@ Result:      {
 
 `biguint_readback` v1 usa um algoritmo de **cycle counting** sobre a
 árvore DUP da multiplicação. Esse algoritmo é exato para o subset
-listado acima mas **sub-estima o multiplicador para grau ≥ 3**: a
-estrutura aninhada cresce exponencialmente em `x` mas o contador linear
-de ciclos não acompanha. Os seguintes casos retornam valores
-incorretos via decoder mas a redução em si está correta (a oracle
-`horner_serial` confirma o valor esperado):
+listado acima mas **sub-estima o multiplicador para grau ≥ 3 OU
+degree-2 com `c₂ ≥ 2`**: a estrutura aninhada cresce exponencialmente
+em `x` mas o contador linear de ciclos não acompanha. Pré-D-016 o
+decoder retornava `Ok(under-counted)` silenciosamente nessas entradas
+— uma regressão de confiança (CVE-class) capturada pelo QA. Post-fix
+(commit `<this>`), todas as entradas fora do envelope retornam
+`Err(UnrecognizedStructure)` com mensagem estruturada, NÃO `Ok(N)`
+com valor numericamente errado. A oracle `horner_serial` continua
+produzindo o valor correto; o decoder simplesmente recusa o readback:
 
-- `{"coeffs":[3,2,5,1],"x":2}` — grau 3 (esperado 35, decoder retorna 23) ❌
-- `{"coeffs":[1,0,0,0,0,1],"x":10}` — grau 5 esparso (esperado 100001) ❌
-- `{"coeffs":[1,1,1,1,1],"x":2}` — grau 4 (esperado 31, decoder retorna 15) ❌
-- `{"coeffs":[1; 25],"x":10}` — T9 BigUint witness ❌
+- `{"coeffs":[3,2,5,1],"x":2}` — grau 3 (esperado 35) → `Err(read_mult_subnet: inbound chain crossed 4 DUPs (>2))`
+- `{"coeffs":[1,0,0,0,0,1],"x":10}` — grau 5 esparso (esperado 100001) → `Err(read_mult_subnet: inbound chain crossed N DUPs (>2))`
+- `{"coeffs":[1,1,1,1,1],"x":2}` — grau 4 (esperado 31) → `Err(read_mult_subnet: inbound chain crossed 6 DUPs (>2))`
+- `{"coeffs":[5,5,5],"x":2}` — degree-2 c₂≥2 (esperado 35) → `Err(read_mult_subnet: inbound chain crossed 3 DUPs (>2))`
+- `{"coeffs":[5,1026],"x":2}` — single-iter c₁>1025 (esperado 5135) → `Err(read_chain_terminal: nested mul boundary on exit chain)`
+- `{"coeffs":[1; 25],"x":10}` — T9 BigUint witness → `Err(...)`
 
 **Future work (SPEC-27 §5.1):** Mackie/Pinto shared-form readback
-fecha esse gap. Tracking no roadmap como item v2.1+.
+fecha esse gap (estende o envelope para degree arbitrário e
+`c₁ > 1025`). Tracking no roadmap como item v2.1+.
 
 ---
 
