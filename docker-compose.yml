@@ -9,9 +9,13 @@ services:
       - coordinator
       - --workers=${NUM_WORKERS:-2}
       - --bind=0.0.0.0:9000
-      - --input=/data/input.bin
-      - --output=/data/output.bin
-      - --metrics=/data/metrics.json
+      # D-017 / TASK-0730: parametrise input/output/metrics paths so the
+      # multi-container Horner demo (scripts/horner_distributed_demo.sh) can
+      # target per-run files without colliding with stress-curve / bench-tcp
+      # artefacts. Defaults match the prior literals for backwards-compat.
+      - --input=${INPUT_PATH:-/data/input.bin}
+      - --output=${OUTPUT_PATH:-/data/output.bin}
+      - --metrics=${METRICS_PATH:-/data/metrics.json}
       # Tier 3 flags wired for D-011 Phase F-2 docker TCP rodada (SPEC-21).
       # Defaults match the v2 local rodada baseline; env-var override allows
       # bench_docker_v2.sh and ad-hoc experiments to sweep different values.
