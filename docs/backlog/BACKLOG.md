@@ -1,10 +1,12 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-05-06 (D-014 Stress Curve Campaign + SPEC-27 v3 Topic 2 Encoder/HornerCodec; 20 tasks active TASK-0700..0719).
+**Last updated:** 2026-05-16 (D-016 HornerCodec decoder extension; +4 tasks TASK-0723..0726 opens the bundle).
 
-**Status:** 20 active TASKs across two bundles:
+**Status:** 27 active TASKs across four bundles:
 - **D-014 (Stress Curve Campaign):** TASK-0700..0708 (9 tasks; Topic 1).
 - **SPEC-27 v3 (Encoder/Decoder API + HornerCodec):** TASK-0709..0719 (11 tasks; Topic 2). Stage 1 splitting completed 2026-05-06 from `specs/SPEC-27-encoder-decoder-api.md` Revised v3 (Round 2 spec-critic response closed all 13 issues).
+- **D-015 follow-ups:** TASK-0720..0722 (3 tasks; refactor + benchmark data).
+- **D-016 (HornerCodec decoder extension):** TASK-0723..0726 (4 tasks; Stage 1 splitting completed 2026-05-16 from `docs/demos/horner-g1-demonstration.md` "Limitações conhecidas" gap analysis).
 
 The full inventory of D-005..D-012 atomic tasks (TASK-0001..TASK-0618 with intentional gaps) is preserved at `archive/`. Numbering gap 0619-0699 reserved for any intermediate bundles between D-012 and D-014.
 
@@ -62,6 +64,28 @@ The full inventory of D-005..D-012 atomic tasks (TASK-0001..TASK-0618 with inten
 7. TASK-0708 (campaign run; needs everything green)
 
 When the bundle closes, TASK files move to `archive/` and this section clears per the existing housekeeping pattern.
+
+### D-016 — HornerCodec decoder extension
+
+Closes the 3 known decoder failures documented in `docs/demos/horner-g1-demonstration.md` "Limitações conhecidas" section (post-v0.20.0 audit, 2026-05-16). The encoder + reducer are correct in all cases per Lafont confluence (G1); the `biguint_readback` decoder mishandles (a) Church multiplication output for coefficient `c_i >= 2` and (b) nested Horner composition for degree `>= 2`. Bundle target: full readable subset over `MAX_CHURCH_NAT = 10_000` bounds with empirical G1 cross-checks at degree ≥ 2.
+
+| ID | Title | Priority | Status | Depends | Complexity | Bundle |
+|----|-------|----------|--------|---------|------------|--------|
+| TASK-0723 | biguint_readback: handle Church mul output for c_i ≥ 2 | P0 | TODO | none (extends TASK-0712 in HEAD) | M (~120 LoC prod) | D-016 |
+| TASK-0724 | biguint_readback: handle nested Horner composition (degree ≥ 2) | P0 | TODO | TASK-0723 | M (~140 LoC prod) | D-016 |
+| TASK-0725 | Horner pipeline property tests at full MAX_CHURCH_NAT bounds | P1 | TODO | TASK-0723, TASK-0724 | S–M (~80 LoC test) | D-016 |
+| TASK-0726 | Doc cleanup of demo "Limitações" section + `scripts/horner_demo.sh` placeholder | P1 | TODO | TASK-0725 | S (~40 LoC doc + ~30 LoC bash) | D-016 |
+
+**Suggested execution order** (linear DAG, no parallelism):
+
+1. TASK-0723 (cofactor c_i ≥ 2 traversal — Demo 2 case `[3,5]@4` → 23).
+2. TASK-0724 (nested Horner traversal — Demos 4/5 + T9 BigUint witness).
+3. TASK-0725 (property tests; promotes TASK-0723/0724 from "demos pass" to "100% readable subset audited").
+4. TASK-0726 (doc + script housekeeping; opens TASK-0727 entry for next bundle).
+
+**Deferred next-bundle entry (placeholder, no TASK file yet):**
+
+- **TASK-0727** — `scripts/horner_demo.sh` Docker arm (D-017 candidate). Port the Phase 2 Docker pattern from `scripts/stress_curve.sh` (commit `c77d7fc`) to the Horner demo workflow. Owner: next bundle's task-splitter.
 
 ---
 
