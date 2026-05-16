@@ -73,6 +73,12 @@ pub enum Command {
     /// of the `compute` subcommand (R21 dual-form).
     #[command(alias = "codecs")]
     Encoders(EncodersArgs),
+
+    /// D-017 / TASK-0729: decode a bincode-v2 `.bin` (typically the
+    /// reduced net emitted by the coordinator) back into the codec's
+    /// JSON representation. Mirrors the post-reduce decode stage of
+    /// `compute --codec <name>` for nets that were reduced out-of-process.
+    Decode(DecodeArgs),
 }
 
 /// Arguments for the `encoders` subcommand (SPEC-27 R22).
@@ -585,6 +591,37 @@ pub struct ComputeArgs {
     /// legacy positional `compute <op> <a> <b>` path (no encoder to invoke).
     #[arg(long, requires = "output")]
     pub encode_only: bool,
+}
+
+/// Arguments for the `decode` subcommand (D-017 / TASK-0729; SPEC-27 v3
+/// R14'/R15'/R16'/R21).
+///
+/// Loads a bincode-v2 `.bin` file (typically the reduced net written by
+/// a coordinator), runs the named codec's decoder, and emits the result
+/// as JSON. If the net has `root = None` (HornerCodec composes via
+/// `wire_*_into`, leaving the result wire on `FreePort(0)`), the handler
+/// invokes `discover_root` automatically — mirroring the contract from
+/// `run_compute_with_encoder` (commands.rs post-reduce branch).
+#[derive(clap::Args, Debug)]
+pub struct DecodeArgs {
+    /// Codec name from the registry (e.g., "horner").
+    /// Mutually exclusive with `--encoder` (SPEC-27 R21 dual-form).
+    #[arg(long, value_name = "NAME", conflicts_with = "encoder")]
+    pub codec: Option<String>,
+
+    /// Alias of `--codec` (SPEC-27 R21 dual-form). Mutually exclusive
+    /// with `--codec`.
+    #[arg(long, value_name = "NAME", conflicts_with = "codec")]
+    pub encoder: Option<String>,
+
+    /// Path to a bincode-v2 `.bin` (typically the reduced net output of
+    /// a coordinator over the bind-mounted volume).
+    #[arg(short = 'i', long)]
+    pub input: PathBuf,
+
+    /// Optional path to write the JSON result. If absent, prints to stdout.
+    #[arg(short = 'o', long)]
+    pub output: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2398,6 +2435,111 @@ mod tests {
             Command::Compute(args) => assert!(!args.encode_only),
             _ => unreachable!(),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // TASK-0729 / D-017: `decode` subcommand CLI parser tests.
+    // ------------------------------------------------------------------
+
+    // UT-0729-01: happy path — `--codec horner --input x.bin` parses;
+    // output defaults to None.
+    #[test]
+    fn decode_parses_with_codec_and_input() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "decode",
+            "--codec",
+            "horner",
+            "--input",
+            "/tmp/x.bin",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::Decode(args) => {
+                assert_eq!(args.codec.as_deref(), Some("horner"));
+                assert!(args.encoder.is_none());
+                assert_eq!(args.input, PathBuf::from("/tmp/x.bin"));
+                assert!(args.output.is_none());
+            }
+            _ => panic!("expected Decode"),
+        }
+    }
+
+    // UT-0729-02: passing both `--codec` and `--encoder` MUST fail at
+    // parse time via clap `conflicts_with`.
+    #[test]
+    fn decode_codec_and_encoder_together_fails() {
+        let res = Cli::try_parse_from([
+            "relativist",
+            "decode",
+            "--codec",
+            "horner",
+            "--encoder",
+            "horner",
+            "--input",
+            "/tmp/x.bin",
+        ]);
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    // UT-0729-03: `--encoder` accepted as alias for `--codec`.
+    #[test]
+    fn decode_encoder_alias_parses() {
+        let cli = Cli::try_parse_from([
+            "relativist",
+            "decode",
+            "--encoder",
+            "horner",
+            "--input",
+            "/tmp/x.bin",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::Decode(args) => {
+                assert_eq!(args.encoder.as_deref(), Some("horner"));
+                assert!(args.codec.is_none());
+            }
+            _ => panic!("expected Decode"),
+        }
+    }
+
+    // UT-0729-04: missing `--input` fails parsing (it is a required
+    // `PathBuf`, not `Option`).
+    #[test]
+    fn decode_requires_input_path() {
+        let res = Cli::try_parse_from(["relativist", "decode", "--codec", "horner"]);
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    // UT-0731-08: CLI parity — `compute --encode-only ...` and `decode
+    // ...` co-exist cleanly.
+    #[test]
+    fn cli_parity_encode_only_and_decode_subcommand() {
+        let a = Cli::try_parse_from([
+            "relativist",
+            "compute",
+            "--codec",
+            "horner",
+            "--input",
+            r#"{"coeffs":[1,2,3],"x":10}"#,
+            "--encode-only",
+            "--output",
+            "/tmp/x.bin",
+        ])
+        .expect("encode-only path parses");
+        let b = Cli::try_parse_from([
+            "relativist",
+            "decode",
+            "--codec",
+            "horner",
+            "--input",
+            "/tmp/x.bin",
+        ])
+        .expect("decode subcommand parses");
+        assert!(matches!(a.command, Command::Compute(ref args) if args.encode_only));
+        assert!(matches!(b.command, Command::Decode(_)));
     }
 
     // UT-0728-04: clap `requires` is one-directional; omitting BOTH

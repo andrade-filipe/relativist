@@ -881,6 +881,55 @@ fn format_encoders_list() -> String {
     out
 }
 
+/// D-017 / TASK-0729: `decode` subcommand handler.
+///
+/// Loads a bincode-v2 `.bin` from `args.input`, runs the named codec's
+/// decoder, and emits the result as pretty JSON to either `args.output`
+/// (when set) or stdout. Errors propagate as:
+///
+/// - `RelativistError::Config` for missing/unknown codec, invalid `--codec`/
+///   `--encoder` combination, or unparseable `.bin` (the load path returns
+///   `Config` for any deserialization failure).
+/// - `RelativistError::Encoding` for codec-level decode failures (e.g.,
+///   `NotNormalForm` when the input net still has redexes — the operator
+///   forgot to run the coordinator).
+///
+/// **Root recovery contract:** codecs that compose Church arithmetic via
+/// `wire_*_into` (HornerCodec, `build_add`/`build_mul`/...) emit nets with
+/// `root = None` — the result wire is connected to `FreePort(0)` and the
+/// post-reduce root must be discovered before decoding. This mirrors the
+/// in-process pipeline in `run_compute_with_encoder` (post-`reduce_all`
+/// branch) and the test convention in `tests/horner_distributed_g1.rs`.
+pub fn run_decode_command(
+    args: crate::config::DecodeArgs,
+) -> Result<(), RelativistError> {
+    let name = args
+        .codec
+        .as_deref()
+        .or(args.encoder.as_deref())
+        .ok_or_else(|| {
+            RelativistError::Config("decode requires --codec or --encoder".to_string())
+        })?;
+    let mut net = crate::io::binary::load_bin(&args.input)?;
+    if net.root.is_none() {
+        let recovered = crate::encoding::discover_root(&mut net);
+        tracing::debug!(
+            recovered_root = recovered,
+            agents = net.count_live_agents(),
+            "decode subcommand: post-load root discovery"
+        );
+    }
+    let registry = crate::encoding::default_registry();
+    let json_out = registry.decode(name, &net)?;
+    let pretty = serde_json::to_string_pretty(&json_out)
+        .map_err(|e| RelativistError::Encoding(format!("serialize result: {}", e)))?;
+    match args.output {
+        Some(ref path) => std::fs::write(path, &pretty)?,
+        None => println!("{}", pretty),
+    }
+    Ok(())
+}
+
 /// SPEC-27 v3 R22: list registered encoders with descriptions.
 ///
 /// The `codecs` subcommand is a clap alias for `encoders` (R22 MAY) — both
