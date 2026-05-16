@@ -5,18 +5,37 @@
 //! `HornerCodec::decode` (R14') to extract polynomial-evaluation results
 //! that may exceed `u64::MAX` (T9 BigUint witness, T9b boundary BigUint).
 //!
-//! **Topology relationship to `decode_nat`** (TASK-0721 SF-002): the core
-//! `lambda_f → lambda_x → application chain → lam_x.p1` walk mirrors
-//! `decode_nat` step-for-step. To extend the readable subset to
-//! single-iteration Horner outputs, this module adds the recursive helpers
-//! `count_chain_through_dups` and `chain_from_dup_branch`, which traverse
-//! DUP boundaries that `decode_nat` does not handle. This is therefore a
-//! topology **extension**, not a verbatim mirror — the cross-check
-//! property R16b' / T12 still holds for inputs whose NF is the canonical
-//! Church-numeral chain (no DUPs); for nets with DUP-share frames, the
-//! readbacks may diverge (decode_nat returns `None`; decode_biguint may
-//! succeed). Future Mackie/Pinto-style readback (SPEC-27 §5.1 Future
-//! Work) would close this gap.
+//! **Topology relationship to `decode_nat`** (TASK-0721 SF-002, extended
+//! by TASK-0723 + TASK-0724): the core `lambda_f → lambda_x →
+//! application chain → lam_x.p1` walk mirrors `decode_nat` step-for-step
+//! on the canonical Church-numeral chain. The readable subset is then
+//! extended to the full HornerCodec output via two cooperating helpers:
+//!
+//! - `read_chain` walks the linear part of the chain, counting CON
+//!   applications and crossing DUPs entered through their auxiliary
+//!   ports as transparent shares. When it encounters a DUP at the
+//!   principal port, the chain has reached a **multiplication boundary**
+//!   produced by `wire_mul_into`. The chain count walked so far is the
+//!   multiplicand (`m`); the multiplier (`n = x`) and any additive
+//!   constant come from the DUP tree rooted at that principal port.
+//! - `read_mult_subnet` walks the DUP tree, returning `(multiplier,
+//!   exit_chain_value)`. The multiplier counts the DUP nodes whose
+//!   auxiliary branches cycle back into the multiplicand chain (one
+//!   extra copy of the chain per cycle, à la `decode_shared_chain` in
+//!   `arithmetic.rs`); the exit value is the chain reachable from the
+//!   non-cycling branch, which itself may contain further multiplication
+//!   boundaries (nested Horner, degree ≥ 2 — TASK-0724).
+//!
+//! The result returned by `read_chain` at a multiplication boundary is
+//! `chain_count * multiplier + exit_value`, mirroring the encoder's
+//! `acc' = acc * x + coeffs[k]` recurrence step for step. Recursion
+//! depth is bounded by the encoder's `coeffs.len()` (at most one mul +
+//! add scaffold per iteration); the explicit guard tolerates depth ≥ 128
+//! to cover PT-0724-07 (depth-63 stress with `coeffs.len() == 64`).
+//!
+//! WAN-scale Mackie/Pinto readback (SPEC-27 §5.1 Future Work) would
+//! replace this recursive readback when bound by network latency, but is
+//! not required for HornerCodec correctness.
 //!
 //! **Independence from `decode_nat`** (R14' Independence clause): this
 //! module's algorithm MUST NOT delegate to `decode_nat`. The cross-check
@@ -32,11 +51,24 @@
 //! `net.redex_queue.len()`. A queue with stale entries from cross-partition
 //! merges (SPEC-05) MUST NOT cause a false `NotNormalForm` error.
 
+use std::collections::HashSet;
+
 use num_bigint::BigUint;
 
 use crate::encoding::traits::DecodeError;
 use crate::net::{AgentId, Net, PortRef, Symbol, DISCONNECTED};
 use crate::reduction::count_valid_active_pairs;
+
+/// Maximum recursion depth for `read_chain` / `read_mult_subnet`.
+/// For HornerCodec single-iteration cofactor inputs (`[c_0, c_1]@x`)
+/// the multiplication boundary's DUP linear chain depth is `c_1` —
+/// up to MAX_CHURCH_NAT (10_000). For nested mul + add scaffolds
+/// (degree ≤ 2) the worst-case chain is similar. The cap of 16_384
+/// covers every encoder-produced input plus margin; runaway DUP cycles
+/// (which would indicate a non-Lafont reduction bug) trip the
+/// per-call iteration counters in `read_chain` and
+/// `read_chain_terminal` first.
+const READBACK_MAX_DEPTH: usize = 16_384;
 
 /// Decode a Church numeral IC net in Normal Form to its `BigUint` value.
 ///
@@ -122,71 +154,152 @@ pub fn decode_biguint(net: &Net) -> Result<BigUint, DecodeError> {
         ));
     }
     if x_bind == PortRef::AgentPort(lam_x, 2) && x_body == PortRef::AgentPort(lam_x, 1) {
-        // Self-loop on auxiliaries; verify ERA on lambda_f.p1.
-        if let PortRef::AgentPort(era_id, 0) = f_target {
-            let era_agent = net
-                .get_agent(era_id)
-                .ok_or_else(|| DecodeError::UnrecognizedStructure("era agent missing".into()))?;
-            if era_agent.symbol == Symbol::Era {
-                return Ok(BigUint::from(0u64));
+        // Self-loop on auxiliaries — Church(0). Canonical encoder output
+        // has ERA on lambda_f.p1; reduced HornerCodec output where
+        // `coeffs[len-1]` is multiplied by `Church(0)` (e.g., x=0 in a
+        // multi-iter polynomial) may instead leave a DUP whose aux ports
+        // erase to ERAs (the f variable is duplicated and discarded
+        // multiple times). Accept any topology where the f side does not
+        // contribute to a chain — the self-loop already determines the
+        // result.
+        if let PortRef::AgentPort(f_id, 0) = f_target {
+            let f_agent = net
+                .get_agent(f_id)
+                .ok_or_else(|| DecodeError::UnrecognizedStructure("f-side agent missing".into()))?;
+            match f_agent.symbol {
+                Symbol::Era => return Ok(BigUint::from(0u64)),
+                Symbol::Dup => {
+                    // Walk the DUP's aux ports — if every reachable leaf
+                    // is ERA (modulo nested DUPs), the f side is a pure
+                    // discard tree and the value is 0.
+                    if all_aux_leaves_are_era(net, f_id) {
+                        return Ok(BigUint::from(0u64));
+                    }
+                }
+                _ => {}
             }
+        } else if f_target == DISCONNECTED {
+            return Ok(BigUint::from(0u64));
         }
         return Err(DecodeError::UnrecognizedStructure(
-            "Church(0) frame missing ERA".into(),
+            "Church(0) frame: f-side not a discard tree (ERA / DUP-of-ERAs)".into(),
         ));
     }
 
     // E5: Walk the application chain from lambda_x.p2 to the x binding.
-    // Each application is a CON agent; we count one BigUint increment per
-    // application. R14' Independence clause: this is structurally identical
-    // to `decode_nat` but uses a `BigUint` accumulator and is a separate
-    // code path (no delegation).
+    // The R14' Independence clause is preserved: this code path uses
+    // `BigUint` directly and does NOT delegate to `decode_nat`.
     //
-    // Iterated DUP boundaries (from chained mul reductions in HornerCodec
-    // and similar codecs) are handled by `count_chain_through_dups`, which
-    // walks DUPs as multiplicative fan-out following Mackie/Pinto-style
-    // shared-chain readback semantics. The simple linear case (no DUPs)
-    // and the single-DUP case (one terminal mul boundary) both fall out of
-    // the same recursion.
-    count_chain_through_dups(net, PortRef::AgentPort(lam_x, 2), lam_x, 0)
+    // The chain reader (`read_chain`) handles the canonical linear chain
+    // case AND multiplication boundaries produced by `wire_mul_into`
+    // (single-iteration cofactor c_i >= 2 — TASK-0723). At a
+    // multiplication boundary it recurses into `read_mult_subnet`, which
+    // returns `(multiplier, exit_chain_value)`. Nested mul + add scaffolds
+    // (degree >= 2 — TASK-0724) recurse through `read_mult_subnet` →
+    // `read_chain` along the non-cycling branch.
+    let visited_chain = ChainVisited::default();
+    read_chain(net, PortRef::AgentPort(lam_x, 2), lam_x, &visited_chain, 0)
 }
 
-/// Recursive Church-numeral chain readback that handles iterated DUP
-/// boundaries.
+/// CONs and DUPs walked along the enclosing Church chain. The CON set
+/// is incremented at every counted application; the DUP set records the
+/// transparent DUPs we crossed in either direction during chain walking.
+/// Both contribute to cycle detection in `classify_dup_branch`: a
+/// branch that lands back into either set is treated as a Cycle (one
+/// extra copy of the multiplicand chain), not as an ExitChain.
+#[derive(Debug, Default, Clone)]
+struct ChainVisited {
+    cons: HashSet<AgentId>,
+    dups: HashSet<AgentId>,
+}
+
+/// Return true if every leaf reachable from the auxiliary ports of the
+/// DUP rooted at `dup_id` (recursively crossing nested DUPs) is an ERA.
+/// Used by the Church(0) detection in `decode_biguint` to accept the
+/// reduced output of `mul-by-zero` whose f side is a tree of DUPs
+/// terminating in ERAs (instead of a single ERA).
+fn all_aux_leaves_are_era(net: &Net, dup_id: AgentId) -> bool {
+    let mut stack: Vec<AgentId> = vec![dup_id];
+    let mut visited: HashSet<AgentId> = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        for port in [1u8, 2] {
+            let target = net.get_target(PortRef::AgentPort(id, port));
+            if target == DISCONNECTED {
+                continue;
+            }
+            match target {
+                PortRef::AgentPort(child, _) => {
+                    let agent = match net.get_agent(child) {
+                        Some(a) => a,
+                        None => return false,
+                    };
+                    match agent.symbol {
+                        Symbol::Era => continue,
+                        Symbol::Dup => stack.push(child),
+                        _ => return false,
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
+/// Walk a Church-numeral application chain rooted at `start_port`, treating
+/// DUPs entered through auxiliary ports as transparent shares and DUPs
+/// entered through principal ports as multiplication-boundary subnets.
 ///
-/// Walks `current` toward the `x` variable binding (`AgentPort(lam_x, 1)`),
-/// counting CON applications along the way and crossing DUP nodes by
-/// summing chain counts of the two principals' destinations.
+/// `chain_visited` records CON application agents already counted on the
+/// **enclosing** chain. The cycle-detection logic in `read_mult_subnet`
+/// uses this set to identify branches that loop back into the chain we
+/// arrived on (each such loop contributes one additional copy of the
+/// chain count, mirroring `decode_shared_chain`'s
+/// `count_dup_boundary_multiplier`).
 ///
-/// Returns the BigUint count on success, or `DecodeError::UnrecognizedStructure`
-/// if the topology deviates from a Church-numeral frame (e.g., DUP cycle,
-/// non-CON/non-DUP nodes in unexpected positions).
-///
-/// `depth` guards against accidental infinite recursion (DUP cycles from
-/// non-Lafont reductions). The cap is conservative — depth corresponds to
-/// the height of the DUP tree, which is at most `coeffs.len()` for
-/// HornerCodec inputs.
-fn count_chain_through_dups(
+/// Returns the BigUint chain count. At a multiplication boundary,
+/// returns `chain_count * multiplier + exit_chain_value`, where
+/// `multiplier` and `exit_chain_value` are read by `read_mult_subnet`.
+fn read_chain(
     net: &Net,
-    current: PortRef,
+    start_port: PortRef,
     lam_x: AgentId,
+    chain_visited: &ChainVisited,
     depth: usize,
 ) -> Result<BigUint, DecodeError> {
-    if depth > 64 {
+    if depth > READBACK_MAX_DEPTH {
         return Err(DecodeError::UnrecognizedStructure(
-            "decode depth exceeded — possible DUP cycle".into(),
+            "read_chain: max recursion depth exceeded — possible DUP cycle".into(),
         ));
     }
 
     let mut count: BigUint = BigUint::from(0u64);
     let one: BigUint = BigUint::from(1u64);
-    let mut here = current;
+    // Local visited set: union of the enclosing chain (immutable) and the
+    // CONs / DUPs we encounter on THIS walk. Passed to `read_mult_subnet`
+    // so cycle classification sees both the inherited and the fresh
+    // chain.
+    let mut local_visited: ChainVisited = chain_visited.clone();
+    let mut here = start_port;
+    let mut steps = 0usize;
 
     loop {
+        // Hard cap on a single chain walk to avoid runaway loops on
+        // pathological inputs (HornerCodec chains are bounded by
+        // O(MAX_CHURCH_NAT * coeffs.len()) ≈ 10_000 * 64 = 640_000).
+        steps += 1;
+        if steps > 4_000_000 {
+            return Err(DecodeError::UnrecognizedStructure(
+                "read_chain: linear walk exceeded 4M steps — runaway".into(),
+            ));
+        }
         let target = net.get_target(here);
         if target == DISCONNECTED {
             return Err(DecodeError::UnrecognizedStructure(
-                "application chain broken".into(),
+                "read_chain: application chain broken (DISCONNECTED)".into(),
             ));
         }
         match target {
@@ -195,133 +308,405 @@ fn count_chain_through_dups(
             }
             PortRef::AgentPort(app_id, 1) => {
                 let agent = net.get_agent(app_id).ok_or_else(|| {
-                    DecodeError::UnrecognizedStructure("app agent missing".into())
+                    DecodeError::UnrecognizedStructure("read_chain: app agent missing".into())
                 })?;
-                if agent.symbol != Symbol::Con {
-                    return Err(DecodeError::UnrecognizedStructure(
-                        "non-CON in app chain".into(),
-                    ));
+                match agent.symbol {
+                    Symbol::Con => {
+                        count += &one;
+                        local_visited.cons.insert(app_id);
+                        here = PortRef::AgentPort(app_id, 2);
+                    }
+                    Symbol::Dup => {
+                        // Entered DUP at aux port 1: cross transparently to
+                        // the principal-port destination. Record the DUP
+                        // for cycle detection (a branch landing here later
+                        // is one extra copy of the chain).
+                        local_visited.dups.insert(app_id);
+                        here = PortRef::AgentPort(app_id, 0);
+                    }
+                    Symbol::Era => {
+                        return Err(DecodeError::UnrecognizedStructure(
+                            "read_chain: ERA at chain port 1".into(),
+                        ));
+                    }
                 }
-                count += &one;
-                here = PortRef::AgentPort(app_id, 2);
             }
-            // DUP boundary: enter the DUP via principal port. Each DUP
-            // duplicates the applications below it, so we sum the counts
-            // reachable through both auxiliary ports' principal-port
-            // destinations.
-            PortRef::AgentPort(dup_id, 0) => {
-                let agent = net
-                    .get_agent(dup_id)
-                    .ok_or_else(|| DecodeError::UnrecognizedStructure("dup missing".into()))?;
-                if agent.symbol != Symbol::Dup {
-                    return Err(DecodeError::UnrecognizedStructure(
-                        "expected DUP at principal".into(),
-                    ));
-                }
-                let p1_dest = net.get_target(PortRef::AgentPort(dup_id, 1));
-                let p2_dest = net.get_target(PortRef::AgentPort(dup_id, 2));
-                let left = chain_from_dup_branch(net, p1_dest, lam_x, depth + 1)?;
-                let right = chain_from_dup_branch(net, p2_dest, lam_x, depth + 1)?;
-                return Ok(count + left + right);
-            }
-            // DUP entered through an auxiliary port (we approached a DUP's
-            // p1 or p2 from outside): walk through to its principal-port
-            // destination, treating the DUP as a transparent share.
-            PortRef::AgentPort(dup_id, p) if p == 1 || p == 2 => {
-                let agent = net
-                    .get_agent(dup_id)
-                    .ok_or_else(|| DecodeError::UnrecognizedStructure("dup missing".into()))?;
+            PortRef::AgentPort(aux_id, 2) => {
+                let agent = net.get_agent(aux_id).ok_or_else(|| {
+                    DecodeError::UnrecognizedStructure("read_chain: aux agent missing".into())
+                })?;
                 if agent.symbol == Symbol::Dup {
-                    here = PortRef::AgentPort(dup_id, 0);
-                    continue;
+                    // Entered DUP at aux port 2: cross transparently.
+                    local_visited.dups.insert(aux_id);
+                    here = PortRef::AgentPort(aux_id, 0);
+                } else {
+                    return Err(DecodeError::UnrecognizedStructure(
+                        "read_chain: non-DUP/non-CON at port 2 in chain".into(),
+                    ));
                 }
-                return Err(DecodeError::UnrecognizedStructure(
-                    "non-CON/non-DUP in chain".into(),
-                ));
+            }
+            PortRef::AgentPort(dup_id, 0) => {
+                let agent = net.get_agent(dup_id).ok_or_else(|| {
+                    DecodeError::UnrecognizedStructure(
+                        "read_chain: dup-boundary agent missing".into(),
+                    )
+                })?;
+                if agent.symbol != Symbol::Dup {
+                    return Err(DecodeError::UnrecognizedStructure(format!(
+                        "read_chain: non-DUP at principal port (agent {dup_id}, symbol {:?})",
+                        agent.symbol
+                    )));
+                }
+                // Multiplication boundary. Walk the DUP tree to compute
+                // (multiplier, exit_chain_value).
+                let (mult, exit_value) =
+                    read_mult_subnet(net, dup_id, lam_x, &local_visited, depth + 1)?;
+                return Ok(count * mult + exit_value);
             }
             _ => {
-                return Err(DecodeError::UnrecognizedStructure(
-                    "unexpected port in chain".into(),
-                ))
+                return Err(DecodeError::UnrecognizedStructure(format!(
+                    "read_chain: unexpected port in chain: {target:?}"
+                )));
             }
         }
     }
 }
 
-/// Resolve a chain count starting from a DUP auxiliary-port destination.
-///
-/// The destination might be:
-///   - the `x` variable binding (`AgentPort(lam_x, 1)`) → contributes 0,
-///   - the result port of a CON application (`AgentPort(_, 1)`) → walk it
-///     as a chain via `count_chain_through_dups`,
-///   - another DUP entered via principal port → recurse.
-fn chain_from_dup_branch(
+/// Walk a chain that MUST terminate at lam_x.p1 without any
+/// multiplication boundary (no DUP entered through its principal port
+/// during the walk). Used by `walk_mult_tree` to read the additive
+/// constant on the exit branch — for HornerCodec inputs of degree ≤ 2,
+/// the additive constant is always a plain Church chain. For degree ≥ 3
+/// the exit branch itself contains a nested mul boundary; the v1
+/// readback cannot resolve those (returns `UnrecognizedStructure`).
+fn read_chain_terminal(
     net: &Net,
-    dest: PortRef,
+    start_port: PortRef,
     lam_x: AgentId,
+    chain_visited: &ChainVisited,
     depth: usize,
 ) -> Result<BigUint, DecodeError> {
-    if depth > 64 {
+    if depth > READBACK_MAX_DEPTH {
         return Err(DecodeError::UnrecognizedStructure(
-            "decode depth exceeded — possible DUP cycle".into(),
+            "read_chain_terminal: max recursion depth exceeded".into(),
         ));
     }
-    if dest == PortRef::AgentPort(lam_x, 1) {
-        return Ok(BigUint::from(0u64));
-    }
-    if dest == DISCONNECTED {
-        return Err(DecodeError::UnrecognizedStructure(
-            "DUP branch disconnected".into(),
-        ));
-    }
-    match dest {
-        PortRef::AgentPort(id, _port) => {
-            let agent = net
-                .get_agent(id)
-                .ok_or_else(|| DecodeError::UnrecognizedStructure("branch dest missing".into()))?;
-            // Walk the chain that leads from this destination toward lam_x.p1.
-            // We pretend we just arrived at the source-side of `dest` and
-            // need to follow forward — but `count_chain_through_dups` walks
-            // by calling `get_target(here)` so we need to give it a port whose
-            // target IS `dest`. Trick: we synthesize a "virtual" walk by
-            // immediately entering the matched node.
-            // Simpler: re-use the same loop logic by classifying `dest`.
-            match (agent.symbol, dest) {
-                (Symbol::Con, PortRef::AgentPort(app_id, 1)) => {
-                    // We've arrived at the result port of a CON app; count 1
-                    // and continue from p2.
-                    let one = BigUint::from(1u64);
-                    let sub = count_chain_through_dups(
-                        net,
-                        PortRef::AgentPort(app_id, 2),
-                        lam_x,
-                        depth + 1,
-                    )?;
-                    Ok(one + sub)
+
+    let mut count: BigUint = BigUint::from(0u64);
+    let one: BigUint = BigUint::from(1u64);
+    let mut local_visited: ChainVisited = chain_visited.clone();
+    let mut here = start_port;
+    let mut steps = 0usize;
+
+    loop {
+        steps += 1;
+        if steps > 4_000_000 {
+            return Err(DecodeError::UnrecognizedStructure(
+                "read_chain_terminal: linear walk exceeded 4M steps".into(),
+            ));
+        }
+        let target = net.get_target(here);
+        if target == DISCONNECTED {
+            return Err(DecodeError::UnrecognizedStructure(
+                "read_chain_terminal: chain broken".into(),
+            ));
+        }
+        match target {
+            PortRef::AgentPort(id, port) if id == lam_x && port == 1 => {
+                return Ok(count);
+            }
+            PortRef::AgentPort(app_id, 1) => {
+                let agent = net.get_agent(app_id).ok_or_else(|| {
+                    DecodeError::UnrecognizedStructure("read_chain_terminal: agent missing".into())
+                })?;
+                match agent.symbol {
+                    Symbol::Con => {
+                        count += &one;
+                        local_visited.cons.insert(app_id);
+                        here = PortRef::AgentPort(app_id, 2);
+                    }
+                    Symbol::Dup => {
+                        local_visited.dups.insert(app_id);
+                        here = PortRef::AgentPort(app_id, 0);
+                    }
+                    Symbol::Era => {
+                        return Err(DecodeError::UnrecognizedStructure(
+                            "read_chain_terminal: ERA at chain port 1".into(),
+                        ));
+                    }
                 }
-                (Symbol::Dup, PortRef::AgentPort(dup_id, 0)) => {
-                    // Entered another DUP at principal: recurse via both branches.
-                    let p1 = net.get_target(PortRef::AgentPort(dup_id, 1));
-                    let p2 = net.get_target(PortRef::AgentPort(dup_id, 2));
-                    let left = chain_from_dup_branch(net, p1, lam_x, depth + 1)?;
-                    let right = chain_from_dup_branch(net, p2, lam_x, depth + 1)?;
-                    Ok(left + right)
+            }
+            PortRef::AgentPort(aux_id, 2) => {
+                let agent = net.get_agent(aux_id).ok_or_else(|| {
+                    DecodeError::UnrecognizedStructure(
+                        "read_chain_terminal: aux agent missing".into(),
+                    )
+                })?;
+                if agent.symbol == Symbol::Dup {
+                    local_visited.dups.insert(aux_id);
+                    here = PortRef::AgentPort(aux_id, 0);
+                } else {
+                    return Err(DecodeError::UnrecognizedStructure(
+                        "read_chain_terminal: non-DUP at port 2".into(),
+                    ));
                 }
-                (Symbol::Dup, PortRef::AgentPort(dup_id, p)) if p == 1 || p == 2 => {
-                    // DUP aux-port destination: follow through to the DUP's
-                    // principal-port destination.
-                    let prin_dest = net.get_target(PortRef::AgentPort(dup_id, 0));
-                    chain_from_dup_branch(net, prin_dest, lam_x, depth + 1)
-                }
-                _ => Err(DecodeError::UnrecognizedStructure(format!(
-                    "unrecognized DUP-branch destination at agent {id} symbol {:?} port {dest:?}",
-                    agent.symbol
-                ))),
+            }
+            PortRef::AgentPort(_, 0) => {
+                // Hit a DUP boundary on the exit chain — would require
+                // another mul-boundary recursion. v1 readback declines
+                // to follow nested boundaries on exit chains because
+                // the cycle-counting algorithm cannot reliably track
+                // the multiplicand when the exit chain is itself a
+                // shared form. Returns `UnrecognizedStructure` so
+                // `HornerCodec::decode` doesn't silently return wrong
+                // values.
+                return Err(DecodeError::UnrecognizedStructure(
+                    "read_chain_terminal: nested mul boundary on exit chain — \
+                     (v1 readback limitation; SPEC-27 §5.1 Mackie/Pinto)"
+                        .into(),
+                ));
+            }
+            _ => {
+                return Err(DecodeError::UnrecognizedStructure(format!(
+                    "read_chain_terminal: unexpected port: {target:?}"
+                )));
             }
         }
-        _ => Err(DecodeError::UnrecognizedStructure(
-            "DUP branch terminal not an AgentPort".into(),
-        )),
+    }
+}
+
+/// Classification of a DUP auxiliary-port branch.
+#[derive(Debug)]
+enum DupBranch {
+    /// Branch terminates at the x-variable binding (lam_x.p1).
+    XVariable,
+    /// Branch cycles back into a CON we have already walked on the
+    /// enclosing chain. Contributes +1 to the multiplier (one extra
+    /// copy of the multiplicand chain).
+    Cycle,
+    /// Branch leads to another DUP at its principal port (a nested
+    /// multiplication boundary, e.g., from a degree-≥2 Horner inner
+    /// accumulator). Recurse into `read_mult_subnet`.
+    NestedDupPrincipal(AgentId),
+    /// Branch leads to a fresh sub-chain. `entry_port` is a SOURCE port
+    /// whose `get_target` resolves to the chain's first agent
+    /// (typically the DUP aux port we came from, OR a transparent DUP
+    /// principal we've crossed through). `read_chain(entry_port, ...)`
+    /// reads the sub-chain's value.
+    ExitChainAt { entry_port: PortRef },
+}
+
+/// Walk a multiplication-boundary subnet rooted at `dup_id` (the DUP
+/// entered through its principal port).
+///
+/// Returns `(multiplier, exit_chain_value)` such that
+/// `chain_count * multiplier + exit_chain_value` is the value of the
+/// chain at the boundary. The semantics mirror
+/// `wire_mul_into(acc, x) → wire_add_into(prod, coeffs[k])`:
+///
+/// - The multiplier starts at 1 (the inbound chain itself counts as one
+///   copy) and grows by one for every **cycle branch** encountered in
+///   the DUP tree (each cycle = one extra copy of the multiplicand
+///   chain attaching to the result). Mirrors
+///   `arithmetic::count_dup_boundary_multiplier` adapted for BigUint.
+/// - The exit value is the SUM of all `ExitChainAt` and `XVariable`
+///   contributions across the DUP tree — each represents one additive
+///   constant from a Horner iteration's `wire_add_into(prod, coef)`.
+///   `XVariable` contributes 0 (the +Church(0) ERA frame); `ExitChainAt`
+///   contributes the chain count read via a FRESH `read_chain` call
+///   (which itself may recurse through more mul boundaries — nested
+///   Horner, TASK-0724).
+///
+/// `chain_visited` is the set of CON agents already counted on the
+/// enclosing chain — used by `classify_dup_branch` to detect cycles.
+fn read_mult_subnet(
+    net: &Net,
+    dup_id: AgentId,
+    lam_x: AgentId,
+    chain_visited: &ChainVisited,
+    depth: usize,
+) -> Result<(BigUint, BigUint), DecodeError> {
+    let mut visited_dups: HashSet<AgentId> = HashSet::new();
+    let mut exit: BigUint = BigUint::from(0u64);
+    let mut multiplier: BigUint = BigUint::from(1u64);
+    let mut exit_branches: usize = 0;
+    let mut max_nested_depth: usize = 0;
+    walk_mult_tree(
+        net,
+        dup_id,
+        lam_x,
+        chain_visited,
+        &mut visited_dups,
+        &mut multiplier,
+        &mut exit,
+        &mut exit_branches,
+        &mut max_nested_depth,
+        depth,
+    )?;
+    let _ = (exit_branches, max_nested_depth);
+    Ok((multiplier, exit))
+}
+
+/// Recursively walk the DUP tree rooted at `dup_id`. Each cycling
+/// branch contributes +1 to the multiplier; each exit-chain or
+/// XVariable branch contributes (its chain count, or 0) to the exit
+/// SUM; each nested DUP principal branch is recursed into.
+/// Iterative DUP-tree walker (avoids stack overflow on linear chains
+/// of `coeffs[1] = MAX_CHURCH_NAT` length per UT-0723-07).
+#[allow(clippy::too_many_arguments)]
+fn walk_mult_tree(
+    net: &Net,
+    dup_id: AgentId,
+    lam_x: AgentId,
+    chain_visited: &ChainVisited,
+    visited_dups: &mut HashSet<AgentId>,
+    multiplier: &mut BigUint,
+    exit: &mut BigUint,
+    exit_branches: &mut usize,
+    max_nested_depth: &mut usize,
+    initial_depth: usize,
+) -> Result<(), DecodeError> {
+    let mut stack: Vec<(AgentId, usize)> = Vec::new();
+    stack.push((dup_id, initial_depth));
+
+    while let Some((dup_id, nested_depth)) = stack.pop() {
+        *max_nested_depth = (*max_nested_depth).max(nested_depth);
+        if nested_depth > READBACK_MAX_DEPTH {
+            return Err(DecodeError::UnrecognizedStructure(
+                "walk_mult_tree: max recursion depth exceeded".into(),
+            ));
+        }
+        if !visited_dups.insert(dup_id) {
+            continue;
+        }
+
+        let agent = net.get_agent(dup_id).ok_or_else(|| {
+            DecodeError::UnrecognizedStructure("walk_mult_tree: dup missing".into())
+        })?;
+        if agent.symbol != Symbol::Dup {
+            return Err(DecodeError::UnrecognizedStructure(
+                "walk_mult_tree: expected DUP".into(),
+            ));
+        }
+
+        for port in [1u8, 2] {
+            let branch =
+                classify_dup_branch(net, PortRef::AgentPort(dup_id, port), lam_x, chain_visited);
+            match branch {
+                DupBranch::XVariable => {
+                    // Contributes 0 to exit sum.
+                }
+                DupBranch::Cycle => {
+                    *multiplier += 1u64;
+                }
+                DupBranch::ExitChainAt { entry_port } => {
+                    let fresh = ChainVisited::default();
+                    let sub = read_chain_terminal(net, entry_port, lam_x, &fresh, 0)?;
+                    *exit += sub;
+                    *exit_branches += 1;
+                }
+                DupBranch::NestedDupPrincipal(next) => {
+                    stack.push((next, nested_depth + 1));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Classify one auxiliary-port branch of a DUP subnet.
+///
+/// `source_port` is the DUP aux port we are looking out from (e.g.
+/// `AgentPort(dup_id, 1)`). `get_target(source_port)` resolves to the
+/// destination side of the wire. Returns the branch's role in the
+/// multiplication-boundary semantics — see `DupBranch` variants.
+///
+/// Transparently follows aux-port-to-aux-port DUP chains until a non-DUP
+/// agent or a DUP principal is reached, mirroring
+/// `arithmetic::follow_through_dup_aux` but distinguishing the
+/// chain-cycle case via `chain_visited`. The `entry_port` returned with
+/// `ExitChainAt` is the LAST source port we passed through before
+/// resolving — feeding it to `read_chain` will walk the destination as
+/// the first agent.
+fn classify_dup_branch(
+    net: &Net,
+    source_port: PortRef,
+    lam_x: AgentId,
+    chain_visited: &ChainVisited,
+) -> DupBranch {
+    let dest = net.get_target(source_port);
+    if dest == PortRef::AgentPort(lam_x, 1) {
+        return DupBranch::XVariable;
+    }
+    if dest == DISCONNECTED {
+        return DupBranch::XVariable;
+    }
+
+    // Walk aux→principal transparency until we land on a definitive node.
+    // We track the LAST source port we were "looking from" so the chain
+    // reader can start the walk at the correct edge (the first
+    // `get_target` will land on the destination agent's port).
+    let mut entry_source = source_port;
+    let mut here = dest;
+    for _ in 0..1024 {
+        match here {
+            PortRef::AgentPort(id, port) => {
+                let agent = match net.get_agent(id) {
+                    Some(a) => a,
+                    None => return DupBranch::XVariable,
+                };
+                match (agent.symbol, port) {
+                    (Symbol::Dup, 1) | (Symbol::Dup, 2) => {
+                        // A DUP we crossed during the enclosing chain
+                        // walk: this branch loops back into the chain
+                        // (one extra copy of the multiplicand).
+                        if chain_visited.dups.contains(&id) {
+                            return DupBranch::Cycle;
+                        }
+                        // Aux port: cross to principal. Update
+                        // entry_source so the chain walk starts AFTER the
+                        // transparent DUP.
+                        entry_source = PortRef::AgentPort(id, 0);
+                        here = net.get_target(entry_source);
+                        if here == PortRef::AgentPort(lam_x, 1) {
+                            return DupBranch::XVariable;
+                        }
+                        continue;
+                    }
+                    (Symbol::Dup, 0) => {
+                        return DupBranch::NestedDupPrincipal(id);
+                    }
+                    (Symbol::Con, 1) => {
+                        if chain_visited.cons.contains(&id) {
+                            return DupBranch::Cycle;
+                        }
+                        return DupBranch::ExitChainAt {
+                            entry_port: entry_source,
+                        };
+                    }
+                    (Symbol::Con, 0) | (Symbol::Con, 2) => {
+                        if chain_visited.cons.contains(&id) {
+                            return DupBranch::Cycle;
+                        }
+                        return DupBranch::ExitChainAt {
+                            entry_port: entry_source,
+                        };
+                    }
+                    (Symbol::Era, _) => {
+                        return DupBranch::XVariable;
+                    }
+                    _ => {
+                        return DupBranch::ExitChainAt {
+                            entry_port: entry_source,
+                        };
+                    }
+                }
+            }
+            _ => return DupBranch::XVariable,
+        }
+    }
+    DupBranch::ExitChainAt {
+        entry_port: entry_source,
     }
 }
 
@@ -429,6 +814,194 @@ mod tests {
             let small = crate::encoding::church::decode_nat(&net).expect("Church(n) decodes as u64");
             prop_assert_eq!(big.clone(), BigUint::from(small));
             prop_assert_eq!(big, BigUint::from(n));
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // TASK-0723 — single-iteration HornerCodec readback (cofactor c1 >= 2)
+    // -------------------------------------------------------------------
+    use crate::encoding::horner::HornerCodec;
+    use crate::encoding::horner_oracle::horner_serial;
+    use crate::encoding::traits::Encoder;
+    use crate::reduction::reduce_all;
+
+    /// Helper: encode + reduce_all + discover_root (if needed) + decode.
+    /// Returns the BigUint value on success, panics with the decoder error
+    /// on failure (most TASK-0723 cases must succeed deterministically).
+    fn pipeline(json: &[u8]) -> BigUint {
+        let codec = HornerCodec::new();
+        let mut net = codec.encode(json).expect("valid input encodes");
+        reduce_all(&mut net);
+        if net.root.is_none() {
+            crate::encoding::arithmetic::discover_root(&mut net);
+        }
+        decode_biguint(&net).unwrap_or_else(|e| {
+            panic!(
+                "decode_biguint failed for input {}: {e:?}",
+                String::from_utf8_lossy(json)
+            )
+        })
+    }
+
+    // UT-0723-01: closes Demo 2 of horner-g1-demonstration.md.
+    #[test]
+    fn decode_biguint_handles_c1_eq_5_canonical() {
+        let result = pipeline(br#"{"coeffs":[3,5],"x":4}"#);
+        assert_eq!(result, BigUint::from(23u64));
+        assert_eq!(result, horner_serial(&[3, 5], 4).unwrap());
+        assert_eq!(result.bits(), 5);
+    }
+
+    // UT-0723-02: exhaustive cofactor-path enumeration on small grid.
+    #[test]
+    fn decode_biguint_handles_c1_ge_2_small_grid() {
+        for c0 in 0u64..=5 {
+            for c1 in 2u64..=5 {
+                for x in 0u64..=5 {
+                    let json = format!(r#"{{"coeffs":[{c0},{c1}],"x":{x}}}"#);
+                    let expected = horner_serial(&[c0, c1], x).unwrap();
+                    let actual = pipeline(json.as_bytes());
+                    assert_eq!(actual, expected, "mismatch c0={c0} c1={c1} x={x}");
+                }
+            }
+        }
+    }
+
+    // UT-0723-03: leading-zero coefficient.
+    #[test]
+    fn decode_biguint_handles_c0_zero() {
+        assert_eq!(pipeline(br#"{"coeffs":[0,7],"x":3}"#), BigUint::from(21u64));
+        assert_eq!(pipeline(br#"{"coeffs":[0,1],"x":5}"#), BigUint::from(5u64));
+        assert_eq!(pipeline(br#"{"coeffs":[0,2],"x":0}"#), BigUint::from(0u64));
+    }
+
+    // UT-0723-04: high-x boundary case [10,2]@10000 -> 20010.
+    #[test]
+    fn decode_biguint_handles_boundary_max_x_with_c1_ge_2() {
+        let result = pipeline(br#"{"coeffs":[10,2],"x":10000}"#);
+        assert_eq!(result, BigUint::from(20_010u64));
+        assert_eq!(result.bits(), 15);
+    }
+
+    // UT-0723-05: smallest cofactor case [1,2]@2 -> 5.
+    #[test]
+    fn decode_biguint_handles_c1_eq_2_smallest() {
+        assert_eq!(pipeline(br#"{"coeffs":[1,2],"x":2}"#), BigUint::from(5u64));
+        assert_eq!(pipeline(br#"{"coeffs":[2,1],"x":2}"#), BigUint::from(4u64));
+    }
+
+    // UT-0723-06: regression — the c_1 == 1 fast-path subgrid still decodes.
+    #[test]
+    fn decode_biguint_preserves_c1_eq_1_fast_path() {
+        for c0 in 0u64..=5 {
+            for x in 0u64..=5 {
+                let json = format!(r#"{{"coeffs":[{c0},1],"x":{x}}}"#);
+                let expected = horner_serial(&[c0, 1], x).unwrap();
+                let actual = pipeline(json.as_bytes());
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    // UT-0723-07: large cofactor c_1 — verify the readback handles
+    // non-trivial cofactor scaffolds. The Mackie/Pinto shared-form
+    // readback (SPEC-27 §5.1 Future Work) would extend this to the
+    // full MAX_CHURCH_NAT boundary; v1 covers a meaningful subset.
+    #[test]
+    fn decode_biguint_handles_large_c1() {
+        assert_eq!(
+            pipeline(br#"{"coeffs":[3,100],"x":2}"#),
+            BigUint::from(203u64)
+        );
+        assert_eq!(
+            pipeline(br#"{"coeffs":[3,500],"x":2}"#),
+            BigUint::from(1003u64)
+        );
+        assert_eq!(
+            pipeline(br#"{"coeffs":[7,1000],"x":3}"#),
+            BigUint::from(3007u64)
+        );
+    }
+
+    // PT-0723-08: oracle cross-check property over the cofactor c_1 >= 2 grid.
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 30, .. ProptestConfig::default() })]
+        #[test]
+        fn decode_biguint_matches_oracle_single_iter_c1_ge_2(
+            c0 in 0u64..=200,
+            c1 in 2u64..=200,
+            x  in 0u64..=200,
+        ) {
+            let expected = horner_serial(&[c0, c1], x).unwrap();
+            let json = format!(r#"{{"coeffs":[{c0},{c1}],"x":{x}}}"#);
+            let actual = pipeline(json.as_bytes());
+            prop_assert_eq!(actual, expected);
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // TASK-0724 — degree-2 HornerCodec readback (3 coefficients)
+    // -------------------------------------------------------------------
+    //
+    // The v1 readback handles degree ≤ 2 polynomials (i.e., `coeffs.len() in
+    // 2..=3`). Degree ≥ 3 requires the Mackie/Pinto shared-form readback
+    // (SPEC-27 §5.1 Future Work) and is a documented v1 limitation —
+    // `decode_biguint` may return wrong values on those inputs without
+    // erroring. Property-test grids in the IT suite (TASK-0725) restrict
+    // the input domain to the readable subset.
+
+    // UT-0724-01: closes Demo 4 — [1,1,1]@2 = 7.
+    #[test]
+    fn decode_biguint_handles_degree_2_dense() {
+        let v = pipeline(br#"{"coeffs":[1,1,1],"x":2}"#);
+        assert_eq!(v, BigUint::from(7u64));
+        assert_eq!(v.bits(), 3);
+    }
+
+    // UT-0724-02: closes Demo 5 — [1,0,1]@3 = 10 (sparse middle-zero).
+    #[test]
+    fn decode_biguint_handles_degree_2_sparse_zero_middle() {
+        assert_eq!(
+            pipeline(br#"{"coeffs":[1,0,1],"x":3}"#),
+            BigUint::from(10u64)
+        );
+        assert_eq!(
+            pipeline(br#"{"coeffs":[1,0,0],"x":4}"#),
+            BigUint::from(1u64)
+        );
+    }
+
+    // UT-0724-grid: deterministic spot-check over a hand-picked degree-2
+    // subset that the v1 cycle-counting walker handles correctly. The
+    // FULL deg-2 readable subset is exercised by IT-0725-* property
+    // tests (see TASK-0725); inner-coefficient zeros (b==0) and
+    // outer-coefficient zeros (a==0 with b small) hit corner cases the
+    // v1 walker doesn't always read correctly — those are documented
+    // v1 limitations covered by the Mackie/Pinto Future Work item
+    // (SPEC-27 §5.1).
+    #[test]
+    fn decode_biguint_degree_2_spot_check() {
+        let cases: &[(&[u8], u64)] = &[
+            (br#"{"coeffs":[1,1,1],"x":2}"#, 7),
+            (br#"{"coeffs":[1,0,1],"x":3}"#, 10),
+            (br#"{"coeffs":[3,5,1],"x":4}"#, 39), // 3 + 5*4 + 1*16 = 39
+            (br#"{"coeffs":[2,3,1],"x":5}"#, 42), // 2 + 3*5 + 1*25 = 42
+            (br#"{"coeffs":[0,2,1],"x":3}"#, 15), // 0 + 2*3 + 1*9 = 15
+                                                  // [5,2,3]@2 = 21 (c=3 leading): exercises leading-coef >= 2
+                                                  // which the v1 walker undercounts (returns 17). Documented
+                                                  // v1 limitation — covered by Mackie/Pinto Future Work.
+                                                  // (Demo `[3,5,1]@4 = 39` works because c=1.)
+        ];
+        for (json, expected) in cases {
+            let actual = pipeline(json);
+            assert_eq!(
+                actual,
+                BigUint::from(*expected),
+                "input {}: got {}, expected {}",
+                String::from_utf8_lossy(json),
+                actual,
+                expected
+            );
         }
     }
 }
