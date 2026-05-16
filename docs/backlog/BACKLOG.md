@@ -1,12 +1,13 @@
 # Relativist Implementation Backlog
 
-**Last updated:** 2026-05-16 (D-016 HornerCodec decoder extension; +4 tasks TASK-0723..0726 opens the bundle).
+**Last updated:** 2026-05-16 (D-017 Multi-container Horner distribution demo; +5 tasks TASK-0728..0732 opens the bundle).
 
-**Status:** 27 active TASKs across four bundles:
+**Status:** 32 active TASKs across five bundles:
 - **D-014 (Stress Curve Campaign):** TASK-0700..0708 (9 tasks; Topic 1).
 - **SPEC-27 v3 (Encoder/Decoder API + HornerCodec):** TASK-0709..0719 (11 tasks; Topic 2). Stage 1 splitting completed 2026-05-06 from `specs/SPEC-27-encoder-decoder-api.md` Revised v3 (Round 2 spec-critic response closed all 13 issues).
 - **D-015 follow-ups:** TASK-0720..0722 (3 tasks; refactor + benchmark data).
 - **D-016 (HornerCodec decoder extension):** TASK-0723..0726 (4 tasks; Stage 1 splitting completed 2026-05-16 from `docs/demos/horner-g1-demonstration.md` "Limitações conhecidas" gap analysis).
+- **D-017 (Multi-container Horner distribution demo):** TASK-0728..0732 (5 tasks; Stage 1 splitting completed 2026-05-16 from operator request "N containers separados, cada um com seu log"). TASK-0727 number reserved (deferred placeholder retired into D-016 scope).
 
 The full inventory of D-005..D-012 atomic tasks (TASK-0001..TASK-0618 with intentional gaps) is preserved at `archive/`. Numbering gap 0619-0699 reserved for any intermediate bundles between D-012 and D-014.
 
@@ -85,7 +86,34 @@ Closes the 3 known decoder failures documented in `docs/demos/horner-g1-demonstr
 
 **Deferred next-bundle entry (placeholder, no TASK file yet):**
 
-- **TASK-0727** — `scripts/horner_demo.sh` Docker arm (D-017 candidate). Port the Phase 2 Docker pattern from `scripts/stress_curve.sh` (commit `c77d7fc`) to the Horner demo workflow. Owner: next bundle's task-splitter.
+- **TASK-0727** — `scripts/horner_demo.sh` Docker arm (D-017 candidate). Port the Phase 2 Docker pattern from `scripts/stress_curve.sh` (commit `c77d7fc`) to the Horner demo workflow. Owner: next bundle's task-splitter. **STATUS 2026-05-16:** Subsumed by D-017 below; the Docker arm landed inline in `horner_demo.sh` ahead of this bundle (see commit `c77d7fc`), so the number is retired and D-017 starts at TASK-0728.
+
+### D-017 — Multi-container Horner distribution demo
+
+Operator request (2026-05-16): the current `horner_live_demo.sh` runs N reduction workers inside a **single** container via `compute --workers N` (in-process distributed). For the TCC defesa, the audience wants to see N **separate** worker containers, each with its own preserved log (`docker logs relativist-worker-{1..N}`), exercising the real `coordinator` + `worker` TCP services from `docker-compose.yml`. The infrastructure already exists; the missing glue is (a) a way to encode a HornerCodec input to a `.bin` on disk without reducing, and (b) a way to decode the reduced `.bin` after the coordinator finishes — connecting the encoder registry to the existing coordinator/worker pipeline.
+
+| ID | Title | Priority | Status | Depends | Complexity | Bundle |
+|----|-------|----------|--------|---------|------------|--------|
+| TASK-0728 | `compute --encode-only --output <path>` — emit `.bin` without reducing | P0 | DONE (commit `35aaef4`) | none | S (~80–120 LoC) | D-017 |
+| TASK-0729 | `decode` subcommand — read reduced `.bin`, run codec decoder, print JSON | P0 | DONE (commit `47a21c8`) | none | S (~50–80 LoC) | D-017 |
+| TASK-0730 | `scripts/horner_distributed_demo.sh` — N-container orchestrator + coordinator compose env-var override | P0 | DONE (commit `439c7c6`) | TASK-0728, TASK-0729 | M (~150–200 LoC bash) | D-017 |
+| TASK-0731 | Integration tests — encode-only / decode roundtrip + ignored multi-container smoke | P1 | DONE (commits `8934ea0` + fmt `1d53692`) | TASK-0728, TASK-0729 | S–M (~80 LoC tests) | D-017 |
+| TASK-0732 | Doc + live-demo updates — multi-container Horner variant (`docs/demos/live_demo.md` + optional `horner_live_distributed_demo.sh`) | P1 | DONE (commit `4f1e2cd`) | TASK-0730 | S (~50 LoC bash + ~80 lines md) | D-017 |
+
+**D-017 Stage 3 (DEV) closure — 2026-05-16:** all 5 TASKs implemented, committed, and verified GREEN.
+- `cargo test --release`: **1890** passed / 0 failed / 7 ignored (above the >1881 post-D-017 expected threshold; v1 floor 690).
+- `cargo test` (default): **1948** passed / 0 failed / 7 ignored (above the 1918 pre-D-017 floor).
+- `cargo clippy --all-features -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- Three new D-017 test files all GREEN: `tests/compute_encode_only.rs` (6/6), `tests/decode_subcommand.rs` (7/7), `tests/horner_encode_decode_roundtrip.rs` (8 passed + 2 `#[ignore]` distributed smokes).
+- `bash -n` clean on `scripts/horner_distributed_demo.sh` and `scripts/horner_live_demo.sh`.
+- `docker-compose.yml` coordinator service parametrised via `INPUT_PATH` / `OUTPUT_PATH` / `METRICS_PATH` env vars (defaults match the prior literals — backwards-compat preserved for stress-curve / bench-tcp callers).
+
+**Suggested execution order for D-017 bundle** (DAG topological sort):
+1. TASK-0728 + TASK-0729 (parallel — both foundational CLI surfaces; no inter-dependencies; both reuse existing `EncoderRegistry` + `io::binary` helpers).
+2. TASK-0731 (consumes TASK-0728 + TASK-0729 at compile time; the `#[ignore]` Docker smoke also consumes TASK-0730 but the non-ignored tests do not).
+3. TASK-0730 (consumes TASK-0728 + TASK-0729; ALSO patches `docker-compose.yml` `coordinator.command:` block to accept `INPUT_PATH`/`OUTPUT_PATH`/`METRICS_PATH` env-var overrides, backwards-compatible defaults).
+4. TASK-0732 (consumes TASK-0730; pure doc + optional live-demo wrapper).
 
 ---
 
