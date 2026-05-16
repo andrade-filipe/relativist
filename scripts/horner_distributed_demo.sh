@@ -240,13 +240,30 @@ fi
 # ----------------------------------------------------------------------------
 
 echo "[4/6] Waiting for coordinator to finish (timeout: ${WAIT_TIMEOUT_SECS}s) ..."
-COORD_CONTAINER=""
+
 # Try the Compose v2 `wait` primitive first; fall back to a polling loop.
-if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
-        timeout "$WAIT_TIMEOUT_SECS" docker compose wait coordinator >/dev/null 2>&1; then
+#
+# D-017 SF-001 fix: Compose v2's `docker compose wait <svc>` returns the
+# SERVICE EXIT CODE, not just a "did it finish" boolean. Previously the
+# script `>/dev/null 2>&1`'d the rc, treating any non-zero as "fall back
+# to polling" — which then re-polled an already-exited container,
+# wasting WAIT_TIMEOUT_SECS before the file-existence check fired
+# exit 4. Now we capture rc explicitly. timeout(1) returns 124 on
+# timeout, in which case we still fall through to the polling loop
+# (covers a stuck-but-not-yet-exited coordinator). Any OTHER non-zero
+# is treated as "wait returned but coordinator was unhealthy" and we
+# bail with the actual code visible in the operator-facing message.
+WAIT_RC=0
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+    timeout "$WAIT_TIMEOUT_SECS" docker compose wait coordinator >/dev/null 2>&1 || WAIT_RC=$?
+
+if [[ "$WAIT_RC" -eq 0 ]]; then
     :
-else
-    # Fallback: find the coordinator container ID and poll its state.
+elif [[ "$WAIT_RC" -eq 124 ]]; then
+    # timeout(1) tripped — wait never returned. Fall through to polling.
+    # D-017 SF-003 fix: wrap the inspect call with the same MSYS path-conv
+    # guards used by every other docker call in this script, since Git-Bash
+    # can mangle Go template strings like '{{.State.Status}}'.
     COORD_CONTAINER="$(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
         docker compose ps -q coordinator | head -n1 || true)"
     if [[ -z "$COORD_CONTAINER" ]]; then
@@ -255,7 +272,8 @@ else
     fi
     waited=0
     while : ; do
-        state="$(docker inspect -f '{{.State.Status}}' "$COORD_CONTAINER" 2>/dev/null || echo unknown)"
+        state="$(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
+            docker inspect -f '{{.State.Status}}' "$COORD_CONTAINER" 2>/dev/null || echo unknown)"
         if [[ "$state" == "exited" ]]; then
             break
         fi
@@ -266,6 +284,11 @@ else
         sleep 2
         waited=$((waited + 2))
     done
+else
+    # Coordinator returned but with a non-zero exit code. Surface it
+    # immediately instead of waiting for the file-existence heuristic.
+    echo "ERROR: coordinator exited with code $WAIT_RC; see \`docker logs relativist-coordinator-1\`." >&2
+    exit 4
 fi
 
 # Confirm output exists.
