@@ -327,10 +327,30 @@ done
 # DO NOT concatenate docker_tcp.csv into aggregated.csv. Both raw files
 # are preserved separately under raw/ and the MANIFEST documents this.
 #
-# Per-rep loop mirrors Phase 1: a single rep per `docker compose run`
-# invocation, with the bash loop driving repetition. Each call rewrites
-# `./results/detail.csv` (the bench subcommand truncates on write), so we
-# extract the one data row after each call and append to $DOCKER_CSV.
+# Unlike Phase 1 (where the bash loop drives repetition because the Rust
+# `stress-curve` dispatch defaults to 1 rep per invocation), the OLD-style
+# `bench` subcommand used by the `bench-tcp` profile has its own internal
+# repetition count (default 5 from `BenchmarkSuiteConfig::repetitions`).
+# The compose profile does NOT pass `--reps`, so each `docker compose run`
+# invocation already produces 5 rows in `/results/detail.csv`. We therefore
+# call `docker compose run` ONCE per (WL, WK, N) tuple and append all rows
+# the container emits. (Previously this script also wrapped the call in an
+# outer `for REP in $(seq 1 $REPS)` loop, multiplying 5x — at REPS=5 that
+# yielded 25 rows per tuple.) The internal rep count (5) is hardcoded in
+# the Rust binary's default; if the operator needs a different value they
+# must rebuild the container with a patched default or extend the compose
+# profile to forward a `--reps` flag.
+#
+# MSYS path note (BUG-D1): on Windows Git Bash (MSYS2), arguments that
+# look like absolute Unix paths (`/results/detail.csv`) are silently
+# rewritten to Windows form (`C:/Program Files/Git/results/detail.csv`)
+# before reaching the `docker` executable. The container then receives a
+# nonsensical path that doesn't exist inside it, and `--csv-detail` fails
+# with `cannot create C:/Program Files/Git/results/detail.csv`. Setting
+# `MSYS_NO_PATHCONV=1` and `MSYS2_ARG_CONV_EXCL='*'` for the duration of
+# the `docker compose run` call disables this rewrite. The vars are
+# harmless on Linux/macOS (the conversion only happens under MSYS), so
+# we set them unconditionally to keep the script portable.
 DOCKER_AVAILABLE=1
 if [[ $NO_DOCKER -eq 0 ]]; then
     echo "=== Phase 2: docker_tcp arm ==="
@@ -355,20 +375,24 @@ if [[ $NO_DOCKER -eq 0 && $DOCKER_AVAILABLE -eq 1 ]]; then
     : >"$DOCKER_CSV"
     DOCKER_HEADER_WRITTEN=0
 
-    # Smoke matrix mirrors Phase 1 smoke (1 workload, W=2, N=[1000, 10000],
-    # 1 rep). The full sweep uses the same (WL_ARR, WK_ARR, NS) as Phase 1.
+    # Smoke matrix mirrors Phase 1 smoke (1 workload, W=2, N=[1000, 10000]).
+    # The full sweep uses the same (WL_ARR, WK_ARR, NS) as Phase 1.
+    # NOTE: there is no DOCKER_REPS — see the block comment above. The
+    # container's internal repetition count (5, hardcoded in the Rust
+    # binary's BenchmarkSuiteConfig default) is the sole driver of how
+    # many rows each invocation produces.
     if [[ $SMOKE -eq 1 ]]; then
         DOCKER_NS=("${SMOKE_NS[@]}")
-        DOCKER_REPS=1
     else
         DOCKER_NS=("${NS[@]}")
-        DOCKER_REPS="$REPS"
     fi
 
     # Track consecutive failures per (WL, WK) to abort the N sweep after
     # 3 in a row (mirrors the Phase 1 StopRule philosophy — give up on a
     # configuration once it's clearly degenerate, but continue with the
-    # next (WL, WK) pair so partial data is preserved).
+    # next (WL, WK) pair so partial data is preserved). With the outer
+    # REP loop removed, "3 consecutive failures" now counts at the
+    # (WL, WK, N) granularity instead of (WL, WK, N, rep).
     for WL in "${WL_ARR[@]}"; do
         for WK in "${WK_ARR[@]}"; do
             CONSECUTIVE_FAILS=0
@@ -377,19 +401,25 @@ if [[ $NO_DOCKER -eq 0 && $DOCKER_AVAILABLE -eq 1 ]]; then
                     echo "  abort N sweep for ${WL} W=${WK}: 3 consecutive docker failures" >&2
                     break
                 fi
-                for REP in $(seq 1 "$DOCKER_REPS"); do
-                    DOCKER_STDERR_LOG="$OUTPUT_DIR/raw/docker_${WL}_${WK}_${N}_${REP}.stderr"
-                    # Clear container output before each rep so we know the
-                    # row we extract afterward is the one this rep produced.
-                    rm -f "$DOCKER_DETAIL_PATH"
+                DOCKER_STDERR_LOG="$OUTPUT_DIR/raw/docker_${WL}_${WK}_${N}.stderr"
+                # Clear container output before each invocation so we know
+                # the rows we extract afterward are the ones this call
+                # produced.
+                rm -f "$DOCKER_DETAIL_PATH"
 
-                    # `docker compose run --rm bench-tcp <cmd...>` REPLACES
-                    # the service `command` block entirely (compose-spec
-                    # behaviour), so we must pass the full bench CLI here.
-                    # Volumes / build / profile from compose are still
-                    # applied. The benchmark name comes from $WL (compose's
-                    # hardcoded --benchmark=ep_annihilation is overridden).
-                    set +e
+                # `docker compose run --rm bench-tcp <cmd...>` REPLACES
+                # the service `command` block entirely (compose-spec
+                # behaviour), so we must pass the full bench CLI here.
+                # Volumes / build / profile from compose are still
+                # applied. The benchmark name comes from $WL (compose's
+                # hardcoded --benchmark=ep_annihilation is overridden).
+                #
+                # MSYS_NO_PATHCONV=1 / MSYS2_ARG_CONV_EXCL='*': prevent
+                # Git Bash on Windows from rewriting `/results/...` into
+                # `C:/Program Files/Git/results/...` before the args reach
+                # the docker CLI. Harmless on Linux/macOS (vars ignored).
+                set +e
+                MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
                     docker compose --profile bench-tcp run --rm bench-tcp \
                             bench \
                             --benchmark="$WL" \
@@ -403,33 +433,31 @@ if [[ $NO_DOCKER -eq 0 && $DOCKER_AVAILABLE -eq 1 ]]; then
                             --csv-detail=/results/detail.csv \
                             --csv-summary=/results/summary.csv \
                         >"$DOCKER_STDERR_LOG" 2>&1
-                    EC=$?
-                    set -e
+                EC=$?
+                set -e
 
-                    if [[ $EC -ne 0 ]]; then
-                        echo "WARN: docker rep ${WL} W=${WK} N=${N} rep=${REP} exit=${EC} (see $DOCKER_STDERR_LOG)" >&2
-                        CONSECUTIVE_FAILS=$((CONSECUTIVE_FAILS + 1))
-                        if [[ $CONSECUTIVE_FAILS -ge 3 ]]; then
-                            break
-                        fi
-                        continue
-                    fi
+                if [[ $EC -ne 0 ]]; then
+                    echo "WARN: docker ${WL} W=${WK} N=${N} exit=${EC} (see $DOCKER_STDERR_LOG)" >&2
+                    CONSECUTIVE_FAILS=$((CONSECUTIVE_FAILS + 1))
+                    continue
+                fi
 
-                    if [[ ! -f "$DOCKER_DETAIL_PATH" ]]; then
-                        echo "WARN: docker rep ${WL} W=${WK} N=${N} rep=${REP} produced no detail.csv" >&2
-                        CONSECUTIVE_FAILS=$((CONSECUTIVE_FAILS + 1))
-                        continue
-                    fi
+                if [[ ! -f "$DOCKER_DETAIL_PATH" ]]; then
+                    echo "WARN: docker ${WL} W=${WK} N=${N} produced no detail.csv" >&2
+                    CONSECUTIVE_FAILS=$((CONSECUTIVE_FAILS + 1))
+                    continue
+                fi
 
-                    # Append: header on first write, data-only thereafter.
-                    if [[ $DOCKER_HEADER_WRITTEN -eq 0 ]]; then
-                        cat "$DOCKER_DETAIL_PATH" >>"$DOCKER_CSV"
-                        DOCKER_HEADER_WRITTEN=1
-                    else
-                        tail -n +2 "$DOCKER_DETAIL_PATH" >>"$DOCKER_CSV"
-                    fi
-                    CONSECUTIVE_FAILS=0
-                done
+                # Append: header on first write, data-only thereafter.
+                # The container writes 5 data rows per invocation (one per
+                # internal rep), all of which we want to keep.
+                if [[ $DOCKER_HEADER_WRITTEN -eq 0 ]]; then
+                    cat "$DOCKER_DETAIL_PATH" >>"$DOCKER_CSV"
+                    DOCKER_HEADER_WRITTEN=1
+                else
+                    tail -n +2 "$DOCKER_DETAIL_PATH" >>"$DOCKER_CSV"
+                fi
+                CONSECUTIVE_FAILS=0
             done
         done
     done
