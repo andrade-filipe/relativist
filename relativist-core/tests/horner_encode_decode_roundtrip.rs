@@ -195,6 +195,15 @@ fn decode_unknown_codec_returns_config_error() {
 // keep debug builds under ~60s (each case re-encodes + re-reduces +
 // re-decodes twice over a non-trivial HornerCodec input space). Release
 // builds are ~20× faster and complete in well under 10s.
+//
+// D-017 SF-004 fix: silent skip-arms on encoder rejection used to risk
+// "test passes because nothing was tested" — an envelope tightening that
+// rejected 100% of generated inputs would still pass green. The
+// companion test `pt_0731_09_acceptance_ratio_above_floor` below drives
+// a fresh 32-case sample of the same generator space and fails if the
+// encoder rejects more than 50% of inputs, so a future envelope
+// tightening that silently nukes PT-0731-09 surfaces as a hard error.
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 12, .. proptest::test_runner::Config::default() })]
     #[test]
@@ -206,6 +215,8 @@ proptest::proptest! {
         let reg = default_registry();
         let a = reg.encode_and_validate("horner", input.as_bytes());
         // Skip cases the encoder rejects (e.g., out-of-envelope shapes).
+        // Acceptance ratio is asserted by the guard test below — a 100%
+        // rejection rate (silent green) is impossible.
         let Ok(mut a) = a else { return Ok(()); };
         let _ = reduce_all(&mut a);
         if a.root.is_none() { discover_root(&mut a); }
@@ -230,16 +241,86 @@ proptest::proptest! {
     }
 }
 
+// PT-0731-09-GUARD (D-017 SF-004): assert PT-0731-09 actually exercises
+// the codec. Drives a fresh 32-case sample of the same generator space
+// independently of PT-0731-09's runtime ordering (cargo can run tests
+// in any order), so the guard is robust against shared-state leaks.
+//
+// With the current envelope (`coeffs.len() in {1, 2}`, `x in [0, 100]`)
+// every generated case is in-envelope, so the realistic acceptance
+// ratio is ~100%; the 50% floor leaves slack for narrow future envelope
+// tightenings without ratcheting QA noise — but flips to RED on a
+// regression that rejects every case.
+#[test]
+fn pt_0731_09_acceptance_ratio_above_floor() {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::{Config, TestRunner};
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        ..Config::default()
+    });
+    let reg = default_registry();
+    let strat = (
+        proptest::collection::vec(0u64..=10_000, 1..=2),
+        0u64..=100u64,
+    );
+
+    let mut accepted = 0usize;
+    let mut rejected = 0usize;
+    let total = 32usize;
+    for _ in 0..total {
+        let tree = strat
+            .new_tree(&mut runner)
+            .expect("strategy must produce a value tree");
+        let (coeffs, x) = tree.current();
+        let input = format!(r#"{{"coeffs":{:?},"x":{}}}"#, coeffs, x);
+        match reg.encode_and_validate("horner", input.as_bytes()) {
+            Ok(_) => accepted += 1,
+            Err(_) => rejected += 1,
+        }
+    }
+    assert_eq!(accepted + rejected, total);
+    assert!(
+        accepted * 2 >= total,
+        "PT-0731-09 generator rejected {}/{} cases (>{}%); envelope drift?",
+        rejected,
+        total,
+        50
+    );
+}
+
 // IT-0731-11: Docker smoke — invokes `scripts/horner_distributed_demo.sh`
 // and asserts a non-empty JSON line on stdout. Ignored by default so
 // `cargo test` stays green without a Docker daemon.
+//
+// D-017 / BUG-D017-007 fix: resolve the script path AND the cwd via
+// `env!("CARGO_MANIFEST_DIR")` joined to `../` (the workspace root).
+// Cargo invokes integration tests with cwd = the crate manifest dir
+// (here, `relativist-core/`) but the script expects the repo root
+// because it computes `REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"` and
+// docker-compose.yml is at the repo root. Without an explicit
+// `current_dir`, `bash scripts/horner_distributed_demo.sh` would fail
+// with "No such file or directory" silently under `#[ignore]`.
 #[test]
 #[ignore = "requires Docker + built release binary; run with --ignored"]
 fn multi_container_horner_e2e_docker() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("CARGO_MANIFEST_DIR must have a parent (workspace root)")
+        .to_path_buf();
+    let script = repo_root.join("scripts").join("horner_distributed_demo.sh");
+    assert!(
+        script.exists(),
+        "demo script must exist at {} (workspace layout drift?)",
+        script.display()
+    );
+
     let output = std::process::Command::new("bash")
-        .arg("scripts/horner_distributed_demo.sh")
+        .arg(&script)
         .arg("--workers")
         .arg("2")
+        .current_dir(&repo_root)
         .output()
         .expect("invoke demo script");
     assert!(
@@ -257,6 +338,22 @@ fn multi_container_horner_e2e_docker() {
     assert!(
         json.get("value").is_some(),
         "decoded JSON must have 'value' field"
+    );
+}
+
+// IT-D017-REFACTOR-03: non-ignored guard for BUG-D017-007 — asserts the
+// script path resolution scheme used by IT-0731-11 is sound, so a layout
+// drift can't silently break the Docker smoke (per QA TG-D017-03).
+#[test]
+fn horner_distributed_demo_script_resolves_from_manifest_dir() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("CARGO_MANIFEST_DIR must have a parent");
+    let script = repo_root.join("scripts").join("horner_distributed_demo.sh");
+    assert!(
+        script.exists(),
+        "horner_distributed_demo.sh must exist at {} (workspace layout drift would silently break IT-0731-11)",
+        script.display()
     );
 }
 
