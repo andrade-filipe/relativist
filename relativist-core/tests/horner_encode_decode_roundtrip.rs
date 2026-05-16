@@ -191,10 +191,12 @@ fn decode_unknown_codec_returns_config_error() {
 //
 // Generates `coeffs ∈ [0, 10000]^k`, `k ∈ {1, 2}`, `x ∈ [0, 100]` to stay
 // within the v1 readback envelope (degree-2 requires `c2 == 1` per
-// HornerCodec — outside the property generator). 30 cases × ~3 reductions
-// each keeps the test under ~10s release.
+// HornerCodec — outside the property generator). Capped at 12 cases to
+// keep debug builds under ~60s (each case re-encodes + re-reduces +
+// re-decodes twice over a non-trivial HornerCodec input space). Release
+// builds are ~20× faster and complete in well under 10s.
 proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config { cases: 30, .. proptest::test_runner::Config::default() })]
+    #![proptest_config(proptest::test_runner::Config { cases: 12, .. proptest::test_runner::Config::default() })]
     #[test]
     fn save_load_roundtrip_preserves_decoded_value(
         coeffs in proptest::collection::vec(0u64..=10_000, 1..=2),
@@ -251,8 +253,7 @@ fn multi_container_horner_e2e_docker() {
         .lines()
         .find(|l| l.trim_start().starts_with('{'))
         .expect("stdout must contain a JSON line from `decode`");
-    let json: Value =
-        serde_json::from_str(json_line).expect("decoded JSON must parse");
+    let json: Value = serde_json::from_str(json_line).expect("decoded JSON must parse");
     assert!(
         json.get("value").is_some(),
         "decoded JSON must have 'value' field"

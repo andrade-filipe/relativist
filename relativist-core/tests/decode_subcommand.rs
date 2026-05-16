@@ -61,7 +61,10 @@ fn decode_reduced_horner_bin_matches_inproc_pipeline() {
 
     assert_eq!(decoded, ref_json);
     // SPEC-27 v3 R15' schema sanity checks.
-    assert!(decoded.get("value").is_some(), "JSON must have 'value' field");
+    assert!(
+        decoded.get("value").is_some(),
+        "JSON must have 'value' field"
+    );
     assert!(
         decoded.get("bit_length").is_some(),
         "JSON must have 'bit_length' field"

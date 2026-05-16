@@ -900,9 +900,7 @@ fn format_encoders_list() -> String {
 /// post-reduce root must be discovered before decoding. This mirrors the
 /// in-process pipeline in `run_compute_with_encoder` (post-`reduce_all`
 /// branch) and the test convention in `tests/horner_distributed_g1.rs`.
-pub fn run_decode_command(
-    args: crate::config::DecodeArgs,
-) -> Result<(), RelativistError> {
+pub fn run_decode_command(args: crate::config::DecodeArgs) -> Result<(), RelativistError> {
     let name = args
         .codec
         .as_deref()
