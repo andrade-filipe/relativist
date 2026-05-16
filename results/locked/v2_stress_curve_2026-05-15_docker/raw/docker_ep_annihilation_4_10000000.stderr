@@ -1,0 +1,11 @@
+ Container relativist-bench-tcp-run-128bcf73ce37 Creating 
+ Container relativist-bench-tcp-run-128bcf73ce37 Created 
+=== Relativist Benchmark Suite ===
+Benchmarks:  ep_annihilation
+Mode:        tcp_localhost
+Workers:     [4]
+Warmup:      2
+Repetitions: 5
+
+error: configuration error: Benchmark suite failed: TASK-0604 streaming assembly: SparseNet::to_dense failed for bench=ep_annihilation size=10000000 chunk_size=1000: DenseAllocationExceedsThreshold { arena_len: 20000000, max: 16777216, live_count: 20000000 }
+

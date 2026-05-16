@@ -1,0 +1,2 @@
+[2m2026-05-16T02:31:25.420900Z[0m [33m WARN[0m ThreadId(01) [2mrelativist_core::partition::helpers[0m[2m:[0m build_subnet_sparse: to_dense allocation cap hit; returning empty Net [3marena_len[0m[2m=[0m17500000 [3mmax[0m[2m=[0m16777216 [3mlive_count[0m[2m=[0m2500000
+[2m2026-05-16T02:31:26.887770Z[0m [33m WARN[0m ThreadId(01) [2mrelativist_core::partition::helpers[0m[2m:[0m build_subnet_sparse: to_dense allocation cap hit; returning empty Net [3marena_len[0m[2m=[0m20000000 [3mmax[0m[2m=[0m16777216 [3mlive_count[0m[2m=[0m2500000
