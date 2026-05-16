@@ -512,27 +512,21 @@ mod tests {
         assert_eq!(bl, 3);
 
         // Multi-iteration sparse degree-5: TASK-0723 + TASK-0724 cover
-        // single-iter and degree-2 cases. Higher degrees (here deg-5)
-        // hit a v1 readback limitation: the cycle-counting walker
-        // under-estimates the multiplier for nested mul scaffolds
-        // whose inner accumulator value scales exponentially with x.
-        // Oracle still produces the right value; full pipeline parity
-        // for degree >= 3 awaits the Mackie/Pinto shared-form readback
-        // (SPEC-27 §5.1 Future Work). Either Err(UnrecognizedStructure)
-        // OR a numerically-different Ok value is accepted; the *correct*
-        // value (100001) would also pass.
+        // single-iter and degree-2 (with c_2 == 1) cases. Higher degrees
+        // (here deg-5) lie outside the v1 readback envelope. Post-D-016
+        // BUG-001 the decoder MUST `Err(UnrecognizedStructure)` on these
+        // inputs — silent `Ok(under-counted)` returns were the regression
+        // the QA caught. The future Mackie/Pinto shared-form readback
+        // (SPEC-27 §5.1) would land here as `Ok("100001")`; until then
+        // we accept either `Err` or the exact oracle value, but NOT
+        // arbitrary decimals (BUG-003 rigor fix).
         match pipeline(br#"{"coeffs":[1,0,0,0,0,1],"x":10}"#) {
             Err(DecodeError::UnrecognizedStructure(_)) => {}
-            Ok((v, _)) => {
-                // Either correct (future-readback) or numerically off
-                // (current v1 walker). Either is documented as
-                // acceptable while degree >= 3 readback is open.
-                assert!(
-                    v == "100001" || v.parse::<u64>().is_ok(),
-                    "expected 100001 (future readback) or any decimal value (v1 walker), got {v}"
-                );
-            }
-            other => panic!("unexpected pipeline result: {other:?}"),
+            Ok((v, _)) if v == "100001" => {}
+            other => panic!(
+                "BUG-001 regression: degree-5 sparse input MUST Err or \
+                 Ok(\"100001\"); got {other:?}"
+            ),
         }
     }
 
@@ -681,8 +675,22 @@ mod tests {
                         crate::encoding::arithmetic::discover_root(&mut net);
                     }
                     total += 1;
-                    if codec.decode(&net).is_err() {
-                        skips += 1;
+                    // D-016 BUG-003 / TG-002: cross-check Ok value against the
+                    // oracle in addition to counting skips. A regression that
+                    // turned correct Ok answers into wrong Ok answers would
+                    // pass the previous skip-only gate silently.
+                    match codec.decode(&net) {
+                        Ok(out) => {
+                            let expected = horner_serial(&[a, b], x).unwrap();
+                            let got = out["value"].as_str().unwrap_or("");
+                            assert_eq!(
+                                got,
+                                expected.to_string(),
+                                "PT-0715-06 oracle mismatch on [{a},{b}]@{x}: \
+                                 decoder returned {got}, oracle says {expected}"
+                            );
+                        }
+                        Err(_) => skips += 1,
                     }
                 }
             }
