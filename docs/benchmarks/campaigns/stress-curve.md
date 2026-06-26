@@ -9,7 +9,7 @@ status: reference
 updated: 2026-06-26
 ---
 
-# Stress Curve Campaign — v2-development
+# Stress Curve Campaign — develop
 
 Methodology page for the D-014 stress-curve campaign. Reviewers consult
 this to understand WHY the campaign exists, HOW to reproduce it from a

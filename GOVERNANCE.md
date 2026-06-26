@@ -22,7 +22,7 @@ permanent.
 ## How decisions are made
 
 - **Small changes** (bug fixes, docs, tests, non-architectural improvements):
-  open a PR against `v2-development`. If it is correct, green on CI, and follows
+  open a PR against `develop`. If it is correct, green on CI, and follows
   `CODING_STANDARDS.md`, it gets merged.
 - **Architectural / model-affecting changes** (anything touching the six
   interaction rules, the partition/merge protocol, the SPEC-01 invariants, or

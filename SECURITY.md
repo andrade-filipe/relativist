@@ -14,13 +14,13 @@ are real and we want to know about them.
 
 ## Supported versions
 
-Active development happens on `v2-development`. Security fixes target the latest
+Active development happens on `develop`. Security fixes target the latest
 development line; there is no long-term-support branch. The frozen `v1` tag
 (`v0.10.0-bench`) is an archival research snapshot and will not receive fixes.
 
 | Version / branch        | Supported           |
 |-------------------------|---------------------|
-| `v2-development` (HEAD)  | ✅ yes               |
+| `develop` (HEAD)  | ✅ yes               |
 | `main`                  | ✅ yes (integration) |
 | `v1-feature-complete`   | ❌ frozen archive    |
 

@@ -574,7 +574,7 @@ Template para `MANIFEST.md` (use `reproduce_article/results/locked/v2_post_d012_
 | Field | Value |
 |---|---|
 | Repository | github.com/andrade-filipe/relativist |
-| Branch | v2-development |
+| Branch | develop |
 | Tag | v0.20.0-pre.1 (or applicable) |
 | Commit SHA | <SHA> |
 | Binary sha256 | <hash from §3.1> |

@@ -24,12 +24,12 @@ is authenticated (`gh auth login`).
 ## 0. Land this work first
 
 This branch is `chore/open-source-launch-readiness`. Review it, then merge it the
-way you normally integrate (`v2-development` → `main`). Nothing here was pushed for
+way you normally integrate (`develop` → `main`). Nothing here was pushed for
 you.
 
 ```bash
 git push -u origin chore/open-source-launch-readiness
-gh pr create --base v2-development --fill   # or merge locally, your call
+gh pr create --base develop --fill   # or merge locally, your call
 ```
 
 > The Apache-2.0 relicense and the `git mv` of ~1,900 files are in the history of
@@ -68,7 +68,7 @@ it updates after the merge to the default branch.
 ## 4. Branch protection (protect `main`)
 
 **Settings → Branches → Add branch ruleset** (or classic "Branch protection
-rules") for `main` (and optionally `v2-development`):
+rules") for `main` (and optionally `develop`):
 
 - ✅ Require a pull request before merging.
 - ✅ Require status checks to pass — select the CI checks once they've run at least

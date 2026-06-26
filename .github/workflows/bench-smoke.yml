@@ -6,7 +6,7 @@ name: Bench Smoke
 
 on:
   push:
-    branches: [main, v2-development]
+    branches: [main, develop]
     paths:
       - Dockerfile
       - docker-compose.yml
@@ -14,7 +14,7 @@ on:
       - relativist-cli/**
       - .github/workflows/bench-smoke.yml
   pull_request:
-    branches: [main, v2-development]
+    branches: [main, develop]
     paths:
       - Dockerfile
       - docker-compose.yml

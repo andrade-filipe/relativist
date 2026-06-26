@@ -121,7 +121,7 @@ stable cut.
 ### Bundles closed since v0.10.1
 
 This section sketches what each bundle delivered. Numbering follows
-the order they ran on `v2-development`; for full per-bundle narratives
+the order they ran on `develop`; for full per-bundle narratives
 see `docs/progress.md`.
 
 - **D-005 — Worker-side `CommutationBatch.local_wiring`**
@@ -255,7 +255,7 @@ For the v0.2..v0.10 progression (initial reduction implementation,
 file format work, deployment skeleton, security primitives, observability,
 benchmarks suite, Church arithmetic), consult `git log v0.2.0..v0.10.1`
 and the corresponding tag annotations on the GitHub release page. The
-v1 line is now in maintenance mode; new work happens on `v2-development`.
+v1 line is now in maintenance mode; new work happens on `develop`.
 
 [Unreleased]: https://github.com/andrade-filipe/relativist/compare/v0.20.0-pre.1...HEAD
 [v0.20.0-pre.1]: https://github.com/andrade-filipe/relativist/compare/v0.10.1...v0.20.0-pre.1

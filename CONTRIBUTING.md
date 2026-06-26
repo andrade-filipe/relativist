@@ -28,8 +28,8 @@ Please also read [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md),
 ### Submit code
 
 1. Fork the repo.
-2. Branch from the active development branch (`v2-development`, **not** `main`):
-   `git checkout -b feature/your-feature v2-development`.
+2. Branch from the active development branch (`develop`, **not** `main`):
+   `git checkout -b feature/your-feature develop`.
 3. Develop using the **RPI workflow** (below).
 4. Keep the three gates green (below) with **zero test regressions**.
 5. Commit with [Conventional Commits](https://www.conventionalcommits.org/):
@@ -37,8 +37,8 @@ Please also read [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md),
    strategy`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `perf`, `ci`,
    `chore`. Scopes are module names (`net`, `reduction`, `partition`, `merge`,
    `protocol`, `bench`, …).
-6. Open a PR against `v2-development`. (`main` receives changes via the
-   `v2-development → main` integration cadence.)
+6. Open a PR against `develop`. (`main` receives changes via the
+   `develop → main` integration cadence.)
 
 ## The workflow: RPI (Research → Plan → Implement)
 
@@ -70,7 +70,7 @@ cargo fmt --check                            # formatted
 ```
 
 The frozen v1 floor (**690** tests on `v1-feature-complete`) must never drop, and
-the current `v2-development` baseline must not regress. Adding code means adding
+the current `develop` baseline must not regress. Adding code means adding
 tests — the count goes up, never silently down. Full rules live in
 [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 

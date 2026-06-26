@@ -9,7 +9,7 @@ Relativist is a Rust implementation of [Lafont's Interaction Combinators](https:
 - **Deterministic distributed reduction** — Strong confluence ensures the result is identical whether computed on 1 machine or 8
 - **Zero coordination overhead for correctness** — Workers reduce independently; only boundary redexes require cross-node resolution
 - **Formally specified** — Every module has a detailed spec with invariants, requirements, and Rust type signatures
-- **TDD from specs** — 1798 default / 1842 zero-copy / 1789 streaming-no-recycle / 1740 release tests on `v2-development` (v1 inviolable floor: 690 on `v1-feature-complete`); 13 benchmarks across 3 workload profiles
+- **TDD from specs** — 1798 default / 1842 zero-copy / 1789 streaming-no-recycle / 1740 release tests on `develop` (v1 inviolable floor: 690 on `v1-feature-complete`); 13 benchmarks across 3 workload profiles
 
 ## Architecture
 

@@ -10,7 +10,7 @@ Relativist is a distributed Interaction Combinator reducer for Grid Computing, w
 ## Current State
 
 - **v1:** frozen on branch `v1-feature-complete` (tag `v0.10.0-bench`). DO NOT modify.
-- **v2:** active development on branch `v2-development`.
+- **v2:** active development on branch `develop`.
 - **Tests (post-D-012, 2026-05-05):**
   - `cargo test`: 1798 default
   - `cargo test --features zero-copy`: 1842
@@ -23,7 +23,7 @@ Relativist is a distributed Interaction Combinator reducer for Grid Computing, w
 ## Build & Test
 
 ```bash
-cargo test                                    # run all tests (1798+ on v2-development; 690 floor on v1-feature-complete)
+cargo test                                    # run all tests (1798+ on develop; 690 floor on v1-feature-complete)
 cargo test --features zero-copy               # 1842+
 cargo test --features streaming-no-recycle    # 1789+
 cargo test --release                          # 1740+ (post-TASK-0617)
@@ -112,7 +112,7 @@ frozen, read-only, under [`docs/_archive/sdd-agents/`](docs/_archive/sdd-agents/
 
 ## v2 Development Rules
 
-1. All work on `v2-development` branch (or feature branches from it)
+1. All work on `develop` branch (or feature branches from it)
 2. Every change must pass all 690 v1 tests (floor) plus the current v2 baseline — zero regression
 3. New features follow roadmap.md priorities
 4. Every change follows the RPI loop (Research → Plan → Implement → update docs)

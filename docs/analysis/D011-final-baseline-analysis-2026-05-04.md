@@ -17,7 +17,7 @@ updated: 2026-06-26
 - `reproduce_article/results/locked/v2_pre_fix_baseline_2026-05-04/` — v2 before D-011 fix (4 broken slots)
 - `reproduce_article/results/locked/v2_d011_final_baseline_2026-05-04/` — v2 after D-011 fix, before D-012 instrumentation restore (3 zeroed columns)
 
-**HEAD at canonical baseline run:** `e6ff6bb` (post-D-012 close paperwork, `v2-development`)
+**HEAD at canonical baseline run:** `e6ff6bb` (post-D-012 close paperwork, `develop`)
 **Analyst:** Claude Opus 4.7 (1M context), at user request 2026-05-05
 **Posture:** adversarial. Each surprising number must be tied to a mechanism in the code or a published spec/argument. No hedging.
 **Revision history:** v1 written 2026-05-04 against `v2_d011_final_baseline_2026-05-04/`; revised 2026-05-05 to include `v2_post_d012_baseline_2026-05-05/` data, close RF-04/05/07, and adjust the verdict.
