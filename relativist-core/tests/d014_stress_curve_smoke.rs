@@ -15,7 +15,7 @@ use tempfile::tempdir;
 #[test]
 fn script_smoke_runs_and_produces_artifacts() {
     // 1. Locate the script.
-    let script = workspace_root().join("scripts/stress_curve.sh");
+    let script = workspace_root().join("reproduce_article/scripts/stress_curve.sh");
     if !script.exists() {
         eprintln!(
             "SKIP IT-0704-01: scripts/stress_curve.sh not found at {:?}",

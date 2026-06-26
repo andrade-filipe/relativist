@@ -24,7 +24,7 @@ fn resume_produces_identical_dataset() {
         return;
     }
 
-    let script = workspace_root().join("scripts/stress_curve.sh");
+    let script = workspace_root().join("reproduce_article/scripts/stress_curve.sh");
 
     // 1. Reference clean smoke.
     let ref_dir = tempdir().expect("tempdir for ref");
@@ -170,7 +170,7 @@ fn skips_pass() -> bool {
         return false;
     }
     // script present?
-    let script = workspace_root().join("scripts/stress_curve.sh");
+    let script = workspace_root().join("reproduce_article/scripts/stress_curve.sh");
     if !script.exists() {
         eprintln!(
             "SKIP IT-0707-05: scripts/stress_curve.sh not found at {:?}",

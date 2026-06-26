@@ -290,18 +290,20 @@ fn pt_0731_09_acceptance_ratio_above_floor() {
     );
 }
 
-// IT-0731-11: Docker smoke — invokes `scripts/horner_distributed_demo.sh`
-// and asserts a non-empty JSON line on stdout. Ignored by default so
-// `cargo test` stays green without a Docker daemon.
+// IT-0731-11: Docker smoke — invokes
+// `reproduce_article/scripts/horner_distributed_demo.sh` and asserts a
+// non-empty JSON line on stdout. Ignored by default so `cargo test`
+// stays green without a Docker daemon.
 //
 // D-017 / BUG-D017-007 fix: resolve the script path AND the cwd via
 // `env!("CARGO_MANIFEST_DIR")` joined to `../` (the workspace root).
 // Cargo invokes integration tests with cwd = the crate manifest dir
 // (here, `relativist-core/`) but the script expects the repo root
-// because it computes `REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"` and
+// because it computes `REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"`
+// (the script lives at reproduce_article/scripts/) and
 // docker-compose.yml is at the repo root. Without an explicit
-// `current_dir`, `bash scripts/horner_distributed_demo.sh` would fail
-// with "No such file or directory" silently under `#[ignore]`.
+// `current_dir`, the script would fail with "No such file or
+// directory" silently under `#[ignore]`.
 #[test]
 #[ignore = "requires Docker + built release binary; run with --ignored"]
 fn multi_container_horner_e2e_docker() {
@@ -309,7 +311,10 @@ fn multi_container_horner_e2e_docker() {
         .parent()
         .expect("CARGO_MANIFEST_DIR must have a parent (workspace root)")
         .to_path_buf();
-    let script = repo_root.join("scripts").join("horner_distributed_demo.sh");
+    let script = repo_root
+        .join("reproduce_article")
+        .join("scripts")
+        .join("horner_distributed_demo.sh");
     assert!(
         script.exists(),
         "demo script must exist at {} (workspace layout drift?)",
@@ -349,7 +354,10 @@ fn horner_distributed_demo_script_resolves_from_manifest_dir() {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("CARGO_MANIFEST_DIR must have a parent");
-    let script = repo_root.join("scripts").join("horner_distributed_demo.sh");
+    let script = repo_root
+        .join("reproduce_article")
+        .join("scripts")
+        .join("horner_distributed_demo.sh");
     assert!(
         script.exists(),
         "horner_distributed_demo.sh must exist at {} (workspace layout drift would silently break IT-0731-11)",

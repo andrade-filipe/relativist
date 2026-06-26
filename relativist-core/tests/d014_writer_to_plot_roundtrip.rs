@@ -39,7 +39,7 @@ fn writer_to_plot_roundtrip_produces_pdf() {
     };
 
     // 2. Locate the plot script; skip if missing.
-    let script = workspace_root().join("scripts/plot_stress_curve.py");
+    let script = workspace_root().join("reproduce_article/scripts/plot_stress_curve.py");
     if !script.exists() {
         eprintln!(
             "SKIP IT-0720-01: scripts/plot_stress_curve.py not found at {:?}",

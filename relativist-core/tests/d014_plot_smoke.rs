@@ -34,7 +34,7 @@ fn plot_script_produces_pdfs_from_synthetic_csv() {
         eprintln!("SKIP IT-0705-01: matplotlib + pandas + numpy not all installed");
         return;
     }
-    let script = workspace_root().join("scripts/plot_stress_curve.py");
+    let script = workspace_root().join("reproduce_article/scripts/plot_stress_curve.py");
     if !script.exists() {
         eprintln!(
             "SKIP IT-0705-01: scripts/plot_stress_curve.py not found at {:?}",
