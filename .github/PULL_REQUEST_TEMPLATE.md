@@ -13,8 +13,11 @@ What does this change and why? (One or two sentences.)
 
 - [ ] This PR targets **`develop`** (feature/fix work), **or** it is a `release/*` / `hotfix/*` PR into `main`.
 
-## Workflow (RPI)
+## Workflow (RPI + TDD)
 
+- [ ] **TDD**: behavioral changes arrived test-first (a test that would have failed before this
+      change). Core/engine behavior is covered by a **library unit test** (the `cargo test --lib`
+      gate). N/A for docs/CI-only changes.
 - [ ] Followed Research → Plan → Implement (or it's a trivial change).
 - [ ] If this touches the model (the six interaction rules, partition/merge, the
       SPEC-01 invariants, or the `reduce_all ≅ run_grid` contract), an issue was

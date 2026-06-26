@@ -20,7 +20,11 @@ minimal, testable plan. You do not write production code.
   change will be proven: which `cargo test` targets, which new/extended tests, and — when the
   change can affect distribution — how the `reduce_all(net) ≅ run_grid(net, n)` contract is
   re-checked.
-- **TDD-friendly.** Order steps so a failing test can be written first where it makes sense.
+- **TDD (required).** TDD is mandatory for this repo — order the steps so each behavioral step
+  begins with a **failing test**, then the code to pass it, then refactor. Name the test and where
+  it lives (a library unit test for core/engine/invariant behavior, so it runs in the
+  `cargo test --lib` gate; see `docs/TESTING.md`). The implementer uses the
+  `beck-tdd-pattern-family` skill to execute it.
 
 ## Output: `docs/rpi/PLAN.md`
 
