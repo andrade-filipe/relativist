@@ -31,6 +31,7 @@ relevance without opening the file.
 | Install & run | [guides/getting-started](guides/getting-started.md) → [guides/README](guides/README.md) |
 | Look up a command | [reference/cli](reference/cli.md) |
 | Know what's next | [reference/next-steps](reference/next-steps.md) |
+| Read the article | [article_read_only/](article_read_only/README.md) (PT-BR original + EN translation) |
 | Reproduce the paper | [../reproduce_article/README.md](../reproduce_article/README.md) |
 | Contribute | [../CONTRIBUTING.md](../CONTRIBUTING.md) · [../CODING_STANDARDS.md](../CODING_STANDARDS.md) |
 
