@@ -1,5 +1,13 @@
 name: CI
 
+# The REQUIRED gate. Strictly essential, fast (~2-3 min): code quality + the
+# core engine/distribution correctness via the library unit tests (which include
+# ~90 run_grid / G1 tests in the merge module). It deliberately does NOT run the
+# integration test binaries under tests/ (example codecs like Horner, the
+# benchmark harness, end-to-end smokes) — those are the OPTIONAL tier and run in
+# extended-tests.yml (manual / scheduled, non-blocking) or via plain `cargo test`
+# locally. See docs/TESTING.md.
+
 on:
   push:
     branches: [main, develop]
@@ -25,14 +33,15 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      # Clippy compiles all targets (incl. tests) under all features but does not
+      # run them — so it stays fast while still linting the whole tree.
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      # SPEC-22 R23 (TASK-0493): SparseNet MUST NOT be imported in src/reduction/.
-      # The reduction engine relies on O(1) indexed Vec access; HashMap has a
-      # 5-10× constant-factor overhead (AC-006 HVM2 flat-array, AC-001 Haskell Map).
-      # QA-D009-011: extended to catch wildcard imports, type aliases, and direct path
-      # expressions — not just `use ... SparseNet` forms.
+      # SPEC-22 R23: SparseNet MUST NOT be imported in src/reduction/. The
+      # reduction engine relies on O(1) indexed Vec access; HashMap has a 5-10×
+      # constant-factor overhead. (QA-D009-011: catches wildcard imports, type
+      # aliases, and direct path expressions, not just `use ... SparseNet`.)
       - name: Lint — SparseNet import boundary (SPEC-22 R23)
         run: |
           if grep -rn \
@@ -43,15 +52,11 @@ jobs:
             -e "SparseNet" \
             relativist-core/src/reduction/; then
             echo "ERROR: SparseNet import or reference found in src/reduction/ — violates SPEC-22 R23."
-            echo "The reduction engine must use the dense Net representation."
             exit 1
           fi
           echo "OK: no SparseNet imports in src/reduction/ (SPEC-22 R23 satisfied)."
 
-      # SPEC-22 R31 (TASK-0498): SPEC-22 implementation files must contain no unsafe code.
-      # QA-D009-010: extended to catch unsafe fn, unsafe impl, unsafe trait, unsafe extern
-      # forms in addition to bare unsafe { blocks.
-      # Future bit-packed migration is SPEC-23's responsibility.
+      # SPEC-22 R31: SPEC-22 implementation files must contain no unsafe code.
       - name: Lint — safe-Rust-only audit (SPEC-22 R31)
         run: |
           if grep -rn \
@@ -64,22 +69,21 @@ jobs:
             relativist-core/src/partition/ \
             relativist-core/src/merge/ \
             relativist-core/src/reduction/; then
-            echo "ERROR: unsafe code found in SPEC-22 implementation files."
-            echo "SPEC-22 R31: all SPEC-22 implementations must be safe Rust."
-            echo "If this is intentional, escalate to SPEC-23."
+            echo "ERROR: unsafe code found in SPEC-22 implementation files (SPEC-22 R31)."
             exit 1
           fi
           echo "OK: no unsafe code in SPEC-22 implementation files (SPEC-22 R31 satisfied)."
 
-      - name: Test
-        run: cargo test
+      # ESSENTIAL correctness: the library unit tests. Covers the reduction
+      # engine, partition/merge, and the fundamental property G1 (reduce_all ≅
+      # run_grid) via the merge module's run_grid tests. Fast: ~30s.
+      - name: Test (library unit tests)
+        run: cargo test --lib
 
-      # SPEC-21 R37b TASK-0591: streaming-no-recycle feature gate matrix column.
-      # When enabled, free-list recycling is unconditionally disabled during
-      # streaming rounds (compile-time alternative closure of SC-007).
-      # Ships disabled by default; this job validates additive-compat.
-      - name: Test (streaming-no-recycle feature)
-        run: cargo test --features streaming-no-recycle
+      # Validate the streaming-no-recycle compile-time feature column still
+      # compiles and its library tests pass (SPEC-21 R37b). Also fast with --lib.
+      - name: Test (library, streaming-no-recycle feature)
+        run: cargo test --lib --features streaming-no-recycle
 
       - name: Build release
         run: cargo build --release

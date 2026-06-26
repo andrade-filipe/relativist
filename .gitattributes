@@ -19,3 +19,6 @@ reproduce_article/results/locked/**/*.bin binary
 *.yml  text eol=lf
 *.yaml text eol=lf
 *.bin  binary
+
+# Git hooks must stay LF + executable to run on Linux/macOS.
+.githooks/* text eol=lf

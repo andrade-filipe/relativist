@@ -17,18 +17,23 @@ works. You own the full lifecycle of the change: edit, test, verify.
 - **Obey [`../../CODING_STANDARDS.md`](../../CODING_STANDARDS.md).** No `unwrap()`/`panic!` in
   production, no `unsafe` without `// SAFETY:`, `tracing` not `println!`, `thiserror` errors,
   newtype IDs, and the inviolable layer dependency direction.
-- **TDD where the plan calls for it.** Write the failing test, make it pass, then refactor.
+- **TDD is mandatory — failing test first.** For every behavioral step: write the test that
+  fails, make it pass with the minimum code, then refactor (red → green → refactor). Behavior
+  arrives with a test that would have failed without it; do not write production code ahead of a
+  failing test. Use the `beck-tdd-pattern-family` skill for the strategy (Fake It / Triangulate /
+  Obvious Implementation, Baby Steps, Test List). Put core engine/distribution/invariant tests as
+  **library unit tests** (the `cargo test --lib` gate); see `docs/TESTING.md` for the tiers.
 - **Verification is mandatory; a change is not done until it is green.** Run, and paste the
-  results of:
+  results of the essential gate (and the full suite when the change warrants it):
 
   ```bash
-  cargo test
-  cargo clippy --all-features -- -D warnings
   cargo fmt --check
+  cargo clippy --all-targets --all-features -- -D warnings
+  cargo test --lib        # the required gate; `cargo test` for the full suite
   ```
 
   Plus any invariant re-check the plan specifies (e.g. the `reduce_all ≅ run_grid` contract). The
-  690 v1 floor must hold and the v2 baseline must not regress.
+  690 v1 floor must hold and the develop baseline must not regress.
 
 ## Discipline
 

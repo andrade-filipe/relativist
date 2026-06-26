@@ -56,6 +56,12 @@ TCP, the design is wrong — push the dependency upward instead.
 
 ## Tests
 
+- **TDD is required** — write the failing test first, then the code to pass it, then refactor
+  (red → green → refactor). Behavior arrives with a test that would have failed without it. Use
+  the `beck-tdd-pattern-family` skill for the strategy. Tiers + where each test goes:
+  [`docs/TESTING.md`](docs/TESTING.md).
+- Core engine / distribution / invariant behavior → a **library unit test** (runs in the
+  `cargo test --lib` gate). Example codecs / benchmarks / e2e → an integration test in `tests/`.
 - Co-locate unit tests with the code (`#[cfg(test)] mod tests`); integration tests in `tests/`.
 - Property-based tests (proptest) guard the algebraic invariants (confluence, structural
   equality modulo renaming). Regressions are checked in under `proptest-regressions/`.

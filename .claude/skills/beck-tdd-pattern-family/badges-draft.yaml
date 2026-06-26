@@ -1,0 +1,259 @@
+# badges-draft.yaml — beck-tdd-pattern-family
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# In v2 shape (per dev-productivity-skills-shape-v2-proposal.md), the
+# SKILL.md body does NOT duplicate this content. composition.yaml carries
+# only the string-ID index (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+#
+# See:
+#   - docs/decisions/ADR-0007-benchmark-architecture.md (Pillar 6)
+#   - .claude/agents/marketplace-generator.md (write boundary)
+#   - .claude/agents/architect.md (badge sign-off authority)
+
+artifact_id: beck-tdd-pattern-family
+artifact_path: generation/skills/beck-tdd-pattern-family/
+artifact_tier: technique           # per ADR-0005
+artifact_task_class: decision-coherent  # per ADR-0006
+artifact_targets_scenarios: []     # empty — no engineering-discipline scenarios seeded yet
+
+# -----------------------------------------------------------------------------
+# B1 — Constants Compliance Badge (binary gate, computed on-emission).
+# Per ADR-0007 Pillar 6, B1 is mandatory for marketplace eligibility. Failing
+# B1 = not eligible. Self-checked by marketplace-generator at emission time
+# via parser/regex checks (no LLM judge involved).
+# -----------------------------------------------------------------------------
+b1_constants_compliance:
+  status: passing
+  checked_at: 2026-05-22
+  framework_commit: 489231b
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  constants_checked:
+    - constant_ref: knowledge/software-craft/constants/information-hiding-as-decomposition-driver.md
+      verdict: passing
+      rationale: |
+        PRIMARY ANCHOR — the red-green-refactor cycle exerts information-
+        hiding pressure as a first-order design effect, which the Skill body's
+        atomic-unit section and worked example both make load-bearing. Three
+        concrete mechanisms:
+          - The test IS the first consumer of the production API; writing it
+            forces the boundary surface (class name, method signature,
+            parameter shape, error semantics) BEFORE implementation pressure
+            crystallizes the wrong boundary. This is the Beck "test-first-
+            as-design-feedback" claim and it is precisely the information-
+            hiding decision-driver the Constant requires.
+          - Triangulation forces the boundary to be parameterized correctly
+            (the `$5 + 10 CHF` example forces the rate-lookup to live behind
+            a `bank` collaborator boundary, not embedded in `Money.plus`).
+          - The Refactor step (composed with fowler-refactor-mechanics-family)
+            applies Extract Method / Extract Class to deepen module boundaries
+            — the named refactorings ARE the information-hiding moves.
+        The Skill's selection rubric makes the boundary-design pressure
+        explicit at every cycle, not just at architecture-review time.
+
+    - constant_ref: knowledge/software-craft/constants/complexity-is-incremental.md
+      verdict: passing
+      rationale: |
+        The refactor step of the red-green-refactor cycle is the per-cycle
+        anti-entropy mechanism — fires once per closed loop, scoped to the
+        substrate the cycle just touched, with the green bar as the safety
+        net. Concretely:
+          - anti_entropy_budget (implicit) = "refactor-step-per-cycle" — one
+            anti-entropy checkpoint per closed red-green-refactor loop. This
+            is the NAMED trigger the Constant's opportunistic-tidy-only anti-
+            pattern forbids; the refactor step is structurally scheduled into
+            every cycle.
+          - complexity_metric (implicit) = "smell-density-at-change-site" —
+            the refactor step targets smells in the just-touched code, not
+            globally. Compose with fowler-refactor-mechanics-family for the
+            named-smell vocabulary.
+          - entropy_trajectory_check (implicit) = "next-test-friction" — the
+            next red bar's authoring friction is the entropy signal; if the
+            next test is hard to write, the previous refactor missed a seam.
+        The "skipping-refactor-step" anti-pattern in the Skill body is the
+        explicit guard against the Constant's failure mode (cycle degenerates
+        into red-green-skip-refactor; entropy compounds per feature).
+
+    - constant_ref: knowledge/software-craft/constants/code-reading-cost-dominates-write-cost.md
+      verdict: passing
+      rationale: |
+        Three test-organization patterns in the Skill body optimize for the
+        reader of the test suite, not the author:
+          - Assert First — the assertion (the test's purpose) is written
+            first so readers see the observable outcome before the setup
+            mechanics. The assertion IS what the test means; everything else
+            is plumbing.
+          - Isolated Test — a failure points unambiguously at one behavior;
+            the reader can debug from the failure message without untangling
+            inter-test state. Reading cost during a failure is the dominant
+            cost the Constant names.
+          - Test List — the list IS the feature's scope made readable; new
+            readers (or future-you) understand what the feature covers by
+            reading the list, not by reverse-engineering the test directory.
+        The selection rubric's "test reads awkwardly → rename/restructure"
+        branch makes reading-cost a first-class signal in the rubric.
+
+    - constant_ref: knowledge/software-craft/constants/failure-design-vs-failure-prevention.md
+      verdict: passing
+      rationale: |
+        The Test List externalizes failure-mode enumeration before any code
+        exists — Beck's discipline of writing edge cases, error paths, and
+        regression-vulnerable behaviors onto the list as they occur to the
+        author. This is the Constant's failure-design move: failures are
+        anticipated, named, and scheduled into the cycle (each list item is
+        a future red bar) rather than prevented by speculative defensive
+        code. The worked example's "rate missing → explicit failure mode"
+        list entry is the canonical move — the failure mode is named into
+        the list, then the §3.3 stance fires (failure-design is a design
+        question upstream of TDD; compose with design-first-discipline).
+        The "regression-fix-test-first" application context the Skill
+        supports is the same pattern: every fixed bug becomes a permanent
+        test, converting the bug into a designed failure mode.
+
+    - constant_ref: knowledge/software-craft/constants/compact-discipline-emission.md
+      verdict: passing
+      rationale: |
+        SKILL.md body is section-budgeted: an atomic-unit section (3 phases),
+        three pattern families (implementation strategies, rhythm discipline,
+        test organization) each with 3 named patterns, a selection rubric (8
+        decision branches), the §3.3 stance, a worked example (3 cycles),
+        anti-patterns, and limitations. No section bloats; each named
+        pattern is a tight one-paragraph definition rather than a sub-page
+        expansion. The Skill explicitly defers larger-grain content to
+        composing Skills (fowler-refactor-mechanics-family for refactor
+        mechanics, feathers-characterization-tests-first for legacy entry,
+        design-first-discipline for upstream design) rather than absorbing
+        them. Family-grouped per the gof-design-patterns-vocabulary precedent
+        (~14 patterns in one Skill is the deliberate compactness choice).
+
+    - constant_ref: knowledge/software-craft/constants/essence-vs-accident-distinction.md
+      verdict: passing
+      rationale: |
+        The selection rubric IS an essence-vs-accident filter at the per-test
+        granularity:
+          - Obvious Implementation vs Fake It is the essence/accident call:
+            is the right code essential to know now, or is the green bar the
+            essential thing and the literal is accidental?
+          - Triangulation is the discipline that converts accidental hard-
+            codes into essential general formulas.
+          - One Step Test selects the test that teaches something new
+            (essential) over the test that "covers" more code (accidental
+            metric-chasing).
+          - Baby Steps shrinks when step size is accidentally too big.
+        The §3.3 stance is itself an essence/accident move: TDD provides
+        essential design feedback (consensus), but is not THE essential
+        design tool (debate). Naming this distinction is the Skill's
+        position-claim.
+
+    - constant_ref: framework/constants/bounded-tool-surface.md
+      verdict: passing
+      rationale: |
+        Vacuously honored — the constant binds on tool-using Agents and
+        Skills; this Skill invokes zero tools at runtime. It is a pure
+        decision-rubric prompt scaffold; the operator's host Agent invokes
+        any test-runner tools (jest, pytest, JUnit, ...) as part of the
+        operator-side workflow, not as part of the Skill's tool surface.
+        active_tool_ceiling = 0, tool_catalog_size_total = 0,
+        tool_pruning_strategy = none-under-ceiling (legal when catalog = 0).
+
+    - constant_ref: framework/constants/typed-tool-contracts-with-feedback-loop.md
+      verdict: passing
+      rationale: |
+        Vacuously honored — the constant binds on tool-using Agents and
+        Skills; this Skill invokes zero tools.
+
+    - constant_ref: framework/constants/minimal-sufficient-context.md
+      verdict: passing
+      rationale: |
+        The Skill injects no retrieved corpus, no exemplars beyond the one
+        Money worked example, no external context — only the five-family
+        pattern vocabulary, the selection rubric, and the §3.3 stance. The
+        pattern vocabulary is the densest knowledge artifact in the Skill
+        and is bounded at ~14 named patterns with one-paragraph definitions.
+        The worked example is bounded to one concrete scenario (multi-
+        currency Money, three cycles, ~200 tokens). Task-scoped, not fill-
+        the-window.
+
+    - constant_ref: framework/constants/observable-agent-traces.md
+      verdict: passing
+      rationale: |
+        The Skill's outputs are inherently observable at the VCS + test-runner
+        boundary: every TDD cycle produces a red→green transition observable
+        in the test-runner log, and (when composed with beck-tidy-first-
+        discipline + git-commits) every refactor step lands as a separate
+        commit. The test list itself is an externalized observable artifact
+        (Beck explicitly writes it onto paper / scratch comment block). The
+        commit graph + test-runner log + test list together ARE the trace —
+        every architectural decision the Skill drives is externally
+        inspectable. Host Agent is responsible for the VCS + test-runner
+        substrate; the Skill's output contract makes the trace structurally
+        clean.
+
+  expires_when:
+    any_of:
+      - framework_constants_change: true
+      - days_elapsed: 180
+  status_after_expiry: stale
+
+# -----------------------------------------------------------------------------
+# B2 — Scenario Performance Badge.
+# Not applicable at emission time. targets_scenarios is empty — no engineering-
+# discipline scenario exists yet in framework/scenarios/. B2 cannot be computed
+# without a scenario. Stage-5 follow-up: architect should seed a tdd-pattern-
+# selection scenario for this tier-1 Skill (it anchors the §3.3 active debate
+# and pairs with design-first-discipline as the alternative-pair, so scenario
+# coverage is high-value for numerically validating the §3.3 stance).
+# -----------------------------------------------------------------------------
+b2_scenarios_performance:
+  status: not-applicable
+  reason: >
+    targets_scenarios is empty. No engineering-discipline scenario seeded yet
+    in framework/scenarios/ (current scenarios cover factual-qa, arithmetic-
+    reasoning, structured-output-compliance — none probe TDD pattern selection
+    or the §3.3 stance). B2 requires at least one declared scenario to run
+    against floor + reference baselines. Flagged tier-1 for Stage-5 scenario-
+    seeding consideration.
+
+# -----------------------------------------------------------------------------
+# Sign-off envelope.
+# -----------------------------------------------------------------------------
+issued_at: 2026-05-22
+signed_off: false
+signed_off_by: null
+signed_off_at: null
+sign_off_notes: |
+  Awaiting architect Stage-5. The architect should:
+    1. Validate this B1 self-check against the framework constants at the
+       pinned framework_commit (489231b).
+    2. Verify the §3.3 stance framing — the Skill declares
+       `tests-as-design-feedback-companion` (NOT `tests-as-primary-design-
+       tool`), names the alternative-pair `design-first-discipline`
+       explicitly, and surfaces the `tdd-as-primary-thinking-tool-for-ill-
+       formed-problems` anti-pattern. This is the load-bearing §3.3
+       discipline the dispatch envelope required (verification step 5).
+    3. Consider seeding a tdd-pattern-selection scenario in
+       framework/scenarios/ for engineering-discipline task class — this
+       Skill is tier-1 and anchors the §3.3 active debate (Beck/Martin TDD-
+       as-primary vs Ousterhout/Dijkstra/Hickey/McConnell design-first), so
+       scenario coverage would let B2 numerically validate the §3.3 stance.
+       Proposed scenario shape: "given a current test bar state (red/green),
+       a Test List of pending behaviors, and a code sketch, pick the next
+       TDD pattern from the five families and defend the selection per the
+       rubric; graded on (a) pattern selection appropriateness, (b)
+       Triangulation discipline when Fake It is used, (c) Baby Steps /
+       Child Test recovery when step size strains, (d) §3.3 handoff to
+       design-first-discipline when the problem is ill-formed."
+    4. Once scenario seeded, update targets_scenarios in composition.yaml,
+       then invoke benchmark-this-artifact to compute B2 against the
+       alternative-pair design-first-discipline as the comparison baseline
+       (this is exactly the alternative-pair-comparison shape that ADR-0006
+       task-class-axis benchmarks were designed for).
+    5. Promote this draft into
+       generation/skills/beck-tdd-pattern-family/badges.yaml on successful
+       review, or reject with documented reason.

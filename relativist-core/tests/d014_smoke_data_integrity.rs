@@ -24,6 +24,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
+#[ignore = "D-014 stress-curve smoke: emits real benchmark data; runner-speed + env dependent. Run manually: cargo test -- --ignored"]
 fn stress_curve_smoke_emits_real_benchmark_data() {
     // 1. Locate the release binary; skip if not built.
     let bin_unix = workspace_root().join("target/release/relativist");

@@ -26,14 +26,14 @@ fn memory_probe_vs_oracle_100mib() {
     }
 
     const SIZE: usize = 100 * 1024 * 1024;
-    let buf: Vec<u8> = vec![0u8; SIZE];
-    // Force commit by touching every 4 KiB page.
-    let mut sum: u64 = 0;
-    for chunk in buf.chunks(4096) {
-        sum = sum.wrapping_add(chunk[0] as u64);
+    let mut buf: Vec<u8> = vec![0u8; SIZE];
+    // Force commit by WRITING every 4 KiB page. On Linux, `vec![0u8; N]` is
+    // backed by the shared zero page (COW); reading it never raises RSS, so the
+    // page must be written to fault in a private resident page.
+    for i in (0..SIZE).step_by(4096) {
+        buf[i] = (i % 251 + 1) as u8;
     }
     let buf = std::hint::black_box(buf);
-    let _sum = std::hint::black_box(sum);
 
     let cur1 = probe.current_bytes().expect("current_bytes post-alloc");
     let peak1 = probe.peak_bytes().expect("peak_bytes post-alloc");

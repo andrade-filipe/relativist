@@ -1,0 +1,46 @@
+name: Extended Tests
+
+# The OPTIONAL tier — NOT a required merge gate. Runs the full integration suite
+# (the tests/ binaries: example codecs like Horner, the benchmark harness, the
+# end-to-end / distributed smokes) plus the feature matrix. These are slow and,
+# for example codecs and the bench harness, not part of the core correctness
+# contract — future contributors will add their own encoders/decoders.
+#
+# Triggers:
+#   - manually (Actions tab → "Run workflow"), and
+#   - weekly, to catch integration regressions without slowing down PRs.
+# Do NOT add this as a required status check in branch protection.
+#
+# To run the same thing locally: `cargo test` (full), and
+# `cargo test -- --ignored` for the environment-fragile stress-curve smokes.
+# See docs/TESTING.md.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full-suite:
+    name: Full integration suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Full test suite (default features)
+        run: cargo test
+
+      - name: Full test suite (streaming-no-recycle feature)
+        run: cargo test --features streaming-no-recycle
+
+      # Environment-fragile stress-curve smokes (wall/RAM budgets, python/bash).
+      # Best-effort: informational only, never fails the job.
+      - name: Environment-dependent smokes (--ignored, best-effort)
+        continue-on-error: true
+        run: cargo test -- --ignored
