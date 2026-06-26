@@ -1,63 +1,66 @@
-# Demonstração — HornerCodec e a Propriedade G1 (Confluência)
-
-**Data:** 2026-05-16
-**Branch:** main (post-merge de feature/stress-and-encoder, tag v0.20.0)
-**Binário usado:** target/release/relativist.exe
-**Operador:** Filipe Andrade Nascimento (TCC UNIT 2026)
-
+---
+title: Horner G1 demonstration
+summary: Horner's method evaluated across distributed workers yields the same result as sequential reduction — a concrete witness of G1.
+keywords: [horner, G1, confluence, compute, codec, encode, decode, distributed, determinism, church numerals]
+modules: [encoding]
+specs: [SPEC-14, SPEC-27]
+audience: [user, llm]
+status: guide
+updated: 2026-06-26
 ---
 
-## Objetivo
+# Horner G1 demonstration
 
-Demonstrar empiricamente, com o **algoritmo de Horner** como cobaia, que a
-redução de uma rede de Interaction Combinators (IC) produz o **mesmo
-resultado numérico** independente da estratégia escolhida — sequencial
-(reduce_all in-process) ou distribuída (BSP com W workers paralelos via
-`local` mode). Isto é evidência direta da propriedade **G1 (Fundamental
-Property)** declarada em `docs/specs/SPEC-01-invariantes.md`, derivada da
-confluência forte demonstrada por Lafont (1997).
+A walkthrough that uses **Horner's method** as a concrete probe to show that an
+IC net reduces to the **same numerical result** regardless of strategy —
+sequential (`reduce_all`, in-process) or distributed (BSP over W parallel
+workers). That invariance is a direct witness of property **G1 (Fundamental
+Property)** from [SPEC-01](../../specs/SPEC-01-invariantes.md), itself derived
+from Lafont's strong confluence (1997).
 
----
+For the encoder/decoder flags see the [CLI reference](../reference/cli.md#compute);
+for IC theory see [interaction-combinators](../theory/interaction-combinators.md).
 
-## Por que Horner é uma escolha forte de demo
+## why Horner is a strong demo
 
-Horner é o algoritmo canônico para avaliar um polinômio
-
-  p(x) = c₀ + c₁·x + c₂·x² + ... + cₙ·xⁿ
-
-em uma forma re-associada que minimiza multiplicações:
-
-  p(x) = c₀ + x·(c₁ + x·(c₂ + ... + x·cₙ))
-
-A formulação **é intrinsecamente sequencial** em texto: para começar a
-calcular `c₂·x² + c₁·x + c₀` na forma re-associada, você precisa primeiro
-do resultado do parêntese mais interno. Linguagens funcionais puras
-tipicamente conseguem paralelizar `map` mas têm dificuldade em paralelizar
-Horner sem reescrever o algoritmo.
-
-Em IC, a re-associação some — a rede codifica a estrutura sem
-ordem implícita, e qualquer estratégia de redução converge ao mesmo
-normal form (G1). É exatamente esse contraste que torna Horner um demo
-interessante para um TCC sobre Grid Computing via IC.
-
-Detalhamento histórico-matemático: `docs/superpowers/specs/2026-05-06-horner-method-explainer.md`.
-
----
-
-## Especificação do CLI
-
-Encoder/decoder expostos via `compute --codec horner --input <JSON>`:
+Horner evaluates a polynomial
 
 ```
-{"coeffs": [c0, c1, c2, ...], "x": valor}
+p(x) = c0 + c1*x + c2*x^2 + ... + cn*x^n
 ```
 
-onde `coeffs[i]` é o coeficiente de xⁱ. Distribuição opcional via `--workers N`.
-
-Registry confirmado em runtime:
+in a re-associated form that minimizes multiplications:
 
 ```
-$ relativist encoders list
+p(x) = c0 + x*(c1 + x*(c2 + ... + x*cn))
+```
+
+That formulation is **intrinsically sequential as text**: to start computing the
+re-associated `c2*x^2 + c1*x + c0` you first need the innermost parenthesis.
+Pure functional languages typically parallelize `map` but struggle to
+parallelize Horner without rewriting the algorithm.
+
+In IC the re-association disappears — the net encodes the structure with no
+implicit order, and any reduction strategy converges to the same normal form
+(G1). That contrast is exactly what makes Horner a sharp demonstration: a
+sequential algorithm executed correctly across distributed workers.
+
+## cli pipeline
+
+The Horner encoder/decoder is exposed through the registry:
+
+```bash
+relativist compute --codec horner --input '{"coeffs":[c0,c1,c2,...],"x":value}'
+```
+
+where `coeffs[i]` is the coefficient of `x^i`. Distribution is optional via
+`--workers N`. Confirm the codec is registered:
+
+```bash
+relativist encoders list
+```
+
+```
 Available encoders:
   church_add             Church numeral addition (a + b)
   church_exp             Church numeral exponentiation (a ^ b)
@@ -66,15 +69,16 @@ Available encoders:
   horner                 Polynomial evaluation via Horner's method
 ```
 
----
+## demo 1 constant polynomial
 
-## Demo 1 — Constante p(x) = 42
+`p(x) = 42`. Degenerate case: the net encodes the Church numeral 42 with no
+redex, and the decoder reads the numeral directly (x = 99 ignored).
 
-Caso degenerado: o net codifica o numeral Church de 42 e não há nenhum
-redex (nenhuma interação a fazer). O decoder lê o numeral diretamente.
+```bash
+relativist compute --codec horner --input '{"coeffs":[42],"x":99}'
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[42],"x":99}'
 === Relativist Compute (encoder: horner) ===
 Encoding:    85 agents, 0 redexes
 Reduction:   0 interactions in 0.00s (0.00 MIPS)
@@ -84,15 +88,15 @@ Result:      {
 }
 ```
 
-✅ Esperado 42; obtido **42**. Independente de x (= 99 ignorado, polinômio
-constante).
+## demo 2 linear sequential
 
----
+`p(x) = 1 + x` at `x = 5`, reduced sequentially in-process.
 
-## Demo 2 — Linear p(x) = 1 + x em x = 5
+```bash
+relativist compute --codec horner --input '{"coeffs":[1,1],"x":5}'
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[1,1],"x":5}'
 === Relativist Compute (encoder: horner) ===
 Encoding:    35 agents, 2 redexes
 Reduction:   11 interactions in 0.00s (1.90 MIPS)
@@ -102,14 +106,15 @@ Result:      {
 }
 ```
 
-✅ Esperado 1+5=6; obtido **6**. **Redução sequencial in-process.**
+Expected `1 + 5 = 6`; obtained **6**.
 
----
+## demo 3 same equation distributed W=4
 
-## Demo 3 — Mesma equação, **distribuído com W=4 workers** (evidência G1)
+```bash
+relativist compute --codec horner --input '{"coeffs":[1,1],"x":5}' --workers 4
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[1,1],"x":5}' --workers 4
 === Relativist Compute (encoder: horner) ===
 Encoding:    35 agents, 2 redexes
 Reduction:   11 interactions in 0.00s (2.00 MIPS)
@@ -119,17 +124,19 @@ Result:      {
 }
 ```
 
-✅ Esperado 6; obtido **6** — **idêntico ao Demo 2 sequencial**. Mesmo número
-de interações (11), mesmo bit_length, mesmo valor. A redução particionou
-o net em 4 sub-nets, distribuiu para workers, e o merge convergiu no
-mesmo normal form.
+**Identical to demo 2**: same interaction count (11), same `bit_length`, same
+`value`. The reducer partitioned the net into 4 sub-nets, distributed them to
+workers, and the merge converged to the same normal form. **This is G1.**
 
----
+## demo 4 larger scale sequential
 
-## Demo 4 — Escala maior p(x) = 100 + x em x = 50
+`p(x) = 100 + x` at `x = 50`.
+
+```bash
+relativist compute --codec horner --input '{"coeffs":[100,1],"x":50}'
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[100,1],"x":50}'
 === Relativist Compute (encoder: horner) ===
 Encoding:    323 agents, 2 redexes
 Reduction:   11 interactions in 0.00s (2.00 MIPS)
@@ -139,17 +146,17 @@ Result:      {
 }
 ```
 
-✅ Esperado 100+50=150; obtido **150**. Note que o número de agentes na
-encoding cresce com x (323 ≈ 2·(50+100)+offset), mas o número de
-interações de redução permanece **11** — o cálculo do polinômio é
-"barato" relativo ao tamanho da representação dos numerais Church.
+Encoding agent count grows with `x` (323 ~ 2*(50+100) + offset), but reduction
+stays at **11 interactions** — evaluating the polynomial is cheap relative to the
+Church-numeral representation size.
 
----
+## demo 5 same polynomial distributed W=8
 
-## Demo 5 — Mesmo polinômio, **distribuído com W=8 workers** (G1 em escala)
+```bash
+relativist compute --codec horner --input '{"coeffs":[100,1],"x":50}' --workers 8
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[100,1],"x":50}' --workers 8
 === Relativist Compute (encoder: horner) ===
 Encoding:    323 agents, 2 redexes
 Reduction:   11 interactions in 0.00s (2.04 MIPS)
@@ -159,16 +166,19 @@ Result:      {
 }
 ```
 
-✅ Esperado 150; obtido **150** — **idêntico ao Demo 4 sequencial**.
-Agora com 8 workers paralelos. O resultado numérico **não muda**, mesmo
-particionando o net em 8 fragmentos independentes e mergeando ao final.
+**Identical to demo 4** with 8 parallel workers. The numerical result does not
+change even when the net is split into 8 independent fragments and merged at the
+end. G1 holds at scale.
 
----
+## demo 6 supported scale limit
 
-## Demo 6 — Limite de escala suportado p(x) = 42 + x em x = 10000
+`p(x) = 42 + x` at `x = 10000`, distributed over 4 workers.
+
+```bash
+relativist compute --codec horner --input '{"coeffs":[42,1],"x":10000}' --workers 4
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[42,1],"x":10000}' --workers 4
 === Relativist Compute (encoder: horner) ===
 Encoding:    20107 agents, 2 redexes
 Reduction:   11 interactions in 0.00s (1.53 MIPS)
@@ -178,147 +188,80 @@ Result:      {
 }
 ```
 
-✅ Esperado 42+10000=10042; obtido **10042**. Encoding com **20k agentes**
-(crescimento linear com x), redução em **11 interactions** (constante).
+Encoding with ~20k agents (linear in `x`); reduction still **11 interactions**
+(constant).
 
----
+## demo 7 input validation
 
-## Demo 7 — Validação de input (defesa contra DoS)
+`MAX_CHURCH_NAT = 10000` caps the largest accepted Church numeral, preventing a
+malicious JSON from constructing a net with billions of agents.
 
-A constante `MAX_CHURCH_NAT = 10000` em `relativist-core/src/encoding/codec_church.rs`
-limita o numeral Church máximo aceito pelo encoder, evitando que um JSON
-malicioso construa um net com bilhões de agentes:
+```bash
+relativist compute --codec horner --input '{"coeffs":[1,1],"x":99999}'
+```
 
 ```
-$ relativist compute --codec horner --input '{"coeffs":[1,1],"x":99999}'
 === Relativist Compute (encoder: horner) ===
 error: encoding error: invalid input: x = 99999 exceeds cap (max 10000)
 ```
 
-✅ Erro reportado claramente, sem panic, sem corrupção. Validação
-introduzida no fix de BUG-003 do D-015 QA pass (2026-05-06).
+Reported cleanly — no panic, no corruption.
 
----
+## what these demos witness
 
-## Síntese — o que esses 7 demos provam
-
-| Propriedade | Evidência |
+| Property | Evidence |
 |---|---|
-| **G1 (Fundamental Property)** — `R*(n)` produz mesma observável | Demo 2 ≡ Demo 3 (W=4); Demo 4 ≡ Demo 5 (W=8). Mesmo valor numérico em sequencial vs distribuído. |
-| **Determinismo** — múltiplas execuções do mesmo input convergem | Idem (cada demo é determinístico no número de interações: 0, 11, 11, 11, 11). |
-| **Confluência forte (Lafont 1997)** — normal form é único | Aparece como **mesmo bit_length, mesmo "value"** entre execuções com partição diferente. |
-| **Robustez de input** — encoder valida bounds | Demo 7 (MAX_CHURCH_NAT enforcement, sem panic). |
+| **G1 (Fundamental Property)** — same observable across strategies | demo 2 == demo 3 (W=4); demo 4 == demo 5 (W=8). Same value, sequential vs distributed. |
+| **Determinism** — repeated runs converge | Each demo is deterministic in interaction count (0, 11, 11, 11, 11). |
+| **Strong confluence (Lafont 1997)** — unique normal form | Same `bit_length` and `value` across runs with different partitioning. |
+| **Input robustness** — encoder bounds-checks | demo 7 (`MAX_CHURCH_NAT` enforcement, no panic). |
 
----
+## decode readback envelope
 
-## Envelope leitor (pós D-016 — TASK-0723 + TASK-0724 + BUG-001/002 fix)
+Decoding the reduced net to an integer is supported for a defined subset:
 
-D-016 estendeu `biguint_readback` para cobrir o readable subset do
-HornerCodec usado nesses demos:
+- **Single-iteration polynomials** (`coeffs.len() == 2`) with cofactor
+  `c1 in 0..=1025` and any `c0`, `x in 0..=MAX_CHURCH_NAT`.
+- **Degree-2 polynomials** (`coeffs.len() == 3`) with leading coefficient
+  `c2 == 1` and middle coefficient `c1 >= 0`.
 
-- **Single-iteration polinômios** (`coeffs.len() == 2`) com cofactor
-  `c₁ ∈ 0..=1025` e qualquer `c₀`, `x ∈ 0..=MAX_CHURCH_NAT` (TASK-0723).
-  O limite superior `c₁ = 1025` foi descoberto empiricamente via bisect
-  (2026-05-16, D-016 BUG-002 fix) — o limite anterior anunciado
-  (`MAX_CHURCH_NAT = 10_000`) era falso; acima de `c₁ = 1025` o decoder
-  retorna `Err(UnrecognizedStructure: read_chain_terminal: nested mul
-  boundary on exit chain)`. Regressão em
-  `decode_biguint_handles_actual_c1_upper_bound` (UT-0723-08).
-- **Degree-2 polinômios** (`coeffs.len() == 3`) com coeficiente líder
-  `c₂ == 1` e coeficiente do meio `c₁ ≥ 0` (TASK-0724 — readable subset).
-  Inputs com `c₂ ≥ 2` retornam `Err(UnrecognizedStructure:
-  read_mult_subnet: inbound chain crossed N DUPs (>2))` em vez de
-  retornar `Ok` com valor numericamente errado (pré-D-016 BUG-001).
-
-Casos previamente bloqueados que agora decodificam corretamente:
-
-| Demo | Input | Esperado | Status |
-|---|---|---|---|
-| Demo 8 | `{"coeffs":[3,5],"x":4}` | 23 | ✅ |
-| Demo 9 | `{"coeffs":[1,1,1],"x":2}` | 7 | ✅ |
-| Demo 10 | `{"coeffs":[1,0,1],"x":3}` | 10 | ✅ |
+Cases inside the envelope decode correctly:
 
 ```bash
-$ target/release/relativist compute --codec horner --input '{"coeffs":[3,5],"x":4}'
-Result:      {
-  "bit_length": 5,
-  "value": "23"
-}
-
-$ target/release/relativist compute --codec horner --input '{"coeffs":[1,1,1],"x":2}'
-Result:      {
-  "bit_length": 3,
-  "value": "7"
-}
-
-$ target/release/relativist compute --codec horner --input '{"coeffs":[1,0,1],"x":3}'
-Result:      {
-  "bit_length": 4,
-  "value": "10"
-}
+relativist compute --codec horner --input '{"coeffs":[3,5],"x":4}'    # -> 23
+relativist compute --codec horner --input '{"coeffs":[1,1,1],"x":2}'  # -> 7
+relativist compute --codec horner --input '{"coeffs":[1,0,1],"x":3}'  # -> 10
 ```
 
-## Limitações remanescentes (escopo Mackie/Pinto futuro)
+Inputs **outside** the envelope (degree >= 3, or degree-2 with `c2 >= 2`, or
+`c1 > 1025`) return a structured `Err(UnrecognizedStructure: ...)` rather than an
+`Ok` with a numerically wrong value. The reduction is still correct and the
+`horner_serial` oracle still produces the right number — only the readback is
+refused. Closing this gap (arbitrary degree, `c1 > 1025`) is future work via
+Mackie/Pinto shared-form readback ([SPEC-27](../../specs/SPEC-27-encoder-decoder-api.md) §5.1).
 
-`biguint_readback` v1 usa um algoritmo de **cycle counting** sobre a
-árvore DUP da multiplicação. Esse algoritmo é exato para o subset
-listado acima mas **sub-estima o multiplicador para grau ≥ 3 OU
-degree-2 com `c₂ ≥ 2`**: a estrutura aninhada cresce exponencialmente
-em `x` mas o contador linear de ciclos não acompanha. Pré-D-016 o
-decoder retornava `Ok(under-counted)` silenciosamente nessas entradas
-— uma regressão de confiança (CVE-class) capturada pelo QA. Post-fix
-(commit `<this>`), todas as entradas fora do envelope retornam
-`Err(UnrecognizedStructure)` com mensagem estruturada, NÃO `Ok(N)`
-com valor numericamente errado. A oracle `horner_serial` continua
-produzindo o valor correto; o decoder simplesmente recusa o readback:
+## decode a saved net
 
-- `{"coeffs":[3,2,5,1],"x":2}` — grau 3 (esperado 35) → `Err(read_mult_subnet: inbound chain crossed 4 DUPs (>2))`
-- `{"coeffs":[1,0,0,0,0,1],"x":10}` — grau 5 esparso (esperado 100001) → `Err(read_mult_subnet: inbound chain crossed N DUPs (>2))`
-- `{"coeffs":[1,1,1,1,1],"x":2}` — grau 4 (esperado 31) → `Err(read_mult_subnet: inbound chain crossed 6 DUPs (>2))`
-- `{"coeffs":[5,5,5],"x":2}` — degree-2 c₂≥2 (esperado 35) → `Err(read_mult_subnet: inbound chain crossed 3 DUPs (>2))`
-- `{"coeffs":[5,1026],"x":2}` — single-iter c₁>1025 (esperado 5135) → `Err(read_chain_terminal: nested mul boundary on exit chain)`
-- `{"coeffs":[1; 25],"x":10}` — T9 BigUint witness → `Err(...)`
+A reduced net written by `coordinator`/`local`/`compute -o` can be decoded later:
 
-**Future work (SPEC-27 §5.1):** Mackie/Pinto shared-form readback
-fecha esse gap (estende o envelope para degree arbitrário e
-`c₁ > 1025`). Tracking no roadmap como item v2.1+.
+```bash
+relativist compute --codec horner --input '{"coeffs":[3,5],"x":4}' -o reduced.bin
+relativist decode --codec horner -i reduced.bin            # prints JSON
+relativist decode --codec horner -i reduced.bin -o out.json
+```
 
----
-
-## Reprodutibilidade
-
-Todos os demos (incluindo os 3 novos unlocked por D-016) podem ser
-re-executados com o script one-shot:
+## reproducibility
 
 ```bash
 cd codigo/relativist
 cargo build --release --bin relativist
-bash reproduce_article/scripts/horner_demo.sh
+target/release/relativist compute --codec horner --input '<JSON>' [--workers N]
 ```
 
-Ou individualmente:
+## cross-references
 
-```bash
-target/release/relativist[.exe] compute --codec horner --input '<JSON>' [--workers N]
-```
-
-Hash do binário usado nesta demonstração e do código que o gerou:
-
-```
-git rev-parse HEAD     # post-D-016 closing commit
-git tag --points-at HEAD   # post-D-016 tag (e.g., v0.21.0)
-```
-
----
-
-## Cross-references
-
-- **Spec:** `docs/specs/SPEC-27-encoder-decoder-api.md` (v3, HornerCodec promovido sobre LambdaCodec)
-- **Tese central:** `docs/specs/SPEC-01-invariantes.md` (G1, Fundamental Property)
-- **Argumento:** `discussoes/argumentos/ARG-001-confluencia-preserva-determinismo.md` (P1-P6)
-- **Explainer matemático:** `docs/superpowers/specs/2026-05-06-horner-method-explainer.md`
-- **Design original:** `docs/superpowers/specs/2026-05-06-horner-distributed-evaluation-design.md`
-- **Encoder/Decoder:** `relativist-core/src/encoding/horner.rs`, `horner_oracle.rs`, `biguint_readback.rs`
-- **CLI dispatch:** `relativist-core/src/commands.rs` (`run_compute_with_encoder`)
-- **Registry:** `relativist-core/src/encoding/registry.rs` (`default_registry`)
-- **Tests IT:** `relativist-core/tests/horner_codec_cli_roundtrip.rs`, `horner_distributed_g1.rs`
+- **Property:** [SPEC-01](../../specs/SPEC-01-invariantes.md) (G1, Fundamental Property)
+- **Codec API:** [SPEC-27](../../specs/SPEC-27-encoder-decoder-api.md) (HornerCodec)
+- **Argument:** `discussoes/argumentos/ARG-001-confluencia-preserva-determinismo.md` (P1-P6)
+- **Church arithmetic guide:** [church-arithmetic](../guides/church-arithmetic.md)
+- **CLI reference:** [compute](../reference/cli.md#compute), [decode](../reference/cli.md#decode), [encoders](../reference/cli.md#encoders)

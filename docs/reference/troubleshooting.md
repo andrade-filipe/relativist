@@ -1,178 +1,176 @@
+---
+title: Troubleshooting
+summary: Lookup reference for Relativist install, run, Docker, TCP, memory, and test errors.
+keywords: [troubleshooting, error, windows, smartscreen, docker, tcp, memory, build, cargo]
+modules: [protocol, config]
+specs: [SPEC-07, SPEC-13]
+audience: [user]
+status: reference
+updated: 2026-06-26
+---
+
 # Troubleshooting
 
-Sintomas comuns e o que fazer. Para erros especificos de campanha, ver [benchmarks/limitations.md](../benchmarks/limitations.md) (L1-L7) e os troubleshooting por campanha em [benchmarks/campaigns/](../benchmarks/campaigns/).
+Symptom-to-fix lookup. For campaign-specific limits see [benchmarks/limitations.md](../benchmarks/limitations.md) (L1-L7) and the per-campaign notes in [benchmarks/campaigns/](../benchmarks/campaigns/).
 
-## Instalacao
+## install
 
-### Windows SmartScreen bloqueia `relativist.exe`
+### windows-smartscreen-blocks-binary
 
-**Sintoma.** Ao rodar o binario baixado, o Windows exibe "Windows protected your PC" ou "unrecognized app".
+**Symptom.** Running the downloaded binary shows "Windows protected your PC" / "unrecognized app".
 
-**Causa.** O binario nao e assinado com um cert EV. SmartScreen flagga executaveis novos com baixa reputacao.
+**Cause.** The binary is unsigned (no EV cert); SmartScreen flags new, low-reputation executables.
 
-**Solucao.** Click em "More info" -> "Run anyway". Alternativamente, buildar localmente com `cargo build --release` — o binario gerado pelo proprio compilador nao dispara SmartScreen.
+**Fix.** Click "More info" -> "Run anyway". Or build locally with `cargo build --release` — a compiler-produced binary does not trip SmartScreen. Tracked as an open UX issue (ROADMAP 2.37-2.39, Tauri GUI + distribution).
 
-Isso esta registrado como UX issue aberto (ver ROADMAP 2.37-2.39 — Tauri GUI + distribution).
-
-### `rustc` nao encontrado ou versao antiga
+### rustc-not-found-or-outdated
 
 ```bash
 rustup update stable
-rustc --version    # MSRV atual esta no Cargo.toml
+rustc --version    # must satisfy MSRV in Cargo.toml
 ```
 
-### Cargo build falha com `link.exe not found` (Windows)
+### linker-not-found-windows
 
-Instale Build Tools do Visual Studio (workload "Desktop development with C++") ou MSYS2 com `mingw-w64`.
+`cargo build` fails with `link.exe not found`. Install Visual Studio Build Tools (workload "Desktop development with C++"), or MSYS2 with `mingw-w64`.
 
-## Execucao local
+## run-local
 
-### `relativist: command not found`
+### command-not-found
 
-Adicione `target/release/` ao PATH, ou rode com path explicito: `./target/release/relativist`.
+Add `target/release/` to `PATH`, or run with an explicit path: `./target/release/relativist`.
 
-### `inspect` mostra `Normal Form: no` apos `reduce`
+### inspect-shows-not-normal-form
 
-Nao deveria acontecer em redes terminantes. Verifique:
+`inspect` reports `Normal Form: no` after `reduce`. Should not happen on terminating nets. Check:
 
-1. Se voce passou `--max-steps <N>` muito baixo em `reduce`.
-2. Se a rede tem ciclos nao-terminantes (fora do escopo do TCC; ver premissa P6).
-3. Se `redex_queue` ficou com itens stale apos um delete de agente (bug — abra issue).
+1. `--max-steps <N>` too low on `reduce`.
+2. Net has non-terminating cycles (out of TCC scope; premise P6).
+3. Stale items in `redex_queue` after an agent delete (bug — file an issue).
 
-### `compute exp` retorna numero errado ou "decode failed"
+### compute-exp-wrong-or-decode-failed
 
-Esperado — `compute exp` resolve corretamente, mas o decoder atual nao caminha DUP ciclico. Ver [L5](../benchmarks/limitations.md#l5). Use `inspect` para confirmar que a estrutura esta correta.
+Expected. `compute exp` reduces correctly, but the current decoder does not walk a cyclic DUP. See [L5](../benchmarks/limitations.md#l5). Use `inspect` to confirm the structure is correct.
 
-## Docker
+## docker
 
-### `docker compose up` nao encontra `data/input.bin`
+### input-bin-not-found
 
 ```bash
-# Garanta que o volume esta montado e o arquivo existe
-ls data/input.bin
+ls data/input.bin    # ensure the volume is mounted and the file exists
 ```
 
-### `docker-compose.yml` monta caminho errado no Windows (Git Bash)
+### windows-git-bash-path-conversion
 
-**Sintoma.** Git Bash converte `/data` para `C:\Program Files\Git\data`, volume nao monta.
+**Symptom.** Git Bash rewrites `/data` to `C:\Program Files\Git\data`; volume fails to mount.
 
-**Solucao.** Exporte `MSYS_NO_PATHCONV=1` antes de `docker compose` quando o comando tiver paths estilo unix:
+**Fix.** Set `MSYS_NO_PATHCONV=1` for `docker compose` commands carrying unix-style paths, or run from PowerShell (no MSYS conversion):
 
 ```bash
 MSYS_NO_PATHCONV=1 docker compose up
 ```
 
-Ou use PowerShell (sem conversao MSYS).
+### coordinator-exits-before-metrics-flush
 
-### Coordinator sai antes de flushar `metrics.json`
+**Symptom.** `metrics.json` missing after `docker compose up --abort-on-container-exit --exit-code-from coordinator`.
 
-**Sintoma.** `metrics.json` ausente apos `docker compose up --abort-on-container-exit --exit-code-from coordinator`.
+**Cause.** `--abort-on-container-exit` SIGKILLs the coordinator as soon as the first worker exits.
 
-**Causa.** O flag `--abort-on-container-exit` SIGKILLa o coordinator assim que o primeiro worker sai.
+**Fix.** Use `docker compose up -d` + `docker wait relativist-coordinator-1` instead. Pattern used by `reproduce_article/scripts/bench_docker_resume2.sh`. See [L7](../benchmarks/limitations.md#l7).
 
-**Mitigacao.** Use `docker compose up -d` + `docker wait relativist-coordinator-1` em vez de `--abort-on-container-exit`. Padrao usado por `reproduce_article/scripts/bench_docker_resume2.sh`. Ver [L7](../benchmarks/limitations.md#l7).
+### docker-desktop-out-of-space
 
-### `docker system prune` travou o Docker Desktop
-
-Reinicie o Docker Desktop. Se o disco encheu (`no space left on device`), rode:
+Restart Docker Desktop. If the disk filled (`no space left on device`):
 
 ```bash
 docker system df
-docker builder prune -af    # Libera cache de build
-docker image prune -af      # Libera imagens nao usadas
+docker builder prune -af    # free build cache
+docker image prune -af      # free unused images
 ```
 
-## TCP / Distribuido
+## tcp-distributed
 
-### Worker conecta mas e rejeitado
+### worker-rejected-on-connect
 
-**Sintoma.** Log do worker: `authentication failed` ou `version mismatch`.
+**Symptom.** Worker log: `authentication failed` or `version mismatch`. Common causes:
 
-**Causas comuns.**
+1. `--auth-token` mismatch between coordinator and worker.
+2. Different binary versions (incompatible wire protocol). Run `relativist --version` on both sides.
+3. `--features zero-copy` enabled on only one side (see [v2-features.md](../guides/v2-features.md)).
 
-1. `--auth-token` nao casa entre coordinator e worker.
-2. Binarios de versoes diferentes (wire protocol incompativel). Rode `relativist --version` nos dois lados.
-3. `--features zero-copy` em um lado so (ver [guia 07](../guides/07-zero-copy.md)).
+### worker-cannot-reach-coordinator
 
-### Worker nao alcanca o coordinator
-
-Teste conectividade em baixo nivel:
+Test low-level connectivity from the worker:
 
 ```bash
-# Do worker para o coordinator:
-nc -vz <COORD_HOST> 9000
-# Esperado: (host) 9000 open
+nc -vz <COORD_HOST> 9000    # expect: (host) 9000 open
 ```
 
-Se timeout: firewall (Windows Defender Firewall, iptables). Libere a porta TCP 9000 (ou a que voce esta usando) no host do coordinator.
+On timeout: firewall (Windows Defender Firewall, iptables). Open TCP 9000 (or your chosen port) on the coordinator host.
 
-### `peak_memory_bytes` ausente no metrics JSON
+### peak-memory-missing-in-metrics
 
-Esperado em Windows/macOS. O campo e Linux-only (via `/proc/self/status`).
+Expected on Windows/macOS. `peak_memory_bytes` is Linux-only (read from `/proc/self/status`).
 
-## Benchmarks
+## memory
 
-### `correct=false` em alguma linha do CSV
+### coordinator-oom-large-sizes
 
-**Pare imediatamente.** Isso e regressao de G1. Acoes:
+The default WSL2 VM has 15 GiB. At 50M agents, bincode v1 uses ~3-4 GB for the serialized partition alone; holding two copies (input + merge) blows the budget. Mitigations:
 
-1. Rode `cargo test` — 690+ testes devem passar.
-2. Veja o `raw/phase1/<bench>.log` (ou `raw/phase2/metrics_*.json`) do config afetado.
-3. Abra issue no repo com o datapoint + log.
+- Raise WSL2 memory (`.wslconfig` on Windows, e.g. `memory=24GB`).
+- Use `--features zero-copy` (SPEC-18 avoids the deserialize copy).
+- Use `--delta-mode` (SPEC-19) — coordinator does not hold the merged net until the end.
 
-### Wall-clock muito maior que esperado
+### worker-swapping-linux
 
-1. Power plan voltou para Balanced? `powercfg /getactivescheme` (Windows).
-2. CPU throttling por calor? Deixe esfriar 30 min.
-3. Carga de fundo (browser, IDE, AV scan)? Ver [v1-local-baseline §1.4](../benchmarks/campaigns/v1-local-baseline.md#14-environment-hygiene-windows-11).
+Check `free -h` + `vmstat 1`. If `si/so` > 0 during a run you are swapping. Add RAM, reduce `workers`, or reduce `size`.
 
-### CV > 0.15 em varios configs
+### frame-cap-exceeded
 
-Maquina tinha carga de fundo. Re-rode Phase 1 em ambiente limpo. Marcar individualmente com `keep` **nao** resolve padrao sistemico. Ver [v1-local-baseline §4.2](../benchmarks/campaigns/v1-local-baseline.md#42-triagem-cv) para triagem.
+`protocol: frame size exceeds limit` (1 GiB cap). A serialized partition exceeded 1 GiB under bincode v1 + CompactSubnet; occurs at stress sizes (50M with w=1/w=2). See [L6](../benchmarks/limitations.md#l6); future mitigation in ROADMAP 2.23 (wire compaction) and [SPEC-18](../specs/SPEC-18-wire-format-v2.md).
 
-### Frame cap excedido (1 GiB)
+## build-tests
 
-Sintoma: `protocol: frame size exceeds limit`. Causa: particao serializada > 1 GiB sob bincode v1 + CompactSubnet. Ocorre em sizes de stress (50M com w=1/w=2). Ver [L6](../benchmarks/limitations.md#l6); mitigacao futura em ROADMAP 2.23 (wire compaction) e [SPEC-18](../../docs/specs/SPEC-18-wire-format-v2.md).
-
-## Memoria
-
-### Coordinator OOM em sizes grandes
-
-WSL2 VM default tem 15 GiB. Em 50M agentes bincode v1 usa ~3-4 GB so de particao serializada — se o coordinator mantem duas copias (entrada + merge), explode.
-
-Mitigacoes:
-
-- Aumente a memoria do WSL2 (`.wslconfig` no Windows, `memory=24GB`).
-- Use `--features zero-copy` se disponivel (SPEC-18 evita a copia do deserialize).
-- Use `--delta-mode` (SPEC-19) — coordinator nao carrega o net mergeado ate o final.
-
-### Worker swappa no Linux
-
-`free -h` + `vmstat 1`. Se `si/so` > 0 durante o benchmark, voce esta swappando. Aumente RAM, reduza `workers`, ou reduza `size`.
-
-## Tests
-
-### `cargo test` falha apos pull de novo branch
+### cargo-test-fails-after-branch-switch
 
 ```bash
 cargo clean
 cargo test
 ```
 
-Se ainda falhar, checar se `Cargo.lock` foi commitado. Para hotfixes, pode precisar regerar: `rm Cargo.lock && cargo build`.
+If it still fails, confirm `Cargo.lock` is committed. For hotfixes you may need to regenerate it: `rm Cargo.lock && cargo build`.
 
-### Teste especifico intermitente
-
-Rode com backtrace completo:
+### flaky-single-test
 
 ```bash
-RUST_BACKTRACE=full cargo test -- --nocapture --test-threads=1 <NOME_DO_TESTE>
+RUST_BACKTRACE=full cargo test -- --nocapture --test-threads=1 <TEST_NAME>
 ```
 
-`--test-threads=1` isola concorrencia; abrir issue se reproduz deterministicamente em single-thread.
+`--test-threads=1` isolates concurrency. File an issue if it reproduces deterministically single-threaded.
 
-## Relatar bug
+## benchmarks
 
-- Anexar: `relativist --version`, `rustc --version`, OS + version, comando completo, output, `raw/` log relevante.
-- Se bug de correctness (G1): incluir o `.bin` do input (ou o comando `generate` que o produziu).
+### correct-false-in-csv
+
+**Stop immediately** — this is a G1 regression. Then:
+
+1. Run `cargo test` — 690+ tests must pass.
+2. Inspect `raw/phase1/<bench>.log` (or `raw/phase2/metrics_*.json`) for the affected config.
+3. File an issue with the datapoint + log.
+
+### wall-clock-too-high
+
+1. Power plan reverted to Balanced? `powercfg /getactivescheme` (Windows).
+2. Thermal throttling? Cool down ~30 min.
+3. Background load (browser, IDE, AV scan)? See [v1-local-baseline §1.4](../benchmarks/campaigns/v1-local-baseline.md#14-environment-hygiene-windows-11).
+
+### high-cv-many-configs
+
+CV > 0.15 across configs means the machine had background load. Re-run Phase 1 clean. Marking single runs `keep` does not fix a systemic pattern. See [v1-local-baseline §4.2](../benchmarks/campaigns/v1-local-baseline.md#42-triagem-cv).
+
+## reporting-a-bug
+
+- Attach: `relativist --version`, `rustc --version`, OS + version, full command, output, relevant `raw/` log.
+- Correctness bug (G1): include the input `.bin` (or the `generate` command that produced it).
 - Issues: [github.com/andrade-filipe/relativist/issues](https://github.com/andrade-filipe/relativist/issues).
