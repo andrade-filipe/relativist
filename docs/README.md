@@ -80,6 +80,7 @@ relevance without opening the file.
 | [operations/docker](operations/docker.md) | Build the image; coordinator/worker + bench via Docker Compose. | docker, docker-compose, scaling, container |
 | [operations/security-observability](operations/security-observability.md) | 3-tier security (token, TLS) + tracing/metrics/health. | security, tls, token, tracing, metrics, prometheus |
 | [MAINTAINER-GITHUB-SETUP](MAINTAINER-GITHUB-SETUP.md) | GitHub web-UI/`gh` steps to do before announcing. | maintainer, github, branch protection, launch |
+| [TESTING](TESTING.md) | Test tiers: fast essential CI gate vs optional integration suite. | testing, ci gate, cargo test, --lib, integration, optional, ignored |
 
 ### Benchmarks & results
 

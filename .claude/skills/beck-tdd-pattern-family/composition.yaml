@@ -1,0 +1,107 @@
+artifact_id: beck-tdd-pattern-family
+artifact_kind: skill
+
+# ===================================================================
+# Framework classification (audience: marketplace aggregator + architect)
+# Per v2 audience matrix — buyer doesn't need this; lives in sidecar.
+# ===================================================================
+framework_classification:
+  tier: discipline
+  skill_contract: discipline-verifiable
+  task_class: decision-coherent
+  concern_layer: engineering-discipline
+  effort_level: L2
+  emitted_by: marketplace-generator
+  emitted_at: 2026-05-22
+  framework_commit: 489231b
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+  # L2 = framework distillation. The SKILL.md body is an original synthesis
+  # of Beck's five TDD pattern families + the selection rubric + the §3.3
+  # stance defense, not a verbatim wrap of any single chapter of REF-0142.
+  # The Money/multi-currency worked example is an original composition that
+  # extends Beck's Part I Money example by adding the §3.3 design-first
+  # handoff at the rate-missing failure mode.
+
+# ===================================================================
+# Source provenance (audience: marketplace listing + attribution display)
+# ===================================================================
+source_provenance:
+  original_author: Kent Beck
+  original_url: https://www.pearson.com/en-us/subject-catalog/p/test-driven-development-by-example/P200000009421
+  upstream_repo: null   # book, not a public repo
+  upstream_path: null
+  license: CC-BY-4.0
+  license_verified_at: 2026-05-22
+  fact_sheet_ref: research/articles/catalog/fact-sheets/REF-0142_2002-dev-fundamentals-beck-test-driven-development-by-example.md
+  our_modifications: |
+    Original framework distillation of Beck (2002) TDD: By Example. The five-
+    family grouping (red-green-refactor cycle / implementation strategies /
+    rhythm discipline / test organization / selection rubric) is the Skill's
+    primary nudge — it consolidates Beck's ~14 named patterns into a single
+    selection rubric keyed on bar state, uncertainty, and step size. The
+    named patterns (Fake It Till You Make It, Triangulation, Obvious
+    Implementation, Baby Steps, One Step Test, Child Test, Test List,
+    Isolated Test, Assert First, red-green-refactor cycle) are Beck's; their
+    grouping into five families is the framework's organizing move.
+
+    The §3.3 stance (tests-as-design-feedback-companion, not tests-as-
+    primary-design-tool) is the framework's positioning in the documented
+    TDD-vs-design-first debate per research/concepts/developer-fundamentals.md
+    §3.3. The Skill explicitly names the alternative-pair (design-first-
+    discipline) and the legacy-rescue companion (feathers-characterization-
+    tests-first) rather than silently adopting Martin's TDD-as-primary stance.
+  attribution_string: "Kent Beck, Test-Driven Development: By Example, Addison-Wesley Professional, 2002."
+
+# ===================================================================
+# Benchmark configuration (per ADR-0007)
+# ===================================================================
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-1
+  scenario_seeding_open_item: true
+  # Empty targets_scenarios is honest: no engineering-discipline scenarios
+  # exist under framework/scenarios/ as of 2026-05-22 (current scenarios:
+  # factual-qa-with-source-citation, multi-step-arithmetic-reasoning,
+  # structured-output-compliance — none probe TDD pattern selection).
+  # Architect Stage-5 should seed a tdd-pattern-selection scenario (e.g.
+  # "given a current test bar state + a Test List + a code sketch, pick the
+  # next pattern from the five families and defend the selection") to enable
+  # B2 — flagged tier-1 because this Skill anchors the §3.3 active debate
+  # and pairs directly with the design-first-discipline alternative-pair.
+
+# ===================================================================
+# Constants declared (v2 — index only; full rationale in badges-draft.yaml)
+# ===================================================================
+constants_declared:
+  - information-hiding-as-decomposition-driver
+  - complexity-is-incremental
+  - code-reading-cost-dominates-write-cost
+  - failure-design-vs-failure-prevention
+  - compact-discipline-emission
+  - essence-vs-accident-distinction
+  - bounded-tool-surface                       # vacuously honored (zero-tool)
+  - typed-tool-contracts-with-feedback-loop    # vacuously honored (zero-tool)
+  - minimal-sufficient-context
+  - observable-agent-traces
+
+# ===================================================================
+# Composition graph (audience: marketplace orchestration discovery)
+# ===================================================================
+composition_graph:
+  depends_on: []
+  extends: null
+  derived_from: knowledge/software-craft/disciplines/beck-tdd-pattern-family.md
+  composes_with:
+    - testing-as-design-feedback             # the umbrella Technique; this Skill is its canonical TDD operationalization
+    - beck-tidy-first-discipline             # complementary Beck discipline: tidy-before-feature vs design-after-green
+    - fowler-refactor-mechanics-family       # the refactor step's named moves catalog
+    - safe-small-step-refactoring            # the small-step envelope at the per-step level
+    - kerievsky-refactor-to-pattern          # refactor-toward-pattern when smell justifies pattern destination
+    - fields-test-design-discipline          # test-code refactoring once tests exist
+    - feathers-characterization-tests-first  # legacy-rescue entry path (compose BEFORE TDD when seams missing)
+  invokes: []
+  alternatives:
+    - design-first-discipline                # the §3.3 alternative-pair: TDD-as-companion vs design-first-as-primary
+
+discovery:
+  keywords: [from-book, testing, refactor, test]
