@@ -84,7 +84,7 @@ The script MUST:
 
 **R11.** Installation via `cargo install --git https://github.com/andrade-filipe/relativist` MUST be supported and documented as a fallback for platforms without precompiled binaries. **(MUST)**
 
-**Note:** This requirement is already satisfied by the current `Cargo.toml` configuration (single binary target, MIT license, repository URL). No code changes required.
+**Note:** This requirement is already satisfied by the current `Cargo.toml` configuration (single binary target, Apache-2.0 license, repository URL). No code changes required.
 
 ### 3.6 Integrity
 
@@ -112,7 +112,7 @@ The script MUST:
 
 **R17.** Windows release executables SHOULD be signed with an Authenticode code signing certificate to suppress SmartScreen warnings automatically. The recommended approach is [SignPath Foundation](https://signpath.org), which provides free code signing certificates for open-source projects hosted on GitHub with an OSI-approved license. Until code signing is implemented, R16 provides the interim solution. **(SHOULD)**
 
-**Note:** SignPath Foundation requirements: OSI-approved license (MIT — satisfied), public GitHub repository (satisfied), MFA enabled on GitHub account (must verify). Application is submitted via signpath.org; approval timeline is days to weeks.
+**Note:** SignPath Foundation requirements: OSI-approved license (Apache-2.0 — satisfied), public GitHub repository (satisfied), MFA enabled on GitHub account (must verify). Application is submitted via signpath.org; approval timeline is days to weeks.
 
 ### 3.10 Linux Native Packages
 

@@ -196,10 +196,25 @@ Relativist is part of a Computer Science thesis (TCC) at Universidade Tiradentes
 - Foster, I., Kesselman, C., Tuecke, S. (2001). *The Anatomy of the Grid*.
 - Arrighi, P. et al. (2024). *Space-time Deterministic Graph Rewriting*. LIPIcs.
 
+## Reproducing the paper
+
+All empirical claims in the thesis are backed by frozen, checksummed data and the
+exact scripts that produced it, isolated under
+[`reproduce_article/`](reproduce_article/) — start at its
+[README](reproduce_article/README.md). The application code keeps evolving; that
+folder is a snapshot pinned to the paper.
+
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Relativist is developed with the **RPI** workflow (Research → Plan → Implement) —
+see [CONTRIBUTING.md](CONTRIBUTING.md), [CODING_STANDARDS.md](CODING_STANDARDS.md),
+and the agent definitions in [`.claude/agents/`](.claude/agents/README.md).
+Community expectations: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). How decisions are
+made: [GOVERNANCE.md](GOVERNANCE.md). Reporting a vulnerability:
+[SECURITY.md](SECURITY.md). What the project should do next:
+[docs/reference/next-steps.md](docs/reference/next-steps.md).
 
 ## License
 
-[MIT](LICENCE)
+Licensed under the [Apache License 2.0](LICENSE) — permissive, with an explicit
+patent grant. See [NOTICE](NOTICE) for attribution.

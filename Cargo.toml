@@ -6,5 +6,5 @@ resolver = "2"
 version = "0.20.0-pre"
 edition = "2021"
 authors = ["Filipe Andrade Nascimento <filipeandrade.work@gmail.com>"]
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/andrade-filipe/relativist"

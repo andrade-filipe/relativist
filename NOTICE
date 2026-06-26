@@ -1,0 +1,11 @@
+Relativist — Distributed Interaction Combinator reducer for Grid Computing
+Copyright 2026 Filipe Andrade Nascimento
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Developed as part of a Computer Science thesis (TCC) at Universidade Tiradentes
+(UNIT), 2026, advised by Yuri Faro Dantas de Sant'Anna. It investigates whether
+Lafont's Interaction Combinators (1997) can serve as a formal model for
+deterministic distributed reduction in Grid Computing.
+
+If you use Relativist in academic work, a citation to the thesis is appreciated.

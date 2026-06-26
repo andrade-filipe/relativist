@@ -1,136 +1,124 @@
 # Contributing to Relativist
 
-Thank you for your interest in contributing to Relativist! This document provides guidelines for contributing to the project.
+Thanks for your interest in Relativist! This project is a research artifact (a
+Computer Science thesis / TCC) that is now open source. Contributions — bug
+reports, fixes, tests, docs, and well-scoped features — are welcome.
 
-## How to Contribute
+Please also read [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md),
+[`CODING_STANDARDS.md`](CODING_STANDARDS.md), and [`GOVERNANCE.md`](GOVERNANCE.md).
 
-### Reporting Bugs
+## Ways to contribute
 
-1. Check the [existing issues](../../issues) to see if the bug has already been reported
-2. If not, open a new issue using the bug report template
-3. Include: steps to reproduce, expected behavior, actual behavior, environment details
+### Report a bug
 
-### Suggesting Features
+1. Search [existing issues](../../issues) first.
+2. Open a new issue with the bug template: steps to reproduce (a minimal
+   `.bin`/`.ic` net or command line is ideal), expected vs. actual behavior, and
+   your environment (OS, Rust version, feature flags).
 
-1. Open an issue using the feature request template
-2. Describe the use case and why the feature would be valuable
-3. Be specific about the expected behavior
+### Suggest a feature
 
-### Submitting Code
+1. Open an issue with the feature template. Describe the use case and why it
+   matters.
+2. For anything that touches the model (the six interaction rules, the
+   partition/merge protocol, the SPEC-01 invariants, or the `reduce_all ≅
+   run_grid` contract), **discuss in the issue before coding** — these are
+   weighed for research integrity, not just code quality (see `GOVERNANCE.md`).
 
-1. Fork the repository
-2. Create a feature branch from the active development branch (`v2-development`, not `main`): `git checkout -b feature/your-feature v2-development`
-3. Follow the **6-stage SDD pipeline** below before any code lands.
-4. Ensure all tests pass on every profile (see "Test floor by profile" below).
-5. Ensure code is formatted: `cargo fmt`
-6. Ensure no lint warnings: `cargo clippy --all-features -- -D warnings`
-7. Commit with clear messages following [conventional commits](https://www.conventionalcommits.org/):
-   - Format: `type(scope): description` (e.g., `feat(partition): add topology-aware strategy`)
-   - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `perf`, `ci`
-   - Scopes: module names (`net`, `reduction`, `partition`, `merge`, `protocol`, `bench`, etc.)
-8. Open a Pull Request against `v2-development` (PRs into `main` come from the `v2-development -> main` integration cadence).
+### Submit code
 
-### 6-stage SDD pipeline (Spec-Driven Development + TDD)
+1. Fork the repo.
+2. Branch from the active development branch (`v2-development`, **not** `main`):
+   `git checkout -b feature/your-feature v2-development`.
+3. Develop using the **RPI workflow** (below).
+4. Keep the three gates green (below) with **zero test regressions**.
+5. Commit with [Conventional Commits](https://www.conventionalcommits.org/):
+   `type(scope): description` — e.g. `feat(partition): add topology-aware
+   strategy`. Types: `feat`, `fix`, `refactor`, `test`, `docs`, `perf`, `ci`,
+   `chore`. Scopes are module names (`net`, `reduction`, `partition`, `merge`,
+   `protocol`, `bench`, …).
+6. Open a PR against `v2-development`. (`main` receives changes via the
+   `v2-development → main` integration cadence.)
 
-Every feature in v2 follows the pipeline below. **No stage can be skipped.** The pipeline state is tracked in `docs/next-steps.md` (active) and historical entries land in `docs/progress.md` once the bundle ships.
+## The workflow: RPI (Research → Plan → Implement)
+
+Relativist replaced its heavyweight Spec-Driven Development pipeline with **RPI**.
+It is lighter and keeps changes focused. The retired SDD process is archived,
+read-only, under [`docs/_archive/`](docs/_archive/).
 
 ```
-1. SPLITTING  (task-splitter)   — break the spec into atomic tasks (<200 LoC each)
-2. TESTS      (test-generator)  — write test specifications (SPEC-style, NOT code yet)
-3. DEV        (developer)       — TDD: RED -> GREEN -> REFACTOR; the only stage that writes Rust
-4. REVIEW     (reviewer)        — code quality + architecture review
-5. QA         (qa)              — adversarial bug hunting, edge cases
-6. REFACTOR   (developer)       — apply review/QA fixes; verify all profiles pass
+1. RESEARCH   — map the affected code + the relevant specs/docs.        -> docs/rpi/RESEARCH.md
+2. PLAN       — write a surgical, testable plan (incl. how you verify). -> docs/rpi/PLAN.md
+3. IMPLEMENT  — make the change TDD-style; run all gates green.         -> src/, tests/
+   then update any living docs (a spec invariant, a reference page, ROADMAP).
 ```
 
-The `sdd-pipeline` agent is the orchestrator — invoke it to see the current stage and next action. Specs MUST be written before implementation (Theory -> Specs -> Code) and ALWAYS in English; the v1 implementation is frozen on `v1-feature-complete` and v2 work happens on `v2-development`.
+You can run this manually, or use the three Claude Code agents in
+[`.claude/agents/`](.claude/agents/) (`researcher`, `planner`, `implementer`).
+Either way: research before planning, plan before coding, verify before opening
+the PR. `docs/rpi/RESEARCH.md` and `docs/rpi/PLAN.md` are disposable working
+notes (gitignored), not deliverables.
 
-For full detail (when each agent runs, how `docs/spec-reviews/` Round 1/2/3 interact, the git workflow, and the progress.md/next-steps.md split) see [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md).
+## The three gates (CI enforces these)
 
-### Test floor by profile
-
-`cargo test` must pass on every feature profile before a PR can land. The floor counts below are the minimum the v2-development branch ships with as of D-012 (2026-05-05); no PR may regress any of them.
-
-| Profile                                              | Minimum tests passing | What it covers                       |
-|------------------------------------------------------|-----------------------|--------------------------------------|
-| `cargo test`                                         | **1798**              | Default features                     |
-| `cargo test --features zero-copy`                    | **1842**              | Adds rkyv archive tests              |
-| `cargo test --features streaming-no-recycle`         | **1789**              | SPEC-21 R37b compile-time gate       |
-| `cargo test --release`                               | **1740**              | Release-build behavior               |
-| `cargo test` on `v1-feature-complete` (inviolable)   | **690**               | Frozen v1; never modified            |
-
-## Development Setup
-
-### Prerequisites
-
-- Rust (latest stable, via [rustup](https://rustup.rs/))
-- Docker (optional, for distributed testing)
-
-### Building
+Every PR must pass, with no regression in test counts:
 
 ```bash
+cargo test                                   # all tests green
+cargo clippy --all-features -- -D warnings   # no warnings
+cargo fmt --check                            # formatted
+```
+
+The frozen v1 floor (**690** tests on `v1-feature-complete`) must never drop, and
+the current `v2-development` baseline must not regress. Adding code means adding
+tests — the count goes up, never silently down. Full rules live in
+[`CODING_STANDARDS.md`](CODING_STANDARDS.md).
+
+## Development setup
+
+```bash
+# Prerequisites: Rust (stable, via rustup); Docker optional for distributed tests
 cargo build
 cargo test
-cargo clippy
+cargo clippy --all-features -- -D warnings
 cargo fmt --check
+
+# Run locally (simulated distribution)
+cargo run --release -- local --workers 4 -i test.bin -o out.bin
+
+# Distributed (two terminals)
+cargo run --release -- coordinator --workers 2 --port 9000 -i test.bin -o out.bin
+cargo run --release -- worker --coordinator localhost:9000
 ```
 
-### Running
+## Specs and invariants
 
-```bash
-# Local mode (simulated distribution)
-cargo run -- local --workers 4 --net examples/ep_annihilation.bin
+The 28 specs in [`specs/`](specs/) document the design. Under RPI they are
+**reference**, not a per-change gate — but they remain the source of truth for
+the formal claims. The load-bearing invariants are in
+[`specs/SPEC-01-invariantes.md`](specs/SPEC-01-invariantes.md):
 
-# Distributed mode
-cargo run -- coordinator --workers 4 --port 9000 --net examples/ep_annihilation.bin
-cargo run -- worker --coordinator localhost:9000
-```
+- **T1–T7** — theoretical invariants from Interaction Combinator theory
+- **D1–D6** — distribution invariants for correct partitioned reduction
+- **I1–I5** — implementation invariants for data-structure correctness
+- **G1** — the fundamental property: `reduce_all(net) ≅ run_grid(net, n)`
 
-## Architecture
+Any change that can affect these must keep the tests that verify them green, and
+should say which invariant it touches.
 
-Relativist follows a **Spec Driven Development** approach. Before writing code, read the relevant spec in `specs/`:
+## Performance
 
-| Module | Spec | Description |
-|--------|------|-------------|
-| Net types | SPEC-02 | Agent, Port, Wire, Net representation |
-| Reduction | SPEC-03 | 6 interaction rules, reduce_all loop |
-| Partition | SPEC-04 | Split, merge, FreePort, boundary handling |
-| Grid cycle | SPEC-05 | Coordinator loop, border redex resolution |
-| Protocol | SPEC-06 | TCP wire protocol, message framing |
-| Deployment | SPEC-07 | CLI, configuration, lifecycle |
-| Testing | SPEC-08 | Test strategy, 103 specified tests |
-| Benchmarks | SPEC-09 | 9 benchmarks, metrics, methodology |
+Changes to core modules (`net`, `reduction`, `partition`, `merge`) should not
+regress benchmark performance meaningfully. The frozen evidence and the scripts
+to reproduce it live in [`reproduce_article/`](reproduce_article/).
 
-## Code Style
+## Review
 
-- Follow Rust idioms and conventions
-- Use `rustfmt` defaults
-- No `unsafe` without explicit justification and review
-- All public APIs must have doc comments
-- Prefer explicitness over cleverness
+This is a solo-maintained project; reviews are best-effort. Bug fixes are looked
+at sooner than features. All PRs need green CI (the three gates above on every
+feature profile). Thank you for contributing!
 
-## Performance Expectations
+## License of contributions
 
-Changes to core modules (`net`, `reduction`, `partition`, `merge`) must not regress benchmark performance by more than 5%. Run `cargo run --release -- bench` before and after your changes to verify.
-
-## Review Process
-
-- Bug fixes: response within 48 hours
-- Features: response within 1 week
-- All PRs require passing CI (`cargo test` on every profile listed above, `cargo clippy --all-features -- -D warnings`, `cargo fmt --check`)
-- Changes to specs require adversarial review (see [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) for the 3-round spec review pipeline: critic Round 1 -> defender Round 2 -> closure Round 3)
-
-## Specs and Invariants
-
-The project is built around formal invariants (see `specs/SPEC-01-invariantes.md`):
-
-- **T1-T7**: Theoretical invariants from Interaction Combinator theory
-- **D1-D4**: Distribution invariants for correct partitioned reduction
-- **I1-I5**: Implementation invariants for data structure correctness
-- **G1**: The fundamental property: `reduce_all(net) == run_grid(net, n)`
-
-Every change must preserve these invariants. Tests verify them.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions are licensed under the
+project's [Apache License 2.0](LICENSE).

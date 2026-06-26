@@ -1,24 +1,45 @@
 # Changelog
 
 All notable changes to Relativist are recorded here. The narrative is
-**condensed per release** — for the full bundle-level history, see
-`docs/progress.md`. For active and future work, see
-`docs/next-steps.md`.
+**condensed per release** — for the full bundle-level history, see the
+frozen `docs/_archive/progress.md`. For future work, see
+`docs/reference/next-steps.md`.
 
-The format is loosely inspired by [Keep a Changelog][1] but adapted to
-the project's bundle-driven development model (each `D-NNN` bundle is
-a discrete unit of work that goes through the 6-stage SDD pipeline).
-Versioning follows [Semantic Versioning][2] from v0.20.0-pre.1 onward;
-earlier v0.x releases predate the formal version policy.
+The format is loosely inspired by [Keep a Changelog][1]. Historical
+entries below refer to the `D-NNN` bundles of the original Spec-Driven
+Development process (now retired in favour of the lighter **RPI**
+workflow — see `CONTRIBUTING.md`). Versioning follows
+[Semantic Versioning][2] from v0.20.0-pre.1 onward; earlier v0.x
+releases predate the formal version policy.
 
 [1]: https://keepachangelog.com/en/1.1.0/
 [2]: https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
-Active queue tracked in `docs/next-steps.md`. Highlights of work
-that landed on `v2-development` after `v0.20.0-pre.1` will be summarised
-here as bundles close.
+Future work tracked in `docs/reference/next-steps.md`.
+
+### Open-source launch readiness (2026-06)
+
+- **Relicensed from MIT to Apache-2.0** (`LICENSE`, `NOTICE`). The author is the
+  sole copyright holder, so the relicense is clean. Apache-2.0 adds an explicit
+  patent grant and termination clause while remaining OSI-permissive.
+- **Workflow change:** retired the Spec-Driven Development pipeline in favour of
+  **RPI** (Research → Plan → Implement). New `.claude/agents/` (researcher,
+  planner, implementer), new `CODING_STANDARDS.md`, rewritten `CONTRIBUTING.md`.
+  The 12 SDD agents and all per-bundle SDD artifacts are frozen, read-only, under
+  `docs/_archive/`.
+- **Reproducibility consolidated:** frozen benchmark evidence and the scripts that
+  produced it moved to a reserved `reproduce_article/` folder with its own README,
+  claim→evidence map, and reproducibility table.
+- **Governance added:** `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1),
+  `GOVERNANCE.md`, `SECURITY.md`; `docs/MAINTAINER-GITHUB-SETUP.md` for the
+  GitHub-side configuration.
+- **Hygiene:** hardened `.gitignore`/`.gitattributes` (LF-pinned scripts), removed
+  build/log junk, rewrote `docs/INDEX.md` for the lean layout. No source-code or
+  test changes — the test floor is unaffected.
+
+### Added (D-014, infrastructure for the stress-curve campaign)
 
 ### Added (D-014, infrastructure for the stress-curve campaign)
 
