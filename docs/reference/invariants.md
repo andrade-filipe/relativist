@@ -152,7 +152,7 @@ senao:                                          Net densa
 
 `effective_arena_size` mede a arena que o caminho denso **realmente alocaria** (`vec![None; max_live_id + 1]`), nao o upper bound do planejamento. Empiricamente: o regression desapareceu sem reintroduzir o pathology M5 que motivou o threshold (R22a documenta o mecanismo de fragmentacao `next_id` que ainda dispara o threshold corretamente).
 
-Closure log: [`docs/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md). Consumidor: [guia 10-arena-management.md](../guides/10-arena-management.md) §5.
+Closure log: [`docs/_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md). Consumidor: [guia 10-arena-management.md](../guides/10-arena-management.md) §5.
 
 ## Ver tambem
 

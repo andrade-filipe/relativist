@@ -357,7 +357,7 @@ relativist-axis1 worker \
 
 ### 5.3 Loop de campanha (4 configs × 4 worker counts × 10 reps = 160 runs por bench)
 
-Driver shell esqueletico (a versao real esta em `scripts/bench_phase3_locked.sh`, a escrever; o esqueleto abaixo e o contrato funcional):
+Driver shell esqueletico (a versao real esta em `reproduce_article/scripts/bench_phase3_locked.sh`, a escrever; o esqueleto abaixo e o contrato funcional):
 
 ```bash
 #!/usr/bin/env bash
@@ -530,7 +530,7 @@ Em redes pequenas (<100 KB de particao), o ganho e marginal e pode ser dentro do
 
 Por volume, o texto detalhado da orquestracao (script SSH de ~400 linhas, Ansible alternativo, CV triage, pos-campanha) fica versionado em:
 
-- **Driver shell:** `scripts/bench_phase3_locked.sh` (a escrever; comparte estrutura com `reproduce_article/scripts/bench_docker_v2.sh`).
+- **Driver shell:** `reproduce_article/scripts/bench_phase3_locked.sh` (a escrever; comparte estrutura com `reproduce_article/scripts/bench_docker_v2.sh`).
 - **Aggregator:** `scripts/aggregate_phase3.py` (a escrever; analogo do parser de metrics em `bench_docker_v2.sh`).
 - **Schema de saida:** deve bater byte-por-byte com `summary.csv` do baseline canonico v2 — mesmo header (16 colunas), mesma ordem, mesma precisao numerica. As colunas `compute_time_secs`, `network_time_secs`, `merge_time_secs`, `mips_mean` precisam estar populadas (D-012 instrumentation).
 

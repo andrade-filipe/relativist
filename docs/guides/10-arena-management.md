@@ -121,7 +121,7 @@ Sob workloads "M5-like" (CON-DUP-dominado, free-list disabled, fragmentacao de `
 
 A regra e **build-time only** (R22 closes SC-023): ela e avaliada **uma vez** na entrada de `build_subnet`. Crescimento de arena durante a reducao local nao re-checa o threshold; isso e governado por SPEC-02 R11 + SPEC-22 R3/R4 (free-list-first).
 
-Detalhes empiricos no closure log [`docs/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md).
+Detalhes empiricos no closure log [`docs/_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md).
 
 ### Forcar caminho dense quando o threshold pediria sparse
 
@@ -168,4 +168,4 @@ Persisted v1/v2 `.bin` files (ex.: `reproduce_article/results/locked/v1_local_ba
 - [SPEC-22 v2.4](../../specs/SPEC-22-arena-management.md) — especificacao completa com todas as amendments do D-011 (R22 + R22a + R30 + §3.8 A9-A11).
 - [09-streaming-generation.md](09-streaming-generation.md) — SPEC-21 streaming, complementar: a interacao R10b/c com streaming e o que torna o threshold relevante na pratica.
 - [08-elastic-grid.md](08-elastic-grid.md) — SPEC-20 elastic grid, complementar: ARG-006 mixed-trace recoverability sob departure depende de `RecyclePolicy::DisableUnderDelta` para fechar o caso delta-mode.
-- [`docs/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md) — closure log do D-011 fix do threshold.
+- [`docs/_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md) — closure log do D-011 fix do threshold.
