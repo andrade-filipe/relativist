@@ -57,7 +57,7 @@ socket2 = { version = "0.5", features = ["all"] }
 rayon = "1"
 
 # Random number generation (SPEC-13 R11, SPEC-10 R9)
-rand = "0.8"
+rand = "0.9"
 
 # Arbitrary-precision unsigned integers (SPEC-27 v3 §2 BigUint definition).
 # Used by `horner_oracle::horner_serial` and `biguint_readback::decode_biguint`
@@ -84,7 +84,7 @@ axum = { version = "0.8", optional = true }
 
 # OpenTelemetry (SPEC-11 — optional, SPEC-13 R12/R37)
 opentelemetry = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.28", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
 
 # Zero-copy archive (SPEC-18 §3.5 R20-R27, item 2.24 — optional, opt-in)
 # `bytecheck` enables the safe `rkyv::access` validating API (R24 step 3 mandates it).
