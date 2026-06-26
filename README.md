@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="assets/relativist_logo.png" alt="Relativist" width="640">
+
 # Relativist
 
 **Distributed Interaction Combinator reducer for Grid Computing**
+
+*Reduce a graph-rewriting computation across many machines and get the exact same answer one machine would — guaranteed by strong confluence, not by coordination.*
+
+[![CI](https://github.com/andrade-filipe/relativist/actions/workflows/ci.yml/badge.svg)](https://github.com/andrade-filipe/relativist/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-catalog-success.svg)](docs/README.md)
+
+</div>
 
 Relativist is a Rust implementation of [Lafont's Interaction Combinators](https://doi.org/10.1016/S0890-5401(97)90136-X) (1997) with native support for distributed reduction across a grid of machines. It leverages the **strong confluence** property of Interaction Combinators to guarantee that distributed reduction produces the exact same result as sequential reduction, regardless of partitioning strategy or execution order.
 
@@ -9,7 +21,7 @@ Relativist is a Rust implementation of [Lafont's Interaction Combinators](https:
 - **Deterministic distributed reduction** — Strong confluence ensures the result is identical whether computed on 1 machine or 8
 - **Zero coordination overhead for correctness** — Workers reduce independently; only boundary redexes require cross-node resolution
 - **Formally specified** — Every module has a detailed spec with invariants, requirements, and Rust type signatures
-- **TDD from specs** — 1798 default / 1842 zero-copy / 1789 streaming-no-recycle / 1740 release tests on `develop` (v1 inviolable floor: 690 on `v1-feature-complete`); 13 benchmarks across 3 workload profiles
+- **Test-driven (enforced)** — built test-first; ~1700 library unit tests gate every PR via `cargo test --lib` (incl. ~90 `run_grid`/G1 tests), with an optional integration suite on top. See [docs/TESTING.md](docs/TESTING.md). v1 inviolable floor: 690 on `v1-feature-complete`.
 
 ## Architecture
 
