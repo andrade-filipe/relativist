@@ -1,3 +1,14 @@
+---
+title: Documentation catalog
+summary: The keyword-searchable entry point to all Relativist docs, with by-category and by-module cross-indexes.
+keywords: [catalog, documentation, index, navigation, docs, keyword search, by module, frontmatter]
+modules: []
+specs: []
+audience: [user, contributor, llm, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Relativist documentation — catalog
 
 The single entry point to Relativist's documentation, built for fast retrieval by both humans and

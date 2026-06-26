@@ -15,7 +15,7 @@ A walkthrough that uses **Horner's method** as a concrete probe to show that an
 IC net reduces to the **same numerical result** regardless of strategy —
 sequential (`reduce_all`, in-process) or distributed (BSP over W parallel
 workers). That invariance is a direct witness of property **G1 (Fundamental
-Property)** from [SPEC-01](../../specs/SPEC-01-invariantes.md), itself derived
+Property)** from [SPEC-01](../specs/SPEC-01-invariantes.md), itself derived
 from Lafont's strong confluence (1997).
 
 For the encoder/decoder flags see the [CLI reference](../reference/cli.md#compute);
@@ -238,7 +238,7 @@ Inputs **outside** the envelope (degree >= 3, or degree-2 with `c2 >= 2`, or
 `Ok` with a numerically wrong value. The reduction is still correct and the
 `horner_serial` oracle still produces the right number — only the readback is
 refused. Closing this gap (arbitrary degree, `c1 > 1025`) is future work via
-Mackie/Pinto shared-form readback ([SPEC-27](../../specs/SPEC-27-encoder-decoder-api.md) §5.1).
+Mackie/Pinto shared-form readback ([SPEC-27](../specs/SPEC-27-encoder-decoder-api.md) §5.1).
 
 ## decode a saved net
 
@@ -260,8 +260,8 @@ target/release/relativist compute --codec horner --input '<JSON>' [--workers N]
 
 ## cross-references
 
-- **Property:** [SPEC-01](../../specs/SPEC-01-invariantes.md) (G1, Fundamental Property)
-- **Codec API:** [SPEC-27](../../specs/SPEC-27-encoder-decoder-api.md) (HornerCodec)
+- **Property:** [SPEC-01](../specs/SPEC-01-invariantes.md) (G1, Fundamental Property)
+- **Codec API:** [SPEC-27](../specs/SPEC-27-encoder-decoder-api.md) (HornerCodec)
 - **Argument:** `discussoes/argumentos/ARG-001-confluencia-preserva-determinismo.md` (P1-P6)
 - **Church arithmetic guide:** [church-arithmetic](../guides/church-arithmetic.md)
 - **CLI reference:** [compute](../reference/cli.md#compute), [decode](../reference/cli.md#decode), [encoders](../reference/cli.md#encoders)

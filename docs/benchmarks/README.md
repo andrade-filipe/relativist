@@ -22,10 +22,10 @@ Esta pasta documenta a suite de benchmarks do Relativist e as campanhas cientifi
 | [phase-2-docker.md](phase-2-docker.md) | Phase 2 — `tcp_localhost` via Docker, 400 datapoints |
 | [phase-3-lan.md](phase-3-lan.md) | Phase 3 — `tcp_network` em LAN real (pendente) |
 | [limitations.md](limitations.md) | L1–L7: limitacoes historicas e seus status |
-| [pipeline.md](pipeline.md) | Pipeline completa `generate → reduce/local → inspect` |
+| [pipeline.md](../_archive/benchmarks-historical/pipeline.md) | Pipeline completa `generate → reduce/local → inspect` |
 | [campaigns/v1-local-baseline.md](campaigns/v1-local-baseline.md) | Tutorial: reproduzir a baseline congelada |
-| [campaigns/v1-stress.md](campaigns/v1-stress.md) | Tutorial: rodar a campanha de stress (sizes maiores) |
-| [campaigns/church-sum-of-squares.md](campaigns/church-sum-of-squares.md) | Demo aritmetica `Σ i²` de ponta a ponta |
+| [campaigns/v1-stress.md](../_archive/benchmarks-historical/v1-stress.md) | Tutorial: rodar a campanha de stress (sizes maiores) |
+| [campaigns/church-sum-of-squares.md](../_archive/benchmarks-historical/church-sum-of-squares.md) | Demo aritmetica `Σ i²` de ponta a ponta |
 | [campaigns/stress-curve.md](campaigns/stress-curve.md) | D-014 stress-curve campaign — N up to 10⁹ via `MemoryProbe` + `StopRule` |
 
 ## `bench` — Suite de Benchmarks
@@ -69,7 +69,7 @@ relativist bench [OPCOES]
 | `church_add`           | B      | Adicao Church numeral                    |
 | `church_mul`           | B      | Multiplicacao Church numeral             |
 | `cascade_cross`        | C      | Cascata CON-DUP cross-partition          |
-| `church_sum_of_squares`| B      | Demo aritmetica `Σ i²` ([ver campanha](campaigns/church-sum-of-squares.md)) |
+| `church_sum_of_squares`| B      | Demo aritmetica `Σ i²` ([ver campanha](../_archive/benchmarks-historical/church-sum-of-squares.md)) |
 
 ## Exemplos de invocacao
 

@@ -22,7 +22,7 @@ relativist compute <OPERATION> <A> <B> [--workers N]
 
 Prerequisite: you know `relativist local` ([local-grid](local-grid.md)), because
 `compute --workers N` runs the in-process grid internally. For the formal
-encoding see [SPEC-14](../../specs/SPEC-14-encoding.md); for IC theory see
+encoding see [SPEC-14](../specs/SPEC-14-encoding.md); for IC theory see
 [interaction-combinators](../theory/interaction-combinators.md); for every flag
 see the [CLI reference](../reference/cli.md#compute).
 

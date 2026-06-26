@@ -74,7 +74,7 @@ relativist inspect -i data/output.bin
 docker compose down --remove-orphans
 ```
 
-> Em campanhas de stress ou com coordinator demorado para flushar metrics, use `docker compose up -d` + `docker wait` em vez de `--abort-on-container-exit`. Veja [campaigns/v1-stress.md](campaigns/v1-stress.md) e o item **L7** em [limitations.md](limitations.md).
+> Em campanhas de stress ou com coordinator demorado para flushar metrics, use `docker compose up -d` + `docker wait` em vez de `--abort-on-container-exit`. Veja [campaigns/v1-stress.md](../_archive/benchmarks-historical/v1-stress.md) e o item **L7** em [limitations.md](limitations.md).
 
 ## Retomar uma campanha parcial
 
