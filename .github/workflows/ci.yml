@@ -87,3 +87,19 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+  # Supply-chain advisory scan (RustSec). Runs in PARALLEL with `check`, so it
+  # does not slow the essential gate. Informational: do NOT add this job's check
+  # as a required status check — a new upstream advisory is independent of a PR's
+  # code and should not block unrelated work. Dependabot opens the fix PRs.
+  audit:
+    name: Security audit (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: cargo audit
