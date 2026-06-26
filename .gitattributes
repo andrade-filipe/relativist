@@ -5,3 +5,17 @@
 reproduce_article/results/locked/** text eol=lf
 reproduce_article/results/locked/**/*.json binary
 reproduce_article/results/locked/**/*.bin binary
+
+# Cross-platform line-ending policy.
+# Shell and Python scripts MUST stay LF — CRLF makes them fail on Linux
+# (`bad interpreter: /usr/bin/env bash^M`). Other text types are pinned to LF
+# so the repository is byte-consistent regardless of a contributor's
+# core.autocrlf setting.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.rs   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.bin  binary
