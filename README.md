@@ -186,12 +186,12 @@ Summary only — full list with status and remediation in [docs/benchmarks/limit
 
 - **Researchers** studying Interaction Combinators, Interaction Nets, or distributed graph rewriting
 - **Grid computing practitioners** exploring deterministic distributed computation models
-- **Students** learning Spec-Driven Development, TDD from specs, or distributed systems
+- **Students** learning test-driven development, distributed systems, or formal models of computation
 - **HVM/Bend community** curious about distributed IC reduction beyond shared memory
 
 ## Research Context
 
-Relativist is part of a Computer Science thesis (TCC) at Universidade Tiradentes (UNIT), investigating whether Interaction Combinators can serve as a formal model for distributed reduction in Grid Computing.
+Relativist is part of a Computer Science thesis (TCC) at Universidade Tiradentes (UNIT), investigating whether Interaction Combinators can serve as a formal model for distributed reduction in Grid Computing. The published article (PT-BR original + AI English translation) is in [`docs/article_read_only/`](docs/article_read_only/README.md).
 
 **Research question:** Do the strong confluence and locality properties of Lafont's Interaction Combinators, combined with a structure-preserving protocol, allow building a distributed reduction model for Grid Computing where the result is deterministic regardless of work order and distribution, for terminating nets?
 
