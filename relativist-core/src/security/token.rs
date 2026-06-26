@@ -7,7 +7,7 @@
 
 use base64::Engine;
 use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::TryRngCore;
 use subtle::ConstantTimeEq;
 
 use super::error::TokenError;
@@ -27,9 +27,16 @@ impl std::fmt::Debug for AuthToken {
 
 impl AuthToken {
     /// Generate a new random token using a CSPRNG (SPEC-10 R9).
+    ///
+    /// Uses the OS CSPRNG (`OsRng`) via rand 0.9's fallible `TryRngCore`
+    /// API. A failure here means the operating system could not provide
+    /// entropy — an unrecoverable condition under which minting an auth
+    /// token would be unsafe, so we panic rather than emit a weak token.
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
+        OsRng
+            .try_fill_bytes(&mut bytes)
+            .expect("OS CSPRNG (OsRng) must be available to mint auth tokens");
         Self(bytes)
     }
 
