@@ -83,7 +83,7 @@ prometheus-client = { version = "0.23", optional = true }
 axum = { version = "0.8", optional = true }
 
 # OpenTelemetry (SPEC-11 — optional, SPEC-13 R12/R37)
-opentelemetry = { version = "0.28", optional = true }
+opentelemetry = { version = "0.32", optional = true }
 opentelemetry_sdk = { version = "0.28", optional = true }
 
 # Zero-copy archive (SPEC-18 §3.5 R20-R27, item 2.24 — optional, opt-in)
