@@ -40,9 +40,11 @@ phase's noise.
 
 1. **Research** — invoke `researcher` with the high-level goal. It writes `docs/rpi/RESEARCH.md`.
 2. **Reset context**, then invoke `planner`. It reads the research and writes `docs/rpi/PLAN.md`.
-3. **Reset context**, then invoke `implementer`. It executes the plan and runs the full
-   verification suite (`cargo test` / `clippy` / `fmt`, plus the `reduce_all ≅ run_grid` invariant
-   where relevant).
+3. **Reset context**, then invoke `implementer`. It executes the plan **test-first (TDD is
+   mandatory)** — failing test → code → refactor — and runs the gate (`cargo fmt --check`,
+   `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --lib`), plus the
+   `reduce_all ≅ run_grid` invariant where relevant. Core behavior goes in a library unit test
+   (see `docs/TESTING.md`).
 4. **Update the living docs** for anything that changed (a spec invariant, a reference page, the
    ROADMAP), then start the next cycle.
 

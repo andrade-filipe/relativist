@@ -11,28 +11,26 @@ Relativist is a distributed Interaction Combinator reducer for Grid Computing, w
 
 - **v1:** frozen on branch `v1-feature-complete` (tag `v0.10.0-bench`). DO NOT modify.
 - **v2:** active development on branch `develop`.
-- **Tests (post-D-012, 2026-05-05):**
-  - `cargo test`: 1798 default
-  - `cargo test --features zero-copy`: 1842
-  - `cargo test --features streaming-no-recycle`: 1789
-  - `cargo test --release`: 1740 (compiles and runs after TASK-0617 + D-012 REFACTOR)
-  - v1 inviolable floor: 690 (frozen on `v1-feature-complete`).
+- **Branching:** GitFlow-lite — `main` (release) + `develop` (integration) + `v1-feature-complete` (frozen archive). PR-only, enforced by branch protection + the `branch-policy` check. See `CONTRIBUTING.md`.
+- **Tests:** the **required CI gate** is `cargo test --lib` (~1700 library unit tests, incl. ~90 `run_grid`/G1 tests). The full `cargo test` (integration: example codecs, bench, e2e) is the **optional tier** (extended-tests.yml / local). v1 inviolable floor: **690** on `v1-feature-complete`. **TDD is mandatory** (test-first). Tiers: `docs/TESTING.md`.
 - **Specs:** 28 specs (SPEC-00 through SPEC-27) in `docs/specs/`. v1 implements SPEC-00..16; v2 adds SPEC-17..27 (transport abstraction, wire format v2, delta protocol, elastic grid, streaming, arena, compact memory, WAN, recipe gen, GUI, encoder API).
-- **Benchmarks:** 4490 executions, 0 correctness failures (Phase 1 + Phase 2 frozen at v1 baseline)
+- **Benchmarks:** frozen evidence in `reproduce_article/` (DO NOT modify).
 
 ## Build & Test
 
 ```bash
-cargo test                                    # run all tests (1798+ on develop; 690 floor on v1-feature-complete)
-cargo test --features zero-copy               # 1842+
-cargo test --features streaming-no-recycle    # 1789+
-cargo test --release                          # 1740+ (post-TASK-0617)
-cargo clippy --all-features -- -D warnings    # lint (must be clean)
-cargo fmt --check                             # formatting (must pass)
-cargo build --release                         # release build
+# Essential gate — what CI requires; run before every push:
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib                              # ~1700 library unit tests (engine + G1)
+
+# Optional / full:
+cargo test                                    # + integration tier (slow: Horner ~256s, bench, e2e)
+cargo build --release
 ```
 
-All three checks must pass before any commit.
+Toolchain pinned to **1.96.0** (`rust-toolchain.toml`) so local clippy/fmt match CI exactly.
+Enable the local gate once: `git config core.hooksPath .githooks` (pre-push runs fmt+clippy+`--lib`).
 
 ## Module Structure (SPEC-13)
 
@@ -47,7 +45,7 @@ src/
   security/      # SPEC-10: auth tokens, TLS — feature-gated
   observability/  # SPEC-11: tracing, metrics, health — feature-gated
   io/            # SPEC-12: formats (binary, IC text), generators
-  encoding/      # SPEC-14: Church numerals (add, mul)
+  encoding/      # SPEC-14/27: Church numerals + Encoder/Decoder/Codec API (Horner = example codec)
   bench/         # SPEC-09: benchmark suite, profiles
   error.rs       # thiserror error types
   lib.rs, main.rs
@@ -101,10 +99,12 @@ frozen, read-only, under [`docs/_archive/sdd-agents/`](docs/_archive/sdd-agents/
 
 ## Key Files
 
+- `CONTRIBUTING.md` — workflow (RPI + **mandatory TDD**), GitFlow-lite branch model, the gate
 - `CODING_STANDARDS.md` — the code rules CI enforces
-- `.claude/agents/README.md` — the RPI workflow
+- `docs/TESTING.md` — the two test tiers (essential `--lib` gate vs optional integration)
+- `.claude/agents/README.md` — the RPI workflow; `.claude/skills/doc-curator` + `.claude/agents/doc-catalog` keep docs LLM-grade; `.claude/skills/beck-tdd-pattern-family` for TDD
+- `docs/README.md` — master documentation **catalog** (keyword-searchable entry point)
 - `docs/specs/` — 28 formal specifications (ENGLISH only); reference under RPI, not a per-change gate
-- `docs/README.md` — master documentation index (entry point for navigation)
 - `docs/roadmap.md` — v2+ features, break-even analysis (section 2.40)
 - `docs/reference/next-steps.md` — what the software should do next (for contributors)
 - `reproduce_article/` — frozen benchmark evidence + reproduction scripts (DO NOT modify the data)
@@ -112,9 +112,9 @@ frozen, read-only, under [`docs/_archive/sdd-agents/`](docs/_archive/sdd-agents/
 
 ## v2 Development Rules
 
-1. All work on `develop` branch (or feature branches from it)
-2. Every change must pass all 690 v1 tests (floor) plus the current v2 baseline — zero regression
+1. Branch from `develop`; open a PR **into `develop`** (GitFlow-lite, enforced by `branch-policy`). Only `develop`/`release/*`/`hotfix/*` may target `main`.
+2. **TDD: failing test first** (red → green → refactor). Core/engine/invariant behavior → a **library unit test** (the `cargo test --lib` gate). The 690 v1 floor never drops; the gate stays green (fmt + clippy + `--lib`).
 3. New features follow roadmap.md priorities
-4. Every change follows the RPI loop (Research → Plan → Implement → update docs)
+4. Every change follows the RPI loop (Research → Plan → Implement → **update the living docs**, per `doc-curator`)
 5. Theory → design → code; cite a spec/invariant when a change touches one (no mandatory new spec per change)
 6. Specs and code are ALWAYS in English
