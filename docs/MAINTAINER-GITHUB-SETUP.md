@@ -96,42 +96,72 @@ merge."
 
 ### 4.3 Protect `main` AND `develop` (rulesets)
 
-**Settings → Rules → Rulesets → New branch ruleset** (modern; or **Settings →
-Branches** classic). Create one targeting `main` and one targeting `develop` with:
+**Settings → Branches** (classic protection) or **Settings → Rules → Rulesets**.
+Both `main` and `develop` carry the **same** protection (applied 2026-06-26):
 
 - ✅ **Require a pull request before merging** (no direct pushes).
-  - ✅ Require **1 approval**; ✅ **Require review from Code Owners** (uses
-    `.github/CODEOWNERS`); ✅ Dismiss stale approvals on new commits.
-- ✅ **Require status checks to pass** + **Require branches up to date**. Select, once
-  they've run at least once (§5): the CI jobs (`ci`, docker/bench smoke as desired)
-  **and `branch-policy`** ← this is the GitFlow gate.
+  - ✅ Require **1 approval**. Because GitHub forbids a PR author from approving
+    their own PR, this means **no collaborator can merge their own PR** — a second
+    person must approve first. Goal: *only the admin can self-accept* (next bullet).
+  - ✅ **Dismiss stale approvals** on new commits; ✅ **Require approval of the most
+    recent push** (`require_last_push_approval`) — a post-approval commit re-opens review.
+  - ❌ **Code-owner review NOT required.** `.github/CODEOWNERS` is `* @andrade-filipe`
+    only, so requiring it would **deadlock the maintainer's own PRs** (he is the sole
+    owner and can't self-approve). Revisit only after adding co-owners (e.g. `yurifarod`).
+- ✅ **Require status checks to pass** + **Require branches up to date** (`strict`).
+  The real check contexts are **`Check, Lint, Test, Build`** (the `ci` job) and
+  **`validate`** (the `branch-policy` GitFlow gate). Do NOT require `extended-tests`.
 - ✅ **Require conversation resolution.**
 - ✅ **Block force pushes**; ✅ **Restrict deletions.**
-- ✅ (recommended) **Require linear history** — matches the repo's FF style.
-- ✅ **Include administrators** / "Enforce for admins" — so the rules bind you too
-  (you can still merge via PR).
+- ✅ **Require linear history** — matches the repo's FF style.
+- ❌ **"Enforce for admins" deliberately OFF.** This is the intentional escape hatch:
+  the **single admin (`andrade-filipe`) can merge his own PRs**; everyone else (push
+  collaborators `yurifarod`, `Rodriggo-Marcelino`, and external fork PRs) is bound by
+  the 1-approval rule. This realizes the policy *"nobody but me accepts their own PR."*
+  Turn this ON only if/when a second admin exists and self-merge by anyone is undesired.
 
-`gh` equivalent (classic protection API; run for `main` and `develop`, fill the
-real check names from §5):
+`gh` equivalent actually applied (classic protection API; run for `main` and `develop`):
 
 ```bash
 for BR in main develop; do
-  gh api -X PUT "repos/andrade-filipe/relativist/branches/$BR/protection" \
-    -F required_pull_request_reviews.required_approving_review_count=1 \
-    -F required_pull_request_reviews.require_code_owner_reviews=true \
-    -F enforce_admins=true \
-    -F required_status_checks.strict=true \
-    -F 'required_status_checks.contexts[]=branch-policy / validate' \
-    -F 'required_status_checks.contexts[]=ci' \
-    -F required_linear_history=true \
-    -F allow_force_pushes=false -F allow_deletions=false \
-    -F restrictions=
+  gh api -X PUT "repos/andrade-filipe/relativist/branches/$BR/protection" --input - <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["Check, Lint, Test, Build", "validate"] },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 1,
+    "require_last_push_approval": true
+  },
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+JSON
 done
 ```
 
-> The exact check context name (`branch-policy / validate` vs `validate`) is whatever
-> appears in the PR's checks list after the workflow runs once — select it from the
-> UI list rather than guessing.
+### 4.3b Frozen archive + release tags
+
+```bash
+# v1-feature-complete is read-only (the frozen v0.10.0-bench snapshot):
+gh api -X PUT repos/andrade-filipe/relativist/branches/v1-feature-complete/protection --input - <<'JSON'
+{ "required_status_checks": null, "enforce_admins": true, "required_pull_request_reviews": null,
+  "restrictions": null, "lock_branch": true, "allow_force_pushes": false, "allow_deletions": false }
+JSON
+
+# Release tags `v*` — only the admin may create/update/delete them, so only the
+# maintainer can trigger release.yml / docker.yml (tag ruleset, admin bypass only):
+gh api -X POST repos/andrade-filipe/relativist/rulesets --input - <<'JSON'
+{ "name": "Protect release tags (v*)", "target": "tag", "enforcement": "active",
+  "bypass_actors": [ { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" } ],
+  "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+  "rules": [ {"type":"creation"}, {"type":"deletion"}, {"type":"update"}, {"type":"non_fast_forward"} ] }
+JSON
+```
 
 ### 4.4 Default branch
 
@@ -217,10 +247,22 @@ article's final citation/DOI is known.
 
 ### Quick checklist
 
-- [ ] `chore/enforce-gitflow` merged into `develop` (then to `main`) — `branch-policy` on both
-- [ ] Rulesets protect **`main`** and **`develop`**: PR required, CODEOWNERS review, `branch-policy` + `ci` required, no force-push/delete, admins included
-- [ ] Default branch = `main`; sidebar shows **Apache-2.0**
+Status as of 2026-06-26 (✅ = verified applied):
+
+- [x] `branch-policy` required on both `main` and `develop`
+- [x] **`main` + `develop` protected**: PR required, **1 approval** (no self-merge except admin),
+      `dismiss_stale` + `require_last_push_approval`, `Check, Lint, Test, Build` + `validate`
+      required (strict), conversation resolution, linear history, no force-push/delete,
+      **enforce-admins OFF** (intentional maintainer escape — see §4.3)
+- [x] **`v1-feature-complete` locked** (read-only frozen archive)
+- [x] **Release tags `v*` protected** — only the admin can create/trigger releases (§4.3b)
+- [x] **Fork PR workflows require approval** for all outside collaborators (Settings → Actions)
+- [x] Default workflow token = **read-only** (`actions/permissions/workflow`)
+- [x] Secret scanning + push protection + Dependabot security updates on
+- [x] Default branch = `main`; sidebar shows **Apache-2.0**
+- [ ] Private vulnerability reporting on (confirm in Settings → Code security)
 - [ ] About: description + topics + (optional) website; social preview uploaded
-- [ ] Dependabot + secret scanning + push protection on; private vuln reporting on
 - [ ] Discussions enabled (optional)
 - [ ] Community Standards all green
+- [ ] (future) Add a co-owner to `CODEOWNERS` → then code-owner review can be required without
+      deadlocking the maintainer's own PRs
