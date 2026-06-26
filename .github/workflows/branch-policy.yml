@@ -31,6 +31,15 @@ jobs:
           echo "PR: $HEAD -> $BASE"
           fail() { echo "::error::$1"; exit 1; }
 
+          # 0) Dependabot PRs are automated and trusted — they follow their own
+          #    branch (dependabot/*) and routing conventions (security updates go
+          #    to the default branch; version updates to develop per
+          #    .github/dependabot.yml). Exempt them from the human GitFlow rules.
+          if echo "$HEAD" | grep -qE '^dependabot/'; then
+            echo "branch-policy: dependabot PR — exempt"
+            exit 0
+          fi
+
           # 1) Head branch naming. Allow the project's prefixes + bot branches.
           #    Exempt the long-lived integration branch 'develop' (it is the
           #    legitimate head for develop -> main release PRs).
