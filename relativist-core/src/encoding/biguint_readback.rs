@@ -187,13 +187,11 @@ pub fn decode_biguint(net: &Net) -> Result<BigUint, DecodeError> {
                 .ok_or_else(|| DecodeError::UnrecognizedStructure("f-side agent missing".into()))?;
             match f_agent.symbol {
                 Symbol::Era => return Ok(BigUint::from(0u64)),
-                Symbol::Dup => {
-                    // Walk the DUP's aux ports — if every reachable leaf
-                    // is ERA (modulo nested DUPs), the f side is a pure
-                    // discard tree and the value is 0.
-                    if all_aux_leaves_are_era(net, f_id) {
-                        return Ok(BigUint::from(0u64));
-                    }
+                // Walk the DUP's aux ports — if every reachable leaf is ERA
+                // (modulo nested DUPs), the f side is a pure discard tree and
+                // the value is 0.
+                Symbol::Dup if all_aux_leaves_are_era(net, f_id) => {
+                    return Ok(BigUint::from(0u64));
                 }
                 _ => {}
             }
