@@ -1,0 +1,57 @@
+# badges-draft.yaml — rpi-pipeline
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# manifest.md body does NOT duplicate this content. composition.yaml carries
+# only the string-ID index (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+
+b1_constants_compliance:
+  status: passing
+  constants_checked:
+    externalize-resumption-state:
+      verdict: passing
+      rationale: >
+        Substantive. The RPI pipeline enforces state externalization by requiring
+        Researcher and Planner to write their outputs to RESEARCH.md and PLAN.md
+        respectively. These files serve as the durable handoff artifacts that
+        survive session resets.
+    human-approval-on-irreversible-actions:
+      verdict: passing
+      rationale: >
+        Substantive. The workflow pattern and Implementer agent mandate that
+        changes are only applied after a plan is verified and approved. The
+        segregation of Planning and Implementation ensures a natural checkpoint
+        for human review.
+    deterministic-outer-loop:
+      verdict: passing
+      rationale: >
+        Substantive. The serialized Researcher -> Planner -> Implementer flow
+        is a deterministic orchestration scheme. Each phase has a clear entry
+        and exit criteria grounded in the filesystem substrate.
+    minimal-sufficient-context:
+      verdict: passing
+      rationale: >
+        Substantive. The core purpose of RPI is to maintain minimal sufficient
+        context by forcing session resets between phases, clearing the context
+        window of research-phase noise before planning begins.
+    complexity-is-incremental:
+      verdict: passing
+      rationale: >
+        Substantive. The Planner agent is instructed to design the minimal set
+        of changes, and the three-phase structure itself treats complexity as
+        something to be decomposed and handled incrementally.
+    preserve-failure-clear-redundancy:
+      verdict: passing
+      rationale: >
+        Substantive. The Implementer agent is explicitly told to stop and report
+        if a plan is flawed, preventing the "hallucination-loop" failure mode
+        where an agent keeps trying to patch a broken architecture.
+    typed-tool-contracts-with-feedback-loop:
+      verdict: passing
+      rationale: >
+        Substantive. The agents rely on standard CLI tool contracts (shell, read,
+        write) and are instructed to use their feedback loops (e.g., test results)
+        to verify work before completion.

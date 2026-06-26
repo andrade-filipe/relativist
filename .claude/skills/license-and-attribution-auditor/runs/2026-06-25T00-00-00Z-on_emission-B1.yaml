@@ -1,0 +1,91 @@
+# B1 on-emission run log — license-and-attribution-auditor
+# Immutable append-only record. Never overwrite; new runs get new timestamps.
+# Per ADR-0007 Pillar 7 (on_emission cadence) + ADR-0013 (write boundary).
+
+run_id: 2026-06-25T00-00-00Z-on_emission-B1
+artifact_id: license-and-attribution-auditor
+artifact_path: generation/skills/license-and-attribution-auditor/
+cadence: on_emission
+run_at: 2026-06-25T00:00:00Z
+framework_commit: 1db0c55
+emitted_by: marketplace-generator-sonnet
+
+b1_overall_result: passing
+
+# Per-constant results (structural parser checks; no LLM judge)
+constants_results:
+  - constant_ref: framework/constants/minimal-sufficient-context.md
+    verdict: passing
+    check_kind: substantive
+    structural_checks:
+      - "SKILL.md body contains task-scoped injection pattern (criterion-by-criterion rubric injection)"
+      - "SKILL.md explicitly scopes to Dimension 2 only and directs out-of-scope to other reviewers"
+      - "No fill-the-window or all-history anti-patterns present"
+
+  - constant_ref: framework/constants/deterministic-outer-loop.md
+    verdict: passing
+    check_kind: substantive
+    structural_checks:
+      - "SKILL.md body declares fixed seven-criterion evaluation order"
+      - "Criterion 1 BLOCKER termination condition explicitly documented"
+      - "Criterion 7 conditional activation documented (NOT-TRIGGERED path)"
+      - "No 'model decides when to stop' language present in SKILL.md"
+
+  - constant_ref: framework/constants/human-approval-on-irreversible-actions.md
+    verdict: passing
+    check_kind: substantive
+    structural_checks:
+      - "SKILL.md body prefixes all file-mutation remediations with 'HUMAN APPROVAL REQUIRED'"
+      - "Output format section explicitly states no file is executed without operator confirmation"
+      - "irreversible_action_class_list non-empty (filesystem-write-* classes)"
+      - "approval_mechanism = request-human-approval-pattern (not prompt-confirmation)"
+
+  - constant_ref: framework/constants/observable-agent-traces.md
+    verdict: passing
+    check_kind: substantive
+    structural_checks:
+      - "SKILL.md output format defines schema-bound trace: criterion_id, verdict, evidence, remediation"
+      - "Summary table structure is deterministic and machine-parseable"
+      - "Replay via re-run-on-same-repo-snapshot documented in badges-draft.yaml"
+
+  - constant_ref: framework/constants/bounded-tool-surface.md
+    verdict: passing
+    check_kind: vacuous
+    rationale: "Zero tools invoked; constant vacuously honored per zero-tool Skill framing."
+
+  - constant_ref: framework/constants/typed-tool-contracts-with-feedback-loop.md
+    verdict: passing
+    check_kind: vacuous
+    rationale: "Zero tools invoked; constant vacuously honored — binds on tool-using Agents and Skills only."
+
+# Frontmatter contract checks (per ADR-0007 Frontmatter contract additions)
+frontmatter_checks:
+  tier_declared: true             # tier: technique
+  task_class_declared: true       # task_class: decision-coherent
+  targets_scenarios_declared: true
+  targets_scenarios_resolved:
+    - scenario_id: prd-completeness
+      scenario_file_exists: true
+      resolved_path: framework/scenarios/prd-completeness/scenario.md
+
+# EMISSION_GAP records
+emission_gaps:
+  - kind: EMISSION_GAP
+    missing_tier: technique
+    proposed_name: license-and-attribution-auditor
+    load_bearing: false
+    # Not load-bearing: the Skill is emitted from concept-card authorization;
+    # the missing framework pattern does not block this emission. The Skill IS
+    # the technique implementation. The gap records that the upstream framework
+    # pattern should be formalized in a subsequent architect Stage-4 cycle.
+
+# Write-boundary verification
+write_boundary_check:
+  declared_boundary: generation/skills/license-and-attribution-auditor/
+  files_written:
+    - generation/skills/license-and-attribution-auditor/SKILL.md
+    - generation/skills/license-and-attribution-auditor/composition.yaml
+    - generation/skills/license-and-attribution-auditor/badges-draft.yaml
+    - generation/skills/license-and-attribution-auditor/runs/2026-06-25T00-00-00Z-on_emission-B1.yaml
+  files_outside_boundary: []
+  boundary_clean: true

@@ -1,0 +1,49 @@
+artifact_id: rpi-pipeline
+artifact_kind: pack
+
+framework_classification:
+  tier: workflow
+  skill_contract: technique-evaluable
+  task_class: mixed
+  effort_level: L0
+  emitted_by: marketplace-generator
+  emitted_at: "2026-05-22T16:55:00Z"
+  framework_commit: "main"
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+source_provenance:
+  original_author: "Context Engineering Framework"
+  original_url: "framework/workflows/rpi-pipeline-pack.md"
+  license: MIT
+  attribution_string: "Copyright (c) 2026 Context Engineering Framework. MIT License."
+
+benchmark_configuration:
+  targets_scenarios:
+    - factual-qa-with-source-citation
+    - structured-output-compliance
+  benchmark_priority: tier-1
+  scenario_seeding_open_item: false
+
+constants_declared:
+  - externalize-resumption-state
+  - human-approval-on-irreversible-actions
+  - deterministic-outer-loop
+  - minimal-sufficient-context
+  - complexity-is-incremental
+  - preserve-failure-clear-redundancy
+  - typed-tool-contracts-with-feedback-loop
+
+composition_graph:
+  depends_on: []
+  extends: null
+  composes_with:
+    - plan-then-execute
+    - context-compaction
+  invokes:
+    - researcher-agent
+    - planner-agent
+    - implementer-agent
+  alternatives: []
+
+discovery:
+  keywords: [from-framework, craft-principles]

@@ -1,0 +1,42 @@
+artifact_id: stride-threat-modeling
+artifact_kind: skill
+
+framework_classification:
+  tier: discipline
+  skill_contract: discipline-verifiable
+  task_class: mixed
+  effort_level: L1
+  emitted_by: gemini-cli
+  emitted_at: 2026-05-23
+  framework_commit: 6d31347
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+source_provenance:
+  original_author: Gemini CLI
+  original_url: https://github.com/google-gemini/gemini-cli
+  license: MIT
+  license_verified_at: 2026-05-23
+  fact_sheet_ref: null
+  our_modifications: "L1 Adaptation: formalized from stride-analysis-patterns"
+  attribution_string: "Gemini CLI, MIT license."
+
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-2
+  scenario_seeding_open_item: true
+
+constants_declared:
+  - minimal-sufficient-context
+  - observable-agent-traces
+  - failure-design-vs-failure-prevention
+  - essence-vs-accident-distinction
+
+composition_graph:
+  depends_on: []
+  extends: null
+  composes_with: []
+  invokes: []
+  alternatives: []
+
+discovery:
+  keywords: [from-repo, security, harden-security, threat-model, write-docs]

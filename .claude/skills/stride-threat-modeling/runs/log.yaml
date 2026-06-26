@@ -1,0 +1,5 @@
+- timestamp: 2026-05-23T00:00:00Z
+  event: emission
+  commit: 6d31347
+  effort: L1 Adaptation
+  notes: Initial emission of stride-threat-modeling.

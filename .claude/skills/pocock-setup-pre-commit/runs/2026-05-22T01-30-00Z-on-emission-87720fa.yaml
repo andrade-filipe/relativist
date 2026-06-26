@@ -1,0 +1,143 @@
+# Run log — on-emission B1 self-check
+# Artifact: pocock-setup-pre-commit
+# Cadence: on-emission (auto, blocking per ADR-0007 Pillar 7)
+# Run ID: 2026-05-22T01-30-00Z-on-emission-87720fa
+# Emitted by: marketplace-generator-sonnet
+
+run_id: 2026-05-22T01-30-00Z-on-emission-87720fa
+artifact_id: pocock-setup-pre-commit
+artifact_path: generation/skills/pocock-setup-pre-commit/
+cadence: on-emission
+framework_commit: 87720fa
+emitted_by: marketplace-generator-sonnet
+run_timestamp: 2026-05-22T01:30:00Z
+
+# Reproducibility envelope (per ADR-0007 §"Topology summary"):
+judge:
+  model_id: deterministic
+  version: parser-rules-v1
+  prompt_hash: n/a
+  rationale: "B1 is structural — decided by parsing frontmatter + body structure checks, no LLM judge."
+
+# Source fetch log:
+source_fetch:
+  primary_url: https://raw.githubusercontent.com/mattpocock/skills/main/skills/misc/setup-pre-commit/SKILL.md
+  primary_result: HTTP 200 — content fetched successfully
+  source_size_bytes: 2180  # approximate; source body is 8 steps + notes
+  fetch_status: success
+  fetch_method: WebFetch tool (raw GitHub URL)
+  fetch_note: |
+    Source content confirmed: SKILL.md contains frontmatter (name, description)
+    and body (Steps 1–8 + Notes). Body preserved verbatim in emitted SKILL.md.
+
+# Frontmatter shape check (12 required fields per dispatch VERIFICATION):
+frontmatter_check:
+  fields_present:
+    - name: present
+    - description: present
+    - tier: present
+    - task_class: present
+    - targets_scenarios: present
+    - emitted_by: present
+    - emitted_at: present
+    - framework_commit: present
+    - source_attribution: present
+    - original_source_url: present
+    - license: present
+    - effort_level: present
+  field_count: 12
+  verdict: passing
+
+# Scenario validation (hard gate per marketplace-generator agent §2):
+scenario_validation:
+  targets_scenarios: []
+  # Empty list — no scenario IDs declared, therefore no directory existence
+  # check required. Per ADR-0007: "The marketplace generator is forbidden from
+  # emitting artifacts whose targets_scenarios references a scenario that does
+  # not exist." An empty list references nothing → gate passes vacuously.
+  verdict: passing
+
+# B1 Constants compliance checks:
+b1_checks:
+  - constant: framework/constants/bounded-tool-surface.md
+    check_method: structural — count of distinct tool types in skill body step procedure
+    result: passing
+    note: |
+      2 tool types enumerated in 'Tool surface' section: Bash and Write/Edit.
+      Both are below the ≤30 ceiling. Active tool ceiling: 2/30.
+      Each invocation is step-scoped to a single named purpose.
+
+  - constant: framework/constants/observable-agent-traces.md
+    check_method: structural — presence of explicit verification steps with named output signals
+    result: passing
+    note: |
+      Step 7 names `npx lint-staged` exit code as the typed observable trace
+      before declaring verification complete. Step 8 uses the live commit run
+      as the final installation-success signal. Both are explicit, named,
+      deterministic observable events. File artifacts (hook, .lintstagedrc,
+      .prettierrc) are git-trackable.
+
+  - constant: framework/constants/minimal-sufficient-context.md
+    check_method: structural — absence of retrieved content / auxiliary context injection in body
+    result: passing
+    note: |
+      Body contains only procedural steps (Steps 1–8) and Notes. No codebase
+      analysis, git history retrieval, or auxiliary prompt injection. The two
+      project-state reads (lock-file existence in Step 1, package.json scripts
+      in Step 4) are scoped to exact fields required by the procedure.
+
+  - constant: framework/constants/typed-tool-contracts-with-feedback-loop.md
+    check_method: structural — verification steps provide typed feedback; substantive rationale present
+    result: passing
+    note: |
+      Substantive typed-feedback-loop rationale confirmed present in both
+      SKILL.md "Constants honored" section and badges-draft.yaml b1_checks.
+      Four named feedback loops documented: Step 2 install exit code, Step 3
+      husky-init directory artifact, Step 7 lint-staged gate, Step 8 smoke-
+      test commit. Each loop has a declared output type (exit code + artifact)
+      that the subsequent step reads as input. Not vacuous-honor framing —
+      the install-time exit-code argument is specific and substantive, as
+      directed by the dispatch INPUTS note ("apply substantive typed-tool-
+      contracts rationale, not vacuous-honor").
+
+# Attribution body check:
+attribution_check:
+  attribution_block_present: true
+  original_author_named: true
+  license_named: true
+  source_url_present: true
+  verdict: passing
+
+# composition.yaml check:
+composition_check:
+  file_present: true
+  source_provenance_complete: true
+  our_modifications_field: ""  # empty string = L0 verified
+  composes_with_field:
+    - generation/skills/pocock-git-guardrails/
+  verdict: passing
+
+# Overall B1 result:
+b1_result: passing
+b1_rationale: |
+  All four constants pass structural checks. Frontmatter has all 12 required
+  fields. Scenario validation passes vacuously (empty targets_scenarios list).
+  Attribution block present and complete. composition.yaml present with
+  source_provenance complete and our_modifications empty (L0 confirmed).
+  typed-tool-contracts rationale is substantive (install-time exit-code
+  feedback-loop argument) — not vacuous-honor framing. Artifact is
+  marketplace-eligible pending architect Stage-5 sign-off.
+
+# Write-boundary audit:
+write_boundary_audit:
+  files_written:
+    - generation/skills/pocock-setup-pre-commit/SKILL.md
+    - generation/skills/pocock-setup-pre-commit/composition.yaml
+    - generation/skills/pocock-setup-pre-commit/badges-draft.yaml
+    - generation/skills/pocock-setup-pre-commit/runs/2026-05-22T01-30-00Z-on-emission-87720fa.yaml
+  files_outside_generation: []
+  badges_yaml_written: false  # architect-only; never written by generator
+  framework_modified: false
+  docs_modified: false
+  claude_agents_modified: false
+  verdict: clean

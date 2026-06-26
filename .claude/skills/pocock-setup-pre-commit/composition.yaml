@@ -1,0 +1,90 @@
+# composition.yaml — pocock-setup-pre-commit
+#
+# Audience: marketplace aggregator (index-time) + architect (sign-off).
+# Per v2 shape (dev-productivity-skills-shape-v2-proposal.md): framework
+# classification, source provenance, benchmark configuration, constants
+# index, and composition graph are consolidated here. SKILL.md is buyer-only.
+
+artifact_id: pocock-setup-pre-commit
+artifact_kind: skill
+
+# ===================================================================
+# Framework classification (audience: marketplace aggregator + architect)
+# Migrated from SKILL.md frontmatter in v2 — buyer doesn't need this.
+# ===================================================================
+framework_classification:
+  tier: discipline
+  skill_contract: discipline-verifiable
+  task_class: decision-coherent
+  effort_level: L0
+  emitted_by: marketplace-generator-sonnet
+  emitted_at: 2026-05-22
+  framework_commit: 87720fa
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+# ===================================================================
+# Source provenance (audience: marketplace listing + attribution display)
+# ===================================================================
+source_provenance:
+  original_author: Matt Pocock
+  original_url: https://github.com/mattpocock/skills/tree/main/skills/misc/setup-pre-commit
+  license: MIT
+  license_verified_at: 2026-05-22
+  # License verification: mattpocock/skills repo carries MIT license in its root
+  # LICENSE file. Verified 2026-05-22 via dispatch inputs (operator confirmation).
+  effort_level: L0
+  our_modifications: ""
+  # L0 wrap: framework-compliance frontmatter added; body preserved verbatim from
+  # source. The only additions are:
+  #   - YAML frontmatter (5 buyer-facing fields in v2: name, description, license,
+  #     source_author, source_url) — lean per v2 audience-matrix
+  #   - Attribution header line (original author, license, source URL)
+  #   - "Limitations" section surfacing Node.js scope, Husky v9+ assumption,
+  #     script-availability caveats, and smoke-test commit side-effect
+  #   - Provenance footer pointing to composition.yaml and badges-draft.yaml
+  # No body content (Steps 1–8 + Notes) was modified, removed, or reordered
+  # relative to the source.
+
+# ===================================================================
+# Benchmark configuration (per ADR-0007)
+# ===================================================================
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-3
+  scenario_seeding_open_item: true
+  # Empty targets_scenarios is honest: no productivity-track scenarios
+  # exist under framework/scenarios/ as of 2026-05-22. Architect Stage-5
+  # may seed a pre-commit-setup scenario to enable B2.
+
+# ===================================================================
+# Constants declared (v2 — index only; rationale in badges-draft.yaml)
+# Full rationale per constant lives in badges-draft.yaml b1_constants_compliance.
+# This list is the index; that file is the canonical authority.
+# ===================================================================
+constants_declared:
+  - bounded-tool-surface
+  - observable-agent-traces
+  - minimal-sufficient-context
+  - typed-tool-contracts-with-feedback-loop   # substantive — non-trivial tool surface (Bash + Write/Edit)
+
+# ===================================================================
+# Composition graph (audience: marketplace orchestration discovery)
+# ===================================================================
+composition_graph:
+  depends_on: []
+  extends: null
+  composes_with:
+    - generation/skills/pocock-git-guardrails/
+    # Natural pairing: setup-pre-commit installs Husky hooks that enforce quality
+    # gates (lint + format + test) at commit time; pocock-git-guardrails installs
+    # Claude Code PreToolUse hooks that block destructive git operations at the
+    # harness layer. Different hook substrates, complementary protection surfaces.
+    # Both may coexist in a project with no conflict.
+  invokes: []
+  alternatives: []
+  # No direct alternative in the current generation/ catalog — this is the only
+  # Husky/lint-staged setup Skill. The upstream git-guardrails skill addresses
+  # a different concern (harness-level git blocking, not commit-time quality gates).
+
+discovery:
+  keywords: [from-repo, documentation, test, clean-git]

@@ -1,0 +1,100 @@
+run_id: 2026-05-22T03-00-00Z-v2-reshape-394432f
+artifact_id: pocock-git-guardrails
+artifact_path: generation/skills/pocock-git-guardrails/
+cadence: v2-reshape
+triggered_by: marketplace-generator-sonnet
+framework_commit: 394432f
+
+reshape_summary:
+  source_proposal: docs/project/dev-productivity-skills-shape-v2-proposal.md
+  shape_version: v2
+  files_rewritten:
+    - SKILL.md
+    - composition.yaml
+    - badges-draft.yaml
+  files_added:
+    - runs/2026-05-22T03-00-00Z-v2-reshape-394432f.yaml
+  files_untouched:
+    - runs/2026-05-22T01-00-00Z-on-emission-5fca761.yaml
+
+skill_md_changes:
+  frontmatter_fields_before: 12
+  frontmatter_fields_after: 5
+  fields_removed:
+    - tier
+    - task_class
+    - targets_scenarios
+    - emitted_by
+    - emitted_at
+    - framework_commit
+    - source_attribution
+    - original_source_url
+  fields_kept:
+    - name
+    - description
+    - license
+  fields_renamed:
+    - source_attribution -> source_author
+    - original_source_url -> source_url
+  sections_removed:
+    - "Tool surface"
+    - "Constants honored"
+    - "Cross-references"
+  sections_kept:
+    - attribution block (3-line)
+    - "What Gets Blocked"
+    - "Steps"
+    - "Limitations"
+  sections_added:
+    - provenance footer (2-line)
+  body_content: verbatim from source (Pocock original preserved)
+
+composition_yaml_changes:
+  shape_version: v2
+  sections_added:
+    - framework_classification
+    - source_provenance
+    - benchmark_configuration
+    - constants_declared
+    - composition_graph
+  constants_declared_count: 5
+  note: >
+    deterministic-outer-loop added to constants_declared (was in SKILL.md
+    Constants honored section but absent from v1 composition.yaml).
+
+badges_draft_yaml_changes:
+  canonical_home_header: added
+  b1_content: preserved verbatim
+  typed_tool_contracts_rationale: substantive (non-vacuous) — preserved verbatim
+  deterministic_outer_loop_entry: added (was present in SKILL.md v1 body; now
+    properly surfaced in badges-draft.yaml as the canonical home)
+  b2_content: preserved verbatim (deferred)
+  sign_off_envelope: preserved verbatim
+
+b1_constants_compliance:
+  status: passing
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  checks:
+    - constant: bounded-tool-surface
+      verdict: passing
+      note: "2 ambient tool types (Bash + Write/Edit); ≤30 ceiling"
+    - constant: observable-agent-traces
+      verdict: passing
+      note: "3 observable artifacts: script file, settings.json, verification exit-code+stderr"
+    - constant: minimal-sufficient-context
+      verdict: passing
+      note: "5-step procedure only; no codebase or history loaded"
+    - constant: typed-tool-contracts-with-feedback-loop
+      verdict: passing
+      note: "substantive: exit-code-2+BLOCKED-stderr named feedback path; scoping argument intact"
+    - constant: deterministic-outer-loop
+      verdict: passing
+      note: "linear 5-step sequence; no stochastic branching"
+  frontmatter_shape_valid: true
+  targets_scenarios_validated: true   # empty list is honest declaration; no missing scenario refs
+  write_boundary_respected: true
+
+run_completed_at: 2026-05-22T03-00-00Z

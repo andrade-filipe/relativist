@@ -1,0 +1,6 @@
+- timestamp: "2026-05-22T12:10:00Z"
+  event: generation_started
+  tool: gemini-cli
+- timestamp: "2026-05-22T12:11:00Z"
+  event: adaptation_complete
+  details: "L1 adaptation from internal source (better-auth-security-best-practices)."

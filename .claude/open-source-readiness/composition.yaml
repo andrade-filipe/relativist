@@ -1,0 +1,106 @@
+artifact_id: open-source-readiness
+artifact_kind: pack
+
+framework_classification:
+  tier: workflow
+  skill_contract: technique-evaluable
+  task_class: mixed
+  effort_level: L2
+  emitted_by: marketplace-generator-sonnet
+  emitted_at: "2026-06-25T00:00:00Z"
+  framework_commit: "1db0c55"
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+source_provenance:
+  original_workflow: "framework/workflows/adversarial-review-pipeline-pack.md"
+  domain_concept_card: "research/concepts/open-source-readiness.md"
+  license: MIT
+  license_verified_at: "2026-06-25"
+  fact_sheet_refs:
+    - REF-0201  # Fogel, Producing Open Source Software, 2nd ed. 2017 (P0 canonical)
+    - REF-0202  # GitHub opensource.guide (P1 practitioner docs)
+  our_modifications: >
+    Specializes the adversarial-review-pipeline-pack for open-source readiness auditing.
+    Four dimension reviewers (Essential Docs / License & Attribution / Secrets & Git Hygiene /
+    Security & CI/Governance) replace the generic archetype set. Adds a human-approval-gated
+    remediator phase downstream of aggregation. Member skills grounded in REF-0201 + REF-0202
+    + the concept card's four-dimension model.
+  attribution_string: >
+    Context Engineering Framework, MIT license. Grounded in Fogel (REF-0201) +
+    GitHub opensource.guide (REF-0202) + research/concepts/open-source-readiness.md.
+
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-2
+  scenario_seeding_open_item: true
+  scenario_fit_note: >
+    No existing framework/scenarios/ entry covers the repository-state audit shape
+    (fan-out inspection of documentation, license, secrets, and security/CI surfaces
+    in a real repository, followed by structured gap-report triage). The three seeded
+    scenarios (multi-step-arithmetic-reasoning, factual-qa-with-source-citation,
+    structured-output-compliance) and the later-seeded architectural-refactor-identification
+    are too narrow (structured-output) or discipline-specific (refactor-identification)
+    to discriminate open-source readiness audit artifacts.
+    Proposed new scenario: `open-source-readiness-audit` (task_class: mixed;
+    tier: workflow; measure: gap-report recall + severity-ranking accuracy + remediation
+    correctness). See stage5_observation SCENARIO_FIT_NOTE in badges-draft.yaml.
+
+constants_declared:
+  - context-curation-discipline           # Isolate pillar: per-reviewer context isolation
+  - human-approval-on-irreversible-actions # Remediator: gate every file write + git mutation
+  - observable-agent-traces               # Per-round state persistence + replay protocol
+  - deterministic-outer-loop              # Orchestrator: fixed 4-reviewer fan-out, finite budget
+  - bounded-tool-surface                  # Reviewer tool ceiling (read_file / grep / list_dir)
+  - minimal-sufficient-context            # Capped per-reviewer context (path + checklist + role)
+
+composition_graph:
+  depends_on: []
+  extends: adversarial-review-pipeline-pack
+  composes_with:
+    - license-and-attribution-auditor        # generation/skills/ — Dim 2
+    - addyosmani-documentation-adrs          # generation/skills/ — Dim 1
+    - awesome-copilot-documentation-writer   # generation/skills/ — Dim 1
+    - pocock-git-guardrails                  # generation/skills/ — Dim 3
+    - pocock-setup-pre-commit                # generation/skills/ — Dim 3
+    - auth-hardening-best-practices          # generation/skills/ — Dim 4
+    - stride-threat-modeling                 # generation/skills/ — Dim 4
+  invokes:
+    - readiness-orchestrator                 # pack-internal agents/
+    - docs-readiness-reviewer
+    - license-readiness-reviewer
+    - secrets-git-reviewer
+    - security-ci-reviewer
+    - readiness-aggregator
+    - readiness-remediator
+  alternatives:
+    - adversarial-review-pipeline            # Generic archetype-based review; does not specialize for open-source gate
+
+slot_configuration:
+  target_artifact_kind: other              # repository-state audit
+  reviewer_count: 4                        # exactly the four open-source readiness dimensions
+  reviewer_archetype_set:
+    - docs-readiness-reviewer
+    - license-readiness-reviewer
+    - secrets-git-reviewer
+    - security-ci-reviewer
+  context_isolation_substrate: separate-context-windows
+  aggregator_protocol: structured-triage
+  state_persistence_path: "review-state/round-<N>/"
+
+discovery:
+  keywords:
+    - open-source
+    - open-source-readiness
+    - repository-audit
+    - license-audit
+    - secrets-scan
+    - git-hygiene
+    - SECURITY.md
+    - CONTRIBUTING
+    - CODE_OF_CONDUCT
+    - GOVERNANCE
+    - pre-commit
+    - DCO
+    - CLA
+    - OSI-license
+    - from-framework

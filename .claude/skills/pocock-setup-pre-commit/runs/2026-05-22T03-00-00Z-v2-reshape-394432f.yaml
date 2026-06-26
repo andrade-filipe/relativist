@@ -1,0 +1,184 @@
+# Run log — v2-reshape B1 self-check
+# Artifact: pocock-setup-pre-commit
+# Cadence: v2-reshape (triggered by operator v2 reshape dispatch)
+# Run ID: 2026-05-22T03-00-00Z-v2-reshape-394432f
+# Emitted by: marketplace-generator-sonnet
+
+run_id: 2026-05-22T03-00-00Z-v2-reshape-394432f
+artifact_id: pocock-setup-pre-commit
+artifact_path: generation/skills/pocock-setup-pre-commit/
+cadence: v2-reshape
+framework_commit: 394432f
+emitted_by: marketplace-generator-sonnet
+run_timestamp: 2026-05-22T03:00:00Z
+
+# Reproducibility envelope (per ADR-0007 §"Topology summary"):
+judge:
+  model_id: deterministic
+  version: parser-rules-v1
+  prompt_hash: n/a
+  rationale: "B1 is structural — decided by parsing frontmatter + body structure checks, no LLM judge."
+
+# Reshape scope — what changed in this run:
+reshape_scope:
+  trigger: "v2 audience-matrix reshape per docs/project/dev-productivity-skills-shape-v2-proposal.md"
+  files_modified:
+    - generation/skills/pocock-setup-pre-commit/SKILL.md
+    - generation/skills/pocock-setup-pre-commit/composition.yaml
+    - generation/skills/pocock-setup-pre-commit/badges-draft.yaml
+  files_added:
+    - generation/skills/pocock-setup-pre-commit/runs/2026-05-22T03-00-00Z-v2-reshape-394432f.yaml
+  files_untouched:
+    - generation/skills/pocock-setup-pre-commit/runs/2026-05-22T01-30-00Z-on-emission-87720fa.yaml
+  v2_changes_summary: |
+    SKILL.md: frontmatter reduced from 12 fields to 5 buyer-facing fields
+    (name, description, license, source_author, source_url). Removed:
+    tier, task_class, targets_scenarios, emitted_by, emitted_at,
+    framework_commit, source_attribution, original_source_url (already in
+    source_url), effort_level. Removed "Constants honored" section and
+    "Cross-references" section (both framework-internal, broken post-install).
+    "Tool surface" section removed (internal discipline detail; not buyer-facing).
+    Body (Steps 1–8 + Notes) preserved verbatim. Limitations kept (buyer-relevant).
+    Provenance footer added pointing to composition.yaml and badges-draft.yaml.
+    composition.yaml: regrouped into 5 explicit sections (framework_classification,
+    source_provenance, benchmark_configuration, constants_declared,
+    composition_graph). Added constants_declared index (was missing in v1 —
+    lived only in SKILL.md body + badges). composes_with preserved:
+    [generation/skills/pocock-git-guardrails/].
+    badges-draft.yaml: canonical-home header comment added (6 lines). B1
+    constants content preserved verbatim including substantive
+    typed-tool-contracts rationale (install-time exit-code feedback-loop
+    argument — NOT downgraded to vacuous-honor per dispatch note).
+
+# Frontmatter shape check (v2: 5 required fields):
+frontmatter_check:
+  fields_present:
+    - name: present
+    - description: present
+    - license: present
+    - source_author: present
+    - source_url: present
+  field_count: 5
+  framework_fields_moved_to_composition_yaml:
+    - tier
+    - task_class
+    - targets_scenarios
+    - emitted_by
+    - emitted_at
+    - framework_commit
+    - effort_level
+  verdict: passing
+
+# Scenario validation (hard gate per marketplace-generator agent §2):
+scenario_validation:
+  targets_scenarios: []
+  # Empty list — no scenario IDs declared, therefore no directory existence
+  # check required. Gate passes vacuously per ADR-0007.
+  verdict: passing
+
+# B1 Constants compliance checks (post-reshape):
+b1_checks:
+  - constant: framework/constants/bounded-tool-surface.md
+    check_method: structural — composition.yaml constants_declared index + body procedure
+    result: passing
+    note: |
+      constants_declared index in composition.yaml lists bounded-tool-surface.
+      Body retains Steps 1–8 with Bash and Write/Edit as the 2 tool types.
+      2/30 ceiling. Each invocation step-scoped. No unbounded traversal.
+
+  - constant: framework/constants/observable-agent-traces.md
+    check_method: structural — composition.yaml constants_declared index + verification steps in body
+    result: passing
+    note: |
+      constants_declared index lists observable-agent-traces. Step 7 (npx
+      lint-staged exit code) and Step 8 (smoke-test commit) remain as
+      explicit named observable signals. File artifacts at deterministic paths.
+
+  - constant: framework/constants/minimal-sufficient-context.md
+    check_method: structural — composition.yaml constants_declared index + absence of auxiliary context in body
+    result: passing
+    note: |
+      constants_declared index lists minimal-sufficient-context. Body contains
+      only the 8-step procedure and Notes. Two minimal project-state reads
+      (lock-file, package.json scripts). No auxiliary context injected.
+
+  - constant: framework/constants/typed-tool-contracts-with-feedback-loop.md
+    check_method: structural — substantive rationale confirmed in badges-draft.yaml b1_constants_compliance
+    result: passing
+    note: |
+      Substantive typed-tool-contracts rationale confirmed PRESERVED verbatim
+      in badges-draft.yaml b1_constants_compliance. Four named install-time
+      feedback loops intact: Step 2 install exit code, Step 3 husky-init
+      directory artifact, Step 7 lint-staged gate, Step 8 smoke-test commit.
+      NOT downgraded to vacuous-honor — this Skill has a non-trivial tool
+      surface (Bash + Write/Edit) and the substantive install-time exit-code
+      argument is correct and specific. composition.yaml constants_declared
+      annotation confirms: "substantive — non-trivial tool surface (Bash + Write/Edit)".
+
+# Attribution check (v2 format — inline blockquote header):
+attribution_check:
+  attribution_block_present: true
+  format: "blockquote header line per v2 shape"
+  original_author_named: true
+  license_named: true
+  source_url_present: true
+  verdict: passing
+
+# composition.yaml v2 structure check:
+composition_check:
+  file_present: true
+  sections_present:
+    - framework_classification: true
+    - source_provenance: true
+    - benchmark_configuration: true
+    - constants_declared: true
+    - composition_graph: true
+  section_count: 5
+  source_provenance_complete: true
+  our_modifications_field: ""  # empty string = L0 verified
+  constants_declared_entries:
+    - bounded-tool-surface
+    - observable-agent-traces
+    - minimal-sufficient-context
+    - typed-tool-contracts-with-feedback-loop
+  composes_with_field:
+    - generation/skills/pocock-git-guardrails/
+  verdict: passing
+
+# badges-draft.yaml check:
+badges_draft_check:
+  canonical_home_header_present: true
+  b1_status: passing
+  typed_tool_contracts_rationale: substantive  # NOT vacuous-honor
+  four_feedback_loops_documented: true
+  b2_status: deferred
+  verdict: passing
+
+# Overall B1 result:
+b1_result: passing
+b1_rationale: |
+  All four constants pass structural checks under v2 shape. Frontmatter has
+  all 5 required buyer-facing fields; framework fields correctly migrated to
+  composition.yaml. Scenario validation passes vacuously (empty list).
+  Attribution block present in v2 blockquote format. composition.yaml has
+  all 5 required sections with constants_declared index and composes_with
+  preserving pocock-git-guardrails. badges-draft.yaml canonical-home header
+  added; B1 substantive typed-tool-contracts rationale preserved verbatim —
+  NOT downgraded to vacuous-honor (non-trivial tool surface: Bash + Write/Edit).
+  Artifact is marketplace-eligible pending architect Stage-5 sign-off.
+
+# Write-boundary audit:
+write_boundary_audit:
+  files_written:
+    - generation/skills/pocock-setup-pre-commit/SKILL.md
+    - generation/skills/pocock-setup-pre-commit/composition.yaml
+    - generation/skills/pocock-setup-pre-commit/badges-draft.yaml
+    - generation/skills/pocock-setup-pre-commit/runs/2026-05-22T03-00-00Z-v2-reshape-394432f.yaml
+  files_outside_generation: []
+  prior_run_logs_untouched:
+    - generation/skills/pocock-setup-pre-commit/runs/2026-05-22T01-30-00Z-on-emission-87720fa.yaml
+  badges_yaml_written: false  # architect-only; never written by generator
+  framework_modified: false
+  docs_modified: false
+  claude_agents_modified: false
+  verdict: clean

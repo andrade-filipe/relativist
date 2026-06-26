@@ -1,0 +1,16 @@
+# badges-draft.yaml — auth-hardening-best-practices
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+
+b1_constants_compliance:
+  constants_checked:
+    - id: prompt-defenses-are-not-a-security-boundary
+      rationale: >
+        The skill emphasizes that authentication security relies on 
+        cryptographic secrets, rate limiting, and protocol-level 
+        protections (CSRF, Origin) rather than just instructional guards.
+    - id: typed-tool-contracts-with-feedback-loop
+      rationale: >
+        The security checklist and explicit configuration patterns 
+        enforce a strict contract for hardening the authentication 
+        infrastructure.

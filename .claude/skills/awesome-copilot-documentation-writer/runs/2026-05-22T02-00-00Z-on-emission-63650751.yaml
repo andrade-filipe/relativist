@@ -1,0 +1,115 @@
+# Run log — on-emission B1 self-check.
+#
+# Cadence: on-emission (per ADR-0007 Pillar 7).
+# This log is IMMUTABLE after creation. Re-runs produce new log files;
+# this file is never overwritten. History is git-tracked.
+#
+# See: docs/decisions/ADR-0007-benchmark-architecture.md §Pillar 7
+
+run_id: 2026-05-22T02-00-00Z-on-emission-63650751
+artifact_id: awesome-copilot-documentation-writer
+artifact_path: generation/skills/awesome-copilot-documentation-writer/
+cadence: on-emission
+triggered_by: marketplace-generator-sonnet
+framework_commit: 63650751cfecf97b7fe693e138d339c26bc42647
+run_timestamp: 2026-05-22T02:00:00Z
+
+# ---------------------------------------------------------------------------
+# B1 Constants Compliance — deterministic parser/regex check
+# ---------------------------------------------------------------------------
+b1_run:
+  status: passing
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  checks:
+    - check: frontmatter_shape
+      result: passing
+      detail: >
+        All three mandatory ADR-0007 keys present and well-formed:
+        tier=technique (valid enum), task_class=decision-coherent (valid enum),
+        targets_scenarios=[] (valid list, empty — allowed when no scenario exists).
+
+    - check: bounded-tool-surface
+      result: passing
+      detail: >
+        SKILL.md body contains zero tool invocations. Grep for tool-call patterns
+        (bash_tool, computer_tool, read_file, write_file, function_call, <tool_use>)
+        returns no matches. Tool surface = 0.
+
+    - check: observable-agent-traces
+      result: passing
+      detail: >
+        Three-phase workflow (Acknowledge & Clarify → Propose a Structure → Generate
+        Content) produces named, observable checkpoints. Each phase boundary is a
+        discrete, named action — structurally loggable by the host Agent.
+
+    - check: minimal-sufficient-context
+      result: passing
+      detail: >
+        Scaffold content = Diátaxis four-quadrant taxonomy + three-step workflow.
+        No retrieved documents, no few-shot exemplars, no auxiliary context.
+        Token overhead is the scaffold text only (~350 tokens estimated).
+
+    - check: typed-tool-contracts-with-feedback-loop
+      result: passing
+      detail: >
+        Vacuously honored — zero tools invoked. Precedent from chain-of-thought-wrapper
+        Stage-5 cycle 2026-05-21 A3 applies: zero-tool Skills cannot violate this
+        constant; vacuous-honor is the correct B1 rationale.
+
+  overall: passing
+
+# ---------------------------------------------------------------------------
+# Source fetch record
+# ---------------------------------------------------------------------------
+source_fetch:
+  attempted_paths:
+    - url: https://raw.githubusercontent.com/github/awesome-copilot/main/skills/documentation-writer/SKILL.md
+      result: success
+      content_length_chars: 1847        # approximate
+  content_preserved: verbatim
+  format_transform: frontmatter-schema-translation-only
+
+# ---------------------------------------------------------------------------
+# Scenario validation
+# ---------------------------------------------------------------------------
+scenario_validation:
+  targets_scenarios: []
+  validation_result: passing
+  detail: >
+    Empty list is valid. No scenario-directory existence check required.
+    No entries to validate against framework/scenarios/.
+
+# ---------------------------------------------------------------------------
+# Write boundary audit
+# ---------------------------------------------------------------------------
+write_boundary_audit:
+  files_written:
+    - generation/skills/awesome-copilot-documentation-writer/SKILL.md
+    - generation/skills/awesome-copilot-documentation-writer/composition.yaml
+    - generation/skills/awesome-copilot-documentation-writer/badges-draft.yaml
+    - generation/skills/awesome-copilot-documentation-writer/runs/2026-05-22T02-00-00Z-on-emission-63650751.yaml
+  files_outside_boundary: []
+  badges_yaml_created: false           # architect-only; NOT created by this run
+  framework_modified: false
+  docs_modified: false
+  claude_modified: false
+  knowledge_modified: false
+  boundary_audit_result: passing
+
+# ---------------------------------------------------------------------------
+# Stage-5 observations (for architect)
+# ---------------------------------------------------------------------------
+stage5_observations:
+  - observation: >
+      targets_scenarios is empty. A documentation-quality scenario in
+      framework/scenarios/ would enable B2 measurement for this Skill and any
+      future documentation-tier Skill emissions. Recommend architect evaluate
+      whether to seed a scenario (e.g., `technical-documentation-quality`) in
+      a future Stage-5 cycle.
+  - observation: >
+      Source repo github/awesome-copilot is MIT-licensed. Attribution is
+      preserved in SKILL.md frontmatter (source_attribution) and composition.yaml.
+      No license-incompatibility with framework distribution.

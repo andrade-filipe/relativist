@@ -1,0 +1,69 @@
+run_id: 2026-05-22T03-00-00Z-v2-reshape-394432f
+cadence: v2-reshape
+artifact_id: awesome-copilot-documentation-writer
+artifact_path: generation/skills/awesome-copilot-documentation-writer/
+framework_commit: 394432f
+triggered_by: marketplace-generator-sonnet
+triggered_at: 2026-05-22T03:00:00Z
+
+reshape_summary:
+  shape_version: v2
+  proposal_doc: docs/project/dev-productivity-skills-shape-v2-proposal.md
+  files_rewritten:
+    - SKILL.md
+    - composition.yaml
+    - badges-draft.yaml
+  files_added:
+    - runs/2026-05-22T03-00-00Z-v2-reshape-394432f.yaml
+  files_untouched:
+    - runs/2026-05-22T02-00-00Z-on-emission-63650751.yaml
+
+skill_md_changes:
+  frontmatter_fields_before: 12
+  frontmatter_fields_after: 5
+  fields_kept: [name, description, license, source_author, source_url]
+  fields_removed: [tier, task_class, targets_scenarios, emitted_by, emitted_at, framework_commit, source_attribution, benchmark_priority, effort]
+  sections_removed: ["Constants honored", "Cross-references"]
+  body_verbatim: true   # original source body preserved unchanged
+  provenance_footer_added: true
+
+composition_yaml_changes:
+  sections_before: flat_structure
+  sections_after: 5
+  sections: [framework_classification, source_provenance, benchmark_configuration, constants_declared, composition_graph]
+  constants_declared_index_added: true   # was only in SKILL.md body + badges; now indexed here
+
+badges_draft_yaml_changes:
+  canonical_home_header_added: true
+  b1_content: preserved
+  checked_at: unchanged   # 2026-05-22 — original emission date preserved
+  framework_commit_updated: 394432f   # updated from 63650751cfecf97b7fe693e138d339c26bc42647
+
+b1_constants_compliance:
+  status: passing
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  checks:
+    - check: frontmatter_fields_present
+      result: passing
+      detail: "5 fields present: name, description, license, source_author, source_url"
+    - check: no_internal_framework_links_in_skill_md
+      result: passing
+      detail: "No ../../../framework/ or ../../../docs/ links in SKILL.md body or frontmatter"
+    - check: composition_yaml_has_5_sections
+      result: passing
+      detail: "framework_classification, source_provenance, benchmark_configuration, constants_declared, composition_graph all present"
+    - check: badges_draft_has_canonical_home_header
+      result: passing
+      detail: "Header comment block declares canonical home for Constants honored rationale"
+    - check: badges_draft_b1_passing
+      result: passing
+      detail: "b1_constants_compliance.status = passing; all 4 constants checked with rationale"
+    - check: prior_run_log_untouched
+      result: passing
+      detail: "2026-05-22T02-00-00Z-on-emission-63650751.yaml not modified"
+    - check: body_verbatim_preserved
+      result: passing
+      detail: "Diátaxis Documentation Expert body (Guiding Principles, Four Document Types, Workflow, Contextual Awareness) reproduced verbatim"

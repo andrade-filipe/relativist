@@ -1,0 +1,83 @@
+artifact_id: awesome-copilot-documentation-writer
+artifact_kind: skill
+
+# ===================================================================
+# Framework classification (audience: marketplace aggregator + architect)
+# Migrated from SKILL.md frontmatter in v2 — buyer doesn't need this.
+# ===================================================================
+framework_classification:
+  tier: discipline
+  skill_contract: discipline-verifiable
+  task_class: decision-coherent
+  effort_level: L0
+  emitted_by: marketplace-generator-sonnet
+  emitted_at: 2026-05-22
+  framework_commit: 63650751cfecf97b7fe693e138d339c26bc42647
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+# ===================================================================
+# Source provenance (audience: marketplace listing + attribution display)
+# ===================================================================
+source_provenance:
+  repo_url: https://github.com/github/awesome-copilot
+  file_path: skills/documentation-writer/SKILL.md
+  raw_url: https://raw.githubusercontent.com/github/awesome-copilot/main/skills/documentation-writer/SKILL.md
+  author: GitHub (org) + community contributors
+  license: MIT
+  license_url: https://github.com/github/awesome-copilot/blob/main/LICENSE
+  fetched_at: 2026-05-22
+  fetch_path_tried:
+    - url: https://raw.githubusercontent.com/github/awesome-copilot/main/skills/documentation-writer/SKILL.md
+      result: success                    # first path — content retrieved
+    - url: https://raw.githubusercontent.com/github/awesome-copilot/main/prompts/documentation-writer.prompt.md
+      result: not_attempted             # success on path 1; paths 2–4 skipped
+    - url: https://raw.githubusercontent.com/github/awesome-copilot/main/documentation-writer/SKILL.md
+      result: not_attempted
+    - url: gh api repos/github/awesome-copilot/contents
+      result: not_attempted
+  source_format: github-copilot-skill-md
+  our_modifications: >
+    Frontmatter translated from GitHub Copilot SKILL.md schema to this framework's
+    v2 buyer-facing shape (5 fields: name, description, license, source_author,
+    source_url). Framework classification fields migrated to this file.
+    Body text reproduced verbatim from the upstream source; no content
+    modifications, additions, or omissions were made to the prose or workflow steps.
+    A "Constants honored" and "Cross-references" section removed per v2 audience-matrix
+    (dev-productivity-skills-shape-v2-proposal.md). Provenance footer added to SKILL.md.
+    # L0 = wrap-as-is. SKILL.md body is source verbatim. Framework
+    # classification + badges = our value-add, both in sidecar files only.
+
+# ===================================================================
+# Benchmark configuration (per ADR-0007)
+# ===================================================================
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-3
+  scenario_seeding_open_item: true   # see docs/project/dev-productivity-skills-tracking.md §Open contract questions Q1
+  # Empty targets_scenarios is honest: no documentation-writing scenarios
+  # exist under framework/scenarios/ as of 2026-05-22. Architect Stage-5
+  # may seed a documentation-quality scenario to enable B2.
+
+# ===================================================================
+# Constants declared (index — rationale lives in badges-draft.yaml)
+# Full rationale per constant lives in badges-draft.yaml b1_constants_compliance.
+# This list is the index; that file is the canonical authority.
+# ===================================================================
+constants_declared:
+  - bounded-tool-surface
+  - observable-agent-traces
+  - minimal-sufficient-context
+  - typed-tool-contracts-with-feedback-loop   # vacuously honored (zero-tool)
+
+# ===================================================================
+# Composition graph (audience: marketplace orchestration discovery)
+# ===================================================================
+composition_graph:
+  depends_on: []
+  extends: null
+  composes_with: []
+  invokes: []
+  alternatives: []
+
+discovery:
+  keywords: [from-repo, documentation, harden-security, design-api, write-docs, clean-git]

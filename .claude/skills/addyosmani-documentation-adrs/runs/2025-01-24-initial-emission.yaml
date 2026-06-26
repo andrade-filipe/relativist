@@ -1,0 +1,6 @@
+run_id: 2025-01-24-addyosmani-documentation-adrs-initial-emission
+artifact_id: addyosmani-documentation-adrs
+operator: gemini-cli
+event: initial-emission
+shape: v2 (ADR-0010)
+notes: "Initial emission of L1 adapted ADR skill following audience-matrix partition."

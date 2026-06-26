@@ -1,0 +1,80 @@
+# badges-draft.yaml — addyosmani-documentation-adrs
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# SKILL.md body does NOT duplicate this content. composition.yaml carries
+# only the string-ID index (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+
+artifact_id: addyosmani-documentation-adrs
+artifact_path: generation/skills/addyosmani-documentation-adrs/
+artifact_tier: discipline
+artifact_task_class: decision-coherent
+artifact_targets_scenarios: []
+
+# ---------------------------------------------------------------------------
+# B1 — Constants Compliance Badge (binary gate, computed on-emission).
+# ---------------------------------------------------------------------------
+b1_constants_compliance:
+  status: passing
+  checked_at: 2025-01-24
+  framework_commit: n/a
+  judge:
+    model_id: gemini-cli
+    version: 1.0
+    prompt_hash: n/a
+  constants_checked:
+    - constant_ref: framework/constants/bounded-tool-surface.md
+      verdict: passing
+      rationale: |
+        Skill invokes zero tools. It provides a cognitive framework and templates for
+        documentation and decision recording. Pure logic/process guidance.
+
+    - constant_ref: framework/constants/observable-agent-traces.md
+      verdict: passing
+      rationale: |
+        The Skill produces immutable, version-controlled artifacts (ADRs, READMEs,
+        structured comments). These artifacts are explicitly designed to make the
+        hidden "why" of architectural decisions observable to future agents and
+        human reviewers. The presence of ADR-001, ADR-002, etc. in a known directory
+        provides a deterministic trace of the system's evolution.
+
+    - constant_ref: framework/constants/minimal-sufficient-context.md
+      verdict: passing
+      rationale: |
+        The Skill enforces "documenting the why, not the what". This directly
+        honors minimal-sufficient-context by stripping away redundant explanations
+        of obvious code and focusing only on the high-leverage context (constraints,
+        alternatives, trade-offs) that cannot be re-derived from the source code
+        itself. It prevents "context rot" by keeping documentation lean and
+        focused on intent.
+
+    - constant_ref: knowledge/software-craft/constants/dry-single-source-of-truth.md
+      verdict: passing
+      rationale: |
+        The ADR pattern enforces a single source of truth for architectural
+        decisions. Once a decision is made and recorded in an ADR, it becomes
+        the authoritative reference. The Skill discourages duplicating decision
+        logic across multiple files, favoring cross-references to the canonical
+        ADR instead.
+
+# ---------------------------------------------------------------------------
+# B2 — Scenario Performance Badge
+# ---------------------------------------------------------------------------
+b2_scenarios_performance:
+  status: deferred
+  reason: |
+    No documentation-specific scenarios exist in framework/scenarios/ yet.
+    Architect sign-off required to seed a documentation-compliance scenario.
+
+# ---------------------------------------------------------------------------
+# Sign-off envelope
+# ---------------------------------------------------------------------------
+issued_at: 2025-01-24
+signed_off: false
+signed_off_by: null
+signed_off_at: null
+sign_off_notes: |
+  Awaiting architect Stage-5 review.

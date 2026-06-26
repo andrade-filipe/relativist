@@ -1,0 +1,118 @@
+# Run log — on-emission B1 self-check
+# Artifact: pocock-git-guardrails
+# Cadence: on-emission (auto, blocking per ADR-0007 Pillar 7)
+# Run ID: 2026-05-22T01-00-00Z-on-emission-5fca761
+# Emitted by: marketplace-generator-sonnet
+
+run_id: 2026-05-22T01-00-00Z-on-emission-5fca761
+artifact_id: pocock-git-guardrails
+artifact_path: generation/skills/pocock-git-guardrails/
+cadence: on-emission
+framework_commit: 5fca761
+emitted_by: marketplace-generator-sonnet
+run_timestamp: 2026-05-22T01:00:00Z
+
+# Reproducibility envelope (per ADR-0007 §"Topology summary"):
+judge:
+  model_id: deterministic
+  version: parser-rules-v1
+  prompt_hash: n/a
+  rationale: "B1 is structural — decided by parsing frontmatter + body structure checks, no LLM judge."
+
+# Source fetch log:
+source_fetch:
+  primary_url: https://raw.githubusercontent.com/mattpocock/skills/main/skills/git-guardrails-claude-code/SKILL.md
+  primary_result: HTTP 404 (path does not exist at this URL)
+  fallback_url: https://github.com/mattpocock/skills/tree/main/skills/git-guardrails-claude-code
+  fallback_result: path verified via gh API; skill located at skills/misc/git-guardrails-claude-code/
+  resolution: fetched via gh api repos/mattpocock/skills/contents/skills/misc/git-guardrails-claude-code/SKILL.md
+  source_sha: d943c68219d0f47512f10c5018a11fd8358e9bb5
+  source_size_bytes: 2312
+  fetch_status: success
+
+# Frontmatter shape check (12 required fields per dispatch VERIFICATION):
+frontmatter_check:
+  fields_present:
+    - name: present
+    - description: present
+    - tier: present
+    - task_class: present
+    - targets_scenarios: present
+    - emitted_by: present
+    - emitted_at: present
+    - framework_commit: present
+    - source_attribution: present
+    - original_source_url: present
+    - license: present
+    - effort_level: present
+  field_count: 12
+  verdict: passing
+
+# Scenario validation (hard gate per marketplace-generator agent §2):
+scenario_validation:
+  targets_scenarios: []
+  # Empty list — no scenario IDs declared, therefore no directory existence
+  # check required. Per ADR-0007: "The marketplace generator is forbidden from
+  # emitting artifacts whose targets_scenarios references a scenario that does
+  # not exist." An empty list references nothing → gate passes vacuously.
+  verdict: passing
+
+# B1 Constants compliance checks:
+b1_checks:
+  - constant: framework/constants/bounded-tool-surface.md
+    check_method: structural — count of distinct tool types in skill body step procedure
+    result: passing
+    note: "2 tool types (Bash, Write/Edit) enumerated in 'Tool surface' section; both <= 30 ceiling"
+
+  - constant: framework/constants/observable-agent-traces.md
+    check_method: structural — presence of explicit verification step with named output signal
+    result: passing
+    note: "Step 5 names exit-code-2 + BLOCKED stderr as the observable trace; file artifacts are git-trackable"
+
+  - constant: framework/constants/minimal-sufficient-context.md
+    check_method: structural — absence of retrieved content / auxiliary context injection in body
+    result: passing
+    note: "Body contains only procedural steps; no codebase retrieval, no few-shot exemplars, no auxiliary prompt injection"
+
+  - constant: framework/constants/typed-tool-contracts-with-feedback-loop.md
+    check_method: structural — verification step provides typed feedback; scoping argument present
+    result: passing
+    note: "Constant scopes to .claude/agents/*.md per spec; within Skill guidance, typed exit-code contract honored in Step 5; scoping rationale documented in badges-draft.yaml and SKILL.md constants-honored section"
+
+# Attribution body check:
+attribution_check:
+  attribution_block_present: true
+  original_author_named: true
+  license_named: true
+  source_url_present: true
+  verdict: passing
+
+# composition.yaml check:
+composition_check:
+  file_present: true
+  source_provenance_complete: true
+  our_modifications_field: ""  # empty string = L0 verified
+  verdict: passing
+
+# Overall B1 result:
+b1_result: passing
+b1_rationale: |
+  All four constants pass structural checks. Frontmatter has all 12 required
+  fields. Scenario validation passes vacuously (empty targets_scenarios list).
+  Attribution block present and complete. composition.yaml present with
+  source_provenance complete and our_modifications empty (L0 confirmed).
+  Artifact is marketplace-eligible pending architect Stage-5 sign-off.
+
+# Write-boundary audit:
+write_boundary_audit:
+  files_written:
+    - generation/skills/pocock-git-guardrails/SKILL.md
+    - generation/skills/pocock-git-guardrails/composition.yaml
+    - generation/skills/pocock-git-guardrails/badges-draft.yaml
+    - generation/skills/pocock-git-guardrails/runs/2026-05-22T01-00-00Z-on-emission-5fca761.yaml
+  files_outside_generation: []
+  badges_yaml_written: false  # architect-only; never written by generator
+  framework_modified: false
+  docs_modified: false
+  claude_agents_modified: false
+  verdict: clean

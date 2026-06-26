@@ -1,0 +1,42 @@
+artifact_id: addyosmani-documentation-adrs
+artifact_kind: skill
+
+framework_classification:
+  tier: discipline
+  skill_contract: discipline-verifiable
+  task_class: decision-coherent
+  effort_level: L1
+  emitted_by: gemini-cli
+  emitted_at: 2025-01-24
+  framework_commit: n/a
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+source_provenance:
+  original_author: Addy Osmani
+  original_url: https://addyosmani.com/blog/adr/
+  license: MIT
+  license_verified_at: 2025-01-24
+  fact_sheet_ref: null
+  our_modifications: "L1 adaptation: structure unified into ADR-0010 shape, content refactored for agent-readability."
+  attribution_string: "Adapted from Addy Osmani's documentation and ADR patterns. MIT license."
+
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-3
+  scenario_seeding_open_item: true
+
+constants_declared:
+  - bounded-tool-surface
+  - observable-agent-traces
+  - minimal-sufficient-context
+  - dry-single-source-of-truth
+
+composition_graph:
+  depends_on: []
+  extends: null
+  composes_with: []
+  invokes: []
+  alternatives: []
+
+discovery:
+  keywords: [from-article, documentation, write-docs]

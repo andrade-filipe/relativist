@@ -1,0 +1,61 @@
+# badges-draft.yaml — stride-threat-modeling
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# SKILL.md body does NOT duplicate this content. composition.yaml carries
+# only the string-ID index (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+
+artifact_id: stride-threat-modeling
+artifact_path: generation/skills/stride-threat-modeling/
+artifact_tier: technique
+artifact_task_class: mixed
+artifact_targets_scenarios: []
+
+b1_constants_compliance:
+  status: passing
+  checked_at: 2026-05-23
+  framework_commit: 6d31347
+  judge:
+    model_id: gemini-2.0-flash
+    version: n/a
+    prompt_hash: n/a
+  constants_checked:
+    - constant_ref: framework/constants/minimal-sufficient-context.md
+      verdict: passing
+      rationale: |
+        The skill provides a structured framework (STRIDE) that encourages providing only the 
+        necessary categories of threats without unnecessary fluff. It helps keep the security 
+        discussion focused and concise.
+
+    - constant_ref: framework/constants/observable-agent-traces.md
+      verdict: passing
+      rationale: |
+        The output of a STRIDE analysis (the threat matrix) is a highly structured and observable 
+        trace of the agent's reasoning process regarding system security.
+
+    - constant_ref: knowledge/software-craft/constants/failure-design-vs-failure-prevention.md
+      verdict: passing
+      rationale: |
+        STRIDE is fundamentally about failure design—identifying how a system can fail under 
+        attack so that mitigations can be designed, rather than just trying to prevent failure 
+        vaguely.
+
+    - constant_ref: knowledge/software-craft/constants/essence-vs-accident-distinction.md
+      verdict: passing
+      rationale: |
+        The categories in STRIDE represent the "essence" of security threats (Spoofing, 
+        Tampering, etc.), allowing the analyst to ignore implementation "accidents" and 
+        focus on the fundamental security properties of the design.
+
+b2_scenarios_performance:
+  status: deferred
+  reason: |
+    No security-track scenarios exist in framework/scenarios/ yet.
+
+issued_at: 2026-05-23
+signed_off: false
+signed_off_by: null
+signed_off_at: null

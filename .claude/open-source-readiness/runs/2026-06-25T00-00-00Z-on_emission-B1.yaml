@@ -1,0 +1,178 @@
+# B1 Constants Compliance Run Log
+# Cadence: on_emission
+# Artifact: generation/packs/open-source-readiness/
+# Emitted by: marketplace-generator-sonnet
+# Timestamp: 2026-06-25T00:00:00Z
+# Framework commit: 1db0c55
+
+run_id: "2026-06-25T00-00-00Z-on_emission-B1"
+artifact_id: open-source-readiness
+artifact_kind: pack
+cadence: on_emission
+timestamp: "2026-06-25T00:00:00Z"
+emitted_by: marketplace-generator-sonnet
+
+# ---- Verification Step 1: Frontmatter shape ----
+
+frontmatter_check:
+  status: passing
+  details:
+    tier_declared: workflow
+    task_class_declared: mixed
+    targets_scenarios_declared: "[] (empty list — see scenario_fit_note in badges-draft.yaml)"
+    skill_contract_declared: technique-evaluable
+    constants_declared_count: 6
+    constants_declared:
+      - context-curation-discipline
+      - human-approval-on-irreversible-actions
+      - observable-agent-traces
+      - deterministic-outer-loop
+      - bounded-tool-surface
+      - minimal-sufficient-context
+
+# ---- Verification Step 2: Member resolution ----
+
+member_skill_resolution:
+  status: passing
+  checks:
+    - skill: license-and-attribution-auditor
+      path: generation/skills/license-and-attribution-auditor/SKILL.md
+      exists: true
+    - skill: addyosmani-documentation-adrs
+      path: generation/skills/addyosmani-documentation-adrs/SKILL.md
+      exists: true
+    - skill: awesome-copilot-documentation-writer
+      path: generation/skills/awesome-copilot-documentation-writer/SKILL.md
+      exists: true
+    - skill: pocock-git-guardrails
+      path: generation/skills/pocock-git-guardrails/SKILL.md
+      exists: true
+    - skill: pocock-setup-pre-commit
+      path: generation/skills/pocock-setup-pre-commit/SKILL.md
+      exists: true
+    - skill: auth-hardening-best-practices
+      path: generation/skills/auth-hardening-best-practices/SKILL.md
+      exists: true
+    - skill: stride-threat-modeling
+      path: generation/skills/stride-threat-modeling/SKILL.md
+      exists: true
+
+member_agent_resolution:
+  status: passing
+  checks:
+    - agent: readiness-orchestrator
+      path: generation/packs/open-source-readiness/agents/readiness-orchestrator.md
+      exists: true
+    - agent: docs-readiness-reviewer
+      path: generation/packs/open-source-readiness/agents/docs-readiness-reviewer.md
+      exists: true
+    - agent: license-readiness-reviewer
+      path: generation/packs/open-source-readiness/agents/license-readiness-reviewer.md
+      exists: true
+    - agent: secrets-git-reviewer
+      path: generation/packs/open-source-readiness/agents/secrets-git-reviewer.md
+      exists: true
+    - agent: security-ci-reviewer
+      path: generation/packs/open-source-readiness/agents/security-ci-reviewer.md
+      exists: true
+    - agent: readiness-aggregator
+      path: generation/packs/open-source-readiness/agents/readiness-aggregator.md
+      exists: true
+    - agent: readiness-remediator
+      path: generation/packs/open-source-readiness/agents/readiness-remediator.md
+      exists: true
+
+# ---- Verification Step 3: Constants honored by content ----
+
+constants_compliance_checks:
+  status: passing
+
+  context_curation_discipline:
+    status: passing
+    evidence:
+      - "readiness-orchestrator.md frontmatter: write_substrate, select_strategy, compress_policy, isolate_mechanism all declared"
+      - "All reviewer agents declare isolate_mechanism: none-single-thread (legal — single-threaded)"
+      - "glue/reviewer-dispatch-template.md formalizes context ceiling and isolation invariants"
+      - "No reviewer agent references another reviewer by name in its body"
+      - "Aggregator receives only reviewer YAML outputs — no repo access"
+
+  human_approval_on_irreversible_actions:
+    status: passing
+    evidence:
+      - "readiness-remediator.md: irreversible_action_class_list non-empty; approval_mechanism: request-human-approval-pattern; bypass_audit_path: log-and-halt"
+      - "readiness-remediator.md body: ## Approval Gate section present; every write gated; no silent bypass"
+      - "Two-step approval required for git history rewrite"
+      - "Orchestrator Phase 4 human gate before remediator dispatch"
+      - "Reviewer and aggregator agents: irreversible_action_class_list: [] (legal — read-only)"
+
+  observable_agent_traces:
+    status: passing
+    evidence:
+      - "All agents: trace_substrate: filesystem; trace_event_schema declared with named fields"
+      - "readiness-orchestrator: review-state/round-N/orchestrator-trace.jsonl"
+      - "Each reviewer: structured YAML output to reviewer-outputs/<dimension>.yaml"
+      - "readiness-aggregator: triage-report.yaml"
+      - "readiness-remediator: remediation-summary.yaml"
+      - "All agents: replay_protocol declared (trace-driven-eval-rerun or equivalent)"
+
+  deterministic_outer_loop:
+    status: passing
+    evidence:
+      - "All agents: termination_predicate and step_budget declared in frontmatter"
+      - "readiness-orchestrator: step_budget 12; escalation_target: halt-and-report"
+      - "Reviewer agents: step_budget 8-10; fixed checklist terminates evaluation"
+      - "readiness-aggregator: step_budget 8; 5-step protocol"
+      - "readiness-remediator: step_budget 30 (bounded; one step per approved item)"
+      - "No agent body contains language delegating loop termination to model judgement"
+
+  bounded_tool_surface:
+    status: passing
+    evidence:
+      - "Each agent's body declares an explicit ## Tool Surface section with named tools"
+      - "readiness-orchestrator: 5 tools"
+      - "docs-readiness-reviewer: 3 tools"
+      - "license-readiness-reviewer: 4 tools"
+      - "secrets-git-reviewer: 5 tools"
+      - "security-ci-reviewer: 4 tools"
+      - "readiness-aggregator: 2 tools"
+      - "readiness-remediator: 4 tools"
+      - "No agent has unbounded access or web search"
+
+  minimal_sufficient_context:
+    status: passing
+    evidence:
+      - "glue/reviewer-dispatch-template.md: context ceiling formalized; only (system prompt + repo path + output path) injected per reviewer"
+      - "readiness-orchestrator: select_strategy: task-scoped-injection"
+      - "readiness-aggregator: receives only 4 reviewer YAML files and triage schema"
+      - "readiness-remediator: receives only triage report and approved item list"
+
+# ---- Verification Step 4: Write boundary ----
+
+write_boundary_check:
+  status: passing
+  files_written:
+    - generation/packs/open-source-readiness/manifest.md
+    - generation/packs/open-source-readiness/composition.yaml
+    - generation/packs/open-source-readiness/agents/readiness-orchestrator.md
+    - generation/packs/open-source-readiness/agents/docs-readiness-reviewer.md
+    - generation/packs/open-source-readiness/agents/license-readiness-reviewer.md
+    - generation/packs/open-source-readiness/agents/secrets-git-reviewer.md
+    - generation/packs/open-source-readiness/agents/security-ci-reviewer.md
+    - generation/packs/open-source-readiness/agents/readiness-aggregator.md
+    - generation/packs/open-source-readiness/agents/readiness-remediator.md
+    - generation/packs/open-source-readiness/glue/triage-schema.yaml
+    - generation/packs/open-source-readiness/glue/reviewer-dispatch-template.md
+    - generation/packs/open-source-readiness/badges-draft.yaml
+    - generation/packs/open-source-readiness/runs/2026-06-25T00-00-00Z-on_emission-B1.yaml
+  files_outside_boundary: []
+  framework_writes: none
+  knowledge_writes: none
+
+# ---- Overall result ----
+
+b1_overall: passing
+scenario_fit_note: >
+  targets_scenarios: [] — no existing scenario fits the repository-state audit shape.
+  Proposed scenario: open-source-readiness-audit (task_class: mixed, tier: workflow).
+  B2 is blocked pending architect Stage-5 scenario seeding.
+  Full SCENARIO_FIT_NOTE in badges-draft.yaml stage5_observations.

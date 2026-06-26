@@ -1,0 +1,235 @@
+# badges-draft.yaml — license-and-attribution-auditor
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# Per v2 audience matrix (ADR-0010), SKILL.md body does NOT duplicate
+# this content. composition.yaml carries only the string-ID index
+# (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+#
+# See:
+#   - docs/decisions/ADR-0007-benchmark-architecture.md (Pillar 6)
+#   - .claude/agents/marketplace-generator.md (write boundary)
+#   - .claude/agents/architect.md (badge sign-off authority)
+
+artifact_id: license-and-attribution-auditor
+artifact_path: generation/skills/license-and-attribution-auditor/
+artifact_tier: technique           # per ADR-0005
+artifact_task_class: decision-coherent  # per ADR-0006
+artifact_targets_scenarios:
+  - prd-completeness               # closest decision-coherent completeness-audit scenario
+
+# -----------------------------------------------------------------------------
+# B1 — Constants Compliance Badge (binary gate, computed on-emission).
+# Per ADR-0007 Pillar 6, B1 is mandatory for marketplace eligibility. Failing
+# B1 = not eligible. Self-checked by marketplace-generator at emission time
+# via parser/regex checks (no LLM judge involved).
+# -----------------------------------------------------------------------------
+b1_constants_compliance:
+  status: passing
+  checked_at: 2026-06-25
+  framework_commit: 1db0c55
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  constants_checked:
+
+    - constant_ref: framework/constants/minimal-sufficient-context.md
+      verdict: passing
+      rationale: |
+        SUBSTANTIVE. The audit methodology injects only the sub-rubric relevant
+        to each criterion as the checklist proceeds. Criterion 2 injects the
+        Fogel license-selection rubric (reciprocity-intent table); Criterion 3
+        injects the SPDX-header application spec; Criterion 5 injects the
+        dependency-compatibility matrix. No criterion drags in the full legal
+        corpus or unrelated content. The structured output format (summary
+        table + per-criterion findings) is the minimal sufficient output for
+        the downstream consumer (the Pack orchestrator or human review). The
+        Skill explicitly scopes itself to Dimension 2 only and directs out-of-
+        scope concerns to separate reviewers. select_strategy =
+        task-scoped-injection — only the criterion's sub-rubric enters the
+        current reasoning step.
+
+    - constant_ref: framework/constants/deterministic-outer-loop.md
+      verdict: passing
+      rationale: |
+        SUBSTANTIVE. The audit is a deterministic seven-criterion checklist
+        executed in a fixed, declared order. Criterion 1 is evaluated first
+        and is a hard blocker: if it fails, remaining criteria are blocked and
+        the report halts at remediation for Criterion 1. Criterion 7 is
+        conditional: it is activated only when a license change is under
+        consideration; otherwise it is marked NOT-TRIGGERED. The evaluation
+        sequence is not LLM-decided — the Skill body fixes the order,
+        termination conditions, and the conditional activation of Criterion 7.
+        The outer loop is: for each criterion in [1..7]: evaluate; if Criterion
+        1 is BLOCKER, mark remaining as blocked and halt; if Criterion 7 is
+        not a relicense context, mark NOT-TRIGGERED and advance. This is
+        deterministic code (harness-enforced checklist), not model-decides-
+        when-to-stop. step_budget = 7, escalation_target = halt-and-report.
+
+    - constant_ref: framework/constants/human-approval-on-irreversible-actions.md
+      verdict: passing
+      rationale: |
+        SUBSTANTIVE. All remediation actions that write or modify files —
+        adding or replacing a LICENSE file (Criterion 1/2), injecting SPDX
+        headers into source files (Criterion 3), creating a NOTICE file
+        (Criterion 3), updating CONTRIBUTING.md with a DCO requirement
+        (Criterion 4), replacing an incompatible dependency (Criterion 5) —
+        are explicitly prefixed "HUMAN APPROVAL REQUIRED" in the output report.
+        The Skill does not execute these actions; it surfaces typed remediation
+        actions and the host Agent or operator confirms before any filesystem
+        write occurs. The approval_mechanism = request-human-approval-pattern
+        (REF-0037 Factor 7). The bypass_audit_path = log-and-halt: if approval
+        is not received, the Skill reports the pending action and exits without
+        executing the write. irreversible_action_class_list =
+        [filesystem-write-license-file, filesystem-write-spdx-headers,
+        filesystem-write-notice, filesystem-write-contributing-md].
+
+    - constant_ref: framework/constants/observable-agent-traces.md
+      verdict: passing
+      rationale: |
+        SUBSTANTIVE. The Skill's primary output IS a structured trace: the
+        summary table (one row per criterion, verdict, severity) and the
+        findings section (criterion, verdict, evidence, remediation per non-
+        passing entry) form a schema-bound record of every audit step's
+        observation and decision. The trace_substrate is the structured audit
+        report emitted to the host Agent or human operator. The
+        trace_event_schema is implicit in the output format contract:
+        criterion_id, verdict (PASS / FAIL / UNCERTAIN / FLAG / NOT-TRIGGERED),
+        evidence (observed file state), severity, remediation (typed action
+        or null). The replay_protocol is re-run-on-same-repo-snapshot — the
+        audit is deterministic given the same file-tree state; a recorded
+        report can be diff-compared to a re-run on the same snapshot to track
+        remediation progress.
+
+    - constant_ref: framework/constants/bounded-tool-surface.md
+      verdict: passing
+      rationale: |
+        Vacuously honored — this Skill invokes zero tools at runtime. It is a
+        pure prompt scaffold producing a structured text report. All file reads
+        required for the audit (LICENSE file contents, source-file header
+        samples, dependency manifest) are performed by the host Agent or
+        operator before invoking the Skill; this Skill receives repository
+        state as context, not through tool calls. active_tool_ceiling = 0,
+        tool_catalog_size_total = 0, tool_pruning_strategy = none-under-ceiling
+        (legal when catalog = 0).
+
+    - constant_ref: framework/constants/typed-tool-contracts-with-feedback-loop.md
+      verdict: passing
+      rationale: |
+        Vacuously honored — the constant binds on tool-using Agents and Skills;
+        this Skill invokes zero tools.
+
+  expires_when:
+    any_of:
+      - framework_constants_change: true
+      - days_elapsed: 180
+  status_after_expiry: stale
+
+# -----------------------------------------------------------------------------
+# B2 — Scenario Performance Badge.
+# Deferred. targets_scenarios is populated (prd-completeness) but the scenario
+# match is imperfect (see stage5_observations). B2 is blocked pending a
+# dedicated license-attribution-compliance-audit scenario.
+# -----------------------------------------------------------------------------
+b2_scenarios_performance:
+  status: not-applicable
+  reason: >
+    targets_scenarios is populated with prd-completeness, the closest available
+    decision-coherent completeness-audit scenario. However, prd-completeness
+    measures identification of missing PRD sections from PRD text inputs;
+    this Skill operates on repository state inputs (LICENSE file contents,
+    source-file headers, dependency manifests). The two input shapes are
+    structurally incompatible for a fair B2 run. B2 is deferred until a
+    dedicated `license-attribution-compliance-audit` scenario is seeded by
+    the architect with repository-state task inputs. See stage5_observations
+    for the proposed scenario shape. Flagged tier-1 for Stage-5 consideration.
+
+# -----------------------------------------------------------------------------
+# Stage-5 observations.
+# Surfaced per EMISSION_GAP protocol (ADR-0013 Layer 4) and scenario-fit
+# note discipline. The architect picks these up at next Stage-5 cycle.
+# -----------------------------------------------------------------------------
+stage5_observations:
+
+  - kind: EMISSION_GAP
+    artifact: generation/skills/license-and-attribution-auditor/
+    missing_tier: technique
+    proposed_name: license-and-attribution-auditor
+    candidate_refs:
+      - REF-0201
+      - REF-0202
+    note: >
+      No framework/techniques/license-and-attribution-auditor.md pattern exists
+      at emission time. This Skill is emitted directly from concept-card
+      authorization (research/concepts/open-source-readiness.md § Dimension 2)
+      and operator dispatch, but the backing framework technique pattern has not
+      been formally written in framework/techniques/. The concept card + two fact
+      sheets (REF-0201 Fogel + REF-0202 opensource.guide) constitute sufficient
+      evidence for architect Stage-4 formalization. The technique pattern should
+      encode: the seven-criterion checklist structure, the Fogel license-selection
+      rubric slots, the SPDX-header coverage metric, the DCO/CLA decision rubric,
+      and the escape-hatch UNCERTAIN discipline for legally ambiguous cases.
+      Until formalized, this Skill's source is the concept card and fact sheets,
+      not a framework/techniques/ pattern file.
+
+  - kind: SCENARIO_FIT_NOTE
+    artifact: generation/skills/license-and-attribution-auditor/
+    scenario_used: prd-completeness
+    scenario_fit_quality: conceptually-analogous-but-input-incompatible
+    proposed_new_scenario: license-attribution-compliance-audit
+    note: >
+      targets_scenarios: [prd-completeness] is the best available fit from the
+      13 seeded scenarios as of 2026-06-25. prd-completeness is decision-coherent
+      (matching this Skill's task_class) and is a completeness-audit scenario
+      (checking a project artifact for required elements against a canonical
+      checklist). However, two mismatches exist: (1) prd-completeness carries
+      tier:discipline in its scenario metadata while this Skill is tier:technique;
+      (2) prd-completeness tasks use PRD-text inputs, not repository-state inputs,
+      so B2 cannot run this Skill against prd-completeness tasks.
+
+      Proposed scenario shape for architect Stage-5 seeding:
+        scenario_id: license-attribution-compliance-audit
+        task_class: decision-coherent
+        tier: technique
+        task_shape: >
+          Given a repository snapshot (LICENSE file content or absence, a sample
+          of source file headers, a dependency manifest with license annotations),
+          identify which of the seven audit criteria are failing and produce a
+          correctly prioritized remediation list.
+        measurable_dimensions:
+          - accuracy (did the audit correctly identify passing vs. failing criteria?)
+          - calibration (did it use UNCERTAIN appropriately vs. false confidence?)
+          - cost-tokens (deterministic)
+        graders:
+          - accuracy: cheap-llm-judge against a gold audit set
+          - calibration: cheap-llm-judge
+          - cost-tokens: deterministic
+        baselines:
+          floor: zero-shot "audit this repo for license issues" with no rubric
+          reference: license-and-attribution-auditor Skill (this artifact)
+        candidate_refs: [REF-0201, REF-0202]
+
+# -----------------------------------------------------------------------------
+# Sign-off envelope.
+# -----------------------------------------------------------------------------
+issued_at: 2026-06-25
+signed_off: false
+signed_off_by: null
+signed_off_at: null
+sign_off_notes: |
+  Awaiting architect Stage-5. The architect should:
+  1. Validate B1 constants compliance at the pinned framework_commit (1db0c55).
+  2. Resolve the EMISSION_GAP: formalize framework/techniques/license-and-
+     attribution-auditor.md from REF-0201 + REF-0202 + concept card, encoding
+     the seven-criterion checklist structure, the Fogel rubric slots, and the
+     escape-hatch UNCERTAIN discipline.
+  3. Seed the `license-attribution-compliance-audit` scenario in
+     framework/scenarios/ per the proposed shape in stage5_observations above.
+  4. Update targets_scenarios in composition.yaml once the new scenario is seeded.
+  5. Invoke benchmark-this-artifact to compute B2 once the new scenario has datasets.
+  6. Promote this draft to generation/skills/license-and-attribution-auditor/
+     badges.yaml on successful review, or reject with documented reason.

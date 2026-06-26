@@ -1,0 +1,40 @@
+o Artigo foi publicado com nota 10, agora estou preparando tudo para efetivamente publicar, vou postar nas minhas redes sociais e etc. e lá o artigo promete que o Relativist é Open-Source.
+
+isto posto, já deixei o repositório público, mas nós precisamos preparar tudo para o Open-Source real, ou seja, depois que eu anunciar e fizer os posts, as pessoas vão olhar e tentar modificar ou replicar.
+
+OK, portanto precisamos que o repositório esteja preparado para isso.
+
+1. Higiene: depois de meses desenvolvendo, podemos dizer que efetivamente isso aqui está uma bagunça. e nosso primeiro objetivo é trazer ordem para essa bagunça.
+1.1 algo bom também a pontuar é que não estamos mais presos ao SpecDriven Development. que depois dessa experiencia desenvolvendo o relativist, percebi que apesar de muito bom, mas também gasta muito token e gera muita documentação. o que no momento atual me parece muito custoso e bagunçado no projeto.
+1.2. também definiremos, através de agents, skills e harness padronizado para o repositório, que estarão commitados. como será o padrão de escrita de código para o repositório
+1.3. um novo workflow mais otimizado que Spec Driven Development que eu acho interessante usar a partir de agora é o RPI. trouxe um pack completo com agentes para implementar RPI @.claude/rpi-pipeline\
+1.4. com o RPI, a documentação precisa ser inteira redesenhada e muito dos arquivos que temos hoje de specs, handoffs, etc etc devem ficar em um _archive, salvos somente para leitura. a nova documentação deve conter o essencial, o que é importante para o contexto da LLM. lembrando que, o RPI funciona ao fazer um scan da documentação e do código, com a informação de qualidade gerada pelo research, um plano descartável é feito, depois implementado. por fim a documentação é atualizada e o ciclo se repete.
+
+2. Reprodutibilidade do artigo.
+
+No momento atual temos pastas como @scripts, @results no root. o que não está errado. mas pensando no futuro, e denovo na organização do repositório. no futuro esses resultados e scripts tendem a não ser mais o ideal, considerando que o software pode mudar muito. portanto acredito que poderiam ser separados em uma pasta reservada, que fique clara que só existe por causa do artigo, algo como reproduce_article, o que acha dessa ideia?
+
+estou tentando equilibrar
+1. manter o artigo possivel de ser reproduzido
+2. preparar a casa para que o código possa andar e ser desenvolvido sem confusão.
+
+me ajude com essa tarefa.
+
+3. Próximos passos planejados
+
+sei que já temos documentado e até no artigo quais os próximos passos o software precisa dar. mas quero explicitar ainda mais isso, na nova documentação que será gerada. até para que os curiosos de plantão possam consultar rapidamente (e quem sabe, ajudar)
+
+4. Licença -> estou na duvida se deixo 100% MIT... o ponto é, essa ideia pode valer bilhões, será que eu deixo me "roubarem" facilmente com uma licença AS IS? é um ponto a ser considerado, como outras pessoas conciliam isso?
+
+5. aqui acabaram as minhas ideias, você deve ter percebido que escrevi esse prompt de forma despretenciosa, pois eu realmente não tenho muita ideia do que fazer nesse caso, é minha primeira vez lançando um repo open-source. portanto preciso de ajuda, quero saber se esqueci de algo, se tem algo que estou deixando passar, etc etc. me ajude nessa tarefa. precisamos refinar até chegar no plano final
+
+6. me ajude com o guia de toda configuração que eu preciso fazer no repositório do github e que você não consegue fazer por aqui.
+
+adicionei vários agentes e skills em @.claude. leia principalmente @.claude\open-source-readiness @.claude\rpi-pipeline
+
+use planning e /grill-me
+
+o objetivo é criar um planejamento de tudo que nós vamos mudar no repositório do relativist, de forma disciplinada e sistemática. e depois implementar o planejamento
+o resultado final esperado é um repositório open-source pronto com alto padrão de qualidade, na documentação, padronização para a produção de código novo, e claro, o repositório corretamente configurado para todos que tiverem interesse de contribuir para o projeto.
+
+Go!

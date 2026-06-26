@@ -1,0 +1,17 @@
+run_id: 20260522-165800-on-emission-rpi
+cadence: on-emission
+timestamp: "2026-05-22 16:58:00"
+framework_commit: main
+
+b1_checks:
+  frontmatter_validation:
+    status: passing
+    rationale: "All required fields (tier, task_class, targets_scenarios) are present in manifest.md and member agent files."
+  scenario_validation:
+    status: passing
+    rationale: "Scenarios [factual-qa-with-source-citation, structured-output-compliance] exist in framework/scenarios/."
+  constants_compliance:
+    status: passing
+    rationale: "All 7 declared constants are structural invariants honored by the pack's member agents."
+
+verdict: passing

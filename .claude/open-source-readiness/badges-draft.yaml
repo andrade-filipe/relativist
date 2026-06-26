@@ -1,0 +1,171 @@
+# badges-draft.yaml
+# Proposed badges for: generation/packs/open-source-readiness/
+# Authored by: marketplace-generator-sonnet (Stage-4 emission)
+# Emitted: 2026-06-25
+# Status: DRAFT — architect Stage-5 sign-off required before promotion to badges.yaml
+# DO NOT rename this file to badges.yaml — that is architect-only authority.
+
+artifact_id: open-source-readiness
+artifact_kind: pack
+emitted_at: "2026-06-25T00:00:00Z"
+b1_run_ref: "runs/2026-06-25T00-00-00Z-on_emission-B1.yaml"
+
+# ============================================================
+# B1 — Constants Compliance (on-emission, structural/deterministic)
+# ============================================================
+
+b1_constants_compliance:
+  overall: passing
+  checks:
+
+    - constant: context-curation-discipline
+      status: passing
+      rationale: >
+        The readiness-orchestrator agent file declares all four pillar slots in frontmatter:
+        write_substrate: filesystem, select_strategy: task-scoped-injection,
+        compress_policy: none-bounded-task, isolate_mechanism: subagent-with-summary-handoff.
+        The four dimension reviewer agents each declare isolate_mechanism: none-single-thread
+        (legal — reviewers are single-threaded within their own context; isolation is enforced
+        by the orchestrator at dispatch time). The glue/reviewer-dispatch-template.md formalizes
+        the isolation invariant in a verifiable artifact. The agent bodies contain a
+        ## Context Strategy section naming each pillar by mechanism. The Isolate pillar is the
+        load-bearing constant for this pack — separate-context-windows per reviewer, enforced
+        by the orchestrator's subagent-with-summary-handoff dispatch mechanism.
+
+    - constant: human-approval-on-irreversible-actions
+      status: passing
+      rationale: >
+        The readiness-remediator agent file declares:
+          irreversible_action_class_list: [filesystem-file-write, git-history-rewrite,
+            secret-rotation, branch-protection-rule-change]
+          approval_mechanism: request-human-approval-pattern
+          bypass_audit_path: log-and-halt
+        The remediator body contains an ## Approval Gate section that explicitly forbids
+        proceeding past an unanswered approval request and mandates two-step approval for
+        git history rewrites. The readiness-orchestrator also declares an approval gate for
+        dispatching the remediator (the Phase 4 human-review gate). No reviewer or aggregator
+        agent performs side-effecting actions; their irreversible_action_class_list: [] is
+        legal because they are read-only.
+
+    - constant: observable-agent-traces
+      status: passing
+      rationale: >
+        All agents declare trace_substrate: filesystem and trace_event_schema with named fields.
+        The orchestrator writes to review-state/round-N/orchestrator-trace.jsonl.
+        Each reviewer writes its structured output YAML (the primary trace artifact for that agent).
+        The aggregator writes triage-report.yaml. The remediator writes remediation-summary.yaml.
+        Every agent declares replay_protocol: trace-driven-eval-rerun (or equivalent).
+        stdout-only and null trace substrates are absent.
+
+    - constant: deterministic-outer-loop
+      status: passing
+      rationale: >
+        All agents declare termination_predicate and step_budget in frontmatter.
+        The orchestrator: termination_predicate "all_reviewers_complete && aggregation_done ||
+        blocker_detected || step_count >= step_budget", step_budget: 12.
+        Reviewer agents: termination_predicate "all_checklist_items_evaluated || step_count >= step_budget",
+        step_budget: 8 (docs) / 8 (license) / 10 (secrets) / 10 (security-ci).
+        Aggregator: step_budget: 8.
+        Remediator: step_budget: 30 (bounded; one step per approved item with approval round-trip).
+        escalation_target: halt-and-report on all agents. No agent delegates loop termination
+        to model judgement.
+
+    - constant: bounded-tool-surface
+      status: passing
+      rationale: >
+        Each agent declares an explicit tool surface with named tools:
+        - readiness-orchestrator: 5 tools (list_directory, read_file, write_file, invoke_agent, request_human_approval)
+        - docs-readiness-reviewer: 3 tools (list_directory, read_file, grep_repo)
+        - license-readiness-reviewer: 4 tools (list_directory, read_file, grep_repo, invoke_skill)
+        - secrets-git-reviewer: 5 tools (list_directory, read_file, grep_repo, run_command, invoke_skill)
+        - security-ci-reviewer: 4 tools (list_directory, read_file, grep_repo, invoke_skill)
+        - readiness-aggregator: 2 tools (read_file, write_file)
+        - readiness-remediator: 4 tools (read_file, write_file, run_command, request_human_approval)
+        No agent has unbounded tool access. No web search. No external API calls.
+
+    - constant: minimal-sufficient-context
+      status: passing
+      rationale: >
+        The glue/reviewer-dispatch-template.md formalizes the context ceiling for each reviewer
+        dispatch: (system prompt for this reviewer) + (repo path) + (output path). No peer outputs,
+        no aggregator schema, no prior round state, no pre-loaded file contents are injected.
+        The orchestrator's select_strategy: task-scoped-injection enforces this at dispatch time.
+        The aggregator receives only the four reviewer output YAML files and triage schema.
+        The remediator receives only the triage report and operator-approved item list.
+
+# ============================================================
+# B2 — Scenario Evaluation (on-demand; BLOCKED pending scenario seed)
+# ============================================================
+
+b2_scenario_evaluation:
+  overall: not-applicable
+  reason: >
+    targets_scenarios: [] — no existing framework/scenarios/ entry covers the
+    repository-state audit shape. B2 is blocked pending architect Stage-5 seeding of
+    the `open-source-readiness-audit` scenario. See stage5_observations below.
+
+# ============================================================
+# B3 — Pack Story Run (on-demand; architect Stage-5 authority)
+# ============================================================
+
+b3_pack_story_run:
+  overall: not-run
+  reason: "B3 requires architect Stage-5 dispatch. Proposed story: audit a sample OSS repository (e.g. a minimal GitHub repo with intentional gaps) and verify the four reviewers produce isolated structured outputs, the aggregator produces a schema-valid triage report, and the remediator correctly gates on human approval."
+
+# ============================================================
+# Stage-5 Observations
+# ============================================================
+
+stage5_observations:
+
+  - kind: SCENARIO_FIT_NOTE
+    artifact: generation/packs/open-source-readiness/
+    reason: >
+      No existing scenario in framework/scenarios/ covers the repository-state audit shape.
+      The pack targets a mixed-task-class workflow (research-breadth reviewer fan-out +
+      decision-coherent aggregation + decision-coherent remediation) over a repository's
+      documentation, license, secrets, and security/CI surfaces. This shape is not
+      discriminated by any of: multi-step-arithmetic-reasoning (decision-coherent math),
+      factual-qa-with-source-citation (Q&A with retrieval), structured-output-compliance
+      (schema-conformant JSON output), or architectural-refactor-identification
+      (code-smell identification).
+    proposed_scenario:
+      scenario_id: open-source-readiness-audit
+      task_class: mixed
+      tier: workflow
+      description: >
+        Given a repository with a known set of open-source readiness gaps across the four
+        dimensions (Essential Docs / License & Attribution / Secrets & Git Hygiene /
+        Security & CI/Governance), measure: (1) gap recall — what fraction of planted gaps
+        does the pack surface? (2) severity accuracy — are gap severity ratings aligned to
+        expert judgment? (3) aggregation quality — does the triage report correctly corroborate
+        cross-dimension findings? (4) remediation correctness — do the generated files close
+        the declared gap?
+      measurable_dimensions:
+        - gap-recall
+        - severity-ranking-accuracy
+        - cross-dimension-corroboration
+        - remediation-correctness
+      candidate_refs:
+        - REF-0201  # Fogel — provides the pass/fail criteria for each dimension's checklist
+        - REF-0202  # opensource.guide — provides the canonical remediation actions
+
+  - kind: STAGE5_OBSERVATION
+    observation_type: area-enum-gap
+    note: >
+      The concept card (research/concepts/open-source-readiness.md) notes that the fact-sheet
+      `Area` enum lacks an `open-source` / `project-stewardship` value (REF-0201 used ad-hoc
+      `open-source`; REF-0202 filed under `meta-research`). Architect should decide whether
+      to add the area value to the enum or sanction ad-hoc slugs. This does not block the
+      pack emission but does affect how future skills in this domain are area-tagged.
+
+  - kind: STAGE5_OBSERVATION
+    observation_type: dim3-source-gap
+    note: >
+      Dimension 3 (Secrets & Git Hygiene) has two sub-surfaces (.gitignore/.env exclusion
+      and pre-commit hook installation) that are grounded only in the pocock-git-guardrails
+      and pocock-setup-pre-commit Skills — neither REF-0201 nor REF-0202 covers these
+      sub-surfaces (flagged in the concept card). A future REF (GitHub gitignore templates /
+      a pre-commit/Lefthook guide) is needed before these sub-surfaces can be promoted with
+      citations. Current emission uses the Skills as proxies; the finding severity should
+      be validated by the architect before sign-off.

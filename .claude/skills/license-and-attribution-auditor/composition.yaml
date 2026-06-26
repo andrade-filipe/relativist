@@ -1,0 +1,111 @@
+artifact_id: license-and-attribution-auditor
+artifact_kind: skill
+
+# ===================================================================
+# Framework classification (audience: marketplace aggregator + architect)
+# Per v2 audience matrix — buyer does not need this; lives in sidecar.
+# ===================================================================
+framework_classification:
+  tier: technique
+  skill_contract: technique-evaluable
+  task_class: decision-coherent
+  concern_layer: security          # provenance + legal compliance (REF-0201 Ch. 9; REF-0202 "Legal Side")
+  effort_level: L2                 # framework distillation: encodes Fogel rubric, SPDX application
+                                   # discipline, DCO/CLA rubric, dependency-compat matrix
+  emitted_by: marketplace-generator-sonnet
+  emitted_at: 2026-06-25
+  framework_commit: 1db0c55
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+# ===================================================================
+# Source provenance (audience: marketplace listing + attribution display)
+# ===================================================================
+source_provenance:
+  original_authors:
+    - Karl Fogel
+    - GitHub Inc. (opensource.guide contributors)
+  original_urls:
+    - https://producingoss.com/                      # REF-0201
+    - https://opensource.guide/                      # REF-0202
+  source_licenses:
+    - CC-BY-SA                                       # REF-0201 license
+    - CC-BY                                          # REF-0202 license
+  license: MIT                                       # this skill artifact's own license
+  license_verified_at: 2026-06-25
+  fact_sheet_refs:
+    - REF-0201
+    - REF-0202
+  concept_card_ref: research/concepts/open-source-readiness.md
+  concept_card_dimension: "Dimension 2 — License & Attribution"
+  attribution_string: >
+    Derived from Karl Fogel, "Producing Open Source Software", 2nd ed. 2017 (CC BY-SA,
+    https://producingoss.com/), and GitHub "opensource.guide" (CC BY,
+    https://opensource.guide/). Consolidated in research/concepts/open-source-readiness.md
+    § Dimension 2 — License & Attribution.
+
+# ===================================================================
+# Benchmark configuration (per ADR-0007 + ADR-0017)
+# technique-evaluable: targets_scenarios MUST be non-empty.
+# ===================================================================
+benchmark_configuration:
+  targets_scenarios:
+    - prd-completeness
+  benchmark_priority: tier-1
+  scenario_seeding_open_item: true
+  # prd-completeness is the closest available decision-coherent completeness-audit
+  # scenario (checks a document artifact for required elements against a standard —
+  # analogous to checking a repo for required license elements). The fit is imperfect:
+  # prd-completeness carries tier:discipline in its scenario metadata while this Skill
+  # is tier:technique, and its task inputs are PRD texts rather than repository states.
+  # A dedicated `license-attribution-compliance-audit` scenario should be seeded by
+  # the architect in a future Stage-5 cycle. See stage5_observations in
+  # badges-draft.yaml for the proposed scenario shape.
+  # Flagged tier-1 because this Skill anchors Dimension 2 of the open-source-readiness
+  # Pack and its compliance audit methodology is discriminable by benchmark (zero-shot
+  # vs. Skill-equipped produces measurably different gap-identification accuracy).
+
+# ===================================================================
+# Constants declared (v2 — string IDs only; full rationale in badges-draft.yaml)
+# ===================================================================
+constants_declared:
+  - minimal-sufficient-context               # substantive
+  - deterministic-outer-loop                 # substantive
+  - human-approval-on-irreversible-actions   # substantive
+  - observable-agent-traces                  # substantive
+  - bounded-tool-surface                     # vacuously honored (zero-tool skill)
+  - typed-tool-contracts-with-feedback-loop  # vacuously honored (zero-tool skill)
+
+# ===================================================================
+# Composition graph (audience: marketplace orchestration discovery)
+# ===================================================================
+composition_graph:
+  depends_on: []
+  extends: null
+  derived_from: research/concepts/open-source-readiness.md
+  # NOTE: No backing framework/techniques/license-and-attribution-auditor.md
+  # pattern exists at emission time. This Skill is emitted directly from
+  # concept-card authorization + operator dispatch (REF-0201 + REF-0202 +
+  # concept card). See stage5_observations[kind=EMISSION_GAP] in
+  # badges-draft.yaml for the architect formalization request.
+  composes_with:
+    - framework/techniques/output-format-pinning.md     # structured audit report output schema
+    - framework/techniques/escape-hatch-instruction.md  # UNCERTAIN verdict for ambiguous license cases
+  invokes: []
+  alternatives: []
+
+discovery:
+  keywords:
+    - license
+    - open-source
+    - spdx
+    - attribution
+    - dco
+    - cla
+    - provenance
+    - compliance
+    - copyright
+    - dependency-licenses
+    - gpl
+    - apache
+    - mit
+    - relicense

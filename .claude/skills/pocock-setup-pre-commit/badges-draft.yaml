@@ -1,0 +1,153 @@
+# badges-draft.yaml — pocock-setup-pre-commit
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# In v2 shape (per dev-productivity-skills-shape-v2-proposal.md), the
+# SKILL.md body does NOT duplicate this content. composition.yaml carries
+# only the string-ID index (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+#
+# See:
+#   - docs/decisions/ADR-0007-benchmark-architecture.md (Pillar 6)
+#   - .claude/agents/marketplace-generator.md (write boundary)
+#   - .claude/agents/architect.md (badge sign-off authority)
+
+artifact_id: pocock-setup-pre-commit
+artifact_path: generation/skills/pocock-setup-pre-commit/
+artifact_tier: technique           # per ADR-0005
+artifact_task_class: decision-coherent  # per ADR-0006
+artifact_targets_scenarios: []     # empty — no scenarios seeded yet; honest declaration
+
+# -----------------------------------------------------------------------------
+# B1 — Constants Compliance Badge (binary gate, computed on-emission).
+# Per ADR-0007 Pillar 6, B1 is mandatory for marketplace eligibility. Failing
+# B1 = not eligible. Self-checked by marketplace-generator-sonnet at emission
+# time via parser/structural checks (no LLM judge involved).
+# -----------------------------------------------------------------------------
+b1_constants_compliance:
+  status: passing
+  checked_at: 2026-05-22
+  framework_commit: 87720fa
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  constants_checked:
+    - constant_ref: framework/constants/bounded-tool-surface.md
+      verdict: passing
+      rationale: |
+        This Skill orchestrates a bounded set of 2 ambient tool types during its
+        setup procedure: Bash (Steps 1–3, 7–8: lock-file detection, dependency
+        install, husky init, lint-staged verification, and smoke-test commit) and
+        Write/Edit (Steps 4–6: hook file, .lintstagedrc, conditional .prettierrc).
+        Active tool count = 2, well below the constant's ≤30 ceiling.
+        tool_pruning_strategy = none-under-ceiling is legal because catalog size
+        (2) is strictly below ceiling. Each invocation is step-scoped to a single
+        named purpose; no unbounded file discovery or open-ended codebase traversal
+        occurs. The Husky pre-commit hook, once installed, operates at the host
+        git-layer (not a Skill-invoked tool) and does not contribute to the
+        Skill's own tool surface count.
+
+    - constant_ref: framework/constants/observable-agent-traces.md
+      verdict: passing
+      rationale: |
+        The setup procedure produces named, observable artifacts at each step:
+        Step 1 — lock-file detection produces a named package-manager value that
+          drives all subsequent commands (observable decision trace).
+        Step 2 — install stdout + exit code (non-zero = failure, halts procedure).
+        Step 3 — `.husky/` directory creation and `prepare` script in package.json
+          (both file artifacts, git-trackable).
+        Step 4 — `.husky/pre-commit` hook file at a deterministic path.
+        Steps 5–6 — `.lintstagedrc` and `.prettierrc` files at deterministic paths.
+        Step 7 — `npx lint-staged` exit code is an explicit typed trace event:
+          exit 0 = configuration valid; non-zero = misconfiguration surfaced before
+          the Skill declares completion.
+        Step 8 — commit runs through the live pre-commit hook, producing a
+          git-log entry as the final observable installation-success signal.
+        All file artifacts are git-trackable; the operator can inspect the diff
+        to audit what the Skill wrote.
+
+    - constant_ref: framework/constants/minimal-sufficient-context.md
+      verdict: passing
+      rationale: |
+        The Skill injects only the eight-step setup procedure into the host Agent's
+        context (~400 tokens of procedure text). No codebase analysis, git history,
+        dependency graphs, or auxiliary retrieval is loaded. The only project-state
+        reads performed during the procedure are:
+          - Lock-file existence check (Step 1): 4 known filenames, no glob traversal.
+          - package.json scripts object (Step 4): one field from one file.
+        Both reads are minimal and scoped to the exact fields the procedure needs.
+        No auxiliary context is injected beyond what the eight steps require.
+
+    - constant_ref: framework/constants/typed-tool-contracts-with-feedback-loop.md
+      verdict: passing
+      rationale: |
+        This Skill's setup procedure uses Bash and Write/Edit tools with explicit,
+        typed feedback loops at each consequential step. The feedback is substantive,
+        not vacuous — each tool invocation has a declared output type that the
+        subsequent step reads as input before proceeding:
+
+        Step 2 (install): npm/pnpm/yarn/bun exits non-zero on failure; the Skill
+          reads this exit code as a typed gate before proceeding to Step 3.
+
+        Step 3 (husky init): `npx husky init` creates the `.husky/` directory as
+          a typed filesystem artifact; the Skill verifies its existence before
+          writing the hook body in Step 4.
+
+        Step 7 (verify): `npx lint-staged` is an explicit typed gate — the Skill
+          reads its exit code (0 = configuration valid, non-zero = misconfiguration)
+          as the primary verification signal before proceeding to Step 8.
+
+        Step 8 (smoke-test commit): the commit runs through the live pre-commit hook,
+          providing an end-to-end typed feedback signal — hook fires and exits 0
+          (installed correctly) or non-zero (misconfiguration exposed). The Skill
+          uses this commit as the canonical installation-success confirmation.
+
+        These install-time exit-codes collectively provide a feedback loop that
+        structurally honors the typed-tool-contracts constant: each tool call has
+        a declared output contract, and the next step in the procedure reads that
+        contract result as its input decision criterion.
+
+  expires_when:
+    any_of:
+      - framework_constants_change: true
+      - source_skill_changes: true  # upstream mattpocock/skills setup-pre-commit updated
+      - days_elapsed: 180
+  status_after_expiry: stale
+
+# -----------------------------------------------------------------------------
+# B2 — Scenario Performance Badge.
+# DEFERRED — no scenario seeded for pre-commit-setup tasks. Productivity-skill
+# scenarios are a Stage-5 architect responsibility. targets_scenarios: [] is the
+# honest declaration; B2 requires a non-empty targets_scenarios list.
+# -----------------------------------------------------------------------------
+b2_scenarios_performance:
+  status: deferred
+  reason: |
+    No scenario seeded yet under framework/scenarios/ for pre-commit-setup tasks.
+    This is expected for the dev-productivity-skills-track first wave per
+    docs/project/dev-productivity-skills-tracking.md §Open items. B2 becomes
+    available when the architect seeds a suitable scenario (Stage-5) and the
+    operator invokes benchmark-this-artifact.
+
+# -----------------------------------------------------------------------------
+# Sign-off envelope.
+# -----------------------------------------------------------------------------
+issued_at: 2026-05-22
+signed_off: false
+signed_off_by: null
+signed_off_at: null
+sign_off_notes: |
+  Awaiting architect Stage-5. The architect should:
+    1. Validate B1 self-check against the framework constants at the pinned
+       framework_commit (87720fa). Pay particular attention to the
+       typed-tool-contracts rationale — this Skill has a non-trivial tool
+       surface (Bash + Write/Edit at install time) and uses the substantive
+       install-time exit-code feedback-loop argument (not the vacuous-honor
+       framing). The rationale should be reviewed for correctness.
+    2. Decide whether to seed a scenario for pre-commit-setup tasks. If
+       seeded, invoke benchmark-this-artifact to compute B2.
+    3. Promote this draft into badges.yaml on successful review, or reject
+       with documented reason.

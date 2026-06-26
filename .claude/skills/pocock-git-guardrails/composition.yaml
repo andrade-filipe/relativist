@@ -1,0 +1,78 @@
+artifact_id: pocock-git-guardrails
+artifact_kind: skill
+
+# ===================================================================
+# Framework classification (audience: marketplace aggregator + architect)
+# Migrated from SKILL.md frontmatter in v2 — buyer doesn't need this.
+# ===================================================================
+framework_classification:
+  tier: discipline
+  skill_contract: discipline-verifiable
+  task_class: decision-coherent
+  effort_level: L0
+  emitted_by: marketplace-generator-sonnet
+  emitted_at: 2026-05-22
+  framework_commit: 5fca761
+  audience_note: "metadata for marketplace index + architect sign-off; not buyer-facing"
+
+# ===================================================================
+# Source provenance (audience: marketplace listing + attribution display)
+# ===================================================================
+source_provenance:
+  original_author: Matt Pocock
+  original_url: https://github.com/mattpocock/skills/tree/main/skills/misc/git-guardrails-claude-code
+  license: MIT
+  license_verified_at: 2026-05-22
+  # License verification: mattpocock/skills repo carries MIT license in its root
+  # LICENSE file. Verified 2026-05-22 via dispatch inputs (operator confirmation).
+  fact_sheet_ref: ""
+  effort_level: L0
+  our_modifications: ""
+  # L0 = wrap-as-is. SKILL.md body is Pocock's verbatim. Framework
+  # classification + badges = our value-add, both in sidecar files only.
+  # The only additions in v1 were: YAML frontmatter, attribution header,
+  # Tool surface section, Constants honored section, Cross-references section.
+  # In v2, all framework-internal content moved to composition.yaml and
+  # badges-draft.yaml (audience-matrix separation per dev-productivity-skills-shape-v2-proposal.md).
+
+# ===================================================================
+# Benchmark configuration (per ADR-0007)
+# ===================================================================
+benchmark_configuration:
+  targets_scenarios: []
+  benchmark_priority: tier-3
+  scenario_seeding_open_item: true
+  # Empty targets_scenarios is honest: no git-guardrail-setup scenarios
+  # exist under framework/scenarios/ as of 2026-05-22. Architect Stage-5
+  # may seed a scenario to enable B2.
+  # MAY B2 — productivity skills are long-tail per dev-productivity-skills-tracking.md
+  # §Frontmatter contract. targets_scenarios: [] is the honest declaration.
+
+# ===================================================================
+# Constants declared (v2 index — full rationale lives in badges-draft.yaml)
+# This list is the index; badges-draft.yaml is the canonical authority.
+# ===================================================================
+constants_declared:
+  - bounded-tool-surface
+  - observable-agent-traces
+  - minimal-sufficient-context
+  - typed-tool-contracts-with-feedback-loop   # substantive honored — non-zero tool surface (Bash + Write/Edit)
+  - deterministic-outer-loop
+
+# ===================================================================
+# Composition graph (audience: marketplace orchestration discovery)
+# ===================================================================
+composition_graph:
+  depends_on: []
+  extends: null
+  composes_with: []
+  invokes: []
+  alternatives:
+    - generation/skills/pocock-setup-pre-commit/
+    # setup-pre-commit installs Husky hooks (lint+format+test via npm);
+    # git-guardrails installs Claude Code PreToolUse hooks (block destructive git ops).
+    # These are complementary, not substitutes — different hook substrates, different
+    # protection surfaces. Both may coexist in a project.
+
+discovery:
+  keywords: [from-repo, documentation, clean-git]

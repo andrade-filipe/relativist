@@ -59,6 +59,13 @@ __pycache__/
 /data/
 /*.bin
 
+# Run logs and LaTeX/tooling logs (never tracked)
+/logs/
+*.log
+
+# Ad-hoc result outputs at repo root (frozen evidence lives in reproduce_article/)
+/results/
+
 # Docker
 .docker/
 

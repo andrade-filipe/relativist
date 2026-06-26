@@ -1,0 +1,110 @@
+# triage-schema.yaml
+# Schema version: 1.0.0
+# Declared by: generation/packs/open-source-readiness/composition.yaml
+# Purpose: Enforces structured aggregator output per aggregator_protocol: structured-triage
+# Verification: readiness-aggregator MUST produce triage-report.yaml conforming to this schema.
+#               The schema is machine-parseable; a verifier confirms presence of required keys.
+
+schema_version: "1.0.0"
+artifact_type: triage-report
+pack: open-source-readiness
+
+# --- Required top-level keys ---
+
+aggregation_run:
+  _required: true
+  _keys:
+    round:
+      type: integer
+      required: true
+      description: "The review round number (1-indexed). Matches the review-state/round-<N>/ directory."
+    reviewers_consumed:
+      type: list
+      required: true
+      description: "List of reviewer archetype IDs whose outputs were aggregated. Must enumerate all four dimension reviewers."
+      enum_values:
+        - docs-readiness-reviewer
+        - license-readiness-reviewer
+        - secrets-git-reviewer
+        - security-ci-reviewer
+    timestamp:
+      type: string
+      required: true
+      description: "ISO 8601 timestamp of aggregation run."
+
+severity_distribution:
+  _required: true
+  _keys:
+    critical: {type: integer, required: true}
+    high:     {type: integer, required: true}
+    medium:   {type: integer, required: true}
+    low:      {type: integer, required: true}
+    info:     {type: integer, required: true}
+
+cross_dimension_notes:
+  type: list
+  required: false
+  description: "Observations that span multiple dimensions (e.g. a single root cause surfacing in two reviewers)."
+
+aggregated_findings:
+  type: list
+  required: true
+  description: "Severity-sorted list of all findings, deduplicated and corroborated."
+  item_schema:
+    id:
+      type: string
+      required: true
+      description: "Unique finding identifier. Format: agg-NNN."
+    severity:
+      type: enum
+      required: true
+      enum_values: [CRITICAL, HIGH, MEDIUM, LOW, INFO]
+    corroboration_count:
+      type: integer
+      required: true
+      description: "Number of dimension reviewers that independently flagged this finding (or close equivalents)."
+    cited_reviewer:
+      type: string
+      required: false
+      description: "Single reviewer archetype name for single-source findings."
+    cited_reviewers:
+      type: list
+      required: false
+      description: "List of reviewer archetype names for corroborated findings (corroboration_count >= 2). At least one of cited_reviewer / cited_reviewers MUST be present."
+    surfaces:
+      type: list
+      required: true
+      description: "File paths or surfaces this finding relates to (e.g. [LICENSE, README.md])."
+    check:
+      type: string
+      required: true
+      description: "The checklist check ID or name that was evaluated (e.g. public-repo-licensed-corrective)."
+    detail:
+      type: string
+      required: true
+      description: "Synthesized description of the gap. Must be specific, not generic."
+    remediation:
+      type: string
+      required: true
+      description: "Specific remediation action. Must name the file and content needed."
+    remediation_order:
+      type: integer
+      required: false
+      description: "Sequence number for CRITICAL and HIGH items. Lower = must happen first."
+    source_refs:
+      type: list
+      required: false
+      description: "Citation list of REF-NNNN entries and concept-key strings that support the finding."
+
+# --- Aggregation invariants (verified by readiness-aggregator) ---
+# 1. Every finding MUST have at least one of: cited_reviewer OR cited_reviewers.
+#    Finding without reviewer attribution fails the audit chain.
+# 2. No finding may attribute to "the reviewers" as a collective.
+# 3. aggregated_findings MUST be sorted: CRITICAL -> HIGH -> MEDIUM -> LOW -> INFO.
+# 4. Within severity bands, findings with corroboration_count >= 2 appear before count == 1.
+# 5. severity_distribution counts MUST equal the count of findings at each severity level.
+
+# --- Downstream consumers ---
+# - readiness-remediator reads aggregated_findings for items approved by the operator
+# - orchestrator reads severity_distribution for the human-review gate summary
+# - badges-draft.yaml references this schema as the B1 aggregator-schema-check

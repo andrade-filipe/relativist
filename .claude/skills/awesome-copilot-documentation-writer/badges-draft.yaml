@@ -1,0 +1,108 @@
+# badges-draft.yaml — awesome-copilot-documentation-writer
+#
+# PROPOSAL-ONLY. Architect signs off via Stage-5.
+#
+# THIS FILE IS THE CANONICAL HOME for "Constants honored" rationale.
+# In v2 shape (per dev-productivity-skills-shape-v2-proposal.md), the
+# SKILL.md body does NOT duplicate this content. composition.yaml carries
+# only the string-ID index (constants_declared); rationale lives here.
+#
+# Audience: architect (sign-off) + marketplace badge UI (display).
+
+artifact_id: awesome-copilot-documentation-writer
+artifact_path: generation/skills/awesome-copilot-documentation-writer/
+artifact_tier: technique                  # per ADR-0005
+artifact_task_class: decision-coherent   # per ADR-0006
+artifact_targets_scenarios: []           # no scenario targeted at emission time
+
+# ---------------------------------------------------------------------------
+# B1 — Constants Compliance Badge (binary gate, computed on-emission).
+# Per ADR-0007 Pillar 6, B1 is mandatory for marketplace eligibility.
+# Failing B1 = not eligible. Self-checked at emission time via parser/regex
+# checks (deterministic — no LLM judge involved).
+# ---------------------------------------------------------------------------
+b1_constants_compliance:
+  status: passing
+  checked_at: 2026-05-22
+  framework_commit: 394432f
+  judge:
+    model_id: deterministic
+    version: parser-rules-v1
+    prompt_hash: n/a
+  constants_checked:
+    - constant_ref: framework/constants/bounded-tool-surface.md
+      verdict: passing
+      rationale: >
+        Skill invokes zero tools (pure prompt scaffold). No tool calls, no external
+        service invocations, no shell commands. Tool surface = 0; well within the
+        constant's ceiling.
+
+    - constant_ref: framework/constants/observable-agent-traces.md
+      verdict: passing
+      rationale: >
+        The Skill's three-phase workflow (Acknowledge & Clarify → Propose a Structure
+        → Generate Content) produces deterministic phase transition checkpoints at
+        each step. Each phase gate is a named, observable event the host Agent or
+        harness can log. Trace substrate is the host Agent's responsibility; this
+        Skill emits structured, loggable phase boundaries.
+
+    - constant_ref: framework/constants/minimal-sufficient-context.md
+      verdict: passing
+      rationale: >
+        Skill injects only the Diátaxis framing scaffold: four-quadrant taxonomy
+        (Tutorial / How-to / Reference / Explanation) plus the three-step workflow
+        instructions. No retrieved documents, no few-shot exemplars, no auxiliary
+        context injected. Minimality preserved — the scaffold adds only what is
+        necessary to route the request to the correct quadrant.
+
+    - constant_ref: framework/constants/typed-tool-contracts-with-feedback-loop.md
+      verdict: passing
+      rationale: >
+        Vacuously honored — the constant binds on tool-using Agents; this Skill
+        invokes zero tools. No tool-call contracts exist to violate. Per the
+        marketplace-generator agent §2 edge-case note: for zero-tool Skills this
+        framing is the correct B1 rationale; conflating the Skill's output schema
+        with a tool-call contract would be a category error.
+
+  expires_when:
+    any_of:
+      - framework_constants_change: true
+      - source_skill_changes: true   # upstream github/awesome-copilot changes
+      - days_elapsed: 180
+  status_after_expiry: stale
+
+# ---------------------------------------------------------------------------
+# B2 — Scenario Performance Badge.
+# DEFERRED at emission time. targets_scenarios is empty — no scenario was
+# declared at emission. If a documentation-writing scenario is seeded by the
+# architect in a future Stage-5 cycle, the operator should:
+#   1. Update SKILL.md frontmatter targets_scenarios: [<new-scenario-id>]
+#   2. Invoke .claude/skills/benchmark-this-artifact to compute B2.
+#   3. Update this file with the B2 entry and re-submit to architect.
+# ---------------------------------------------------------------------------
+b2_scenarios_performance:
+  status: deferred
+  reason: >
+    targets_scenarios is empty at emission time. No documentation-writing scenario
+    exists in framework/scenarios/ at the time of this emission (2026-05-22).
+    B2 is not applicable until a suitable scenario is seeded by the architect.
+
+# ---------------------------------------------------------------------------
+# Sign-off envelope.
+# ---------------------------------------------------------------------------
+issued_at: 2026-05-22
+signed_off: false
+signed_off_by: null
+signed_off_at: null
+sign_off_notes: >
+  Awaiting architect Stage-5. The architect should:
+    1. Validate this B1 self-check against the framework constants at the pinned
+       framework_commit (394432f).
+    2. Confirm zero-tool vacuous-honor rationale for typed-tool-contracts is
+       acceptable (precedent: chain-of-thought-wrapper badges.yaml Stage-5 cycle
+       2026-05-21 A3).
+    3. Consider whether a documentation-quality scenario should be seeded in
+       framework/scenarios/ to enable B2 measurement for this and future
+       documentation Skill emissions.
+    4. Promote this draft into generation/skills/awesome-copilot-documentation-writer/badges.yaml
+       on successful review, or reject with documented reason.
