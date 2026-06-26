@@ -32,7 +32,10 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
 
           # 1) Head branch naming. Allow the project's prefixes + bot branches.
-          if ! echo "$HEAD" | grep -qE '^(feature|fix|chore|docs|refactor|test|perf|ci|build|release|hotfix)/.+' \
+          #    Exempt the long-lived integration branch 'develop' (it is the
+          #    legitimate head for develop -> main release PRs).
+          if [ "$HEAD" != "develop" ] \
+             && ! echo "$HEAD" | grep -qE '^(feature|fix|chore|docs|refactor|test|perf|ci|build|release|hotfix)/.+' \
              && ! echo "$HEAD" | grep -qE '^dependabot/'; then
             fail "Branch '$HEAD' must be named <type>/<description> — one of: feature/, fix/, chore/, docs/, refactor/, test/, perf/, ci/, build/, release/, hotfix/. Rename your branch."
           fi

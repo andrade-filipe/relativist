@@ -151,11 +151,19 @@ push even reaches GitHub — see the `pocock-setup-pre-commit` skill. Note these
 
 ## 5. Confirm CI runs
 
-Workflows: `ci.yml`, `docker.yml`, `docker-smoke.yml`, `bench-smoke.yml`,
-`release.yml`, **`branch-policy.yml`**. CI triggers on `[main, develop]`.
+Four workflows (see [`docs/TESTING.md`](TESTING.md) for the test tiers):
 
-- Open a throwaway PR into `develop` → confirm `ci` and `branch-policy` both run.
-- Then add those check names as **required** in the §4.3 rulesets.
+| Workflow | Trigger | Required gate? |
+|---|---|---|
+| `ci.yml` | push/PR to `main`,`develop` | ✅ **yes** — fmt + clippy + `cargo test --lib` + build (~3 min) |
+| `branch-policy.yml` | PR | ✅ **yes** — GitFlow gate |
+| `release.yml` | tag `v*` | n/a — builds binaries/.deb + Release |
+| `docker.yml` | tag `v*` | n/a — publishes GHCR image |
+| `extended-tests.yml` | weekly + manual | ❌ **no — do NOT mark required** (slow optional integration suite) |
+
+- Open a throwaway PR into `develop` → confirm `ci` and `branch-policy` run green.
+- Add **only** `branch-policy` + `ci` as **required** checks in the §4.3 rulesets.
+  Do NOT require `extended-tests` (it's the optional tier and runs weekly/manual).
 - Consider adding **`cargo audit`** (RustSec) and **Dependabot** — see §6.
 
 ## 6. Supply-chain / dependency security

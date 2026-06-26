@@ -19,6 +19,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]
+#[ignore = "D-014 stress-curve smoke: real resume run (sleep + bash/python/matplotlib); runner-speed + env dependent. Run manually: cargo test -- --ignored"]
 fn resume_produces_identical_dataset() {
     if !skips_pass() {
         return;

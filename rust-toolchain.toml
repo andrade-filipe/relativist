@@ -1,0 +1,9 @@
+# Pin the toolchain so a contributor's local `cargo clippy`/`fmt` (and the
+# .githooks/pre-push gate) match CI exactly. Without this, a newer clippy on the
+# CI runner flags lints a stale local toolchain misses (and vice-versa).
+#
+# Bump this deliberately (and re-run `cargo clippy --all-targets --all-features
+# -- -D warnings`) when you want a newer toolchain.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]

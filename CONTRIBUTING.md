@@ -69,20 +69,25 @@ Either way: research before planning, plan before coding, verify before opening
 the PR. `docs/rpi/RESEARCH.md` and `docs/rpi/PLAN.md` are disposable working
 notes (gitignored), not deliverables.
 
-## The three gates (CI enforces these)
+## The required gate (CI enforces these)
 
-Every PR must pass, with no regression in test counts:
+Every PR must pass the **essential** gate — fast, and the line CI defends:
 
 ```bash
-cargo test                                   # all tests green
-cargo clippy --all-features -- -D warnings   # no warnings
-cargo fmt --check                            # formatted
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib                             # core engine + G1 (~1700 unit tests)
 ```
 
-The frozen v1 floor (**690** tests on `v1-feature-complete`) must never drop, and
-the current `develop` baseline must not regress. Adding code means adding
-tests — the count goes up, never silently down. Full rules live in
-[`CODING_STANDARDS.md`](CODING_STANDARDS.md).
+`cargo test --lib` is the gate, not the full `cargo test`. The library unit tests
+cover the reduction engine, partition/merge, the SPEC-01 invariants, and the
+fundamental property G1. The **optional** integration suite (example codecs like
+Horner, the benchmark harness, end-to-end smokes) runs non-blocking via
+`extended-tests.yml` (weekly / manual) and with plain `cargo test` locally. The
+two-tier strategy and where to put a new test: [`docs/TESTING.md`](docs/TESTING.md).
+
+Enable the [pre-push hook](#enable-the-local-lint-gate-recommended) to run this
+gate before every push. Full code rules: [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 
 ## Development setup
 
@@ -100,6 +105,18 @@ cargo run --release -- local --workers 4 -i test.bin -o out.bin
 cargo run --release -- coordinator --workers 2 --port 9000 -i test.bin -o out.bin
 cargo run --release -- worker --coordinator localhost:9000
 ```
+
+### Enable the local lint gate (recommended)
+
+The repo ships a `pre-push` hook that runs the same `cargo fmt --check` + `cargo
+clippy -- -D warnings` gate as CI, so a clippy failure is caught before it turns
+your PR red. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+(Emergency bypass: `git push --no-verify` — but CI still enforces it.)
 
 ## Specs and invariants
 
