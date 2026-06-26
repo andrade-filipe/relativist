@@ -1309,7 +1309,7 @@ pub async fn run_coordinator(
         //   5. NO partition reclaim, NO `reconstruct`.
         //
         // The full `elastic_departure = true` reclaim+reconstruct path is
-        // deferred to v2.1; see `docs/next-steps.md` "Deferred to v2.1".
+        // deferred to v2.1; see `docs/_archive/next-steps.md` "Deferred to v2.1".
         if !departing_worker_ids.is_empty() {
             tracing::warn!(
                 D = departing_worker_ids.len(),
@@ -1380,7 +1380,7 @@ pub async fn run_coordinator(
         // happy path today because the conservative reclaim branch above
         // (L767..L832) unconditionally returns `Err` once it materializes
         // reclaimed partitions. Until TASK-0443 wires reclaim back into the
-        // round loop, these counters always push 0 here. See `docs/next-steps.md`
+        // round loop, these counters always push 0 here. See `docs/_archive/next-steps.md`
         // entry "TASK-0443 follow-up — reclaim metrics dead-on-arrival" for
         // the closure plan. (MF-004)
         // SF-004: `bytes_received_per_round` aggregates ALL message bytes

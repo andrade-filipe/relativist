@@ -100,7 +100,7 @@ relativist compute mul 5 6 --workers 4 -o result.bin -m metrics.json
 3. Chama `reduce_all` (se `--workers` nao foi passado) ou `run_grid` (se foi).
 4. Aplica `decode_nat_or_shared` sobre a rede reduzida.
 
-A especificacao formal da codificacao esta em `specs/SPEC-14-encoding.md`.
+A especificacao formal da codificacao esta em `docs/specs/SPEC-14-encoding.md`.
 
 ## 4.4 Por que demonstrar com Church
 

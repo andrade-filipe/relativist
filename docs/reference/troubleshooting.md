@@ -132,7 +132,7 @@ Maquina tinha carga de fundo. Re-rode Phase 1 em ambiente limpo. Marcar individu
 
 ### Frame cap excedido (1 GiB)
 
-Sintoma: `protocol: frame size exceeds limit`. Causa: particao serializada > 1 GiB sob bincode v1 + CompactSubnet. Ocorre em sizes de stress (50M com w=1/w=2). Ver [L6](../benchmarks/limitations.md#l6); mitigacao futura em ROADMAP 2.23 (wire compaction) e [SPEC-18](../../specs/SPEC-18-wire-format-v2.md).
+Sintoma: `protocol: frame size exceeds limit`. Causa: particao serializada > 1 GiB sob bincode v1 + CompactSubnet. Ocorre em sizes de stress (50M com w=1/w=2). Ver [L6](../benchmarks/limitations.md#l6); mitigacao futura em ROADMAP 2.23 (wire compaction) e [SPEC-18](../../docs/specs/SPEC-18-wire-format-v2.md).
 
 ## Memoria
 

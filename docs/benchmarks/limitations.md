@@ -16,7 +16,7 @@ Ver `docs/ROADMAP.md` Secao 2.40 (break-even analysis: c_o/c_r ≈ 2.2 observado
 
 **Fix.** Modo opt-in `strict_bsp=true` no `GridConfig`. Substitui `reduce_all` por `reduce_border_once` em `src/reduction/engine.rs`: fila atual processada exatamente uma vez, novas cascatas ficam enfileiradas para a proxima rodada. Default continua lenient (`false`) — zero regressao nos 643+ testes.
 
-Uso: `--strict-bsp` na CLI. Detalhes em `specs/SPEC-05-merge.md` secao "Lenient vs Strict BSP".
+Uso: `--strict-bsp` na CLI. Detalhes em `docs/specs/SPEC-05-merge.md` secao "Lenient vs Strict BSP".
 
 ## L3 — Round-robin partitioning only — ABERTO (v2)
 
@@ -28,7 +28,7 @@ Escalabilidade limitada pela banda de merge do coordinator. Tree/ring/gossip top
 
 ## L5 — Readback exponencial — ABERTO (v2)
 
-Resultados de `church exp` nao decodificam de volta para inteiro por conta de DUP sharing ciclico. A reducao em si e correta (forma normal valida). Limitacao do decoder atual (`decode_shared_chain`). Detalhes em `specs/SPEC-14-encoding.md`.
+Resultados de `church exp` nao decodificam de volta para inteiro por conta de DUP sharing ciclico. A reducao em si e correta (forma normal valida). Limitacao do decoder atual (`decode_shared_chain`). Detalhes em `docs/specs/SPEC-14-encoding.md`.
 
 ## L6 — Teto de payload do protocolo (256 MiB) — RESOLVIDO
 

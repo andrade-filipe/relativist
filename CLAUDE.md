@@ -17,7 +17,7 @@ Relativist is a distributed Interaction Combinator reducer for Grid Computing, w
   - `cargo test --features streaming-no-recycle`: 1789
   - `cargo test --release`: 1740 (compiles and runs after TASK-0617 + D-012 REFACTOR)
   - v1 inviolable floor: 690 (frozen on `v1-feature-complete`).
-- **Specs:** 28 specs (SPEC-00 through SPEC-27) in `specs/`. v1 implements SPEC-00..16; v2 adds SPEC-17..27 (transport abstraction, wire format v2, delta protocol, elastic grid, streaming, arena, compact memory, WAN, recipe gen, GUI, encoder API).
+- **Specs:** 28 specs (SPEC-00 through SPEC-27) in `docs/specs/`. v1 implements SPEC-00..16; v2 adds SPEC-17..27 (transport abstraction, wire format v2, delta protocol, elastic grid, streaming, arena, compact memory, WAN, recipe gen, GUI, encoder API).
 - **Benchmarks:** 4490 executions, 0 correctness failures (Phase 1 + Phase 2 frozen at v1 baseline)
 
 ## Build & Test
@@ -103,7 +103,7 @@ frozen, read-only, under [`docs/_archive/sdd-agents/`](docs/_archive/sdd-agents/
 
 - `CODING_STANDARDS.md` — the code rules CI enforces
 - `.claude/agents/README.md` — the RPI workflow
-- `specs/` — 28 formal specifications (ENGLISH only); reference under RPI, not a per-change gate
+- `docs/specs/` — 28 formal specifications (ENGLISH only); reference under RPI, not a per-change gate
 - `docs/INDEX.md` — master documentation index (entry point for navigation)
 - `docs/ROADMAP.md` — v2+ features, break-even analysis (section 2.40)
 - `docs/reference/next-steps.md` — what the software should do next (for contributors)

@@ -287,8 +287,8 @@ Future Work (Mackie/Pinto shared-form readback).
 
 - **Scripts:** `reproduce_article/scripts/horner_demo.sh`, `reproduce_article/scripts/horner_live_demo.sh`, `reproduce_article/scripts/horner_distributed_demo.sh`
 - **Datasets locked:** `results/horner_demo_2026-05-16.csv` (80 rows, 0 mismatches)
-- **Spec G1:** `specs/SPEC-01-invariantes.md`
-- **Spec encoder API:** `specs/SPEC-27-encoder-decoder-api.md` (v3)
+- **Spec G1:** `docs/specs/SPEC-01-invariantes.md`
+- **Spec encoder API:** `docs/specs/SPEC-27-encoder-decoder-api.md` (v3)
 - **Argumento P1-P6:** `discussoes/argumentos/ARG-001-confluencia-preserva-determinismo.md` (no repo TCC root)
 - **Explainer matemático:** `docs/superpowers/specs/2026-05-06-horner-method-explainer.md`
 - **Narrativa acadêmica:** `docs/demos/horner-g1-demonstration.md`

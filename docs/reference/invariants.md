@@ -1,6 +1,6 @@
 # Invariantes — G1, D1-D6, T1-T7, I1-I5
 
-Tabela de referencia rapida. A fonte de verdade formal e [SPEC-01 Invariants](../../specs/SPEC-01-invariantes.md); amendments do bundle 2.26 (delta protocol) estao em [SPEC-19 §3.5](../../specs/SPEC-19-delta-protocol.md#35-invariant-amendments).
+Tabela de referencia rapida. A fonte de verdade formal e [SPEC-01 Invariants](../../docs/specs/SPEC-01-invariantes.md); amendments do bundle 2.26 (delta protocol) estao em [SPEC-19 §3.5](../../docs/specs/SPEC-19-delta-protocol.md#35-invariant-amendments).
 
 ## G1 — Propriedade Fundamental
 
@@ -100,7 +100,7 @@ Invariantes estruturais do codigo (SPEC-02, SPEC-03).
 - **I1-I5:** invariant checks ativos sob `debug_assertions`; podem ser desativados em release por configuracao (feature-gated).
 - **G1 (amendment):** testes novos da SPEC-19 cobrem delta_mode=true contra delta_mode=false como oracle.
 
-Para detalhes formais, a prova de D3d (equivalencia delta vs merge completo) esta marcada como *pending formal proof* na [SPEC-19 §8](../../specs/SPEC-19-delta-protocol.md).
+Para detalhes formais, a prova de D3d (equivalencia delta vs merge completo) esta marcada como *pending formal proof* na [SPEC-19 §8](../../docs/specs/SPEC-19-delta-protocol.md).
 
 ## v2 Amendments (post-SPEC-19)
 
@@ -156,10 +156,10 @@ Closure log: [`docs/_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-bloc
 
 ## Ver tambem
 
-- [SPEC-01](../../specs/SPEC-01-invariantes.md) — definicoes formais completas
-- [SPEC-19 §3.5](../../specs/SPEC-19-delta-protocol.md) — amendments G1/D3/D6
-- [SPEC-22 §3.1 / §3.8](../../specs/SPEC-22-arena-management.md) — I3' uniqueness, R10b/c free-list, R22 effective_arena_size
-- [SPEC-21 §3.7 / §3.8](../../specs/SPEC-21-streaming-generation.md) — A6 trigger broadening para R10b/c, R37b feature gate
+- [SPEC-01](../../docs/specs/SPEC-01-invariantes.md) — definicoes formais completas
+- [SPEC-19 §3.5](../../docs/specs/SPEC-19-delta-protocol.md) — amendments G1/D3/D6
+- [SPEC-22 §3.1 / §3.8](../../docs/specs/SPEC-22-arena-management.md) — I3' uniqueness, R10b/c free-list, R22 effective_arena_size
+- [SPEC-21 §3.7 / §3.8](../../docs/specs/SPEC-21-streaming-generation.md) — A6 trigger broadening para R10b/c, R37b feature gate
 - [../guides/06-delta-protocol.md](../guides/06-delta-protocol.md) — guia didatico do delta protocol
 - [../guides/09-streaming-generation.md](../guides/09-streaming-generation.md) — guia didatico do streaming
 - [../guides/10-arena-management.md](../guides/10-arena-management.md) — guia didatico de free-list + dense/sparse

@@ -310,8 +310,8 @@ MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
 - **Script batch (sem pausa):** `reproduce_article/scripts/horner_demo.sh`
 - **Doc de demonstração base:** `docs/demos/horner-g1-demonstration.md`
 - **Dataset locked:** `results/horner_demo_2026-05-16.csv`
-- **Spec da invariante G1:** `specs/SPEC-01-invariantes.md`
+- **Spec da invariante G1:** `docs/specs/SPEC-01-invariantes.md`
 - **Argumento P1-P6 derivando G1:** `discussoes/argumentos/ARG-001-confluencia-preserva-determinismo.md` (no repo TCC root)
-- **Spec do encoder API:** `specs/SPEC-27-encoder-decoder-api.md` (v3)
+- **Spec do encoder API:** `docs/specs/SPEC-27-encoder-decoder-api.md` (v3)
 - **Explainer matemático de Horner:** `docs/superpowers/specs/2026-05-06-horner-method-explainer.md`
 - **Tag de release usada:** `v0.21.0` (commit `ebd0439` em main)

@@ -260,9 +260,9 @@ Este documento é um resumo consolidado. Os documentos de origem, cada um com n�
 | [`docs/PHASE1-FINDINGS.md`](PHASE1-FINDINGS.md) | Narrativa original + L2 resolvido + tabela empírica strict BSP | §L2 |
 | [`docs/PHASE2-FINDINGS.md`](PHASE2-FINDINGS.md) | Narrativa Phase 2 + history de fixes L3/L6 + role no Phase 3 subtraction | §7 "v1_local_baseline — Unified Frozen Campaign" |
 | [`USAGE_GUIDE.md`](../USAGE_GUIDE.md) | Tutorial operacional Phase 3 LAN completo | §11.3 (10 subseções) |
-| [`specs/SPEC-05-merge.md`](../specs/SPEC-05-merge.md) | Formalização lenient vs strict BSP | §"Lenient vs Strict BSP modes", R30a |
-| [`specs/SPEC-09-benchmarks.md`](../specs/SPEC-09-benchmarks.md) | Tabela property de cada benchmark + rounds teóricos | R18 (cascade_cross) |
-| [`specs/SPEC-01-invariantes.md`](../specs/SPEC-01-invariantes.md) | G1 em ambos os modos; D6 refinado com R_strict ≥ R_lenient | D6, G1 |
+| [`docs/specs/SPEC-05-merge.md`](../docs/specs/SPEC-05-merge.md) | Formalização lenient vs strict BSP | §"Lenient vs Strict BSP modes", R30a |
+| [`docs/specs/SPEC-09-benchmarks.md`](../docs/specs/SPEC-09-benchmarks.md) | Tabela property de cada benchmark + rounds teóricos | R18 (cascade_cross) |
+| [`docs/specs/SPEC-01-invariantes.md`](../docs/specs/SPEC-01-invariantes.md) | G1 em ambos os modos; D6 refinado com R_strict ≥ R_lenient | D6, G1 |
 | [`docs/ROADMAP.md`](ROADMAP.md) | v2 direções (incluindo 2.21 WAN/Internet deployment) | §2.16 (streaming), §2.20 (CompactSubnet DONE), §2.21 (WAN) |
 
 ---

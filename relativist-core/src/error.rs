@@ -134,7 +134,7 @@ pub enum PartitionError {
     /// (the planning range from `compute_id_ranges`), which is decoupled
     /// from the actual arena memory `build_subnet` would allocate. Under
     /// that metric every healthy workload routed through SPARSE — see
-    /// `docs/next-steps.md` BLOCKER 2026-05-04 for the bisect transcript.
+    /// `docs/_archive/next-steps.md` BLOCKER 2026-05-04 for the bisect transcript.
     ///
     /// M5 pathology (recycled-id fragmentation under delta mode) is still
     /// detected: it manifests as `max_live_id ≫ live_count` and trips the

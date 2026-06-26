@@ -36,6 +36,6 @@ Bem-vindo(a). Esta pasta organiza o caminho de aprendizado do Relativist em **de
 - **Exemplos em Bash.** No Windows, use Git Bash ou WSL2. Onde houver diferenca de sintaxe, a seccao marca como `# Windows (PowerShell)`.
 - **Blocos fechados.** Cada comando e autocontido — copiar e colar funciona (desde que o `relativist` esteja no `PATH`).
 - **Linhas curtas.** Nada de scripts gigantes inline; drivers grandes vivem em `scripts/` ou sao escritos em varias etapas.
-- **Ponteiros para specs.** Quando um conceito precisa da formalizacao (teoremas, requisitos), o guia aponta para o arquivo `specs/SPEC-XX-*.md` correspondente — nao duplica o texto.
+- **Ponteiros para specs.** Quando um conceito precisa da formalizacao (teoremas, requisitos), o guia aponta para o arquivo `docs/specs/SPEC-XX-*.md` correspondente — nao duplica o texto.
 
-> **Idioma:** os guias estao em portugues-BR. As especificacoes (`specs/`) ficam em ingles para alinhar com a literatura academica.
+> **Idioma:** os guias estao em portugues-BR. As especificacoes (`docs/specs/`) ficam em ingles para alinhar com a literatura academica.

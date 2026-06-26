@@ -490,7 +490,7 @@ struct GridMeasureParams<'a> {
     /// silently mislabeled the row whenever the operator asked for
     /// `tcp_localhost`). Note: `bench` subcommand's `--mode=tcp_localhost`
     /// remains semantically equivalent to `local` for the actual execution
-    /// path; the proper TCP path lives in `scripts/bench_docker_v2.sh`. See
+    /// path; the proper TCP path lives in `reproduce_article/scripts/bench_docker_v2.sh`. See
     /// QA-D012-003 for the architectural gap and the followup ticket.
     mode: Mode,
 }

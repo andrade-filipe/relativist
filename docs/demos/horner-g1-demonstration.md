@@ -14,7 +14,7 @@ redução de uma rede de Interaction Combinators (IC) produz o **mesmo
 resultado numérico** independente da estratégia escolhida — sequencial
 (reduce_all in-process) ou distribuída (BSP com W workers paralelos via
 `local` mode). Isto é evidência direta da propriedade **G1 (Fundamental
-Property)** declarada em `specs/SPEC-01-invariantes.md`, derivada da
+Property)** declarada em `docs/specs/SPEC-01-invariantes.md`, derivada da
 confluência forte demonstrada por Lafont (1997).
 
 ---
@@ -313,8 +313,8 @@ git tag --points-at HEAD   # post-D-016 tag (e.g., v0.21.0)
 
 ## Cross-references
 
-- **Spec:** `specs/SPEC-27-encoder-decoder-api.md` (v3, HornerCodec promovido sobre LambdaCodec)
-- **Tese central:** `specs/SPEC-01-invariantes.md` (G1, Fundamental Property)
+- **Spec:** `docs/specs/SPEC-27-encoder-decoder-api.md` (v3, HornerCodec promovido sobre LambdaCodec)
+- **Tese central:** `docs/specs/SPEC-01-invariantes.md` (G1, Fundamental Property)
 - **Argumento:** `discussoes/argumentos/ARG-001-confluencia-preserva-determinismo.md` (P1-P6)
 - **Explainer matemático:** `docs/superpowers/specs/2026-05-06-horner-method-explainer.md`
 - **Design original:** `docs/superpowers/specs/2026-05-06-horner-distributed-evaluation-design.md`

@@ -843,7 +843,7 @@ fn run_grid_delta_inner(
 /// an empty graph; delta mode adds `has_border_activity == false` as the
 /// worker-local signal that *complements* the coordinator's graph view.
 ///
-/// Dropping `local_redexes == 0` (the task-splitter's two-predicate
+/// Dropping `local_redexes == 0` (as in the original two-predicate
 /// draft) would rely on the folklore assumption that
 /// `reduce_all` always reaches a local fixed point before reporting.
 /// Keeping it defends against that gap: one extra O(W) scan per round,

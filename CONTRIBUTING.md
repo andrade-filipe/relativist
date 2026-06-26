@@ -93,10 +93,10 @@ cargo run --release -- worker --coordinator localhost:9000
 
 ## Specs and invariants
 
-The 28 specs in [`specs/`](specs/) document the design. Under RPI they are
+The 28 specs in [`docs/specs/`](docs/specs/) document the design. Under RPI they are
 **reference**, not a per-change gate — but they remain the source of truth for
 the formal claims. The load-bearing invariants are in
-[`specs/SPEC-01-invariantes.md`](specs/SPEC-01-invariantes.md):
+[`docs/specs/SPEC-01-invariantes.md`](docs/specs/SPEC-01-invariantes.md):
 
 - **T1–T7** — theoretical invariants from Interaction Combinator theory
 - **D1–D6** — distribution invariants for correct partitioned reduction

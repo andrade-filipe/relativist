@@ -1,6 +1,6 @@
 # 07 · Zero-Copy Wire Format (`--features zero-copy`)
 
-Guia para o **wire format v2 com zero-copy**, especificado em [SPEC-18](../../specs/SPEC-18-wire-format-v2.md). SPEC-18 substitui bincode v1 (fixed-int) por bincode v2 (varint), adiciona compressao LZ4 opcional e oferece um caminho **zero-copy** via rkyv para hot-path messages (`AssignPartition`, `PartitionResult`).
+Guia para o **wire format v2 com zero-copy**, especificado em [SPEC-18](../../docs/specs/SPEC-18-wire-format-v2.md). SPEC-18 substitui bincode v1 (fixed-int) por bincode v2 (varint), adiciona compressao LZ4 opcional e oferece um caminho **zero-copy** via rkyv para hot-path messages (`AssignPartition`, `PartitionResult`).
 
 > **Status:** feature-gated. `--features zero-copy` e **opt-in** — nao e default. Beneficio pratico so aparece quando o custo de deserializacao domina (particoes grandes, rede rapida, CPU do receptor limitada).
 
@@ -133,5 +133,5 @@ Isso e aceitavel: o custo que `CompactSubnet` evita (deserialize + realloc da ar
 
 ## 8. Proximo passo
 
-- [SPEC-18](../../specs/SPEC-18-wire-format-v2.md) — spec completa com bincode v2, PortRef varint, LZ4, rkyv archive, frame header v2.
+- [SPEC-18](../../docs/specs/SPEC-18-wire-format-v2.md) — spec completa com bincode v2, PortRef varint, LZ4, rkyv archive, frame header v2.
 - [06-delta-protocol.md](06-delta-protocol.md) — o modo delta reduz o **numero** de mensagens; zero-copy reduz o **custo por mensagem**. As duas features sao complementares.

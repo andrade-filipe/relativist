@@ -84,10 +84,10 @@ A constante `PROTOCOL_VERSION` rege o handshake de wire entre coordinator e work
 | Version | Spec driver                  | O que mudou                                                                                                                  |
 |---------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
 | 1       | SPEC-06 v1                   | Wire v1 inicial: bincode v1 fixed-int, frame header v1, sem compressao.                                                       |
-| 2       | [SPEC-18](../../specs/SPEC-18-wire-format-v2.md) | Wire format v2: bincode v2 (varint), `PortRef` compacto (2-5 bytes), LZ4 threshold (>1 MB), frame header v2 com flags rkyv/lz4. Break intencional. |
-| 3       | [SPEC-22 §3.1 R9a](../../specs/SPEC-22-arena-management.md) | `Net.free_list: Vec<AgentId>` adicionado ao layout serializado (D-009). v2 deserializers rejeitam v3 nets com `UnsupportedVersion`. |
-| 4       | [SPEC-19](../../specs/SPEC-19-delta-protocol.md) | Wave delta protocol: novas variantes `Message` (`InitialPartition`, `RoundStart`, `RoundResult`, `FinalStateRequest`, `FinalStateResult`, `BorderState`). |
-| 5       | [SPEC-21 §3.7 R37c / §3.8 A2](../../specs/SPEC-21-streaming-generation.md) | Streaming generation: `Message` ganha `RequestWork { worker_id }` e `NoMoreWork` (pull dispatch). |
+| 2       | [SPEC-18](../../docs/specs/SPEC-18-wire-format-v2.md) | Wire format v2: bincode v2 (varint), `PortRef` compacto (2-5 bytes), LZ4 threshold (>1 MB), frame header v2 com flags rkyv/lz4. Break intencional. |
+| 3       | [SPEC-22 §3.1 R9a](../../docs/specs/SPEC-22-arena-management.md) | `Net.free_list: Vec<AgentId>` adicionado ao layout serializado (D-009). v2 deserializers rejeitam v3 nets com `UnsupportedVersion`. |
+| 4       | [SPEC-19](../../docs/specs/SPEC-19-delta-protocol.md) | Wave delta protocol: novas variantes `Message` (`InitialPartition`, `RoundStart`, `RoundResult`, `FinalStateRequest`, `FinalStateResult`, `BorderState`). |
+| 5       | [SPEC-21 §3.7 R37c / §3.8 A2](../../docs/specs/SPEC-21-streaming-generation.md) | Streaming generation: `Message` ganha `RequestWork { worker_id }` e `NoMoreWork` (pull dispatch). |
 | 6       | (proxima onda v2)            | Reservado para SPEC-20 elastic-grid wire variants (`JoinRequest`/`JoinAck`/`LeaveRequest`/`LeaveAck`) quando o ramo TCP for travado em release.                          |
 
 **Sequencing rules.** SPEC-21 R37c documenta a politica de bumps: cada spec que toca o `Message` enum incrementa `PROTOCOL_VERSION`, e o predecessor REJEITA wire payloads com a versao posterior (`UnsupportedVersion`) — nada de silencioso reinterpretation de tags. Persisted `.bin` files de baselines congelados (ex.: `reproduce_article/results/locked/v1_local_baseline/*.bin`) ficam **ilegiveis** por binarios de versoes superiores; isso e aceitavel porque baselines congelados nao alimentam codigo posterior — a regeneracao via `relativist generate` produz arquivos com o schema corrente.
@@ -96,8 +96,8 @@ A constante `PROTOCOL_VERSION` rege o handshake de wire entre coordinator e work
 
 - Schema binario: `src/io/binary.rs`
 - Schema texto: `src/io/text.rs`
-- Requisitos: `specs/SPEC-12-user-io.md`
-- Wire format v2 (PORT_VERSION 2): `specs/SPEC-18-wire-format-v2.md`
-- Free-list serde (PROTOCOL_VERSION 3, R9a): `specs/SPEC-22-arena-management.md` §3.1
-- Delta protocol Message variants (PROTOCOL_VERSION 4): `specs/SPEC-19-delta-protocol.md`
-- Streaming RequestWork/NoMoreWork (PROTOCOL_VERSION 5, R37c): `specs/SPEC-21-streaming-generation.md` §3.7
+- Requisitos: `docs/specs/SPEC-12-user-io.md`
+- Wire format v2 (PORT_VERSION 2): `docs/specs/SPEC-18-wire-format-v2.md`
+- Free-list serde (PROTOCOL_VERSION 3, R9a): `docs/specs/SPEC-22-arena-management.md` §3.1
+- Delta protocol Message variants (PROTOCOL_VERSION 4): `docs/specs/SPEC-19-delta-protocol.md`
+- Streaming RequestWork/NoMoreWork (PROTOCOL_VERSION 5, R37c): `docs/specs/SPEC-21-streaming-generation.md` §3.7

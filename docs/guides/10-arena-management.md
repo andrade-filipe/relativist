@@ -1,6 +1,6 @@
 # 10 · Arena Management (`--recycle-policy`, `--representation`)
 
-Guia para o **arena management** especificado em [SPEC-22](../../specs/SPEC-22-arena-management.md). SPEC-22 introduz dois mecanismos independentes para evitar que o consumo de memoria cresca alem do necessario durante reducao distribuida: a **free-list** que reaproveita slots de agentes consumidos, e a **SparseNet** que evita tombstones quando a arena densa ficaria cheia de buracos.
+Guia para o **arena management** especificado em [SPEC-22](../../docs/specs/SPEC-22-arena-management.md). SPEC-22 introduz dois mecanismos independentes para evitar que o consumo de memoria cresca alem do necessario durante reducao distribuida: a **free-list** que reaproveita slots de agentes consumidos, e a **SparseNet** que evita tombstones quando a arena densa ficaria cheia de buracos.
 
 > **Status:** ativo por default desde v0.20-pre. As decisoes de free-list e dense vs sparse acontecem **automaticamente** com defaults seguros (`disable-under-delta` para recycle, `dense` para representation com fallback para sparse acima do threshold). Os flags existem para benchmarks/experimentos; o usuario tipico nao precisa toca-los.
 
@@ -165,7 +165,7 @@ Persisted v1/v2 `.bin` files (ex.: `reproduce_article/results/locked/v1_local_ba
 
 ## 9. Proximo passo
 
-- [SPEC-22 v2.4](../../specs/SPEC-22-arena-management.md) — especificacao completa com todas as amendments do D-011 (R22 + R22a + R30 + §3.8 A9-A11).
+- [SPEC-22 v2.4](../../docs/specs/SPEC-22-arena-management.md) — especificacao completa com todas as amendments do D-011 (R22 + R22a + R30 + §3.8 A9-A11).
 - [09-streaming-generation.md](09-streaming-generation.md) — SPEC-21 streaming, complementar: a interacao R10b/c com streaming e o que torna o threshold relevante na pratica.
 - [08-elastic-grid.md](08-elastic-grid.md) — SPEC-20 elastic grid, complementar: ARG-006 mixed-trace recoverability sob departure depende de `RecyclePolicy::DisableUnderDelta` para fechar o caso delta-mode.
 - [`docs/_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md`](../_archive/spec-reviews/SPEC-22-amendment-2026-05-04-d011-blocker.md) — closure log do D-011 fix do threshold.

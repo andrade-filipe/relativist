@@ -1,6 +1,6 @@
 # 06 · Protocolo Delta (`--delta-mode`)
 
-Guia para o **Protocolo Delta**, especificado em [SPEC-19](../../specs/SPEC-19-delta-protocol.md). O modo delta e uma alternativa v2 ao ciclo BSP full-partition de v1 — em vez de reempacotar particoes inteiras a cada rodada, workers sao **stateful** e trocam apenas **deltas de borda** com o coordinator.
+Guia para o **Protocolo Delta**, especificado em [SPEC-19](../../docs/specs/SPEC-19-delta-protocol.md). O modo delta e uma alternativa v2 ao ciclo BSP full-partition de v1 — em vez de reempacotar particoes inteiras a cada rodada, workers sao **stateful** e trocam apenas **deltas de borda** com o coordinator.
 
 > **Status:** feature-gated, opt-in. Default continua no protocolo full-partition de v1 (zero regressao). Ative apenas se souber que o caso de uso se beneficia (borders pequenas em relacao ao tamanho de particao).
 
@@ -113,12 +113,12 @@ Ver [docs/reference/invariants.md](../reference/invariants.md) para a forma comp
 
 ## 6. Limitacoes conhecidas
 
-- **Pending formal proof.** D3d e a alma da correctness do modo delta. Ha argumento informal + testes extensivos, mas a prova formal esta listada em [SPEC-19 §8](../../specs/SPEC-19-delta-protocol.md).
-- **Partition migration.** Se um worker morre, recuperar sua particao exige protocolo de resincronizacao (fora do SPEC-19; coberto em [SPEC-20 Elastic Grid](../../specs/SPEC-20-elastic-grid.md)).
+- **Pending formal proof.** D3d e a alma da correctness do modo delta. Ha argumento informal + testes extensivos, mas a prova formal esta listada em [SPEC-19 §8](../../docs/specs/SPEC-19-delta-protocol.md).
+- **Partition migration.** Se um worker morre, recuperar sua particao exige protocolo de resincronizacao (fora do SPEC-19; coberto em [SPEC-20 Elastic Grid](../../docs/specs/SPEC-20-elastic-grid.md)).
 - **Compat.** Worker e coordinator **precisam** da mesma versao. Mismatch de versao rejeita o handshake.
 
 ## 7. Proximo passo
 
-- [SPEC-19](../../specs/SPEC-19-delta-protocol.md) — especificacao formal completa (R1-R42, diagramas de mensagem, prova de convergencia).
+- [SPEC-19](../../docs/specs/SPEC-19-delta-protocol.md) — especificacao formal completa (R1-R42, diagramas de mensagem, prova de convergencia).
 - [docs/reference/invariants.md](../reference/invariants.md) — G1/D3/D6 com amendments.
 - [07-zero-copy.md](07-zero-copy.md) — SPEC-18 wire format v2 (complementar ao delta: reduz o custo de bytes efetivamente enviados).

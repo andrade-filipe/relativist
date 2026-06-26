@@ -104,7 +104,7 @@ TOKEN=$(cat /tmp/rel-token)
 relativist worker --coordinator coord-host:9000 --token "$TOKEN"
 ```
 
-Detalhes do modelo de 3 niveis em `specs/SPEC-10-security.md`.
+Detalhes do modelo de 3 niveis em `docs/specs/SPEC-10-security.md`.
 
 ## 5.6 Docker
 

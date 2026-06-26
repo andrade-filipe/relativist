@@ -1,8 +1,8 @@
 # 08 · Elastic Grid (`--hybrid`, `--elastic-join`, `--elastic-departure`)
 
-Guia para o **Elastic Grid**, especificado em [SPEC-20](../../specs/SPEC-20-elastic-grid.md). SPEC-20 introduz tres recursos que tornam o conjunto de nos participantes **dinamico** durante uma reducao distribuida: o coordinator pode atuar como worker, novos workers podem entrar entre rodadas BSP, e workers podem sair (graceful ou por timeout) sem matar o run.
+Guia para o **Elastic Grid**, especificado em [SPEC-20](../../docs/specs/SPEC-20-elastic-grid.md). SPEC-20 introduz tres recursos que tornam o conjunto de nos participantes **dinamico** durante uma reducao distribuida: o coordinator pode atuar como worker, novos workers podem entrar entre rodadas BSP, e workers podem sair (graceful ou por timeout) sem matar o run.
 
-> **Status:** parcialmente entregue. As flags da CLI estao no parser e os campos do `GridConfig` ja sao consumidos pelo coordinator. A semantica completa de SPEC-20 (recovery sob delta mode, retain-partitions, M5 elastico) ainda esta sendo coberta por testes de integracao na v2; o uso fora do `local` mode deve ser tratado como **experimental** ate o fechamento de [SPEC-20 §3.3 ARG-005](../../specs/SPEC-20-elastic-grid.md). Default continua o comportamento estatico de v1 (zero regressao).
+> **Status:** parcialmente entregue. As flags da CLI estao no parser e os campos do `GridConfig` ja sao consumidos pelo coordinator. A semantica completa de SPEC-20 (recovery sob delta mode, retain-partitions, M5 elastico) ainda esta sendo coberta por testes de integracao na v2; o uso fora do `local` mode deve ser tratado como **experimental** ate o fechamento de [SPEC-20 §3.3 ARG-005](../../docs/specs/SPEC-20-elastic-grid.md). Default continua o comportamento estatico de v1 (zero regressao).
 
 ## 1. Quando usar
 
@@ -149,6 +149,6 @@ G1 e D6 valem identicos; o que muda e a complexidade do FSM do coordinator (esta
 
 ## 8. Proximo passo
 
-- [SPEC-20](../../specs/SPEC-20-elastic-grid.md) — especificacao formal completa (R1-R45, FSM diagrams, mode matrix v1/delta × lenient/strict, ARG-006 mixed-trace recoverability).
+- [SPEC-20](../../docs/specs/SPEC-20-elastic-grid.md) — especificacao formal completa (R1-R45, FSM diagrams, mode matrix v1/delta × lenient/strict, ARG-006 mixed-trace recoverability).
 - [09-streaming-generation.md](09-streaming-generation.md) — SPEC-21 streaming pipeline (complementar: o elastic grid permite que workers entrem; o streaming permite que a malha receba uma rede grande sem materializa-la).
 - [10-arena-management.md](10-arena-management.md) — SPEC-22 arena/free-list (interage com elastic departure: `RecyclePolicy::DisableUnderDelta` e o fallback que torna ARG-006 valido em delta mode).

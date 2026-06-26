@@ -1,6 +1,6 @@
 # 09 · Streaming Generation (`--chunk-size`)
 
-Guia para a **geracao e particionamento em streaming**, especificada em [SPEC-21](../../specs/SPEC-21-streaming-generation.md). SPEC-21 substitui o pipeline eager de v1 (`gerar rede inteira -> particionar -> dispatch`) por um pipeline incremental (`gerar chunk -> particionar chunk -> dispatch chunk -> repetir`), limitando o pico de memoria do coordinator a **O(chunk_size + border_state)** em vez de O(total_agents).
+Guia para a **geracao e particionamento em streaming**, especificada em [SPEC-21](../../docs/specs/SPEC-21-streaming-generation.md). SPEC-21 substitui o pipeline eager de v1 (`gerar rede inteira -> particionar -> dispatch`) por um pipeline incremental (`gerar chunk -> particionar chunk -> dispatch chunk -> repetir`), limitando o pico de memoria do coordinator a **O(chunk_size + border_state)** em vez de O(total_agents).
 
 > **Status:** ativo por default em `coordinator` e `local` desde v0.20-pre. O parametro `--chunk-size` tem default `10000`. Para forcar o caminho eager v1-equivalente, use `--chunk-size 4294967295` (`u32::MAX`) ou — no `bench` — omita a flag. A correctness depende de SPEC-22 R10b/c (free-list recycle precisa estar protegida sob streaming); ver §6.
 
@@ -190,6 +190,6 @@ O baseline canonico v2 ([`v2_post_d012_baseline_2026-05-05`](../../reproduce_art
 
 ## 10. Proximo passo
 
-- [SPEC-21](../../specs/SPEC-21-streaming-generation.md) — especificacao formal (R1-R37g, pull/push dispatch, FENNEL, forward references, BorderGraph interaction).
+- [SPEC-21](../../docs/specs/SPEC-21-streaming-generation.md) — especificacao formal (R1-R37g, pull/push dispatch, FENNEL, forward references, BorderGraph interaction).
 - [10-arena-management.md](10-arena-management.md) — SPEC-22 arena, R10b/c free-list e a interacao critica com streaming.
 - [06-delta-protocol.md](06-delta-protocol.md) — SPEC-19 delta protocol, complementar (delta reduz numero de mensagens; streaming reduz o pico de memoria do coord).

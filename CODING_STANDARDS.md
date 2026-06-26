@@ -71,7 +71,7 @@ TCP, the design is wrong — push the dependency upward instead.
 
 ## Specs as reference (not gospel)
 
-The 28 formal specs in [`specs/`](specs/) document the design and the invariants (SPEC-01:
+The 28 formal specs in [`docs/specs/`](docs/specs/) document the design and the invariants (SPEC-01:
 T1–T7, D1–D6, I1–I5, G1). Under RPI they are **reference**, not a process gate: read them to
 understand *why* the system is shaped the way it is, cite them when a change touches an invariant,
 but you no longer have to author a new spec before every change. New theory still flows

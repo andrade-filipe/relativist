@@ -445,7 +445,7 @@ pub fn build_subnet(
 /// allocates `Vec<Option<Agent>>` of size `max_live_id + 1` regardless of
 /// `id_range.end`. Using the planning range routed every healthy workload
 /// through SPARSE — a 5–7× wall-clock regression on `ep_con 5M w=2`. See
-/// `docs/next-steps.md` BLOCKER 2026-05-04 for the bisect transcript.
+/// `docs/_archive/next-steps.md` BLOCKER 2026-05-04 for the bisect transcript.
 ///
 /// M5 pathology (recycled-id fragmentation under delta mode) is still
 /// detected (it manifests as `max_live_id ≫ live_count` and trips the
@@ -480,7 +480,7 @@ pub fn build_subnet_with_config(
     // which is the PLANNING range from `compute_id_ranges` and is decoupled
     // from real arena memory (dense allocates by `max_live_id + 1`, see
     // `build_subnet` line 301-303). Using the planning range routed every
-    // healthy workload through SPARSE; see `docs/next-steps.md` BLOCKER
+    // healthy workload through SPARSE; see `docs/_archive/next-steps.md` BLOCKER
     // 2026-05-04 for the bisect transcript.
     let live_count = worker_agents.len() as u64;
     let effective_arena_size: u64 = worker_agents

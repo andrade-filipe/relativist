@@ -245,7 +245,7 @@ reproduce_article/results/locked/v2_horner_demo_<YYYY-MM-DD>/
 
 | Arquivo | Mudança |
 |---|---|
-| `specs/SPEC-27-encoder-decoder-api.md` | **Revisão pelo ESPECIALISTA EM SPECS (Fase 0)** — única edição em `specs/` |
+| `docs/specs/SPEC-27-encoder-decoder-api.md` | **Revisão pelo ESPECIALISTA EM SPECS (Fase 0)** — única edição em `specs/` |
 | `docs/encoders/horner.md` | Novo. Tutorial: input format, exemplos, validação por oracle |
 | `docs/INDEX.md` | Nova entrada "Encoders > Horner Polynomial Evaluation" |
 | `docs/ROADMAP.md` §2.41 | Status: "**[DONE — Topic 2]** trait API + EncoderRegistry shipped; HornerCodec is the v1 codec; LambdaEncoder remains as documented future work" |
@@ -418,6 +418,6 @@ cat reproduce_article/results/locked/v2_horner_demo_<YYYY-MM-DD>/MANIFEST.md
 
 - **Foundation explainer:** `2026-05-06-horner-method-explainer.md` — o que é Horner, pra que serve, por que é a demo perfeita para confluência.
 - **Topic 1 design:** `2026-05-05-stress-test-large-nets-design.md` — sub-projeto irmão (curva de stress test).
-- **SPEC-27 (a revisar):** `specs/SPEC-27-encoder-decoder-api.md` — Draft atual com LambdaEncoder; revisado na Fase 0a para HornerCodec como codec v1.
-- **SPEC-14 (intacta):** `specs/SPEC-14-encoding.md` — Church arithmetic já em produção; HornerCodec compõe por cima.
+- **SPEC-27 (a revisar):** `docs/specs/SPEC-27-encoder-decoder-api.md` — Draft atual com LambdaEncoder; revisado na Fase 0a para HornerCodec como codec v1.
+- **SPEC-14 (intacta):** `docs/specs/SPEC-14-encoding.md` — Church arithmetic já em produção; HornerCodec compõe por cima.
 - **ROADMAP §2.41:** Encoder/Decoder API and Problem Registry — atualizado para `[DONE — Topic 2]` ao fechar.

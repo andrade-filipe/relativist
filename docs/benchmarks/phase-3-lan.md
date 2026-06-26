@@ -659,16 +659,16 @@ Drift > 5 s torna a correlacao de eventos entre coord e workers ilegivel (mensag
 
 ## 10. Referencias cruzadas
 
-- **SPEC-09** (`specs/SPEC-09-benchmarks.md`): R25 modos, R27 TcpNetwork MUST, R31 10 reps.
-- **SPEC-07** (`specs/SPEC-07-deployment.md`): R41 bare-metal procedure.
-- **SPEC-05** (`specs/SPEC-05-merge.md`): R30a lenient vs strict BSP.
-- **SPEC-06** (`specs/SPEC-06-wire-protocol.md`): wire format, handshake, token, PROTOCOL_VERSION.
-- **SPEC-10** (`specs/SPEC-10-security.md`): modelo de auth de 3 niveis.
-- **SPEC-17** (`specs/SPEC-17-transport-abstraction.md`): TCP transport, keepalive, buffer tuning.
-- **SPEC-18** (`specs/SPEC-18-wire-format-v2.md`): bincode v2, zero-copy archive (Axis 2).
-- **SPEC-19** (`specs/SPEC-19-delta-protocol.md`): delta mode, BorderGraph, R37 version handshake.
-- **SPEC-21** (`specs/SPEC-21-streaming-generation.md`): chunk-size + max-pending-lifetime semantica.
-- **SPEC-22** (`specs/SPEC-22-arena-management.md`): recycle-policy + dense/sparse routing.
+- **SPEC-09** (`docs/specs/SPEC-09-benchmarks.md`): R25 modos, R27 TcpNetwork MUST, R31 10 reps.
+- **SPEC-07** (`docs/specs/SPEC-07-deployment.md`): R41 bare-metal procedure.
+- **SPEC-05** (`docs/specs/SPEC-05-merge.md`): R30a lenient vs strict BSP.
+- **SPEC-06** (`docs/specs/SPEC-06-wire-protocol.md`): wire format, handshake, token, PROTOCOL_VERSION.
+- **SPEC-10** (`docs/specs/SPEC-10-security.md`): modelo de auth de 3 niveis.
+- **SPEC-17** (`docs/specs/SPEC-17-transport-abstraction.md`): TCP transport, keepalive, buffer tuning.
+- **SPEC-18** (`docs/specs/SPEC-18-wire-format-v2.md`): bincode v2, zero-copy archive (Axis 2).
+- **SPEC-19** (`docs/specs/SPEC-19-delta-protocol.md`): delta mode, BorderGraph, R37 version handshake.
+- **SPEC-21** (`docs/specs/SPEC-21-streaming-generation.md`): chunk-size + max-pending-lifetime semantica.
+- **SPEC-22** (`docs/specs/SPEC-22-arena-management.md`): recycle-policy + dense/sparse routing.
 - **`reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md`**: subtraendo canonico Phase 2 docker. Template estrutural para os manifests Phase 3.
 - **`docs/analysis/D011-final-baseline-analysis-2026-05-04.md`** §6 verdict: estado atual da decomposicao compute/network/merge — Phase 3 LAN preenche o componente que ainda nao foi medido.
 

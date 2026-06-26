@@ -808,7 +808,7 @@ impl PartitionAccumulator {
     /// `AccumulatorNet::Dense` direct path) would allocate. The pre-D-011
     /// metric used `id_range.end - id_range.start` (the planning range
     /// from `compute_id_ranges`), which routed healthy workloads through
-    /// the threshold; see `docs/next-steps.md` BLOCKER 2026-05-04.
+    /// the threshold; see `docs/_archive/next-steps.md` BLOCKER 2026-05-04.
     ///
     /// # R23 reconciliation
     ///

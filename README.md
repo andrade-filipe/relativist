@@ -122,7 +122,7 @@ The **strong confluence** theorem (Lafont 1997) guarantees that any two non-over
 
 ## Specs
 
-All design decisions are documented in formal specifications under [`specs/`](specs/). 17 specs (SPEC-00 through SPEC-16) cover the v1 surface; SPEC-17 onwards cover v2 work. See [docs/INDEX.md](docs/INDEX.md) for the full table.
+All design decisions are documented in formal specifications under [`docs/specs/`](docs/specs/). 17 specs (SPEC-00 through SPEC-16) cover the v1 surface; SPEC-17 onwards cover v2 work. See [docs/INDEX.md](docs/INDEX.md) for the full table.
 
 ## Benchmark Results
 
