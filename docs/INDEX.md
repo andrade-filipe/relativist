@@ -63,7 +63,7 @@ Guides cover the user-facing v2 features: [06-delta-protocol](guides/06-delta-pr
 | [benchmarks/DATA-COLLECTION-PLAN.md](benchmarks/DATA-COLLECTION-PLAN.md) | Benchmark data collection strategy |
 | [benchmarks/benchmark-relevance-analysis.md](benchmarks/benchmark-relevance-analysis.md) | Benchmark selection rationale |
 
-Frozen data: [`results/locked/v1_local_baseline/`](../results/locked/v1_local_baseline/) — SHA-256 checksums in `manifest.md`.
+Frozen data: [`reproduce_article/results/locked/v1_local_baseline/`](../reproduce_article/results/locked/v1_local_baseline/) — SHA-256 checksums in `manifest.md`.
 
 ## Research Library (24 notes)
 
@@ -92,8 +92,8 @@ Organized in 7 categories in [`pesquisa/`](pesquisa/). See [`pesquisa/INDICE.md`
 | Document | Description |
 |----------|-------------|
 | [analysis/D011-final-baseline-analysis-2026-05-04.md](analysis/D011-final-baseline-analysis-2026-05-04.md) | Cold post-mortem analysis: 9 red flags + verdict + per-component decomposition |
-| `results/locked/v2_post_d012_baseline_2026-05-05/` | **Canonical v2 baseline** — 32 distributed slots all_correct=true, mips/network/compute populated |
-| `results/locked/v1_local_baseline/` | v1 frozen baseline (Phase 1 + Phase 2, 4600 reps, 0 failures) |
+| `reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/` | **Canonical v2 baseline** — 32 distributed slots all_correct=true, mips/network/compute populated |
+| `reproduce_article/results/locked/v1_local_baseline/` | v1 frozen baseline (Phase 1 + Phase 2, 4600 reps, 0 failures) |
 | [benchmarks/campaigns/stress-curve.md](benchmarks/campaigns/stress-curve.md) | **Stress Curve (v2)** — methodology for N up to 10⁹ campaign; locked dir produced by TASK-0708 |
 
 ## Internal (Historical / archived)

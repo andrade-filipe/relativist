@@ -1,10 +1,10 @@
 # D-011 Final Baseline — Cold Post-Mortem Analysis (rev 2026-05-05)
 
-**Primary baseline (canonical):** `results/locked/v2_post_d012_baseline_2026-05-05/` — post-D-012 instrumentation restoration, all RF-04/05/07 closures empirically verified.
+**Primary baseline (canonical):** `reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/` — post-D-012 instrumentation restoration, all RF-04/05/07 closures empirically verified.
 **Historical baselines (referenced for delta analysis):**
-- `results/locked/v1_local_baseline/` — frozen v1 reference (2026-04-11)
-- `results/locked/v2_pre_fix_baseline_2026-05-04/` — v2 before D-011 fix (4 broken slots)
-- `results/locked/v2_d011_final_baseline_2026-05-04/` — v2 after D-011 fix, before D-012 instrumentation restore (3 zeroed columns)
+- `reproduce_article/results/locked/v1_local_baseline/` — frozen v1 reference (2026-04-11)
+- `reproduce_article/results/locked/v2_pre_fix_baseline_2026-05-04/` — v2 before D-011 fix (4 broken slots)
+- `reproduce_article/results/locked/v2_d011_final_baseline_2026-05-04/` — v2 after D-011 fix, before D-012 instrumentation restore (3 zeroed columns)
 
 **HEAD at canonical baseline run:** `e6ff6bb` (post-D-012 close paperwork, `v2-development`)
 **Analyst:** Claude Opus 4.7 (1M context), at user request 2026-05-05
@@ -188,7 +188,7 @@ The v2 wire abstraction trades **bytes-on-the-wire for CPU time per round**. The
 
 **Mechanism (originally suspected):** `total_interactions` (`detail.csv`) appeared to be 0 everywhere, suggesting the bench harness never populated it.
 
-**Adversarial finding during D-012 (QA-D012-002, CRITICAL).** The literal `mips_mean = 0.000` in CSV output came from `scripts/bench_docker_v2.sh:283` — a **Python-in-bash hardcode** that overrode whatever the binary computed. The binary had the metric flow correctly wired via `WorkerRoundStats.local_redexes` → coordinator aggregation → `BenchmarkResult.total_interactions` → `mips` derivation in `bench/suite.rs::aggregate`. The script was the wrong-layer red herring.
+**Adversarial finding during D-012 (QA-D012-002, CRITICAL).** The literal `mips_mean = 0.000` in CSV output came from `reproduce_article/scripts/bench_docker_v2.sh:283` — a **Python-in-bash hardcode** that overrode whatever the binary computed. The binary had the metric flow correctly wired via `WorkerRoundStats.local_redexes` → coordinator aggregation → `BenchmarkResult.total_interactions` → `mips` derivation in `bench/suite.rs::aggregate`. The script was the wrong-layer red herring.
 
 **D-012 closure (2026-05-05).** Commit `c439182` (Stage 6 REFACTOR) patched the bash hardcode to recompute `mips_mean` from per-rep `total_interactions` and added IT-0618-A4 to exercise `bench::suite::run_benchmark_suite` end-to-end and assert `summary.csv::mips_mean > 0`. The `v2_post_d012_baseline_2026-05-05` summary.csv now shows non-zero `mips_mean` for **every TCP-mode row** (range 0.002 – 1.261, with `dual_tree 20 w=1` reporting the highest at 1.261 MIPS).
 

@@ -1,35 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Phase 3 Locked Baseline — v1_lan_baseline (Tailscale / TcpNetwork)
+# Phase 2 Docker Benchmark Orchestration Script
 # =============================================================================
-# Runs the full Phase 3 LAN benchmark campaign using real distributed workers
-# connected via Tailscale. Emits frozen CSVs under
-# `results/locked/v1_lan_baseline/`.
 #
-# Campaign layout:
-#   - 8 benchmark configurations (ep_annihilation_con × 500k/1M/5M,
-#     dual_tree × 18/20/22, condup_expansion × 1000/5000).
-#   - 4 worker counts (1, 2, 4, 8) per config → 32 distributed datapoints.
-#   - 8 native sequential baselines (one per bench × size) → 40 total.
-#   - 10 repetitions each, 2 warmup runs.
+# Runs Relativist benchmarks via Docker Compose (TcpLocalhost mode).
+# Produces CSVs matching the Phase 1 format for direct comparison.
 #
-# Pre-conditions:
-#   - `cargo build --release` must succeed prior to invocation.
-#   - Tailscale running on all machines (coordinator + workers).
-#   - Worker daemons started on N machines BEFORE running this script:
-#       relativist worker --coordinator <TAILSCALE_IP>:9000 \
-#           --token "<TOKEN>" --daemon
-#   - Coordinator machine (running this script) can ping all workers
-#     via Tailscale.
+# Usage:
+#   bash scripts/bench_docker.sh [--dry-run] [--skip-build] [--skip-sequential]
 #
-# Token handling:
-#   - Set RELATIVIST_TOKEN env var to a fixed base64 token, or let the
-#     script generate one with --token auto (default). Workers must use
-#     the SAME token.
+# Prerequisites:
+#   - Docker Desktop running
+#   - 'relativist' binary available in PATH or ./target/release/
+#   - docker-compose.yml in repo root
 #
-# On error the script stops immediately (set -e). Partial CSVs remain in
-# place under results/locked/v1_lan_baseline/ for forensic review; raw
-# per-run metrics.json files persist in raw/phase3/.
+# Output:
+#   results/phase2_detail.csv
+#   results/phase2_summary.csv
+#   results/phase2_rounds.csv
 # =============================================================================
 
 set -euo pipefail
@@ -39,14 +27,11 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$REPO_DIR/data"
-LOCKED_DIR="$REPO_DIR/results/locked/v1_lan_baseline"
-RAW_DIR="$LOCKED_DIR/raw/phase3"
+RESULTS_DIR="$REPO_DIR/reproduce_article/results"
 
-mkdir -p "$DATA_DIR" "$LOCKED_DIR" "$RAW_DIR"
-
-# On Windows (Git Bash / MSYS2), convert paths for Python compatibility.
+# On Windows (Git Bash / MSYS2), convert paths for Python compatibility
 winpath() {
     if command -v cygpath &>/dev/null; then
         cygpath -w "$1"
@@ -55,11 +40,13 @@ winpath() {
     fi
 }
 
+# Join array elements with commas for Python list literals
 join_comma() {
     local IFS=','
     echo "$*"
 }
 
+# Find relativist binary
 if [ -f "$REPO_DIR/target/release/relativist.exe" ]; then
     RELATIVIST="$REPO_DIR/target/release/relativist.exe"
 elif [ -f "$REPO_DIR/target/release/relativist" ]; then
@@ -67,7 +54,7 @@ elif [ -f "$REPO_DIR/target/release/relativist" ]; then
 elif command -v relativist &>/dev/null; then
     RELATIVIST="relativist"
 else
-    echo "ERROR: relativist binary not found. Run 'cargo build --release' first." >&2
+    echo "ERROR: relativist binary not found. Run 'cargo build --release' first."
     exit 1
 fi
 
@@ -86,12 +73,9 @@ BENCHMARKS=(
 WORKER_COUNTS=(1 2 4 8)
 WARMUP_RUNS=2
 REPETITIONS=10
-TIMEOUT_SECS=1800   # 30 minutes per run
+TIMEOUT_SECS=600  # 10 minutes per run max
 
-# Token: use env var or generate one for the campaign
-TOKEN="${RELATIVIST_TOKEN:-}"
-BIND="${RELATIVIST_BIND:-tailscale}"
-
+# Flags
 DRY_RUN=false
 SKIP_BUILD=false
 SKIP_SEQUENTIAL=false
@@ -106,16 +90,16 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------------------
-# CSV Headers (matching Phase 1/2 format for direct comparison)
+# CSV Headers (matching Phase 1 format)
 # ---------------------------------------------------------------------------
 
 DETAIL_HEADER="benchmark,input_size,mode,workers,repetition,correct,wall_clock_secs,total_interactions,mips,rounds,speedup,efficiency,overhead_ratio,peak_memory_bytes,bytes_sent,bytes_received,con_con,dup_dup,era_era,con_dup,con_era,dup_era"
 SUMMARY_HEADER="benchmark,input_size,mode,workers,repetitions,all_correct,wall_clock_mean,wall_clock_std,wall_clock_median,wall_clock_min,wall_clock_max,mips_mean,speedup_mean,efficiency_mean,overhead_ratio_mean,cv"
 ROUNDS_HEADER="benchmark,input_size,workers,mode,repetition,round,partition_time_secs,compute_time_secs,merge_time_secs,network_time_secs,border_redexes,border_ratio,agents_at_start,bytes_sent,bytes_received"
 
-DETAIL_FILE="$LOCKED_DIR/phase3_detail.csv"
-SUMMARY_FILE="$LOCKED_DIR/phase3_summary.csv"
-ROUNDS_FILE="$LOCKED_DIR/phase3_rounds.csv"
+DETAIL_FILE="$RESULTS_DIR/phase2_detail.csv"
+SUMMARY_FILE="$RESULTS_DIR/phase2_summary.csv"
+ROUNDS_FILE="$RESULTS_DIR/phase2_rounds.csv"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,6 +107,7 @@ ROUNDS_FILE="$LOCKED_DIR/phase3_rounds.csv"
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
+# Parse metrics.json → detail CSV row
 parse_metrics_to_detail() {
     local metrics_file="$1"
     local bench_name="$2"
@@ -157,10 +142,11 @@ overhead = max(0.0, 1.0 - efficiency)
 bytes_s = sum(m.get("bytes_sent_per_round", []))
 bytes_r = sum(m.get("bytes_received_per_round", []))
 
-print(f"$bench_name,$input_size,tcp_network,$workers,$rep,$is_correct,{total_secs:.6f},{total_int},{mips:.3f},{rounds},{speedup:.4f},{efficiency:.4f},{overhead:.4f},0,{bytes_s},{bytes_r},{con_con},{dup_dup},{era_era},{con_dup},{con_era},{dup_era}")
+print(f"$bench_name,$input_size,tcp_localhost,$workers,$rep,$is_correct,{total_secs:.6f},{total_int},{mips:.3f},{rounds},{speedup:.4f},{efficiency:.4f},{overhead:.4f},0,{bytes_s},{bytes_r},{con_con},{dup_dup},{era_era},{con_dup},{con_era},{dup_era}")
 PYEOF
 }
 
+# Parse metrics.json → rounds CSV rows
 parse_metrics_to_rounds() {
     local metrics_file="$1"
     local bench_name="$2"
@@ -202,10 +188,11 @@ for r in range(m["rounds"]):
     bs = ival("bytes_sent_per_round")
     br = ival("bytes_received_per_round")
 
-    print(f"$bench_name,$input_size,$workers,tcp_network,$rep,{r},{part_t:.6f},{comp_t:.6f},{merge_t:.6f},{net_t:.6f},{b_redex},{b_ratio:.6f},{agents},{bs},{br}")
+    print(f"$bench_name,$input_size,$workers,tcp_localhost,$rep,{r},{part_t:.6f},{comp_t:.6f},{merge_t:.6f},{net_t:.6f},{b_redex},{b_ratio:.6f},{agents},{bs},{br}")
 PYEOF
 }
 
+# Extract wall_clock from metrics.json
 extract_wall_clock() {
     local wpath
     wpath=$(winpath "$1")
@@ -218,6 +205,7 @@ print(f'{t:.6f}')
 "
 }
 
+# Compute summary stats from wall_clock values
 write_summary_row() {
     local bench_name="$1"
     local input_size="$2"
@@ -227,6 +215,7 @@ write_summary_row() {
     local all_correct="$6"
     local seq_baseline="$7"
     shift 7
+    # remaining args are wall_clock values
 
     python3 << PYEOF
 import statistics
@@ -254,7 +243,7 @@ print(f"$bench_name,$input_size,$mode,$workers,$reps,$all_correct,{mean_v:.6f},{
 PYEOF
 }
 
-# G1 verification via structural check.
+# G1 verification: compare agent counts + redex counts (quick structural check)
 verify_g1() {
     local seq_output="$1"
     local dist_output="$2"
@@ -275,22 +264,28 @@ verify_g1() {
     fi
 }
 
-run_tailscale_coordinator() {
+# Run a single docker compose cycle
+run_docker_cycle() {
     local workers="$1"
-    local input_file="$2"
-    local output_file="$3"
-    local metrics_file="$4"
-    local timeout_val="$5"
+    local timeout="$2"
 
+    # Clean previous state
+    (cd "$REPO_DIR" && docker compose down --remove-orphans 2>/dev/null) || true
+
+    # Run with abort-on-container-exit: stops all when coordinator exits
     local exit_code=0
-    timeout "$timeout_val" "$RELATIVIST" coordinator \
-        -w "$workers" \
-        -i "$input_file" \
-        -o "$output_file" \
-        -m "$metrics_file" \
-        --bind "$BIND" \
-        --token "$TOKEN" \
-        2>&1 | tail -30 || exit_code=$?
+    (cd "$REPO_DIR" && \
+        NUM_WORKERS="$workers" \
+        timeout "$timeout" \
+        docker compose up \
+            --abort-on-container-exit \
+            --exit-code-from coordinator \
+            --scale worker="$workers" \
+            2>&1 | tail -30
+    ) || exit_code=$?
+
+    # Always clean up
+    (cd "$REPO_DIR" && docker compose down --remove-orphans 2>/dev/null) || true
 
     return $exit_code
 }
@@ -300,49 +295,36 @@ run_tailscale_coordinator() {
 # ---------------------------------------------------------------------------
 
 main() {
-    log "=== Phase 3 Locked Baseline — v1_lan_baseline (Tailscale) ==="
-    log "Binary:      $RELATIVIST"
-    log "Output:      $LOCKED_DIR"
+    log "=== Phase 2: Docker (TcpLocalhost) Benchmark Suite ==="
     log "Benchmarks:  ${#BENCHMARKS[@]} configurations"
     log "Workers:     ${WORKER_COUNTS[*]}"
     log "Warmup:      $WARMUP_RUNS"
     log "Repetitions: $REPETITIONS"
     log "Timeout:     ${TIMEOUT_SECS}s per run"
-    log "Bind:        $BIND"
-
-    # Generate or display campaign token
-    if [ -z "$TOKEN" ]; then
-        TOKEN=$(python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())")
-        log "Generated campaign token (use this for all workers):"
-        log "  TOKEN=$TOKEN"
-    else
-        log "Using provided token from RELATIVIST_TOKEN"
-    fi
-
-    echo ""
-    log "--- Worker daemon command (run on each worker machine) ---"
-    log "  relativist worker --coordinator <THIS_MACHINE_TAILSCALE_IP>:9000 --token \"$TOKEN\" --daemon"
     echo ""
 
-    if [ "$DRY_RUN" = true ]; then
-        log "[DRY RUN] Would run ${#BENCHMARKS[@]} × ${#WORKER_COUNTS[@]} = $(( ${#BENCHMARKS[@]} * ${#WORKER_COUNTS[@]} )) configurations"
-        log "[DRY RUN] Exiting."
-        return
-    fi
+    mkdir -p "$DATA_DIR" "$RESULTS_DIR"
 
+    # Build Docker image once
     if [ "$SKIP_BUILD" = false ]; then
-        log "Building release binary..."
-        (cd "$REPO_DIR" && cargo build --release 2>&1 | tail -3)
-        log "Build complete."
+        log "Building Docker image..."
+        if [ "$DRY_RUN" = true ]; then
+            log "[DRY RUN] Would build Docker image"
+        else
+            (cd "$REPO_DIR" && docker compose build 2>&1 | tail -3)
+            log "Docker image built."
+        fi
     fi
 
+    # Initialize CSV output files
     echo "$DETAIL_HEADER" > "$DETAIL_FILE"
     echo "$SUMMARY_HEADER" > "$SUMMARY_FILE"
     echo "$ROUNDS_HEADER" > "$ROUNDS_FILE"
 
+    # Sequential baselines: associative array bench:size → median_secs
     declare -A SEQ_BASELINES
 
-    # ===== PHASE A: Sequential baselines (native, no network) =====
+    # ===== PHASE A: Sequential baselines (native, not Docker) =====
     if [ "$SKIP_SEQUENTIAL" = false ]; then
         log ""
         log "--- Phase A: Sequential Baselines (native) ---"
@@ -352,20 +334,30 @@ main() {
 
             local input_file="$DATA_DIR/bench_${bench_name}_${input_size}.bin"
 
+            if [ "$DRY_RUN" = true ]; then
+                log "[DRY RUN] Sequential: $bench_name size=$input_size"
+                SEQ_BASELINES["${bench_name}:${input_size}"]="1.0"
+                continue
+            fi
+
             log "Sequential: $bench_name size=$input_size"
 
+            # Generate input net (once per benchmark×size)
             "$RELATIVIST" generate "$example_net" -n "$input_size" -o "$input_file" 2>/dev/null
 
+            # Warmup
             for ((w=0; w<WARMUP_RUNS; w++)); do
                 "$RELATIVIST" reduce -i "$input_file" -o /dev/null 2>/dev/null || true
             done
 
+            # Measure repetitions
             local wall_clocks=()
             local seq_output="$DATA_DIR/seq_${bench_name}_${input_size}.bin"
 
             for ((rep=0; rep<REPETITIONS; rep++)); do
                 local t0 t1 elapsed
 
+                # Use python for sub-second timing on Windows
                 t0=$(python3 -c "import time; print(f'{time.perf_counter():.9f}')")
                 "$RELATIVIST" reduce -i "$input_file" -o "$seq_output" 2>/dev/null
                 t1=$(python3 -c "import time; print(f'{time.perf_counter():.9f}')")
@@ -373,9 +365,11 @@ main() {
                 elapsed=$(python3 -c "print(f'{$t1 - $t0:.6f}')")
                 wall_clocks+=("$elapsed")
 
+                # Write detail row
                 echo "$bench_name,$input_size,sequential,0,$rep,true,$elapsed,0,0.0,0,1.0000,1.0000,0.0000,0,0,0,0,0,0,0,0,0" >> "$DETAIL_FILE"
             done
 
+            # Compute median baseline
             local median
             median=$(python3 -c "
 import statistics
@@ -384,6 +378,7 @@ print(f'{statistics.median(vals):.6f}')
 ")
             SEQ_BASELINES["${bench_name}:${input_size}"]="$median"
 
+            # Write summary row
             write_summary_row "$bench_name" "$input_size" "sequential" "0" \
                 "$REPETITIONS" "true" "$median" "${wall_clocks[@]}" >> "$SUMMARY_FILE"
 
@@ -391,17 +386,16 @@ print(f'{statistics.median(vals):.6f}')
         done
     else
         log "Skipping sequential baselines (--skip-sequential)"
+        # Use placeholder baselines
         for bench_spec in "${BENCHMARKS[@]}"; do
             IFS=':' read -r bench_name _ input_size <<< "$bench_spec"
             SEQ_BASELINES["${bench_name}:${input_size}"]="1.0"
         done
     fi
 
-    # ===== PHASE B: Tailscale (TcpNetwork) benchmarks =====
+    # ===== PHASE B: Docker (TcpLocalhost) benchmarks =====
     log ""
-    log "--- Phase B: Tailscale (TcpNetwork) Benchmarks ---"
-    log "Ensure worker daemons are running on remote machines."
-    echo ""
+    log "--- Phase B: Docker (TcpLocalhost) Benchmarks ---"
 
     local total_configs=$(( ${#BENCHMARKS[@]} * ${#WORKER_COUNTS[@]} ))
     local config_num=0
@@ -413,7 +407,8 @@ print(f'{statistics.median(vals):.6f}')
         local seq_output="$DATA_DIR/seq_${bench_name}_${input_size}.bin"
         local seq_baseline="${SEQ_BASELINES["${bench_name}:${input_size}"]}"
 
-        if [ ! -f "$input_file" ]; then
+        # Ensure input file exists
+        if [ ! -f "$input_file" ] && [ "$DRY_RUN" = false ]; then
             "$RELATIVIST" generate "$example_net" -n "$input_size" -o "$input_file" 2>/dev/null
         fi
 
@@ -421,6 +416,11 @@ print(f'{statistics.median(vals):.6f}')
             config_num=$((config_num + 1))
             log ""
             log "[$config_num/$total_configs] $bench_name size=$input_size workers=$workers"
+
+            if [ "$DRY_RUN" = true ]; then
+                log "  [DRY RUN] Skipping"
+                continue
+            fi
 
             local wall_clocks=()
             local all_correct="true"
@@ -433,53 +433,60 @@ print(f'{statistics.median(vals):.6f}')
                     is_warmup=true
                 fi
 
-                local dist_output="$DATA_DIR/dist_output.bin"
-                local dist_metrics="$DATA_DIR/dist_metrics.json"
-                rm -f "$dist_output" "$dist_metrics"
+                # Prepare: copy input to data/input.bin (docker-compose volume)
+                cp "$input_file" "$DATA_DIR/input.bin"
+                rm -f "$DATA_DIR/output.bin" "$DATA_DIR/metrics.json"
 
+                # Run docker compose cycle
                 local exit_code=0
-                run_tailscale_coordinator "$workers" "$input_file" "$dist_output" "$dist_metrics" "$TIMEOUT_SECS" || exit_code=$?
+                run_docker_cycle "$workers" "$TIMEOUT_SECS" || exit_code=$?
 
                 if [ "$is_warmup" = true ]; then
                     log "  Warmup $((run+1))/$WARMUP_RUNS"
                     continue
                 fi
 
-                if [ "$exit_code" -ne 0 ] || [ ! -f "$dist_metrics" ]; then
+                # Check if metrics were produced
+                if [ "$exit_code" -ne 0 ] || [ ! -f "$DATA_DIR/metrics.json" ]; then
                     log "  Rep $((rep+1)): FAILED (exit=$exit_code)"
                     all_correct="false"
-                    echo "$bench_name,$input_size,tcp_network,$workers,$rep,false,0,0,0,0,0,0,1.0,0,0,0,0,0,0,0,0,0" >> "$DETAIL_FILE"
+                    echo "$bench_name,$input_size,tcp_localhost,$workers,$rep,false,0,0,0,0,0,0,1.0,0,0,0,0,0,0,0,0,0" >> "$DETAIL_FILE"
                     continue
                 fi
 
-                # Persist raw metrics
-                local metrics_file="$RAW_DIR/metrics_${bench_name}_${input_size}_w${workers}_r${rep}.json"
-                cp "$dist_metrics" "$metrics_file"
+                # Save metrics for this rep
+                local metrics_file="$DATA_DIR/metrics_${bench_name}_${input_size}_w${workers}_r${rep}.json"
+                cp "$DATA_DIR/metrics.json" "$metrics_file"
 
+                # G1 verification
                 local correct="true"
-                if [ -f "$dist_output" ] && [ -f "$seq_output" ]; then
-                    correct=$(verify_g1 "$seq_output" "$dist_output")
+                if [ -f "$DATA_DIR/output.bin" ] && [ -f "$seq_output" ]; then
+                    correct=$(verify_g1 "$seq_output" "$DATA_DIR/output.bin")
                 fi
                 if [ "$correct" = "false" ]; then
                     all_correct="false"
                     log "  Rep $((rep+1)): G1 FAILED!"
                 fi
 
+                # Extract wall clock
                 local wc
                 wc=$(extract_wall_clock "$metrics_file")
                 wall_clocks+=("$wc")
 
+                # Write detail row
                 parse_metrics_to_detail "$metrics_file" "$bench_name" "$input_size" \
                     "$workers" "$rep" "$seq_baseline" "$correct" >> "$DETAIL_FILE"
 
+                # Write rounds rows
                 parse_metrics_to_rounds "$metrics_file" "$bench_name" "$input_size" \
                     "$workers" "$rep" >> "$ROUNDS_FILE"
 
                 log "  Rep $((rep+1))/$REPETITIONS: ${wc}s correct=$correct"
             done
 
+            # Write summary row
             if [ ${#wall_clocks[@]} -gt 0 ]; then
-                write_summary_row "$bench_name" "$input_size" "tcp_network" "$workers" \
+                write_summary_row "$bench_name" "$input_size" "tcp_localhost" "$workers" \
                     "${#wall_clocks[@]}" "$all_correct" "$seq_baseline" "${wall_clocks[@]}" >> "$SUMMARY_FILE"
 
                 local median_wc
@@ -495,15 +502,19 @@ print(f'{statistics.median(vals):.6f}')
         done
     done
 
+    # ===== Report =====
     log ""
     log "=========================================="
-    log "  Phase 3 Locked Baseline Complete"
+    log "  Phase 2 Benchmark Campaign Complete"
     log "=========================================="
     log "Output files:"
-    log "  $DETAIL_FILE  ($(wc -l < "$DETAIL_FILE") rows)"
-    log "  $SUMMARY_FILE ($(wc -l < "$SUMMARY_FILE") rows)"
-    log "  $ROUNDS_FILE  ($(wc -l < "$ROUNDS_FILE") rows)"
-    log "Raw metrics in: $RAW_DIR"
+    log "  $DETAIL_FILE"
+    log "  $SUMMARY_FILE"
+    log "  $ROUNDS_FILE"
+
+    local detail_rows
+    detail_rows=$(( $(wc -l < "$DETAIL_FILE") - 1 ))
+    log "Total datapoints: $detail_rows"
 }
 
 main "$@"

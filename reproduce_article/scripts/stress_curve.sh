@@ -43,7 +43,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # --- arg parsing ---
 SMOKE=0
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="$REPO_DIR/results/locked/v2_stress_curve_$(date -I)"
+    OUTPUT_DIR="$REPO_DIR/reproduce_article/results/locked/v2_stress_curve_$(date -I)"
 fi
 
 mkdir -p "$OUTPUT_DIR/raw"
@@ -362,7 +362,7 @@ if [[ $NO_DOCKER -eq 0 ]]; then
 fi
 
 if [[ $NO_DOCKER -eq 0 && $DOCKER_AVAILABLE -eq 1 ]]; then
-    DOCKER_RESULTS_DIR="$REPO_DIR/results"
+    DOCKER_RESULTS_DIR="$REPO_DIR/reproduce_article/results"
     DOCKER_DETAIL_PATH="$DOCKER_RESULTS_DIR/detail.csv"
     DOCKER_SUMMARY_PATH="$DOCKER_RESULTS_DIR/summary.csv"
     mkdir -p "$DOCKER_RESULTS_DIR"

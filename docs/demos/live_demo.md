@@ -55,7 +55,7 @@ JSON `--input` (lição aprendida em D-014 Phase 2).
 Use o script interativo:
 
 ```bash
-bash scripts/horner_live_demo.sh
+bash reproduce_article/scripts/horner_live_demo.sh
 ```
 
 Ele pausa em cada passo aguardando Enter — você narra entre eles. 4
@@ -156,10 +156,10 @@ tese central deste TCC."
 
 | Comando | Polinômio | Interações | Value | Por quê usar |
 |---|---|---|---|---|
-| `bash scripts/horner_live_demo.sh` | `[10000,500,1]@100` | 1220 | 70000 | **Default.** Degree-2 max-scale. Demo balanceada de trabalho real. |
-| `bash scripts/horner_live_demo.sh --big` | `[1,1025]@10000` | 2059 | 10250001 | **Mais dramática.** Single-iter c1 no limite do envelope. Quase o dobro de interações. |
-| `bash scripts/horner_live_demo.sh --input '{"coeffs":[42],"x":99}'` | constante 42 | 0 | 42 | Demo "anti-paralelismo" — nada pra reduzir. |
-| `bash scripts/horner_live_demo.sh --input '{"coeffs":[1,1,1],"x":2}'` | `x² + x + 1` em x=2 | 26 | 7 | Demo "didática" — pequena o suficiente pra explicar passo a passo. |
+| `bash reproduce_article/scripts/horner_live_demo.sh` | `[10000,500,1]@100` | 1220 | 70000 | **Default.** Degree-2 max-scale. Demo balanceada de trabalho real. |
+| `bash reproduce_article/scripts/horner_live_demo.sh --big` | `[1,1025]@10000` | 2059 | 10250001 | **Mais dramática.** Single-iter c1 no limite do envelope. Quase o dobro de interações. |
+| `bash reproduce_article/scripts/horner_live_demo.sh --input '{"coeffs":[42],"x":99}'` | constante 42 | 0 | 42 | Demo "anti-paralelismo" — nada pra reduzir. |
+| `bash reproduce_article/scripts/horner_live_demo.sh --input '{"coeffs":[1,1,1],"x":2}'` | `x² + x + 1` em x=2 | 26 | 7 | Demo "didática" — pequena o suficiente pra explicar passo a passo. |
 
 ---
 
@@ -203,13 +203,13 @@ cd relativist
 git checkout v0.21.0          # ou tag mais recente
 cargo build --release --bin relativist
 docker compose --profile bench-tcp build
-bash scripts/horner_live_demo.sh
+bash reproduce_article/scripts/horner_live_demo.sh
 ```
 
 Ou o batch completo (10 demos × 4 workers × 2 arms = 80 rows):
 
 ```bash
-bash scripts/horner_demo.sh --csv results/horner_demo_$(date -I).csv
+bash reproduce_article/scripts/horner_demo.sh --csv results/horner_demo_$(date -I).csv
 ```
 
 Compara contra o dataset locked: `results/horner_demo_2026-05-16.csv`.
@@ -237,10 +237,10 @@ relativist-worker-K` mid-talk.
 ### Quando usar a variante multi-container
 
 ```bash
-bash scripts/horner_distributed_demo.sh                     # default: 4 workers
-bash scripts/horner_distributed_demo.sh --workers 2
-bash scripts/horner_distributed_demo.sh --input '{"coeffs":[42],"x":7}'
-bash scripts/horner_distributed_demo.sh --keep-running      # NÃO derrubar containers
+bash reproduce_article/scripts/horner_distributed_demo.sh                     # default: 4 workers
+bash reproduce_article/scripts/horner_distributed_demo.sh --workers 2
+bash reproduce_article/scripts/horner_distributed_demo.sh --input '{"coeffs":[42],"x":7}'
+bash reproduce_article/scripts/horner_distributed_demo.sh --keep-running      # NÃO derrubar containers
 ```
 
 ### Fluxo (6 estágios)
@@ -305,9 +305,9 @@ MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \
 
 ## 8. Cross-references
 
-- **Script interativo (1 container, threads internas):** `scripts/horner_live_demo.sh`
-- **Script multi-container (D-017, N+1 containers separados):** `scripts/horner_distributed_demo.sh`
-- **Script batch (sem pausa):** `scripts/horner_demo.sh`
+- **Script interativo (1 container, threads internas):** `reproduce_article/scripts/horner_live_demo.sh`
+- **Script multi-container (D-017, N+1 containers separados):** `reproduce_article/scripts/horner_distributed_demo.sh`
+- **Script batch (sem pausa):** `reproduce_article/scripts/horner_demo.sh`
 - **Doc de demonstração base:** `docs/demos/horner-g1-demonstration.md`
 - **Dataset locked:** `results/horner_demo_2026-05-16.csv`
 - **Spec da invariante G1:** `specs/SPEC-01-invariantes.md`

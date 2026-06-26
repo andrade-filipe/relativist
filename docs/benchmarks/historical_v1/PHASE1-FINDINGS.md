@@ -3,7 +3,7 @@
 **Version:** 1.1
 **Date:** 2026-04-10
 **Status:** Complete (canonical v0.9.0 + post-fix validation in Section 7)
-**Cross-references:** SPEC-09 (Benchmarks), SPEC-01 (Invariants, G1), ARG-001 (P1-P6), ARG-004 (Overhead Analysis), DATA-COLLECTION-PLAN v1.1, `results/post_fix/B3_comparison.md`, PHASE2-FINDINGS.md Section 6
+**Cross-references:** SPEC-09 (Benchmarks), SPEC-01 (Invariants, G1), ARG-001 (P1-P6), ARG-004 (Overhead Analysis), DATA-COLLECTION-PLAN v1.1, `reproduce_article/results/post_fix/B3_comparison.md`, PHASE2-FINDINGS.md Section 6
 
 ---
 
@@ -146,7 +146,7 @@ All benchmarks converge in exactly 1 grid round in local mode. This means the BS
 | `dual_tree` | 10 | 4 | 10 | 10 |
 | `dual_tree` | 14 | 8 | 14 | 14 |
 
-All 40 strict-mode configs match the theoretical prediction exactly, with 0 correctness failures across 400 strict-mode repetitions. See `results/locked/v1_local_baseline/phase1_strict_rounds.csv` (50 781 rows — one per round emitted across the full campaign) for the raw per-round data.
+All 40 strict-mode configs match the theoretical prediction exactly, with 0 correctness failures across 400 strict-mode repetitions. See `reproduce_article/results/locked/v1_local_baseline/phase1_strict_rounds.csv` (50 781 rows — one per round emitted across the full campaign) for the raw per-round data.
 
 **Safety of the fix:** G1 is preserved in both modes — the reduction work is the *same*, just distributed across rounds instead of concentrated at the coordinator. The formal argument appears in SPEC-01 D6 (`R_strict(μ, n) ≥ R_lenient(μ, n) = 1`) and is validated empirically by the `test_g1_equivalence_strict_vs_lenient` test family (3800 sequential-vs-strict pairings in v1_local_baseline reported `correct=true` in 3800/3800 rows).
 
@@ -279,7 +279,7 @@ Expanded tests with wall clock > 100ms achieve stable measurements (CV < 10% in 
 
 The canonical Phase 1 data in Sections 1-6 was collected against Relativist v0.9.0. After Phase 2 finished, a second round of fixes targeted the engineering overheads documented in L3 and L6. Section 7 summarises a narrow re-run of the sequential + local benchmarks that re-measures the affected configurations on top of the fixes, without invalidating any v0.9.0 datapoint.
 
-The full re-run data lives in `results/post_fix/` (`ep_con_local_*.csv`, `dualtree_local_*.csv`, `condup_local_*.csv`). The comparison against the canonical CSVs is documented in `results/post_fix/B3_comparison.md`. The scope and methodology are deliberately smaller than the canonical campaign: 1 warmup + 5 repetitions per config instead of 2 warmup + 10 reps, and only the three benchmark families that the fixes can affect (`ep_annihilation_con`, `dual_tree`, `condup_expansion`).
+The full re-run data lives in `reproduce_article/results/post_fix/` (`ep_con_local_*.csv`, `dualtree_local_*.csv`, `condup_local_*.csv`). The comparison against the canonical CSVs is documented in `reproduce_article/results/post_fix/B3_comparison.md`. The scope and methodology are deliberately smaller than the canonical campaign: 1 warmup + 5 repetitions per config instead of 2 warmup + 10 reps, and only the three benchmark families that the fixes can affect (`ep_annihilation_con`, `dual_tree`, `condup_expansion`).
 
 ### 7.1 CompactSubnet local-mode effect (L6 fix applied in-process)
 
@@ -298,7 +298,7 @@ The strongest signal is on the largest canonical benchmarks:
 
 At smaller sizes (500K ep_con, dual_tree depths 18 and 20) the effect sits inside machine-state noise. This is expected: the dense-arena padding is only a dominant cost when the last worker's arena length is a meaningful fraction of the total frame, which requires a large enough net that the fixed overhead dwarfs the per-interaction work. The L6 fix therefore matters most for the scenarios where L1 was already biting hardest.
 
-Sequential baselines drift between runs (machine-state noise on the same hardware), so the comparable metric is the `post_seq / post_wall` and `pre_seq / pre_wall` ratio rather than raw wall clock. The drift normalization is documented in `results/post_fix/B3_comparison.md`.
+Sequential baselines drift between runs (machine-state noise on the same hardware), so the comparable metric is the `post_seq / post_wall` and `pre_seq / pre_wall` ratio rather than raw wall clock. The drift normalization is documented in `reproduce_article/results/post_fix/B3_comparison.md`.
 
 ### 7.2 L3 weak check unblocks condup_expansion at 10K and 50K
 

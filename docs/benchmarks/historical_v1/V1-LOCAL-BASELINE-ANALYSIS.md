@@ -360,7 +360,7 @@ A campanha entrega exatamente o que o TCC precisa: **evidência empírica da cor
 
 ## Apêndice — fontes primárias dos dados citados
 
-Todos os números desta análise vêm dos seguintes arquivos congelados em `results/locked/v1_local_baseline/`:
+Todos os números desta análise vêm dos seguintes arquivos congelados em `reproduce_article/results/locked/v1_local_baseline/`:
 
 - `phase1_lenient_summary.csv` — 340 linhas, 12 benchmarks in-process (§3)
 - `phase1_lenient_detail.csv` — 3400 repetições individuais

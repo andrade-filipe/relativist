@@ -66,6 +66,9 @@ __pycache__/
 # Ad-hoc result outputs at repo root (frozen evidence lives in reproduce_article/)
 /results/
 
+# Fresh reproduction runs (the frozen reference under results/locked/ stays tracked)
+/reproduce_article/results/reproduction/
+
 # Docker
 .docker/
 

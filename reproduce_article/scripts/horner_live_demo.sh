@@ -81,7 +81,7 @@ done
 # ----------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [[ -x "$REPO_DIR/target/release/relativist.exe" ]]; then
     RELATIVIST_BIN="$REPO_DIR/target/release/relativist.exe"

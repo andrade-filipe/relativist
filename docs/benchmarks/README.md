@@ -1,6 +1,6 @@
 # Benchmarks & Campanhas
 
-Esta pasta documenta a suite de benchmarks do Relativist e as campanhas cientificas que geraram os dados usados no TCC. Todos os CSVs congelados vivem em `results/locked/v1_local_baseline/` e `results/extended/v1_stress/`.
+Esta pasta documenta a suite de benchmarks do Relativist e as campanhas cientificas que geraram os dados usados no TCC. Todos os CSVs congelados vivem em `reproduce_article/results/locked/v1_local_baseline/` e `reproduce_article/results/extended/v1_stress/`.
 
 ## Entry points
 
@@ -193,4 +193,4 @@ Esta decomposicao permite isolar a contribuicao de cada camada no `overhead_rati
 
 Cada datapoint e verificado pela propriedade fundamental `reduce_all(net) ≅ run_grid(net, n)` — isomorfismo estrutural (modulo renomeacao de IDs).
 
-Dados: [`results/locked/v1_local_baseline/`](../../results/locked/v1_local_baseline/) com checksums SHA-256 e manifest de provenance.
+Dados: [`reproduce_article/results/locked/v1_local_baseline/`](../../reproduce_article/results/locked/v1_local_baseline/) com checksums SHA-256 e manifest de provenance.

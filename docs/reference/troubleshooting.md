@@ -70,7 +70,7 @@ Ou use PowerShell (sem conversao MSYS).
 
 **Causa.** O flag `--abort-on-container-exit` SIGKILLa o coordinator assim que o primeiro worker sai.
 
-**Mitigacao.** Use `docker compose up -d` + `docker wait relativist-coordinator-1` em vez de `--abort-on-container-exit`. Padrao usado por `scripts/bench_docker_resume2.sh`. Ver [L7](../benchmarks/limitations.md#l7).
+**Mitigacao.** Use `docker compose up -d` + `docker wait relativist-coordinator-1` em vez de `--abort-on-container-exit`. Padrao usado por `reproduce_article/scripts/bench_docker_resume2.sh`. Ver [L7](../benchmarks/limitations.md#l7).
 
 ### `docker system prune` travou o Docker Desktop
 

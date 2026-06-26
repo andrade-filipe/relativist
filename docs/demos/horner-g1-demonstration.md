@@ -293,7 +293,7 @@ re-executados com o script one-shot:
 ```bash
 cd codigo/relativist
 cargo build --release --bin relativist
-bash scripts/horner_demo.sh
+bash reproduce_article/scripts/horner_demo.sh
 ```
 
 Ou individualmente:

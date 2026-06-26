@@ -44,13 +44,13 @@ Resultados de `church exp` nao decodificam de volta para inteiro por conta de DU
 - **CompactSubnet** (`src/partition/compact.rs`) + `serialize_with`/`deserialize_with` em `Partition::subnet`: serializa apenas agentes vivos como `(id, agent, [ports; 3])` e reconstroi arena denso no receptor. Roundtrip preserva `agents`, `ports`, `redex_queue`, `next_id` e `root` byte-por-byte.
 - **Cap elevado para 1 GiB.**
 
-**Pos-fix.** Phase 2 roda 40/40 com G1 = 100%, ganhos de 40–100% de speedup onde padding era dominante (`results/post_fix/B3_comparison.md`).
+**Pos-fix.** Phase 2 roda 40/40 com G1 = 100%, ganhos de 40–100% de speedup onde padding era dominante (`reproduce_article/results/post_fix/B3_comparison.md`).
 
 ## L7 — Shutdown race do coordinator — MITIGADO no driver
 
 **Sintoma.** `docker compose up --abort-on-container-exit --exit-code-from coordinator` mata o coordinator com SIGTERM (depois SIGKILL, exit 137) assim que o primeiro worker sai — antes de o coordinator persistir `metrics.json` e `output.bin`. Reducao completa, mas artefatos nao saem.
 
-**Mitigacao.** `scripts/bench_docker_resume2.sh::run_docker_cycle()` usa `docker compose up -d` + `docker wait relativist-coordinator-1` ate o coordinator sair sozinho. Nao precisa de flag de abort. Um SIGTERM handler interno no coordinator e um hardening opcional registrado em ROADMAP 2.x.
+**Mitigacao.** `reproduce_article/scripts/bench_docker_resume2.sh::run_docker_cycle()` usa `docker compose up -d` + `docker wait relativist-coordinator-1` ate o coordinator sair sozinho. Nao precisa de flag de abort. Um SIGTERM handler interno no coordinator e um hardening opcional registrado em ROADMAP 2.x.
 
 ---
 

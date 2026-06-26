@@ -31,8 +31,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOCKED_DIR="$REPO_DIR/results/locked/v1_local_baseline"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOCKED_DIR="$REPO_DIR/reproduce_article/results/locked/v1_local_baseline"
 RAW_DIR="$LOCKED_DIR/raw/phase1"
 
 mkdir -p "$LOCKED_DIR" "$RAW_DIR"

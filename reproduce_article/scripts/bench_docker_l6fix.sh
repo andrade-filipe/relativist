@@ -13,9 +13,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$REPO_DIR/data"
-RESULTS_DIR="$REPO_DIR/results/post_fix"
+RESULTS_DIR="$REPO_DIR/reproduce_article/results/post_fix"
 mkdir -p "$RESULTS_DIR"
 
 winpath() { if command -v cygpath &>/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
@@ -32,7 +32,7 @@ fi
 DETAIL_FILE="$RESULTS_DIR/phase2_l6_detail.csv"
 SUMMARY_FILE="$RESULTS_DIR/phase2_l6_summary.csv"
 ROUNDS_FILE="$RESULTS_DIR/phase2_l6_rounds.csv"
-CANONICAL_SUMMARY="$REPO_DIR/results/phase2_summary.csv"
+CANONICAL_SUMMARY="$REPO_DIR/reproduce_article/results/phase2_summary.csv"
 
 # Initialise output files with headers
 echo "benchmark,input_size,mode,workers,repetition,correct,wall_clock_secs,total_interactions,mips,rounds,speedup,efficiency,overhead_ratio,peak_memory_bytes,bytes_sent,bytes_received,con_con,dup_dup,era_era,con_dup,con_era,dup_era" > "$DETAIL_FILE"

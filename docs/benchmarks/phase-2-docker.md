@@ -13,7 +13,7 @@ Phase 2 executa o protocolo BSP completo sobre TCP, mas com coordinator e worker
 
 ```bash
 cd codigo/relativist
-bash scripts/bench_docker.sh
+bash reproduce_article/scripts/bench_docker.sh
 ```
 
 O `bench_docker.sh`:
@@ -36,7 +36,7 @@ O `bench_docker.sh`:
 Exemplo — usar imagem ja construida e baselines ja medidos:
 
 ```bash
-bash scripts/bench_docker.sh --skip-build --skip-sequential
+bash reproduce_article/scripts/bench_docker.sh --skip-build --skip-sequential
 ```
 
 ## Executar manualmente um unico config (debug)

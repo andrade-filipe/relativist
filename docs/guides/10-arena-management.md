@@ -141,7 +141,7 @@ A combinacao default cobre 100% dos benchmarks travados de v2:
 --representation dense   (com fallback automatico para sparse acima do threshold)
 ```
 
-Esses defaults preservam G1, evitam o regression de +83% identificado pelo D-011, e mantem zero crashes nos 32/32 slots distribuidos do baseline canonico ([`v2_post_d012_baseline_2026-05-05/`](../../results/locked/v2_post_d012_baseline_2026-05-05/)).
+Esses defaults preservam G1, evitam o regression de +83% identificado pelo D-011, e mantem zero crashes nos 32/32 slots distribuidos do baseline canonico ([`v2_post_d012_baseline_2026-05-05/`](../../reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/)).
 
 Mude apenas se voce esta:
 
@@ -153,7 +153,7 @@ Mude apenas se voce esta:
 
 A introducao do `free_list: Vec<AgentId>` no `Net` serializado **quebrou compatibilidade de wire**: workers/coordinator pre-SPEC-22 nao deserializam `Net` com free-list nao-vazio. SPEC-22 R9a (referenciado em SPEC-18 §3.8 A9) bumpou `PROTOCOL_VERSION` de 2 para 3.
 
-Persisted v1/v2 `.bin` files (ex.: `results/locked/v1_local_baseline/*.bin`) ficam **ilegiveis para binarios v3+**. Aceitavel — esses arquivos sao baselines congelados que nao alimentam codigo v2/v3. Para regerar inputs com schema novo, basta rodar `relativist generate` com o binario atual.
+Persisted v1/v2 `.bin` files (ex.: `reproduce_article/results/locked/v1_local_baseline/*.bin`) ficam **ilegiveis para binarios v3+**. Aceitavel — esses arquivos sao baselines congelados que nao alimentam codigo v2/v3. Para regerar inputs com schema novo, basta rodar `relativist generate` com o binario atual.
 
 ## 8. Limitacoes
 

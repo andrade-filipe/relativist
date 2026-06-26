@@ -18,9 +18,9 @@ Complementa:
 | Single computation rápida | `target/release/relativist.exe compute --codec horner --input '<JSON>'` | <1s |
 | Single + workers internos | mesmo, com `--workers N` | <1s |
 | Encode-only + decode separados | `compute --encode-only -o X.bin` + `decode --codec horner -i X.bin` | <1s |
-| Batch validação 10 demos × 4W × 2 arms | `bash scripts/horner_demo.sh` | ~12-30s |
-| Apresentação Enter-paced single-container | `bash scripts/horner_live_demo.sh` | interativo |
-| **Multi-container distribuída (workers em containers separados)** | `bash scripts/horner_distributed_demo.sh --workers N` | ~10-30s |
+| Batch validação 10 demos × 4W × 2 arms | `bash reproduce_article/scripts/horner_demo.sh` | ~12-30s |
+| Apresentação Enter-paced single-container | `bash reproduce_article/scripts/horner_live_demo.sh` | interativo |
+| **Multi-container distribuída (workers em containers separados)** | `bash reproduce_article/scripts/horner_distributed_demo.sh --workers N` | ~10-30s |
 | Inspecionar logs pós-demo | `docker logs relativist-{coordinator,worker}-<N>` | instantâneo |
 
 ---
@@ -113,7 +113,7 @@ Roda 10 demos × W ∈ {1,2,4,8} × 2 arms (in-process + Docker
 single-container) com G1 cross-check automático.
 
 ```bash
-bash scripts/horner_demo.sh --csv results/horner_demo_$(date -I).csv
+bash reproduce_article/scripts/horner_demo.sh --csv results/horner_demo_$(date -I).csv
 ```
 
 Esperado: 80 rows no CSV, exit 0, `OK: 80/80 rows passed`. Tempo ~12-30s.
@@ -133,9 +133,9 @@ awk -F, '$(NF-1)=="false"{print}' $CSV | wc -l      # 0 (nenhum value mismatch)
 Script Enter-paced — pausa em cada passo para você narrar.
 
 ```bash
-bash scripts/horner_live_demo.sh                    # default [10000,500,1]@100
-bash scripts/horner_live_demo.sh --big              # [1,1025]@10000 — 2059 interactions
-bash scripts/horner_live_demo.sh --input '<JSON>'   # custom (dentro do envelope)
+bash reproduce_article/scripts/horner_live_demo.sh                    # default [10000,500,1]@100
+bash reproduce_article/scripts/horner_live_demo.sh --big              # [1,1025]@10000 — 2059 interactions
+bash reproduce_article/scripts/horner_live_demo.sh --input '<JSON>'   # custom (dentro do envelope)
 ```
 
 5 passos: encoders list → in-process → Docker W=1 → W=4 → W=8.
@@ -153,7 +153,7 @@ N workers em containers separados, cada um com seu log preservado.
 ### 5.1 Comando básico
 
 ```bash
-bash scripts/horner_distributed_demo.sh --workers 4 \
+bash reproduce_article/scripts/horner_distributed_demo.sh --workers 4 \
   --input '{"coeffs":[10000,500,1],"x":100}'
 ```
 
@@ -178,17 +178,17 @@ bash scripts/horner_distributed_demo.sh --workers 4 \
 
 ```bash
 # Menos workers
-bash scripts/horner_distributed_demo.sh --workers 2
+bash reproduce_article/scripts/horner_distributed_demo.sh --workers 2
 
 # Mais workers
-bash scripts/horner_distributed_demo.sh --workers 8
+bash reproduce_article/scripts/horner_distributed_demo.sh --workers 8
 
 # Input mais pesado (2059 interactions)
-bash scripts/horner_distributed_demo.sh --workers 4 \
+bash reproduce_article/scripts/horner_distributed_demo.sh --workers 4 \
   --input '{"coeffs":[1,1025],"x":10000}'
 
 # Input didático (constante — 0 interactions, demo "anti-paralelismo")
-bash scripts/horner_distributed_demo.sh --workers 4 \
+bash reproduce_article/scripts/horner_distributed_demo.sh --workers 4 \
   --input '{"coeffs":[42],"x":99}'
 ```
 
@@ -285,7 +285,7 @@ Future Work (Mackie/Pinto shared-form readback).
 
 ## 10. Cross-references
 
-- **Scripts:** `scripts/horner_demo.sh`, `scripts/horner_live_demo.sh`, `scripts/horner_distributed_demo.sh`
+- **Scripts:** `reproduce_article/scripts/horner_demo.sh`, `reproduce_article/scripts/horner_live_demo.sh`, `reproduce_article/scripts/horner_distributed_demo.sh`
 - **Datasets locked:** `results/horner_demo_2026-05-16.csv` (80 rows, 0 mismatches)
 - **Spec G1:** `specs/SPEC-01-invariantes.md`
 - **Spec encoder API:** `specs/SPEC-27-encoder-decoder-api.md` (v3)

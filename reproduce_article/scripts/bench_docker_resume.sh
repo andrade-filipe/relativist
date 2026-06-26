@@ -3,9 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$REPO_DIR/data"
-RESULTS_DIR="$REPO_DIR/results"
+RESULTS_DIR="$REPO_DIR/reproduce_article/results"
 RELATIVIST="$REPO_DIR/target/release/relativist.exe"
 
 winpath() {

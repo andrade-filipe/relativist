@@ -3,7 +3,7 @@
 Campanha de stress que estende `v1_local_baseline` para sizes maiores (`ep_annihilation_con` ate 50 M, `dual_tree` ate `d=25`). O objetivo e produzir o dado **"antes"** dos itens 2.22-2.26 do [ROADMAP](../../ROADMAP.md) (otimizacoes de overhead de rede): mesma maquina, mesmo binario `v0.10.0-bench`, apenas sizes maiores.
 
 - **Quem deve rodar:** o autor, apos terminar uma reproducao limpa de `v1_local_baseline` e **antes** de implementar qualquer item 2.22-2.26. As medicoes "antes / depois" so sao comparaveis na mesma maquina sob a mesma hygiene.
-- **Saida:** `results/extended/v1_stress/` (nao em `results/locked/`).
+- **Saida:** `reproduce_article/results/extended/v1_stress/` (nao em `reproduce_article/results/locked/`).
 - **Tempo total estimado:** 4-6 h unattended (Phase 1 ~1-2 h + Phase 2 ~3-4 h).
 
 ## Por que stress e campanha separada de `v1_local_baseline`
@@ -31,7 +31,7 @@ Detalhado no [item L7 de limitations.md](../limitations.md#l7).
 
 ## 1. Pre-flight checklist
 
-Identico a [v1-local-baseline §1](v1-local-baseline.md#1-pre-flight-checklist) com duas excecoes: Phase 1 stress **nao** precisa de Docker (mas Phase 2 stress precisa), e a campanha roda em `results/extended/v1_stress/` (nao em `results/locked/`).
+Identico a [v1-local-baseline §1](v1-local-baseline.md#1-pre-flight-checklist) com duas excecoes: Phase 1 stress **nao** precisa de Docker (mas Phase 2 stress precisa), e a campanha roda em `reproduce_article/results/extended/v1_stress/` (nao em `reproduce_article/results/locked/`).
 
 ### 1.1 Estado do repositorio
 
@@ -83,13 +83,13 @@ df -h .     # Precisa de ~3-5 GB livres para raw/phase2/metrics_*.json
 
 ```bash
 cd codigo/relativist
-./scripts/bench_phase1_stress_locked.sh
+./reproduce_article/scripts/bench_phase1_stress_locked.sh
 ```
 
 O script:
 
 1. Detecta o binario em `target/release/relativist.exe`.
-2. Cria `results/extended/v1_stress/` e `raw/phase1/`.
+2. Cria `reproduce_article/results/extended/v1_stress/` e `raw/phase1/`.
 3. Roda `ep_annihilation_con` em `10M,20M,50M` com workers `1,2,4,8` (+ sequential auto-adicionado).
 4. Roda `dual_tree` em `23,24,25` com workers `1,2,4,8`.
 5. Concatena em `phase1_stress_{detail,rounds,summary}.csv`.
@@ -107,11 +107,11 @@ Validacao rapida:
 
 ```bash
 # Nenhum correct=false
-awk -F, 'NR>1 && $6=="false"' results/extended/v1_stress/phase1_stress_detail.csv
+awk -F, 'NR>1 && $6=="false"' reproduce_article/results/extended/v1_stress/phase1_stress_detail.csv
 # (output vazio)
 
 # 2 benches * 3 sizes * 5 modos (seq + {1,2,4,8}) = 30 linhas + header
-wc -l results/extended/v1_stress/phase1_stress_summary.csv
+wc -l reproduce_article/results/extended/v1_stress/phase1_stress_summary.csv
 ```
 
 ## 3. Executar Phase 2 stress (3-4 h)
@@ -120,7 +120,7 @@ Com Docker Desktop rodando:
 
 ```bash
 cd codigo/relativist
-./scripts/bench_phase2_stress_locked.sh
+./reproduce_article/scripts/bench_phase2_stress_locked.sh
 ```
 
 O script:
@@ -155,13 +155,13 @@ Validacao:
 
 ```bash
 # Correct=false indica regressao critica
-awk -F, 'NR>1 && $6=="false"' results/extended/v1_stress/phase2_stress_detail.csv
+awk -F, 'NR>1 && $6=="false"' reproduce_article/results/extended/v1_stress/phase2_stress_detail.csv
 
 # Configs que pularam (exit != 0) aparecem com all_correct=false no summary.
 # Espera-se zero falhas sob v0.10.0-bench, mas se houver, cheque o log raw.
 
 # 26 configs * 5 reps + 7 seq * 5 reps + header = 166
-wc -l results/extended/v1_stress/phase2_stress_detail.csv
+wc -l reproduce_article/results/extended/v1_stress/phase2_stress_detail.csv
 ```
 
 ## 4. Pos-campanha: manifest
@@ -169,11 +169,11 @@ wc -l results/extended/v1_stress/phase2_stress_detail.csv
 Copie e adapte o template de `v1_local_baseline`:
 
 ```bash
-cp results/locked/v1_local_baseline/manifest.md \
-   results/extended/v1_stress/manifest.md
+cp reproduce_article/results/locked/v1_local_baseline/manifest.md \
+   reproduce_article/results/extended/v1_stress/manifest.md
 ```
 
-Edite `results/extended/v1_stress/manifest.md` para refletir:
+Edite `reproduce_article/results/extended/v1_stress/manifest.md` para refletir:
 
 - **Status:** COMPLETE ou documentar quais configs falharam
 - **Campaign knobs:** 5 reps (nao 10), sizes diferentes
@@ -181,7 +181,7 @@ Edite `results/extended/v1_stress/manifest.md` para refletir:
 - **Checksums:** gere sha256 dos CSVs novos
 
 ```bash
-cd results/extended/v1_stress
+cd reproduce_article/results/extended/v1_stress
 sha256sum phase1_stress_*.csv phase2_stress_*.csv > checksums.sha256
 cat checksums.sha256
 ```

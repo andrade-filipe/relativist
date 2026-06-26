@@ -3,7 +3,7 @@
 **Version:** 1.1
 **Date:** 2026-04-10
 **Status:** Complete (40 of 40 configurations; L6 resolved post-v0.9.0)
-**Cross-references:** SPEC-06 (Protocol), SPEC-07 (Framing), SPEC-09 (Benchmarks), PHASE1-FINDINGS.md, ROADMAP.md item 2.20, ARG-001 (P1-P6), ARG-004 (Overhead Analysis), `results/post_fix/B3_comparison.md`
+**Cross-references:** SPEC-06 (Protocol), SPEC-07 (Framing), SPEC-09 (Benchmarks), PHASE1-FINDINGS.md, ROADMAP.md item 2.20, ARG-001 (P1-P6), ARG-004 (Overhead Analysis), `reproduce_article/results/post_fix/B3_comparison.md`
 
 ---
 
@@ -37,7 +37,7 @@ The Phase 2 campaign targets the same benchmark matrix as Phase 1b (expanded siz
 | ep_annihilation_con | 1000000 | 1, 2, 4, 8 | Complete |
 | ep_annihilation_con | 5000000 | 1 (post-fix), 2 (post-fix), 4 (post-fix), 8 | Complete |
 
-The four post-fix configurations (`dual_tree=22 workers=1`, `ep_annihilation_con=5000000 workers=1`, `workers=2`, `workers=4`) were blocked by L6 in the v0.9.0 canonical campaign and unblocked after the L6 fix described in Section 6 below. Their validation data lives in `results/post_fix/phase2_l6_{detail,summary,rounds}.csv`. The original 36 configurations remain in `results/phase2_{detail,summary,rounds}.csv` as the canonical v0.9.0 baseline.
+The four post-fix configurations (`dual_tree=22 workers=1`, `ep_annihilation_con=5000000 workers=1`, `workers=2`, `workers=4`) were blocked by L6 in the v0.9.0 canonical campaign and unblocked after the L6 fix described in Section 6 below. Their validation data lives in `reproduce_article/results/post_fix/phase2_l6_{detail,summary,rounds}.csv`. The original 36 configurations remain in `results/phase2_{detail,summary,rounds}.csv` as the canonical v0.9.0 baseline.
 
 ---
 
@@ -131,7 +131,7 @@ Either fix unblocks all four missing configurations; together they also make the
 
 The race is load-sensitive: for small nets the coordinator finishes `merge + save + write_metrics` before the first worker exit triggers the abort, so small configurations in the original driver appeared to succeed. For `dual_tree=22` and `ep_annihilation_con=5000000` the post-reduction window is long enough (a few seconds) to reliably lose the race.
 
-**Fix.** One change in `scripts/bench_docker_resume2.sh::run_docker_cycle()`: stop using `--abort-on-container-exit`/`--exit-code-from` entirely. The new cycle is:
+**Fix.** One change in `reproduce_article/scripts/bench_docker_resume2.sh::run_docker_cycle()`: stop using `--abort-on-container-exit`/`--exit-code-from` entirely. The new cycle is:
 
 1. `docker compose up -d --force-recreate --scale worker=N` (detached, no abort behavior).
 2. `timeout $t docker wait relativist-coordinator-1` — block until the coordinator exits on its own, capture its exit code.
@@ -168,11 +168,11 @@ ROADMAP.md items 2.2, 2.3, and 2.19 together describe a v2 protocol evolution th
 
 ## 5. Reproducibility
 
-The Phase 2 campaign is fully scripted by `scripts/bench_docker_resume2.sh`. To reproduce:
+The Phase 2 campaign is fully scripted by `reproduce_article/scripts/bench_docker_resume2.sh`. To reproduce:
 
 ```bash
 cd codigo/relativist
-bash scripts/bench_docker_resume2.sh
+bash reproduce_article/scripts/bench_docker_resume2.sh
 ```
 
 Requirements:
@@ -192,10 +192,10 @@ The Phase 1 results in `results/phase1_*.csv` provide the local-grid comparison 
 The post-fix validation for the four L6-blocked configurations is reproduced by a separate script:
 
 ```bash
-bash scripts/bench_docker_l6fix.sh
+bash reproduce_article/scripts/bench_docker_l6fix.sh
 ```
 
-Its outputs land in `results/post_fix/phase2_l6_{detail,summary,rounds}.csv` so that the canonical `results/phase2_*.csv` files remain the v0.9.0 baseline.
+Its outputs land in `reproduce_article/results/post_fix/phase2_l6_{detail,summary,rounds}.csv` so that the canonical `results/phase2_*.csv` files remain the v0.9.0 baseline.
 
 ---
 
@@ -213,7 +213,7 @@ These two changes compose: sparse last-worker subnets now send ~6 bytes per live
 
 ### 6.2 Validation data
 
-Running `scripts/bench_docker_l6fix.sh` on the four previously-blocked configurations (1 warmup + 3 repetitions each, Docker TcpLocalhost, same host hardware as the canonical campaign) produced:
+Running `reproduce_article/scripts/bench_docker_l6fix.sh` on the four previously-blocked configurations (1 warmup + 3 repetitions each, Docker TcpLocalhost, same host hardware as the canonical campaign) produced:
 
 | Benchmark | Size | Workers | Wall clock mean (s) | Speedup | Frame size | G1 |
 |-----------|------|---------|---------------------|---------|------------|----|
@@ -238,7 +238,7 @@ ARG-004 separates overhead into **structural** (inherent to BSP: split + merge +
 
 ## 7. v1_local_baseline — Unified Frozen Campaign (2026-04-11)
 
-The post-fix patches documented in Section 6 were validated in isolation using `bench_docker_l6fix.sh` on a reduced matrix (3 reps per config). Those patches were then rolled into the full unified Phase 2 campaign that produces the frozen baseline. This section documents that campaign; the per-file detail lives in `results/locked/v1_local_baseline/manifest.md`.
+The post-fix patches documented in Section 6 were validated in isolation using `bench_docker_l6fix.sh` on a reduced matrix (3 reps per config). Those patches were then rolled into the full unified Phase 2 campaign that produces the frozen baseline. This section documents that campaign; the per-file detail lives in `reproduce_article/results/locked/v1_local_baseline/manifest.md`.
 
 ### 7.1 Scope
 
@@ -254,7 +254,7 @@ All 40 Phase 2 configurations at full rep count (10 reps each), single binary (t
 - **Total wall clock:** 43 min 42 s (`12:22:37 → 13:06:19 -0300`), well below the 1.5 – 3 h planning estimate. Per-run Docker compose overhead (~3 – 5 s) dominates the long tail, not CPU.
 - **Correctness:** 0 of 400 repetitions failed the structural check (`relativist inspect`-based agent + redex count equality to the sequential reference output). All 8 bench × size combos and all 4 Docker worker counts produced nets indistinguishable from the sequential baseline. The same L6 configs that were previously capped by the 256 MiB frame limit (`dual_tree=22` at W=1, `ep_annihilation_con=5M` at W∈{1,2,4}) now complete within the 1800 s per-run timeout under the CompactSubnet fix shipped with v0.10.0-bench — validating the Section 6 fix under full campaign conditions, not just the reduced 3-rep probe.
 - **Rounds:** every Docker run terminated in exactly 1 round, as expected under the lenient BSP mode Phase 2 uses by design. Phase 2 is deliberately *not* a strict-BSP campaign — its purpose is to characterize the distributed-local baseline on the same hardware that Phase 3 LAN will subtract from, not to count rounds. Strict-BSP round data lives in the Phase 1 `phase1_strict_*.csv` files under the same `v1_local_baseline` snapshot.
-- **CV triage:** 1 of 40 Docker summary rows flagged with `cv > 0.15` — `condup_expansion, size=1000, workers=1` with CV = 0.172 at a 1.99 ms mean wall clock. Disposition: `keep` (timer noise at sub-5 ms scale). Combined Phase 1 + Phase 2 CV triage reports **63 flagged / 63 keep / 0 rerun / 0 exclude** — see `results/locked/v1_local_baseline/cv_triage.md`.
+- **CV triage:** 1 of 40 Docker summary rows flagged with `cv > 0.15` — `condup_expansion, size=1000, workers=1` with CV = 0.172 at a 1.99 ms mean wall clock. Disposition: `keep` (timer noise at sub-5 ms scale). Combined Phase 1 + Phase 2 CV triage reports **63 flagged / 63 keep / 0 rerun / 0 exclude** — see `reproduce_article/results/locked/v1_local_baseline/cv_triage.md`.
 
 ### 7.3 Role in Phase 3
 
@@ -269,8 +269,8 @@ Any config where `t_lan - t_localhost` is negative or indistinguishable from mea
 
 ### 7.4 Immutability guarantees
 
-The snapshot directory is committed under `results/locked/v1_local_baseline/` and protected against silent drift by three mechanisms:
+The snapshot directory is committed under `reproduce_article/results/locked/v1_local_baseline/` and protected against silent drift by three mechanisms:
 
-1. **`.gitattributes`** at `codigo/relativist/.gitattributes` pins `results/locked/**` to `text eol=lf` and `results/locked/**/*.json` to `binary`. Without this, Windows clones with `core.autocrlf=true` (the default for many users) would silently rewrite line endings on checkout and invalidate the sha256 checksums recorded in `manifest.md`.
+1. **`.gitattributes`** at `codigo/relativist/.gitattributes` pins `reproduce_article/results/locked/**` to `text eol=lf` and `reproduce_article/results/locked/**/*.json` to `binary`. Without this, Windows clones with `core.autocrlf=true` (the default for many users) would silently rewrite line endings on checkout and invalidate the sha256 checksums recorded in `manifest.md`.
 2. **`manifest.md`** records sha256 checksums of every frozen CSV. Any reproduction run that obtains matching row counts and correctness flags but diverging wall clocks is explicitly permitted (hardware difference); any run with diverging row counts or correctness flags breaks the snapshot contract.
 3. **Tag `v0.10.0-bench`** is an annotated tag pointing at the atomic snapshot commit (containing binary + data + manifest together). Reproducers check out this tag to rebuild the exact binary that produced the frozen CSVs.

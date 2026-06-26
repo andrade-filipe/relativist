@@ -38,9 +38,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$REPO_DIR/data"
-OUTPUT_DIR="$REPO_DIR/results/v2_tcp_baseline"
+OUTPUT_DIR="$REPO_DIR/reproduce_article/results/v2_tcp_baseline"
 PER_REP_DIR="$OUTPUT_DIR/per_rep_metrics"
 SEQ_OUT_DIR="$OUTPUT_DIR/seq_outputs"
 

@@ -179,7 +179,7 @@ relativist coordinator --workers 4 --port 9000 \
     --chunk-size 4294967295 -i net.bin -o out.bin
 ```
 
-O baseline canonico v2 ([`v2_post_d012_baseline_2026-05-05`](../../results/locked/v2_post_d012_baseline_2026-05-05/)) usa `CHUNK_SIZE=10000` — i.e., streaming ON. Para comparar com `v1_local_baseline`, use o eager path.
+O baseline canonico v2 ([`v2_post_d012_baseline_2026-05-05`](../../reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/)) usa `CHUNK_SIZE=10000` — i.e., streaming ON. Para comparar com `v1_local_baseline`, use o eager path.
 
 ## 9. Limitacoes
 

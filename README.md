@@ -126,7 +126,7 @@ All design decisions are documented in formal specifications under [`specs/`](sp
 
 ## Benchmark Results
 
-**Canonical baseline (v2):** [`results/locked/v2_post_d012_baseline_2026-05-05/`](results/locked/v2_post_d012_baseline_2026-05-05/)
+**Canonical baseline (v2):** [`reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/`](reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/)
 
 | Property | Value |
 |----------|-------|
@@ -157,8 +157,8 @@ where ≅ denotes graph isomorphism (structural equality modulo ID renaming).
 - `dual_tree(d)` terminates in d rounds (workers ≥ 2)
 
 Full data and SHA-256 checksums:
-- v2 canonical: [`results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md`](results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md)
-- v1 frozen reference: [`results/locked/v1_local_baseline/`](results/locked/v1_local_baseline/) — Reproduction: [docs/benchmarks/campaigns/v1-local-baseline.md](docs/benchmarks/campaigns/v1-local-baseline.md).
+- v2 canonical: [`reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md`](reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md)
+- v1 frozen reference: [`reproduce_article/results/locked/v1_local_baseline/`](reproduce_article/results/locked/v1_local_baseline/) — Reproduction: [docs/benchmarks/campaigns/v1-local-baseline.md](docs/benchmarks/campaigns/v1-local-baseline.md).
 - Cold post-mortem analysis: [docs/analysis/D011-final-baseline-analysis-2026-05-04.md](docs/analysis/D011-final-baseline-analysis-2026-05-04.md).
 
 ## Known Limitations

@@ -52,7 +52,7 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # Pick up either ELF or .exe (Git-Bash on Windows ships both possible names).
 if [[ -x "${REPO_ROOT}/target/release/relativist.exe" ]]; then
@@ -117,8 +117,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${CSV_OUT}" ]]; then
-    mkdir -p "${REPO_ROOT}/results"
-    CSV_OUT="${REPO_ROOT}/results/horner_demo_$(date -I).csv"
+    mkdir -p "${REPO_ROOT}/reproduce_article/results"
+    CSV_OUT="${REPO_ROOT}/reproduce_article/results/horner_demo_$(date -I).csv"
 fi
 
 # Validate Docker availability when needed.

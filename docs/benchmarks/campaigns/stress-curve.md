@@ -46,11 +46,11 @@ campaign: **7-8 hours overnight** on a workstation with ≥ 16 GiB RAM.
 | 2 | Stop rule | `relativist-core/src/bench/stop_rule.rs` | TASK-0701 |
 | 3 | Campaign descriptor | `relativist-core/src/bench/suite.rs` (`StressCurveDescriptor`) | TASK-0702 |
 | 4 | CSV schema (+4 cols) | `relativist-core/src/bench/csv.rs` + `bench/mod.rs` | TASK-0703 |
-| 5 | Bash orchestrator | `scripts/stress_curve.sh` | TASK-0704 |
-| 6 | Plot generator | `scripts/plot_stress_curve.py` | TASK-0705 |
+| 5 | Bash orchestrator | `reproduce_article/scripts/stress_curve.sh` | TASK-0704 |
+| 6 | Plot generator | `reproduce_article/scripts/plot_stress_curve.py` | TASK-0705 |
 | 7 | Methodology docs (this page) | `docs/benchmarks/campaigns/stress-curve.md` | TASK-0706 |
 | 8 | Integration tests | `relativist-core/tests/d014_*.rs` | TASK-0707 |
-| 9 | Campaign run + lock | `results/locked/v2_stress_curve_<DATE>/` | TASK-0708 |
+| 9 | Campaign run + lock | `reproduce_article/results/locked/v2_stress_curve_<DATE>/` | TASK-0708 |
 
 ## 4. CSV schema
 
@@ -80,7 +80,7 @@ end-of-rep) and answer different questions.
 
 ### 5.1 Pre-conditions
 
-The orchestrator (`scripts/stress_curve.sh`) gates on the following
+The orchestrator (`reproduce_article/scripts/stress_curve.sh`) gates on the following
 before kicking off the full campaign:
 
 1. `git status --porcelain` empty (clean tree).
@@ -101,12 +101,12 @@ before kicking off the full campaign:
 ### 5.2 Smoke run
 
 ```bash
-scripts/stress_curve.sh --smoke
+reproduce_article/scripts/stress_curve.sh --smoke
 ```
 
 Smoke runs `ep_annihilation`, W=2, N=[1000, 10000], 1 rep, 15-minute
 total budget. Produces an output tree at
-`results/locked/v2_stress_curve_<DATE>/` (or `--output-dir` override)
+`reproduce_article/results/locked/v2_stress_curve_<DATE>/` (or `--output-dir` override)
 with `MANIFEST.md`, `raw/in_process.csv`, `aggregated.csv`,
 `figures/*.pdf`, and `checksums.sha256`. Smoke finishing in < 20
 minutes on an 8-GiB-RAM host validates the orchestrator end-to-end
@@ -115,7 +115,7 @@ before committing to the overnight run.
 ### 5.3 Full overnight run
 
 ```bash
-scripts/stress_curve.sh
+reproduce_article/scripts/stress_curve.sh
 ```
 
 No flags: full 3×2×4 matrix with the canonical 11-point N sweep, 5
@@ -126,7 +126,7 @@ reps per cell. Expected wall ~7-8 hours.
 - `rustc -V` and `cargo -V` outputs
 - `/proc/meminfo` snapshot (Linux) / `systeminfo` (Windows + WSL)
 - `/proc/cpuinfo` `model name` line (Linux)
-- Full bash invocation (canonical `scripts/stress_curve.sh`)
+- Full bash invocation (canonical `reproduce_article/scripts/stress_curve.sh`)
 - Total reps executed
 - Total wall-clock time (HH:MM:SS)
 - Median CV across all rows
@@ -139,9 +139,9 @@ reps per cell. Expected wall ~7-8 hours.
 1. After the campaign exits cleanly, audit the output tree:
 
    ```bash
-   ls results/locked/v2_stress_curve_<DATE>/figures/
-   cat results/locked/v2_stress_curve_<DATE>/MANIFEST.md
-   sha256sum -c results/locked/v2_stress_curve_<DATE>/checksums.sha256
+   ls reproduce_article/results/locked/v2_stress_curve_<DATE>/figures/
+   cat reproduce_article/results/locked/v2_stress_curve_<DATE>/MANIFEST.md
+   sha256sum -c reproduce_article/results/locked/v2_stress_curve_<DATE>/checksums.sha256
    ```
 
 2. Apply the §8 sanity checks (below). If any fails, **STOP** — do
@@ -171,11 +171,11 @@ reps per cell. Expected wall ~7-8 hours.
   Indicates either the workload reached a fundamental scaling wall
   or background load corrupted the timing.
 - **Smoke fails — do not run overnight.** If
-  `scripts/stress_curve.sh --smoke` exits non-zero, treat it as a
+  `reproduce_article/scripts/stress_curve.sh --smoke` exits non-zero, treat it as a
   pre-condition failure: investigate, fix, re-smoke before committing
   the overnight slot.
 - **`--resume` semantics:** an interrupted run can resume via
-  `scripts/stress_curve.sh --resume --output-dir <existing>`. The
+  `reproduce_article/scripts/stress_curve.sh --resume --output-dir <existing>`. The
   script reads the existing `raw/in_process.csv`, builds a set of
   completed `(workload, env, W, N, rep)` tuples, and skips them.
   **A truncated mid-row CSV is detected and the script refuses with
@@ -238,7 +238,7 @@ input that work is needed.
    monotonically inherited across reps. Rep 1's high-water mark is
    visible to reps 2..N because the probe is constructed once per
    sequence and `VmHWM` is monotonic non-decreasing within a process
-   on Linux. The bash orchestrator (`scripts/stress_curve.sh`) bypasses
+   on Linux. The bash orchestrator (`reproduce_article/scripts/stress_curve.sh`) bypasses
    this by fork-execing a fresh child per rep — the canonical
    campaign path is the bash orchestrator, NOT the in-process Rust
    API. The dispatch code emits a `tracing::warn!` when called with
@@ -262,7 +262,7 @@ input that work is needed.
 ## 10. Cross-references
 
 - Design doc: `docs/superpowers/specs/2026-05-05-stress-test-large-nets-design.md`
-- Locked output (post-run): `results/locked/v2_stress_curve_<DATE>/`
+- Locked output (post-run): `reproduce_article/results/locked/v2_stress_curve_<DATE>/`
 - ROADMAP item: §2.16 streaming reduction — this campaign characterises
   the wall it leaves; streaming-reduction is the work that pushes the
   wall further (deferred per the (α) decision in the design doc).

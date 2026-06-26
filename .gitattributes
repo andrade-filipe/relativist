@@ -2,6 +2,6 @@
 # checksums (recorded in manifest.md) remain valid on checkout across
 # platforms. Without this, core.autocrlf=true on Windows would rewrite
 # these files on checkout and break reproducibility.
-results/locked/** text eol=lf
-results/locked/**/*.json binary
-results/locked/**/*.bin binary
+reproduce_article/results/locked/** text eol=lf
+reproduce_article/results/locked/**/*.json binary
+reproduce_article/results/locked/**/*.bin binary

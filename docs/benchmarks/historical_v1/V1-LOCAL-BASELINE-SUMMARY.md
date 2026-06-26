@@ -3,7 +3,7 @@
 **Tag do binário:** `v0.10.0-bench` (commit `8529dd5`)
 **Campanhas executadas em:** 2026-04-11
 **Hardware:** Lenovo ThinkPad T14 Gen 4 (Intel i7-1365U, 32 GB DDR5-5200, Windows 11 Pro, Docker Desktop 29.3.1/WSL2)
-**Snapshot imutável:** [`results/locked/v1_local_baseline/`](../results/locked/v1_local_baseline/)
+**Snapshot imutável:** [`reproduce_article/results/locked/v1_local_baseline/`](../reproduce_article/results/locked/v1_local_baseline/)
 **Status:** FECHADA — referência para subtração da Phase 3 LAN
 
 ---
@@ -24,8 +24,8 @@ Qualquer imprecisão, drift ou artefato presente nesta baseline vira contaminant
 
 - **Binário único tagged** — um só `cargo build --release` produziu o executável usado em ambas as fases; tag `v0.10.0-bench` anotada aponta para o commit que congelou os dados.
 - **Atomicidade do snapshot** — os CSVs, o `manifest.md` com checksums sha256, os logs forensic e o próprio tag foram commitados como uma unidade em `787b195`.
-- **Imutabilidade cross-platform** — `.gitattributes` fixa `text eol=lf` em `results/locked/**` para que os checksums sha256 sobrevivam a checkouts em Windows com `core.autocrlf=true`.
-- **Reprodutibilidade** — `scripts/reproduce_local_baseline.sh` faz checkout da tag, rebuild, re-rodada, e comparação de row counts + correctness flags.
+- **Imutabilidade cross-platform** — `.gitattributes` fixa `text eol=lf` em `reproduce_article/results/locked/**` para que os checksums sha256 sobrevivam a checkouts em Windows com `core.autocrlf=true`.
+- **Reprodutibilidade** — `reproduce_article/scripts/reproduce_local_baseline.sh` faz checkout da tag, rebuild, re-rodada, e comparação de row counts + correctness flags.
 
 ---
 
@@ -36,7 +36,7 @@ Duas campanhas complementares, mesmo binário, mesmo hardware:
 | Dimensão | **Phase 1** | **Phase 2** |
 |---|---|---|
 | Modo de execução | In-process (`--local`) | Docker containers com `TcpLocalhost` |
-| Driver | `scripts/bench_phase1_locked.sh` | `scripts/bench_phase2_locked.sh` |
+| Driver | `reproduce_article/scripts/bench_phase1_locked.sh` | `reproduce_article/scripts/bench_phase2_locked.sh` |
 | Propósito | Baseline sequencial + shared-memory parallel | Baseline de overhead do protocolo TCP localhost |
 | Benchmarks lenient | 12 (todos os `default_sizes()`) | 3 (`ep_annihilation_con`, `dual_tree`, `condup_expansion`) |
 | Benchmarks strict | 2 (`cascade_cross` default, `dual_tree` {6,10,14}) | — (Phase 2 é lenient por design) |
@@ -204,7 +204,7 @@ O campanha rodou em um ultrabook ThinkPad T14 Gen 4 de 14 polegadas, não em uma
 
 3. **Docker oversubscribes o CPU físico.** A WSL2 VM usa 12 vCPUs contra os 10 cores físicos (12 threads lógicos) do host. Em Phase 2 este é o ponto de operação intencional. **Docker Desktop foi fechado durante Phase 1** para evitar o ~2-4 GB de footprint residual do WSL2 contaminar medições in-process, e reaberto imediatamente antes de Phase 2.
 
-Estas limitações são por que `scripts/cv_triage.py` existe e por que o artigo reportará CV junto com wall-clock médio: transformam o caveat em metodologia disclosable em vez de confundidor oculto.
+Estas limitações são por que `reproduce_article/scripts/cv_triage.py` existe e por que o artigo reportará CV junto com wall-clock médio: transformam o caveat em metodologia disclosable em vez de confundidor oculto.
 
 Documentadas em detalhe no `manifest.md` §"Hardware constraints (disclosure)".
 
@@ -212,7 +212,7 @@ Documentadas em detalhe no `manifest.md` §"Hardware constraints (disclosure)".
 
 ## 7. CV Triage — análise de variância
 
-**Threshold:** CV > 0.15. **Ferramenta:** `scripts/cv_triage.py`.
+**Threshold:** CV > 0.15. **Ferramenta:** `reproduce_article/scripts/cv_triage.py`.
 
 | Fase | Summary rows | Flagged (CV > 0.15) | Keep | Rerun | Exclude |
 |---|---|---|---|---|---|
@@ -226,7 +226,7 @@ Documentadas em detalhe no `manifest.md` §"Hardware constraints (disclosure)".
 - **4 genuína variância P/E hybrid scheduling** (todos na faixa 0.155-0.193, bem abaixo do threshold de 0.30 para rerun). Serão anotados em footnote no artigo.
 - **1 timer noise Phase 2** (`condup_expansion 1000 w=1` em 1.99 ms, CV 0.172).
 
-Zero reruns, zero exclusions — a campanha é assinada sem rejeições. Detalhe linha-por-linha em [`cv_triage.md`](../results/locked/v1_local_baseline/cv_triage.md).
+Zero reruns, zero exclusions — a campanha é assinada sem rejeições. Detalhe linha-por-linha em [`cv_triage.md`](../reproduce_article/results/locked/v1_local_baseline/cv_triage.md).
 
 ---
 
@@ -240,7 +240,7 @@ Com a baseline v1 congelada, a Phase 3 LAN tem:
 
 3. **Binário idêntico.** Tag `v0.10.0-bench` garante que a Phase 3 usará exatamente o mesmo executável que gerou os números locais. Sem drift de binário entre campanhas.
 
-4. **Reprodutibilidade documentada.** `scripts/reproduce_local_baseline.sh` permite que qualquer revisor reexecute a Phase 1 + Phase 2 em hardware alternativo e compare row counts + correctness flags (wall-clock diverge, mas estrutura dos dados é invariante).
+4. **Reprodutibilidade documentada.** `reproduce_article/scripts/reproduce_local_baseline.sh` permite que qualquer revisor reexecute a Phase 1 + Phase 2 em hardware alternativo e compare row counts + correctness flags (wall-clock diverge, mas estrutura dos dados é invariante).
 
 5. **Hardware caveats disclosable.** As 3 ressalvas do §6 permitem defender os números no artigo como "baseline honesta do ultrabook", não como número universal. Phase 3 LAN comparará *o mesmo ultrabook* contra as mesmas máquinas em rede, eliminando a dependência de hardware idealizado.
 
@@ -254,9 +254,9 @@ Este documento é um resumo consolidado. Os documentos de origem, cada um com n�
 
 | Fonte | Conteúdo | Onde olhar |
 |---|---|---|
-| [`results/locked/v1_local_baseline/manifest.md`](../results/locked/v1_local_baseline/manifest.md) | Provenance completa: commit SHA, hardware detalhado, timestamps, checksums sha256, row counts, campaign knobs, Phase 1 + Phase 2 results summary | §"Phase 1 results summary", §"Phase 2 results summary" |
-| [`results/locked/v1_local_baseline/README.md`](../results/locked/v1_local_baseline/README.md) | Índice dos arquivos congelados + scope notes | Top-level |
-| [`results/locked/v1_local_baseline/cv_triage.md`](../results/locked/v1_local_baseline/cv_triage.md) | Todos os 63 datapoints flagged com disposição linha por linha | §"Phase 1 (lenient)", §"Phase 1 (strict)", §"Phase 2 (Docker)" |
+| [`reproduce_article/results/locked/v1_local_baseline/manifest.md`](../reproduce_article/results/locked/v1_local_baseline/manifest.md) | Provenance completa: commit SHA, hardware detalhado, timestamps, checksums sha256, row counts, campaign knobs, Phase 1 + Phase 2 results summary | §"Phase 1 results summary", §"Phase 2 results summary" |
+| [`reproduce_article/results/locked/v1_local_baseline/README.md`](../reproduce_article/results/locked/v1_local_baseline/README.md) | Índice dos arquivos congelados + scope notes | Top-level |
+| [`reproduce_article/results/locked/v1_local_baseline/cv_triage.md`](../reproduce_article/results/locked/v1_local_baseline/cv_triage.md) | Todos os 63 datapoints flagged com disposição linha por linha | §"Phase 1 (lenient)", §"Phase 1 (strict)", §"Phase 2 (Docker)" |
 | [`docs/PHASE1-FINDINGS.md`](PHASE1-FINDINGS.md) | Narrativa original + L2 resolvido + tabela empírica strict BSP | §L2 |
 | [`docs/PHASE2-FINDINGS.md`](PHASE2-FINDINGS.md) | Narrativa Phase 2 + history de fixes L3/L6 + role no Phase 3 subtraction | §7 "v1_local_baseline — Unified Frozen Campaign" |
 | [`USAGE_GUIDE.md`](../USAGE_GUIDE.md) | Tutorial operacional Phase 3 LAN completo | §11.3 (10 subseções) |

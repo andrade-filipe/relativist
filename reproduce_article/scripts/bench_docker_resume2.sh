@@ -13,9 +13,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DATA_DIR="$REPO_DIR/data"
-RESULTS_DIR="$REPO_DIR/results"
+RESULTS_DIR="$REPO_DIR/reproduce_article/results"
 
 winpath() { if command -v cygpath &>/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 join_comma() { local IFS=','; echo "$*"; }

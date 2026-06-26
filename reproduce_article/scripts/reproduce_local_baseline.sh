@@ -30,10 +30,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-LOCKED_DIR="$REPO_DIR/results/locked/v1_local_baseline"
-REPRO_ROOT="$REPO_DIR/results/reproduction"
+LOCKED_DIR="$REPO_DIR/reproduce_article/results/locked/v1_local_baseline"
+REPRO_ROOT="$REPO_DIR/reproduce_article/results/reproduction"
 REPRO_DATE="$(date +%Y-%m-%d)"
 REPRO_DIR="$REPRO_ROOT/$REPRO_DATE"
 

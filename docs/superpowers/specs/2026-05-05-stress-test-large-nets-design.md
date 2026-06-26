@@ -34,7 +34,7 @@ O TCC precisa de evidência empírica de até onde o Relativist v2 escala com a 
 1. Curvas log-log de `wall_time(N)`, `MIPS(N)` e `VmRSS_peak(N)` para cada `(workload, env, W)` — mínimo 4 ordens de grandeza em N.
 2. Identificação precisa da parede: `N_max` por `(workload, env, W)` + `StopReason`.
 3. Speedup absoluto reportável (W=2/4/8 vs W=1) por workload e por ambiente.
-4. Dataset reproduzível, congelado em `results/locked/v2_stress_curve_<YYYY-MM-DD>/` com MANIFEST + SHA-256.
+4. Dataset reproduzível, congelado em `reproduce_article/results/locked/v2_stress_curve_<YYYY-MM-DD>/` com MANIFEST + SHA-256.
 5. Zero regressão dos pisos: 1798 default / 1842 zero-copy / 1789 streaming-no-recycle / 1740 release / 690 v1 floor.
 
 ## 4. Arquitetura
@@ -48,8 +48,8 @@ Isto é **campanha de benchmark + metodologia**, não feature de sistema. Nenhum
 | `bench/suite.rs` matriz + agregadores | `relativist-core/src/bench/suite.rs` |
 | `--chunk-size`, `--recycle-policy`, `--streaming-strategy` | CLI já em produção |
 | Geradores `ep_annihilation`, `dual_tree`, `condup_expansion` (versões streaming) | `relativist-core/src/io/generators.rs` |
-| Lock-and-manifest pattern (D-012) | `results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md` como template |
-| `scripts/bench_docker_v2.sh` como template de orchestration | `scripts/` |
+| Lock-and-manifest pattern (D-012) | `reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md` como template |
+| `reproduce_article/scripts/bench_docker_v2.sh` como template de orchestration | `scripts/` |
 | Métricas D-012 (network_time MAX, compute_time MAX, mips de per-rep total) | `relativist-core/src/protocol/coordinator.rs`, `relativist-core/src/merge/grid.rs`, `relativist-core/src/bench/suite.rs` |
 
 ### 4.2 Construído novo (~920 LoC distribuídos em 7 arquivos)
@@ -60,8 +60,8 @@ Isto é **campanha de benchmark + metodologia**, não feature de sistema. Nenhum
 | `MemoryProbe` | `relativist-core/src/bench/memory_probe.rs` (novo) | ~120 | VmRSS atual + pico (Linux: `/proc/self/status`; Windows: `GetProcessMemoryInfo`); fração de RAM total |
 | `StopRule` | `relativist-core/src/bench/stop_rule.rs` (novo) | ~90 | Aborta sequência N quando rep anterior bate uma das 3 condições; emite sentinel row |
 | CSV schema estendido | `relativist-core/src/bench/csv_writer.rs` (extensão) | ~30 | Colunas novas: `vmrss_peak_mb`, `vmrss_current_end_mb`, `stop_reason`, `cv_above_gate` |
-| `scripts/stress_curve.sh` | `scripts/` | ~150 | Orquestra Fase 1 (in-process) + Fase 2 (Docker via compose `bench-tcp` profile); pré-condições; `--resume` |
-| `scripts/plot_stress_curve.py` | `scripts/` | ~200 | 9 PDFs (3 workloads × 3 métricas) IEEE-ready + `summary_walls.pdf` |
+| `reproduce_article/scripts/stress_curve.sh` | `scripts/` | ~150 | Orquestra Fase 1 (in-process) + Fase 2 (Docker via compose `bench-tcp` profile); pré-condições; `--resume` |
+| `reproduce_article/scripts/plot_stress_curve.py` | `scripts/` | ~200 | 9 PDFs (3 workloads × 3 métricas) IEEE-ready + `summary_walls.pdf` |
 | `docs/benchmarks/campaigns/stress-curve.md` | `codigo/relativist/docs/benchmarks/campaigns/` | ~250 md | Metodologia + comandos para reproduzir |
 
 ### 4.3 Interfaces críticas
@@ -115,7 +115,7 @@ metrics:  [wall_time_ns, mips, vmrss_peak_mb, vmrss_current_end_mb,
 
 ## 5. Procedimento experimental
 
-`scripts/stress_curve.sh` orquestra:
+`reproduce_article/scripts/stress_curve.sh` orquestra:
 
 **Pré-condições (script aborta se falhar):**
 - Branch limpa; testes verdes em todos os 5 perfis (default/zero-copy/streaming-no-recycle/release/v1-floor); clippy limpo; Docker disponível (se braço Docker ativado); RAM ≥ 8 GiB (warning < 16); diretório destino ainda não existe; CPU governor não está em low-power (Linux) ou plano de energia não é Power saver (Windows); `df --output=avail` ≥ 10 GiB.
@@ -139,10 +139,10 @@ metrics:  [wall_time_ns, mips, vmrss_peak_mb, vmrss_current_end_mb,
 
 ## 6. Outputs e artefatos
 
-> **Convenção de nomenclatura:** `<YYYY-MM-DD>` em todos os caminhos abaixo é resolvido em runtime pelo `scripts/stress_curve.sh` para a data ISO da execução. Múltiplas execuções produzem múltiplos diretórios (não há sobrescrita).
+> **Convenção de nomenclatura:** `<YYYY-MM-DD>` em todos os caminhos abaixo é resolvido em runtime pelo `reproduce_article/scripts/stress_curve.sh` para a data ISO da execução. Múltiplas execuções produzem múltiplos diretórios (não há sobrescrita).
 
 ```
-results/locked/v2_stress_curve_<YYYY-MM-DD>/
+reproduce_article/results/locked/v2_stress_curve_<YYYY-MM-DD>/
 ├── MANIFEST.md
 ├── README.md
 ├── raw/
@@ -280,20 +280,20 @@ cargo clippy --all-features -- -D warnings
 cargo fmt --check
 
 # 2. Smoke run da campanha (~15 min)
-scripts/stress_curve.sh --smoke
+reproduce_article/scripts/stress_curve.sh --smoke
 
 # 3. Inspeção do output do smoke
-ls results/locked/v2_stress_curve_smoke_*/
-cat results/locked/v2_stress_curve_smoke_*/MANIFEST.md
+ls reproduce_article/results/locked/v2_stress_curve_smoke_*/
+cat reproduce_article/results/locked/v2_stress_curve_smoke_*/MANIFEST.md
 # Confere: 1 workload × 1 W × 2 N × 1 rep = 2 linhas no CSV; 1 figura PDF
 
 # 4. Campanha completa (overnight)
-scripts/stress_curve.sh   # ~7-8h
+reproduce_article/scripts/stress_curve.sh   # ~7-8h
 
 # 5. Inspeção da campanha completa
-ls results/locked/v2_stress_curve_<YYYY-MM-DD>/figures/
+ls reproduce_article/results/locked/v2_stress_curve_<YYYY-MM-DD>/figures/
 # Espera: 9 PDFs + summary_walls.pdf
-cat results/locked/v2_stress_curve_<YYYY-MM-DD>/MANIFEST.md
+cat reproduce_article/results/locked/v2_stress_curve_<YYYY-MM-DD>/MANIFEST.md
 # Espera: provenance completa (git SHA, cargo/rustc, /proc/meminfo, /proc/cpuinfo,
 #         comando exato, total reps, total wall time, %CV mediano, contagem de stop_reason)
 

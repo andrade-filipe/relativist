@@ -90,7 +90,7 @@ A constante `PROTOCOL_VERSION` rege o handshake de wire entre coordinator e work
 | 5       | [SPEC-21 §3.7 R37c / §3.8 A2](../../specs/SPEC-21-streaming-generation.md) | Streaming generation: `Message` ganha `RequestWork { worker_id }` e `NoMoreWork` (pull dispatch). |
 | 6       | (proxima onda v2)            | Reservado para SPEC-20 elastic-grid wire variants (`JoinRequest`/`JoinAck`/`LeaveRequest`/`LeaveAck`) quando o ramo TCP for travado em release.                          |
 
-**Sequencing rules.** SPEC-21 R37c documenta a politica de bumps: cada spec que toca o `Message` enum incrementa `PROTOCOL_VERSION`, e o predecessor REJEITA wire payloads com a versao posterior (`UnsupportedVersion`) — nada de silencioso reinterpretation de tags. Persisted `.bin` files de baselines congelados (ex.: `results/locked/v1_local_baseline/*.bin`) ficam **ilegiveis** por binarios de versoes superiores; isso e aceitavel porque baselines congelados nao alimentam codigo posterior — a regeneracao via `relativist generate` produz arquivos com o schema corrente.
+**Sequencing rules.** SPEC-21 R37c documenta a politica de bumps: cada spec que toca o `Message` enum incrementa `PROTOCOL_VERSION`, e o predecessor REJEITA wire payloads com a versao posterior (`UnsupportedVersion`) — nada de silencioso reinterpretation de tags. Persisted `.bin` files de baselines congelados (ex.: `reproduce_article/results/locked/v1_local_baseline/*.bin`) ficam **ilegiveis** por binarios de versoes superiores; isso e aceitavel porque baselines congelados nao alimentam codigo posterior — a regeneracao via `relativist generate` produz arquivos com o schema corrente.
 
 ## Especificacao formal
 

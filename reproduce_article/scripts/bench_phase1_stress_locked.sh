@@ -33,8 +33,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-STRESS_DIR="$REPO_DIR/results/extended/v1_stress"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+STRESS_DIR="$REPO_DIR/reproduce_article/results/extended/v1_stress"
 RAW_DIR="$STRESS_DIR/raw/phase1"
 
 mkdir -p "$STRESS_DIR" "$RAW_DIR"

@@ -4,7 +4,7 @@ Phase 3 executa o protocolo BSP em **maquinas fisicas diferentes** conectadas po
 
 > **Pre-requisitos.** Phase 3 v2 corre em **dois eixos** que travam baselines independentes contra o canonico Phase 2 docker:
 >
-> - **Axis 1 — bincode + delta protocol (build default).** Replica `results/locked/v2_post_d012_baseline_2026-05-05/` em LAN real. A medida principal e `t_network = t_lan - t_localhost` para a mesma config; o subtraendo vem do baseline canonico no mesmo binario.
+> - **Axis 1 — bincode + delta protocol (build default).** Replica `reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/` em LAN real. A medida principal e `t_network = t_lan - t_localhost` para a mesma config; o subtraendo vem do baseline canonico no mesmo binario.
 > - **Axis 2 — zero-copy + delta protocol (`--features zero-copy`).** Mesma matriz; o ganho esperado e reducao do componente `compute` (deserialize CPU) e leve aumento do componente `network` (rkyv archive size > bincode).
 >
 > Os dois eixos so fazem sentido depois que `v2_post_d012_baseline_2026-05-05` esta travado e o binario compila os dois feature sets (`cargo build --release` e `cargo build --release --features zero-copy`). Nao comece Phase 3 sem ter o canonico v2 travado.
@@ -530,7 +530,7 @@ Em redes pequenas (<100 KB de particao), o ganho e marginal e pode ser dentro do
 
 Por volume, o texto detalhado da orquestracao (script SSH de ~400 linhas, Ansible alternativo, CV triage, pos-campanha) fica versionado em:
 
-- **Driver shell:** `scripts/bench_phase3_locked.sh` (a escrever; comparte estrutura com `scripts/bench_docker_v2.sh`).
+- **Driver shell:** `scripts/bench_phase3_locked.sh` (a escrever; comparte estrutura com `reproduce_article/scripts/bench_docker_v2.sh`).
 - **Aggregator:** `scripts/aggregate_phase3.py` (a escrever; analogo do parser de metrics em `bench_docker_v2.sh`).
 - **Schema de saida:** deve bater byte-por-byte com `summary.csv` do baseline canonico v2 — mesmo header (16 colunas), mesma ordem, mesma precisao numerica. As colunas `compute_time_secs`, `network_time_secs`, `merge_time_secs`, `mips_mean` precisam estar populadas (D-012 instrumentation).
 
@@ -541,7 +541,7 @@ O esqueleto do `run_one()` bash, a matriz `BENCH_SIZES`/`WORKER_COUNTS`/`REPS=10
 Apos campanha + CV triage, crie **dois manifests** — um por eixo — em diretorios separados:
 
 ```
-results/locked/
+reproduce_article/results/locked/
   v2_lan_axis1_<data>/
     summary.csv
     detail.csv
@@ -552,7 +552,7 @@ results/locked/
   v2_lan_axis2_<data>/   (mesma estrutura)
 ```
 
-Template para `MANIFEST.md` (use `results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md` como referencia exata):
+Template para `MANIFEST.md` (use `reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md` como referencia exata):
 
 ```markdown
 # v2_lan_axis1_<data> — Campaign Manifest
@@ -669,7 +669,7 @@ Drift > 5 s torna a correlacao de eventos entre coord e workers ilegivel (mensag
 - **SPEC-19** (`specs/SPEC-19-delta-protocol.md`): delta mode, BorderGraph, R37 version handshake.
 - **SPEC-21** (`specs/SPEC-21-streaming-generation.md`): chunk-size + max-pending-lifetime semantica.
 - **SPEC-22** (`specs/SPEC-22-arena-management.md`): recycle-policy + dense/sparse routing.
-- **`results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md`**: subtraendo canonico Phase 2 docker. Template estrutural para os manifests Phase 3.
+- **`reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/MANIFEST.md`**: subtraendo canonico Phase 2 docker. Template estrutural para os manifests Phase 3.
 - **`docs/analysis/D011-final-baseline-analysis-2026-05-04.md`** §6 verdict: estado atual da decomposicao compute/network/merge — Phase 3 LAN preenche o componente que ainda nao foi medido.
 
 ## 11. Analise pos-campanha
@@ -690,10 +690,10 @@ def load(path):
                 for r in csv.DictReader(f)}
 
 # Subtraendo: baseline Phase 2 docker (canonico v2)
-local = load('results/locked/v2_post_d012_baseline_2026-05-05/summary.csv')
+local = load('reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/summary.csv')
 
 # Minuendo: campanha Phase 3 LAN (axis 1 ou axis 2)
-lan   = load('results/locked/v2_lan_axis1_<data>/summary.csv')
+lan   = load('reproduce_article/results/locked/v2_lan_axis1_<data>/summary.csv')
 
 print('benchmark,size,workers,wall_loc,wall_lan,d_wall,d_compute,d_network,d_merge')
 for key, row in lan.items():

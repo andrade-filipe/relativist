@@ -10,7 +10,7 @@ services:
       - --workers=${NUM_WORKERS:-2}
       - --bind=0.0.0.0:9000
       # D-017 / TASK-0730: parametrise input/output/metrics paths so the
-      # multi-container Horner demo (scripts/horner_distributed_demo.sh) can
+      # multi-container Horner demo (reproduce_article/scripts/horner_distributed_demo.sh) can
       # target per-run files without colliding with stress-curve / bench-tcp
       # artefacts. Defaults match the prior literals for backwards-compat.
       - --input=${INPUT_PATH:-/data/input.bin}

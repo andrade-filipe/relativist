@@ -23,7 +23,7 @@ A motivação completa do Horner está no explainer companheiro (`2026-05-06-hor
 | Problema | Math problem alvo | Avaliação polinomial via Horner |
 | API | Escopo | (B) SPEC-27 traits + Registry + HornerCodec; LambdaEncoder fica em "Future Work" |
 | Range | Decoder | `BigUint` (`num-bigint`); resultado sem teto |
-| Demo | Validação distribuída | (II) Integration tests + `scripts/horner_demo.sh` + diretório locked |
+| Demo | Validação distribuída | (II) Integration tests + `reproduce_article/scripts/horner_demo.sh` + diretório locked |
 | Spec | Atualização SPEC-27 | (α) Revisão ANTES da implementação via handoff brief → ESPECIALISTA EM SPECS |
 | Branch | Onde mora | `feature/stress-and-encoder` (mesma do Topic 1) |
 | Merge | Destino | `main` direto após aprovação |
@@ -54,7 +54,7 @@ Tudo novo vive em `relativist-core/src/encoding/`. Não toca `net/`, `reduction/
 | `HornerCodec` (encode + decode) | `relativist-core/src/encoding/horner.rs` (novo) | ~250 | Tradução `(coeffs, x) → Net` em árvore de `build_add`/`build_mul`; decode via BigUint readback |
 | `BigUintDecoder` (helper) | `relativist-core/src/encoding/biguint_readback.rs` (novo) | ~80 | Estende `decode_nat` para BigUint quando resultado excede u64 |
 | CLI `compute --codec X --input '{...}'` | `relativist-cli/src/compute.rs` (extensão) | ~80 | **Back-compat:** subcomandos legados `compute add 3 5` continuam funcionando como antes (SPEC-14 paths preservados); novo `compute --codec X --input '{...}'` despacha pro registry. Exato shape final ratificado na revisão SPEC-27. |
-| Demo script | `scripts/horner_demo.sh` | ~120 | Roda matrix `cases × env × W`; produz CSV + figura |
+| Demo script | `reproduce_article/scripts/horner_demo.sh` | ~120 | Roda matrix `cases × env × W`; produz CSV + figura |
 | Plot generator | `scripts/plot_horner_demo.py` | ~100 | 2 PDFs IEEE-ready (correctness table + walltime) |
 | Docs metodologia | `docs/encoders/horner.md` | ~200 md | Tutorial reproduzível: input format, exemplos, validação |
 
@@ -211,7 +211,7 @@ Pipeline padrão de 6 stages do CLAUDE.md aplicado contra SPEC-27 revisada:
 
 ### Fase 2 — Demo distribuído
 
-`scripts/horner_demo.sh` roda casos representativos cobrindo grau e magnitude:
+`reproduce_article/scripts/horner_demo.sh` roda casos representativos cobrindo grau e magnitude:
 
 | Case | Coeffs | x | Grau | Resultado esperado | Razão de incluir |
 |---|---|---|---|---|---|
@@ -228,7 +228,7 @@ Cada caso roda em `W ∈ {1, 2, 4, 8}` × `env ∈ {in_process, docker_tcp}` = 8
 Output do script:
 
 ```
-results/locked/v2_horner_demo_<YYYY-MM-DD>/
+reproduce_article/results/locked/v2_horner_demo_<YYYY-MM-DD>/
 ├── MANIFEST.md                         # provenance D-012 pattern
 ├── README.md
 ├── raw/
@@ -393,12 +393,12 @@ cargo run --release -- compute --list-codecs
 # Espera: church_arithmetic, horner
 
 # 4. Demo distribuído completo
-scripts/horner_demo.sh           # ~10-15 min
+reproduce_article/scripts/horner_demo.sh           # ~10-15 min
 
 # 5. Inspeção do output
-ls results/locked/v2_horner_demo_<YYYY-MM-DD>/figures/
+ls reproduce_article/results/locked/v2_horner_demo_<YYYY-MM-DD>/figures/
 # Espera: horner_correctness.pdf, horner_walltime.pdf
-cat results/locked/v2_horner_demo_<YYYY-MM-DD>/MANIFEST.md
+cat reproduce_article/results/locked/v2_horner_demo_<YYYY-MM-DD>/MANIFEST.md
 # Espera: provenance completa + 56/56 oracle_match=true
 
 # 6. Sanity checks manuais (conforme tabela na seção 7)
