@@ -56,10 +56,22 @@ serializing into three short, single-purpose contexts joined only by a written a
 phase reasons cleanly over exactly what it needs — and the disposable plan keeps the repo's
 permanent documentation lean.
 
+## Keeping docs LLM-grade
+
+Step 4 of the loop ("update the living docs") is not optional — Relativist's docs are catalogued
+for fast LLM retrieval, and stale docs poison the next Research phase. Two tools enforce the bar:
+
+- [`doc-curator`](../skills/doc-curator/SKILL.md) skill — the writing standard: frontmatter schema
+  (keywords/summary/modules/specs), compactness rules, and the rule that the catalog
+  ([`docs/README.md`](../../docs/README.md)) + module map
+  ([`docs/architecture/modules.md`](../../docs/architecture/modules.md)) stay in sync.
+- [`doc-catalog`](doc-catalog.md) agent — validates every live doc has frontmatter, appears in the
+  catalog, and has no broken links; regenerates the catalog on request.
+
 ## Companion harness
 
-- [`../skills/`](../skills/) — reusable skills (license auditing, git guardrails, pre-commit,
-  documentation, threat modeling) usable from any phase.
+- [`../skills/`](../skills/) — reusable skills (doc-curator, license auditing, git guardrails,
+  pre-commit, documentation, threat modeling) usable from any phase.
 - [`../open-source-readiness/`](../open-source-readiness/) — the audit pack used to bring this
   repo to open-source launch quality.
 - [`../rpi-pipeline/`](../rpi-pipeline/) — the upstream RPI pack these repo-native agents are
