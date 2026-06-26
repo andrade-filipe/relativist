@@ -1,0 +1,57 @@
+name: branch-policy
+
+# Enforces the GitFlow-lite contribution model on every pull request:
+#   - feature/fix/etc. branches integrate into `develop`
+#   - only `develop`, `release/*`, or `hotfix/*` may target `main`
+#   - branch names and PR titles follow the project conventions
+#
+# This workflow must exist on the BASE branch of a PR to run for it, so it is
+# kept on both `main` and `develop`. Make the `branch-policy` check REQUIRED in
+# the branch protection rules for `main` and `develop` (see
+# docs/MAINTAINER-GITHUB-SETUP.md) — that is what actually blocks a bad merge.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch + PR-title policy
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          echo "PR: $HEAD -> $BASE"
+          fail() { echo "::error::$1"; exit 1; }
+
+          # 1) Head branch naming. Allow the project's prefixes + bot branches.
+          if ! echo "$HEAD" | grep -qE '^(feature|fix|chore|docs|refactor|test|perf|ci|build|release|hotfix)/.+' \
+             && ! echo "$HEAD" | grep -qE '^dependabot/'; then
+            fail "Branch '$HEAD' must be named <type>/<description> — one of: feature/, fix/, chore/, docs/, refactor/, test/, perf/, ci/, build/, release/, hotfix/. Rename your branch."
+          fi
+
+          # 2) Base policy: only develop, release/*, hotfix/* may target main.
+          if [ "$BASE" = "main" ]; then
+            if [ "$HEAD" != "develop" ] && ! echo "$HEAD" | grep -qE '^(release|hotfix)/'; then
+              fail "GitFlow-lite: PRs into 'main' may only come from 'develop', 'release/*', or 'hotfix/*'. Open this PR against 'develop' instead."
+            fi
+          fi
+
+          # 3) Direct PRs must not target the frozen archive branch.
+          if [ "$BASE" = "v1-feature-complete" ]; then
+            fail "'v1-feature-complete' is a frozen archive (tag v0.10.0-bench). Do not open PRs against it."
+          fi
+
+          # 4) Conventional-Commit PR title (becomes the squash-merge commit).
+          if ! echo "$TITLE" | grep -qE '^(feat|fix|docs|refactor|test|perf|ci|chore|build|revert)(\([a-z0-9_-]+\))?!?: .+'; then
+            fail "PR title must be a Conventional Commit, e.g. 'feat(partition): add topology-aware strategy'. Got: '$TITLE'"
+          fi
+
+          echo "branch-policy OK"

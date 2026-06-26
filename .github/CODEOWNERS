@@ -1,0 +1,17 @@
+# Code owners — required reviewers.
+# When "Require review from Code Owners" is enabled in branch protection,
+# a PR cannot merge without an approving review from the owner(s) below.
+#
+# Relativist is solo-maintained (see GOVERNANCE.md); the maintainer owns
+# everything. Add finer-grained owners here as the project grows.
+
+* @andrade-filipe
+
+# The model and its invariants are load-bearing for the research claim —
+# changes here always need the maintainer's eyes (already covered by * above,
+# listed explicitly as a signpost).
+/relativist-core/src/reduction/   @andrade-filipe
+/relativist-core/src/partition/   @andrade-filipe
+/relativist-core/src/merge/       @andrade-filipe
+/docs/specs/                       @andrade-filipe
+/docs/theory/                      @andrade-filipe

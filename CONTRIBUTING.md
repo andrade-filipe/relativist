@@ -40,6 +40,16 @@ Please also read [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md),
 6. Open a PR against `develop`. (`main` receives changes via the
    `develop → main` integration cadence.)
 
+### Branch model (GitFlow-lite — enforced)
+
+- **`main`** — production/release. **`develop`** — integration. **`v1-feature-complete`** — frozen archive.
+- Branch names must be `<type>/<description>`: `feature/`, `fix/`, `chore/`, `docs/`,
+  `refactor/`, `test/`, `perf/`, `ci/`, `build/` (and `release/`, `hotfix/` for maintainers).
+- Feature work PRs into **`develop`**. Only `develop`, `release/*`, or `hotfix/*` may PR into **`main`**.
+- This is **enforced by CI**: the `branch-policy` check rejects mis-named branches, PRs into
+  `main` from a feature branch, and non–Conventional-Commit PR titles. A PR can't merge until it
+  passes (plus the three gates and a maintainer review via `CODEOWNERS`).
+
 ## The workflow: RPI (Research → Plan → Implement)
 
 Relativist replaced its heavyweight Spec-Driven Development pipeline with **RPI**.
