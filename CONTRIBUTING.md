@@ -101,6 +101,18 @@ cargo run --release -- coordinator --workers 2 --port 9000 -i test.bin -o out.bi
 cargo run --release -- worker --coordinator localhost:9000
 ```
 
+### Enable the local lint gate (recommended)
+
+The repo ships a `pre-push` hook that runs the same `cargo fmt --check` + `cargo
+clippy -- -D warnings` gate as CI, so a clippy failure is caught before it turns
+your PR red. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+(Emergency bypass: `git push --no-verify` — but CI still enforces it.)
+
 ## Specs and invariants
 
 The 28 specs in [`docs/specs/`](docs/specs/) document the design. Under RPI they are

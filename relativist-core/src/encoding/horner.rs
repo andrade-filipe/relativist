@@ -206,9 +206,9 @@ mod tests {
     use crate::reduction::{count_valid_active_pairs, reduce_all};
 
     /// Reduce `net` to NF, run `discover_root` if necessary, then read back
-    /// via `decode_biguint`. Falls back to `decode_nat_or_shared` (canonical
-    /// + single-DUP-boundary) for benchmarks-style nets where the result
-    /// fits in u64. Returns `None` when neither reader succeeds.
+    /// via `decode_biguint`. Falls back to `decode_nat_or_shared`
+    /// (canonical + single-DUP-boundary) for benchmarks-style nets where the
+    /// result fits in u64. Returns `None` when neither reader succeeds.
     fn reduce_and_decode(mut net: Net) -> Option<u64> {
         reduce_all(&mut net);
         // discover_root if the net was built without a root (build_add /

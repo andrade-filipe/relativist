@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-push gate — mirrors the CI lint gate (ci.yml) locally so formatting and
+# clippy failures are caught BEFORE they reach GitHub and turn a PR red.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+#
+# Emergency bypass (discouraged — CI will still enforce it):
+#     git push --no-verify
+set -euo pipefail
+
+echo "[pre-push] cargo fmt --check"
+cargo fmt --check
+
+echo "[pre-push] cargo clippy --all-targets --all-features -- -D warnings"
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "[pre-push] lint gate OK"
