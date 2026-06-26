@@ -296,14 +296,16 @@ mod tests {
         }
 
         const SIZE: usize = 100 * 1024 * 1024;
-        let buf: Vec<u8> = vec![0u8; SIZE];
-        // Touch every page through a sum to defeat optimizer page-skip.
-        let mut sum: u64 = 0;
-        for chunk in buf.chunks(4096) {
-            sum = sum.wrapping_add(chunk[0] as u64);
+        let mut buf: Vec<u8> = vec![0u8; SIZE];
+        // WRITE one byte per page (not read) to force the kernel to back every
+        // page with a private resident page. On Linux, `vec![0u8; N]` is backed
+        // by the shared zero page (copy-on-write); merely *reading* it never
+        // raises RSS, so the probe would see no growth. Writing faults each page
+        // in. (4096 = the common page size; smaller real pages are a superset.)
+        for i in (0..SIZE).step_by(4096) {
+            buf[i] = (i % 251 + 1) as u8;
         }
         let buf = std::hint::black_box(buf);
-        let _sum = std::hint::black_box(sum);
 
         let after_current = probe.current_bytes().expect("current_bytes post");
         let delta = after_current.saturating_sub(before_current);
