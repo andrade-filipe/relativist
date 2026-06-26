@@ -50,11 +50,34 @@ Please also read [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md),
   `main` from a feature branch, and non–Conventional-Commit PR titles. A PR can't merge until it
   passes (plus the three gates and a maintainer review via `CODEOWNERS`).
 
+## Test-Driven Development (required)
+
+Relativist is built **test-first, and stays that way.** Every behavioral change
+follows **red → green → refactor**:
+
+1. **Red** — write a failing test that pins the behavior you want.
+2. **Green** — write the minimum production code to make it pass.
+3. **Refactor** — clean up with the test green.
+
+Why it's non-negotiable here: the project's claim is *correctness* (the reduction
+engine and the fundamental property G1, `reduce_all ≅ run_grid`). As contributors
+add new encoders, strategies, and transports, TDD is what keeps that claim true.
+
+- **Where the test goes** decides the tier (see [`docs/TESTING.md`](docs/TESTING.md)):
+  core engine / distribution / invariant behavior → a **library unit test** in the
+  relevant `src/` module, so it runs in the required `cargo test --lib` gate. New
+  example codecs, benchmarks, or e2e smokes → an integration test under `tests/`.
+- A PR that adds behavior without a test that would have failed before it is **not
+  ready** — reviewers look for the test-first evidence.
+- For the *how* (Fake It / Triangulate / Obvious Implementation, Baby Steps, Test
+  List, …), use the **`beck-tdd-pattern-family`** skill.
+
 ## The workflow: RPI (Research → Plan → Implement)
 
 Relativist replaced its heavyweight Spec-Driven Development pipeline with **RPI**.
-It is lighter and keeps changes focused. The retired SDD process is archived,
-read-only, under [`docs/_archive/`](docs/_archive/).
+It is lighter and keeps changes focused — and the Implement phase is **TDD**
+(above). The retired SDD process is archived, read-only, under
+[`docs/_archive/`](docs/_archive/).
 
 ```
 1. RESEARCH   — map the affected code + the relevant specs/docs.        -> docs/rpi/RESEARCH.md
