@@ -1,3 +1,14 @@
+---
+title: Maintainer GitHub Setup Guide
+summary: Web-UI/gh-CLI steps to finish before announcing the open-source repo — About sidebar, social preview, license detection, branch protection.
+keywords: [maintainer, github, open source, gh cli, branch protection, social preview, license detection, apache-2.0, topics, repository settings, launch, announce]
+modules: []
+specs: []
+audience: [contributor]
+status: guide
+updated: 2026-06-26
+---
+
 # Maintainer guide — GitHub setup before announcing
 
 Everything in this repo (license, governance, docs, CI, reproducibility) is ready.

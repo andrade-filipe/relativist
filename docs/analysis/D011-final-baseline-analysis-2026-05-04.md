@@ -1,3 +1,14 @@
+---
+title: D-011 Final Baseline — Post-Mortem Analysis
+summary: Adversarial post-mortem of the post-D-012 canonical baseline — v2-vs-v1 wall-time gap, wire-vs-abstraction cost, RF closures, TCC defensibility verdict.
+keywords: [d-011, d-012, baseline, post-mortem, adversarial, v2 vs v1, network_time_secs, compute_time_secs, mips, delta protocol, negative scaling, condup outlier, c_o/c_r, verdict]
+modules: [bench, protocol, merge, partition]
+specs: [SPEC-17, SPEC-18, SPEC-19]
+audience: [researcher, contributor]
+status: reference
+updated: 2026-06-26
+---
+
 # D-011 Final Baseline — Cold Post-Mortem Analysis (rev 2026-05-05)
 
 **Primary baseline (canonical):** `reproduce_article/results/locked/v2_post_d012_baseline_2026-05-05/` — post-D-012 instrumentation restoration, all RF-04/05/07 closures empirically verified.
@@ -125,7 +136,7 @@ Each flag = observation + mechanism in code/spec + verdict.
 
 The v2 wire abstraction trades **bytes-on-the-wire for CPU time per round**. The trade is unfavorable on `localhost` (effectively zero network bandwidth limit) because the wire bytes are essentially free and the CPU cost is real. It would only become favorable on a real WAN link where bandwidth is the bottleneck — which is the Phase 3 LAN scenario the TCC explicitly defers.
 
-**Verdict.** EXPLAINABLE — and **the right finding for the TCC**. The break-even where v2's protocol-fewer-bytes pays for v2's protocol-CPU-overhead is somewhere between localhost (where it loses) and a real WAN link (where it should win). This is exactly the c_o / c_r tradeoff predicted in `docs/ROADMAP.md` §2.40. Quantifying it on real LAN/WAN is the empirical signature ARG-006 / ARG-007 require. **This baseline is the lower bound for the wire-saving win**, not the win itself.
+**Verdict.** EXPLAINABLE — and **the right finding for the TCC**. The break-even where v2's protocol-fewer-bytes pays for v2's protocol-CPU-overhead is somewhere between localhost (where it loses) and a real WAN link (where it should win). This is exactly the c_o / c_r tradeoff predicted in `docs/roadmap.md` §2.40. Quantifying it on real LAN/WAN is the empirical signature ARG-006 / ARG-007 require. **This baseline is the lower bound for the wire-saving win**, not the win itself.
 
 ### RF-02 — `condup_expansion` 1000 tcp/w=1 is 25.47× v1
 

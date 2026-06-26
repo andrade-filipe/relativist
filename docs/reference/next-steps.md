@@ -1,7 +1,18 @@
+---
+title: What's Next for Relativist
+summary: Contributor-facing map of the critical path to break-even (delta protocol, coordinator-free round, delta merge) and the pending Phase 3 LAN milestone.
+keywords: [next steps, break-even, c_o/c_r, speedup, delta protocol, coordinator-free round, delta merge, phase 3 lan, elastic grid, recipe generation, memory-bounded coordinator, contribution]
+modules: [merge, partition, protocol, bench]
+specs: [SPEC-19, SPEC-25]
+audience: [contributor, llm, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # What's next for Relativist
 
 A short, contributor-facing map of where the software should go — distilled from
-[`../ROADMAP.md`](../ROADMAP.md) (which has the full rationale and the per-feature
+[`../roadmap.md`](../roadmap.md) (which has the full rationale and the per-feature
 status tags). If you're a curious reader or a would-be contributor, start here.
 
 ## The one result that frames everything
@@ -18,7 +29,7 @@ negative performance result on local/localhost hardware**:
 
 For speedup at `w=2` you need `c_o/c_r < 0.5` — a **~77% overhead reduction**. That
 single number is the engineering target. Full derivation:
-[`../ROADMAP.md` §2.40](../ROADMAP.md).
+[`../roadmap.md` §2.40](../roadmap.md).
 
 ## The critical path to break-even
 
@@ -47,7 +58,7 @@ the crossover is the single most valuable next contribution. This is a
 
 ## Other directions (lower on the critical path)
 
-Pulled from `ROADMAP.md`; see it for status tags and complexity notes.
+Pulled from `roadmap.md`; see it for status tags and complexity notes.
 
 - **Confluence-enabled elasticity** — dynamic worker join/departure is partially
   shipped (D-006); full mid-session departure recovery (reclaim from retained
@@ -70,7 +81,7 @@ Pulled from `ROADMAP.md`; see it for status tags and complexity notes.
 
 ## How to pick something up
 
-1. Read [`../ROADMAP.md`](../ROADMAP.md) for the item's full context and status tag.
+1. Read [`../roadmap.md`](../roadmap.md) for the item's full context and status tag.
 2. Open an issue to discuss (especially for anything touching the model — see
    [`../../GOVERNANCE.md`](../../GOVERNANCE.md)).
 3. Use the [RPI workflow](../../CONTRIBUTING.md) and keep the three gates green.

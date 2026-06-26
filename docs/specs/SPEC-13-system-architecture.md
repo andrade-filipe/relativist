@@ -630,7 +630,7 @@ pub enum Cli {
 | Intra-worker parallelism (rayon) | Sequential per-worker reduction is simpler and sufficient | PESQ-011 L2 |
 | Worker-to-worker communication | Star topology is sufficient; peer-to-peer adds complexity without clear benefit | PESQ-010 L6, L7 |
 
-**R50.** The v1 exclusions SHOULD be documented in a `ROADMAP.md` file in the repository, noting which items are candidates for future work. **(SHOULD)**
+**R50.** The v1 exclusions SHOULD be documented in a `roadmap.md` file in the repository, noting which items are candidates for future work. **(SHOULD)**
 
 ### 3.13 Additional Requirements (from review)
 

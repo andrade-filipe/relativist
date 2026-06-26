@@ -1,3 +1,14 @@
+---
+title: Phase 3 — TcpNetwork (real machines, LAN)
+summary: Pending cross-machine LAN campaign measuring true network overhead by subtraction (t_lan − t_localhost) on bincode and zero-copy axes.
+keywords: [phase 3, lan, tcp network, real machines, t_network, subtraction, zero-copy, bincode, delta protocol, rtt, strict-bsp, break-even crossover, pending]
+modules: [protocol, merge, bench]
+specs: [SPEC-05, SPEC-06, SPEC-09, SPEC-19]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Phase 3 — TcpNetwork (maquinas reais)
 
 Phase 3 executa o protocolo BSP em **maquinas fisicas diferentes** conectadas por rede Ethernet real. Expoe o custo que nenhum outro modo consegue reproduzir: latencia RTT, throughput limitado, jitter e contencao de NIC. E a campanha que transforma Relativist de "implementacao correta de ICs distribuidos" em "evidencia empirica sobre o custo real de distribuir reducao de ICs num grid".

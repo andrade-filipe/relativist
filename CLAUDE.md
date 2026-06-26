@@ -104,8 +104,8 @@ frozen, read-only, under [`docs/_archive/sdd-agents/`](docs/_archive/sdd-agents/
 - `CODING_STANDARDS.md` — the code rules CI enforces
 - `.claude/agents/README.md` — the RPI workflow
 - `docs/specs/` — 28 formal specifications (ENGLISH only); reference under RPI, not a per-change gate
-- `docs/INDEX.md` — master documentation index (entry point for navigation)
-- `docs/ROADMAP.md` — v2+ features, break-even analysis (section 2.40)
+- `docs/README.md` — master documentation index (entry point for navigation)
+- `docs/roadmap.md` — v2+ features, break-even analysis (section 2.40)
 - `docs/reference/next-steps.md` — what the software should do next (for contributors)
 - `reproduce_article/` — frozen benchmark evidence + reproduction scripts (DO NOT modify the data)
 - `docs/_archive/` — frozen SDD history (read-only): backlog, tests, reviews, progress, WORKFLOWS, …
@@ -114,7 +114,7 @@ frozen, read-only, under [`docs/_archive/sdd-agents/`](docs/_archive/sdd-agents/
 
 1. All work on `v2-development` branch (or feature branches from it)
 2. Every change must pass all 690 v1 tests (floor) plus the current v2 baseline — zero regression
-3. New features follow ROADMAP.md priorities
+3. New features follow roadmap.md priorities
 4. Every change follows the RPI loop (Research → Plan → Implement → update docs)
 5. Theory → design → code; cite a spec/invariant when a change touches one (no mandatory new spec per change)
 6. Specs and code are ALWAYS in English

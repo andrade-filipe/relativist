@@ -1,3 +1,14 @@
+---
+title: Benchmarks & Campaigns Index
+summary: Entry point for the Relativist benchmark suite — `relativist bench` flags, available benchmarks, and links to phase/campaign docs.
+keywords: [benchmarks, campaigns, relativist bench, csv-detail, csv-rounds, csv-summary, workers, sizes, profiles, ep_annihilation, dual_tree, condup_expansion, locked baseline]
+modules: [bench]
+specs: [SPEC-09]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Benchmarks & Campanhas
 
 Esta pasta documenta a suite de benchmarks do Relativist e as campanhas cientificas que geraram os dados usados no TCC. Todos os CSVs congelados vivem em `reproduce_article/results/locked/v1_local_baseline/` e `reproduce_article/results/extended/v1_stress/`.

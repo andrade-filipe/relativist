@@ -1,3 +1,14 @@
+---
+title: Phase 1 — Sequential + Local (in-process)
+summary: How to run the in-process baseline campaign (3 profiles + encoding, ~3800 datapoints, ~6h) with `relativist bench --mode local`.
+keywords: [phase 1, local, in-process, sequential, baseline, relativist bench, profile a, profile b, profile c, church arithmetic, csv, workers, repetitions]
+modules: [bench]
+specs: [SPEC-09]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Phase 1 — Sequential + Local (in-process)
 
 Phase 1 executa os benchmarks em **um unico processo**, sem TCP nem Docker. Usa o comando `relativist bench` nativo com `--mode local`. E o baseline de referencia: se Phase 1 nao mostra speedup, Phase 2/3 nao poderao melhorar (elas apenas somam overhead de rede).

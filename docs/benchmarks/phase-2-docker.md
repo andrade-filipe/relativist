@@ -1,3 +1,14 @@
+---
+title: Phase 2 — Docker (TcpLocalhost)
+summary: How to run the full BSP protocol over TCP loopback in Docker containers (400 datapoints) via bench_docker.sh, isolating algorithm + TCP cost.
+keywords: [phase 2, docker, tcp localhost, loopback, bsp, bench_docker, docker-compose, coordinator, worker, g1, sequential baseline, csv]
+modules: [protocol, merge, bench]
+specs: [SPEC-06, SPEC-09]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Phase 2 — Docker (TcpLocalhost)
 
 Phase 2 executa o protocolo BSP completo sobre TCP, mas com coordinator e workers em **containers na mesma maquina** (loopback). Isola o custo do algoritmo + protocolo TCP, sem interferencia de rede fisica.

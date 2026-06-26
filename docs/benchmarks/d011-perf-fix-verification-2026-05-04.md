@@ -1,3 +1,14 @@
+---
+title: D-011 Perf Fix Verification (2026-05-04)
+summary: In-process timing verification of the D-011/TASK-0612 performance fix vs v1 baseline (3 passes, interleaved), on ep_annihilation_con 5M.
+keywords: [d-011, perf fix, verification, TASK-0612, ep_annihilation_con, interleaved, timing, median, ratio, v1 baseline, effective_arena_size, wire format]
+modules: [bench, partition, merge]
+specs: []
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # D-011 Perf Fix Verification — 2026-05-04
 
 ## Commit references

@@ -81,7 +81,7 @@ docs/
 ├── operations/
 │   ├── docker.md             # from DOCKER.md
 │   └── security-observability.md  # tiers + tracing/metrics (compact, from SPEC-10/11)
-├── roadmap.md                # from ROADMAP.md (good as-is; light touch)
+├── roadmap.md                # from roadmap.md (good as-is; light touch)
 ├── theory-bridge.md          # keep (TCC link)
 └── _archive/                 # + research surveys, historical_v1, superseded campaigns, design docs
 ```
@@ -155,11 +155,11 @@ These plug into the RPI loop's "update the living docs" step.
 - **Guides consolidate 11 → ~6:** v1 trail (getting-started, first-reduction, local-grid,
   distributed-tcp, church-arithmetic) + **one** `guides/v2-features.md` (delta, zero-copy,
   elastic, streaming, arena — one section each). Removes the 5-way v2 redundancy.
-- **Single invariants doc:** `theory/invariants.md` canonical; `reference/invariants.md` dropped
+- **Single invariants doc:** `theory/invariants.md` canonical; `theory/invariants.md` dropped
   (links redirected).
 - **Specs catalogued via `docs/specs/README.md` index** (id→title→module→status→keywords); no
   per-file frontmatter on the 28 specs (they already carry IDs + formal headers).
-- **`docs/INDEX.md` → `docs/README.md`** (the catalog; GitHub renders it for the `docs/` dir).
+- **`docs/README.md` → `docs/README.md`** (the catalog; GitHub renders it for the `docs/` dir).
 - **Demos:** translate `horner-g1-demonstration` → English (it demonstrates G1); archive
   `live_demo` + `horner_runbook` (PT-BR presentation logistics).
 - **Frontmatter applies to the live narrative docs** (architecture, theory, guides, reference,

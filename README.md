@@ -78,26 +78,25 @@ docker compose up --scale worker=4
 - **D-011 dense-path bug fix** — `effective_arena_size = max_live_id + 1` replaces the misleading planning-range metric in SPEC-22 R22; closes the +83% wall-clock regression on `ep_annihilation_con 5M w=2`.
 - **D-012 instrumentation restored** — `compute_time_secs`, `network_time_secs`, and `mips_mean` are populated for every TCP-mode row in the canonical baseline. Wall-time is now decomposed by component (compute / network / merge), enabling targeted analysis of where each ms is spent.
 
-User guides: [08 Elastic Grid](docs/guides/08-elastic-grid.md), [09 Streaming Generation](docs/guides/09-streaming-generation.md), [10 Arena Management](docs/guides/10-arena-management.md).
+The five v2 features (delta protocol, zero-copy wire, elastic grid, streaming generation, arena management) are documented together in [docs/guides/v2-features.md](docs/guides/v2-features.md).
 
 ## Documentation
 
-Start here based on your goal:
+The full, keyword-searchable catalog is **[docs/README.md](docs/README.md)** — start there. Quick links:
 
 | Goal                                   | Start at                                                               |
 |----------------------------------------|------------------------------------------------------------------------|
-| Learn Relativist step by step          | [**docs/guides/**](docs/guides/README.md) — 10-step learning path       |
-| Use SPEC-20 elastic grid               | [docs/guides/08-elastic-grid.md](docs/guides/08-elastic-grid.md)        |
-| Use SPEC-21 streaming generation       | [docs/guides/09-streaming-generation.md](docs/guides/09-streaming-generation.md) |
-| Use SPEC-22 arena management           | [docs/guides/10-arena-management.md](docs/guides/10-arena-management.md)|
+| Understand the model                   | [docs/theory/interaction-combinators.md](docs/theory/interaction-combinators.md) |
+| Understand the system                  | [docs/architecture/overview.md](docs/architecture/overview.md)         |
+| Learn Relativist step by step          | [docs/guides/](docs/guides/README.md) — install → v2 features          |
 | Look up a command or flag              | [docs/reference/cli.md](docs/reference/cli.md)                          |
+| Use the v2 features                    | [docs/guides/v2-features.md](docs/guides/v2-features.md)                |
 | Reproduce or extend benchmarks         | [docs/benchmarks/](docs/benchmarks/README.md)                           |
-| Understand the invariants (G1, D3, D6) | [docs/reference/invariants.md](docs/reference/invariants.md)            |
+| Understand the invariants (G1, D3, D6) | [docs/theory/invariants.md](docs/theory/invariants.md)                  |
+| Map code to docs                       | [docs/architecture/modules.md](docs/architecture/modules.md)           |
 | Debug an issue                         | [docs/reference/troubleshooting.md](docs/reference/troubleshooting.md)  |
 | Contribute code                        | [CONTRIBUTING.md](CONTRIBUTING.md)                                      |
-| Navigate everything else               | [docs/INDEX.md](docs/INDEX.md)                                          |
-
-v2 features already documented: [delta protocol (SPEC-19)](docs/guides/06-delta-protocol.md), [zero-copy wire format (SPEC-18)](docs/guides/07-zero-copy.md), [elastic grid (SPEC-20)](docs/guides/08-elastic-grid.md), [streaming generation (SPEC-21)](docs/guides/09-streaming-generation.md), [arena management (SPEC-22)](docs/guides/10-arena-management.md).
+| Browse everything                      | [docs/README.md](docs/README.md) (catalog)                              |
 
 ## Interaction Combinators
 
@@ -122,7 +121,7 @@ The **strong confluence** theorem (Lafont 1997) guarantees that any two non-over
 
 ## Specs
 
-All design decisions are documented in formal specifications under [`docs/specs/`](docs/specs/). 17 specs (SPEC-00 through SPEC-16) cover the v1 surface; SPEC-17 onwards cover v2 work. See [docs/INDEX.md](docs/INDEX.md) for the full table.
+All design decisions are documented in formal specifications under [`docs/specs/`](docs/specs/). 17 specs (SPEC-00 through SPEC-16) cover the v1 surface; SPEC-17 onwards cover v2 work. See [docs/README.md](docs/README.md) for the full table.
 
 ## Benchmark Results
 

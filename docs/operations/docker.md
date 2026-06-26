@@ -168,7 +168,7 @@ docker compose up -d coordinator worker
 docker wait relativist-coordinator-1     # blocks until the coordinator finishes
 ```
 
-An internal SIGTERM handler is tracked as optional hardening in `docs/ROADMAP.md`.
+An internal SIGTERM handler is tracked as optional hardening in `docs/roadmap.md`.
 See `docs/benchmarks/limitations.md` (L7).
 
 **"connection refused" on worker start.** Workers dial `coordinator:9000` via

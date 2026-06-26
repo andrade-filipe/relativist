@@ -1,3 +1,14 @@
+---
+title: Theory Bridge — TCC ↔ Relativist
+summary: Local index of every TCC argument (ARG), discussion (DISC) and reference (REF) that Relativist specs cite, with paths back to source.
+keywords: [theory bridge, arguments, ARG-001, confluence, determinism, partitioning, border completeness, delta border, mixed-trace recoverability, discussions, references, citations]
+modules: []
+specs: [SPEC-01, SPEC-04, SPEC-05, SPEC-06, SPEC-13, SPEC-14, SPEC-19, SPEC-20]
+audience: [llm, researcher, contributor]
+status: reference
+updated: 2026-06-26
+---
+
 # Theory Bridge — TCC ↔ Relativist
 
 > **Purpose:** Relativist agents (`spec-critic`, `especialista-specs`, `task-splitter`, `test-generator`, `developer`, `reviewer`, `qa`, etc.) live in `codigo/relativist/.claude/agents/` and by design do not traverse upward to read TCC-root academic artifacts. This file is the local index of every formal ARG (argument), DISC (discussion) and REF (reference) that Relativist specs cite. Summaries here are deliberately short — when an agent needs full content, follow the absolute path back to the TCC source.

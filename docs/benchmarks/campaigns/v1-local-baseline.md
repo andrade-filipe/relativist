@@ -1,3 +1,14 @@
+---
+title: Campaign — v1_local_baseline (frozen)
+summary: Operational runbook to reproduce the frozen Phase 1 + Phase 2 snapshot at tag v0.10.0-bench, including pre-flight checklist and manifest.
+keywords: [v1_local_baseline, campaign, frozen, snapshot, v0.10.0-bench, pre-flight, reproduce, phase 1, phase 2, toolchain, manifest, locked results]
+modules: [bench]
+specs: [SPEC-09]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Campanha `v1_local_baseline` (congelada)
 
 Passo-a-passo operacional para rodar a campanha unificada Phase 1 + Phase 2 que gera o snapshot congelado `reproduce_article/results/locked/v1_local_baseline/`. Esta e a referencia que a Phase 3 LAN vai subtrair para isolar o custo de rede — a qualidade dos dados aqui determina a validade de toda conclusao downstream.

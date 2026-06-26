@@ -1,3 +1,14 @@
+---
+title: Known Benchmark Limitations (L1–L7)
+summary: Quick reference for the seven L-items from Phase 1/2 campaigns (no break-even, collapsed BSP, payload ceiling, etc.) with status and v2 pointers.
+keywords: [limitations, L1, L2, L3, L4, L5, L6, L7, break-even, strict-bsp, round-robin, star topology, readback, payload ceiling, compact subnet, shutdown race]
+modules: [merge, partition, protocol, reduction]
+specs: [SPEC-05, SPEC-09, SPEC-14]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Limitacoes Conhecidas (L1–L7)
 
 Sete itens L apareceram durante as campanhas de Phase 1/2 e alimentam decisoes de v2. Este documento e a referencia rapida; o historico detalhado fica em `docs/PHASE1-FINDINGS.md` e `docs/PHASE2-FINDINGS.md`.
@@ -6,7 +17,7 @@ Sete itens L apareceram durante as campanhas de Phase 1/2 e alimentam decisoes d
 
 Overhead de distribuicao excede o ganho paralelo para todas as configuracoes testadas in-process. Break-even so e esperado em maquinas separadas por rede (Phase 3 LAN).
 
-Ver `docs/ROADMAP.md` Secao 2.40 (break-even analysis: c_o/c_r ≈ 2.2 observado; precisa < 0.50 para w=2).
+Ver `docs/roadmap.md` Secao 2.40 (break-even analysis: c_o/c_r ≈ 2.2 observado; precisa < 0.50 para w=2).
 
 ## L2 — Loop BSP colapsado em uma rodada — RESOLVIDO em v0.10.0-bench
 

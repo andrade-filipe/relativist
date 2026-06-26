@@ -1,3 +1,14 @@
+---
+title: Data Collection Plan
+summary: Bridges SPEC-09 with TCC Section 5 — experimental matrix, CSV schemas, figure/table plan, statistics, and success criteria for the campaign.
+keywords: [data collection, experimental matrix, csv schema, detail rounds summary, repetitions, confidence interval, haskell comparison, statistical analysis, figures, tables, success criteria]
+modules: [bench]
+specs: [SPEC-01, SPEC-08, SPEC-09]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # DATA-COLLECTION-PLAN.md
 
 **Version:** 1.1

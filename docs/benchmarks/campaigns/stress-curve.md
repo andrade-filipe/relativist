@@ -1,3 +1,14 @@
+---
+title: Campaign — Stress Curve (D-014)
+summary: Methodology for the D-014 stress-curve campaign sweeping N from 10⁴ to 10⁹ agents to characterise the scaling wall and its failure mode.
+keywords: [stress curve, d-014, scaling wall, memory probe, stop rule, N up to 10^9, in_process, docker_tcp, ep_annihilation, dual_tree, condup_expansion, oom, ram gate]
+modules: [bench]
+specs: [SPEC-19, SPEC-21, SPEC-22]
+audience: [contributor, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Stress Curve Campaign — v2-development
 
 Methodology page for the D-014 stress-curve campaign. Reviewers consult
@@ -273,5 +284,5 @@ input that work is needed.
   (viability + break-even), ARG-007 (formal invariants vs empirical
   testing).
 - Closure: TASK-0708 runs the campaign, locks the dir, and updates
-  `docs/INDEX.md`, `docs/ROADMAP.md`, `docs/next-steps.md`,
+  `docs/README.md`, `docs/roadmap.md`, `docs/next-steps.md`,
   `CHANGELOG.md`, `docs/backlog/BACKLOG.md`.

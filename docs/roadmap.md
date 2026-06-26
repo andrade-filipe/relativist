@@ -1,3 +1,14 @@
+---
+title: Relativist Roadmap
+summary: Architectural rationale for v1-excluded and v2+ features (elastic grid, delta protocol, break-even §2.40), tagged by ship status.
+keywords: [roadmap, v2, elastic grid, confluence-enabled, delta protocol, break-even, coordinator-as-worker, work stealing, fault tolerance, hierarchical merge, streaming, recipe generation, c_o/c_r]
+modules: [merge, partition, protocol, bench]
+specs: [SPEC-13, SPEC-19, SPEC-20, SPEC-21, SPEC-22, SPEC-25]
+audience: [contributor, llm, researcher]
+status: reference
+updated: 2026-06-26
+---
+
 # Roadmap
 
 > **NOTE:** For active implementation status, priorities, and milestones, see `next-steps.md`. For shipped-bundle history see `progress.md`. This document keeps **architectural rationale** for what is/was/will-be built, condensed for items that have shipped to make room for future planning.
@@ -126,7 +137,7 @@ bincode v2 with varint shipped via wire format v2 (PROTOCOL_VERSION 5, bumped th
 
 ### 2.24 Zero-Copy Archive (rkyv) on the Hot Path  **[DONE (opt-in) — SPEC-18]**
 
-`cargo build --release --features zero-copy` enables rkyv-archived payloads alongside bincode. Activated at runtime via `--use-zero-copy`. Per SPEC-18 R20 NOT default. Reserved for Phase 3 LAN axis 2 measurement. See `docs/guides/07-zero-copy.md`.
+`cargo build --release --features zero-copy` enables rkyv-archived payloads alongside bincode. Activated at runtime via `--use-zero-copy`. Per SPEC-18 R20 NOT default. Reserved for Phase 3 LAN axis 2 measurement. See `docs/guides/v2-features.md`.
 
 ### 2.25 Same-Host Fast Path (Unix Domain Sockets / Shared Memory)  **[DONE (Unix) — SPEC-17]**
 
@@ -144,7 +155,7 @@ Theme: keep coordinator memory bounded (independent of total net size) by stream
 
 ### 2.27 Streaming Net Generation (Producer-Consumer Pipeline)  **[DONE — D-010 / SPEC-21]**
 
-`--chunk-size N` produces chunks of N agents through a producer-consumer pipeline; `bench-tcp` docker-compose profile exercises it. Streaming generators implemented for `ep_annihilation`, `dual_tree`, `condup_expansion`. R10b/c free-list recycle integrated under streaming (Strategy A streaming gate, Strategy B `BorderClean`). See `docs/guides/09-streaming-generation.md`.
+`--chunk-size N` produces chunks of N agents through a producer-consumer pipeline; `bench-tcp` docker-compose profile exercises it. Streaming generators implemented for `ep_annihilation`, `dual_tree`, `condup_expansion`. R10b/c free-list recycle integrated under streaming (Strategy A streaming gate, Strategy B `BorderClean`). See `docs/guides/v2-features.md`.
 
 ### 2.28 Online/Streaming Graph Partitioning  **[DONE — D-010 R10b strategies]**
 
@@ -163,7 +174,7 @@ Pending. mmap-based `Net` for single-node giant-net scenarios. Platform-specific
 
 ### 2.32 Sparse Net Representation  **[DONE — D-009 / SPEC-22 SparseNet]**
 
-`HashMap<AgentId, Agent>` + `HashMap<(AgentId, PortId), PortRef>` representation for partitions where dense allocation would overflow. Routing decision via SPEC-22 v2.4 `effective_arena_size > 4 × live_agent_count` metric (D-011 fix for the partition-perf BLOCKER). See `docs/guides/10-arena-management.md`.
+`HashMap<AgentId, Agent>` + `HashMap<(AgentId, PortId), PortRef>` representation for partitions where dense allocation would overflow. Routing decision via SPEC-22 v2.4 `effective_arena_size > 4 × live_agent_count` metric (D-011 fix for the partition-perf BLOCKER). See `docs/guides/v2-features.md`.
 
 ### 2.33 Arena Recycling / GC During Reduction  **[DONE — D-009 / SPEC-22 free-list]**
 

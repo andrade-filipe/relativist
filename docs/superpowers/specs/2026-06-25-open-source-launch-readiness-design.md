@@ -73,7 +73,7 @@ Five workstreams, executed in dependency order. Each ends green (`cargo test`, `
   `docs/_archive/README.md` explaining provenance and read-only status. Use `git mv` so history
   follows the files and no blobs duplicate.
 - **Keep live & curate:** `docs/guides/`, `docs/reference/`, `docs/benchmarks/`,
-  `docs/analysis/`, `docs/pesquisa/` (research notes — valuable to readers), `ROADMAP.md`,
+  `docs/analysis/`, `docs/pesquisa/` (research notes — valuable to readers), `roadmap.md`,
   `INDEX.md` (rewritten). `specs/` stays top-level as first-class design reference.
 - **`.gitignore` hardening:** ensure regenerable outputs (`data/`, `logs/`, `target/`,
   `*.log`, `__pycache__/`, `results/*.bak`, `results/*.before_*`, `results/*.pre_*`) are
@@ -131,7 +131,7 @@ evolution never re-clutters the root.
 Applying the four open-source-readiness dimensions directly:
 
 - **Dim 1 — Docs:** rewrite `README.md` license/section pointers; rewrite `CONTRIBUTING.md`
-  around RPI (remove the 6-stage SDD section); rewrite `docs/INDEX.md` for the new layout; add
+  around RPI (remove the 6-stage SDD section); rewrite `docs/README.md` for the new layout; add
   `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and `GOVERNANCE.md` (BDFL-style, honest:
   single maintainer + academic origin).
 - **Dim 2 — License:** replace MIT `LICENCE` with Apache-2.0 `LICENSE` (+ keep a note in
@@ -149,7 +149,7 @@ Applying the four open-source-readiness dimensions directly:
 ### 4.5 Next-steps visibility
 
 - Add `docs/reference/next-steps.md` (or `ROADMAP` "What's next" section) distilled from
-  `ROADMAP.md` §2.40 break-even analysis and the article's future work: the headline being the
+  `roadmap.md` §2.40 break-even analysis and the article's future work: the headline being the
   **clean negative result** (c_o/c_r = 2.2, needs < 0.5) and the concrete path to break-even
   (delta protocol §2.26 + coordinator-free round §2.34 + delta merge §2.35), plus Phase 3 LAN
   as the next empirical milestone. Written for a curious outsider who might want to help.
