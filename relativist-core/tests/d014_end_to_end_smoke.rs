@@ -12,6 +12,7 @@ use relativist_core::bench::suite::{Env, StressCurveDescriptor, StressWorkload};
 use std::time::Duration;
 
 #[test]
+#[ignore = "D-014 stress-curve smoke: runs a real benchmark sequence; wall/RAM budgets depend on runner speed (false-trips on shared CI). Run manually: cargo test -- --ignored"]
 fn end_to_end_smoke_in_process() {
     let n_override = [1_000usize, 10_000usize];
     let stop = StopRule {

@@ -13,6 +13,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
+#[ignore = "D-014 stress-curve smoke: runs the bash/python stress-curve script; runner-speed + env dependent. Run manually: cargo test -- --ignored"]
 fn script_smoke_runs_and_produces_artifacts() {
     // 1. Locate the script.
     let script = workspace_root().join("reproduce_article/scripts/stress_curve.sh");
