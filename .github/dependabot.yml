@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Rust dependencies (Cargo.lock / Cargo.toml across the workspace).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Conventional-Commit prefix so PR titles pass the branch-policy check
+    # (e.g. "build(deps): bump serde from ..."). Dependabot branches are
+    # `dependabot/*`, which branch-policy whitelists.
+    commit-message:
+      prefix: build
+      prefix-development: build
+    target-branch: develop
+
+  # GitHub Actions versions.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    target-branch: develop
